@@ -15,8 +15,8 @@ import { faGit, write } from "./file-actions-fixtures";
 import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { buildF05 } from "./fixtures";
 import { workingFileDigests } from "./git-oracle";
-import { approve, compare, copyRepo, gitPath, gitPathOf, hunksOf, outcome, patchOf, readOk, repoOf, resultOf, SUCCEEDED, TIMEOUT_MS, withService, type Comparison } from "./hunk-harness";
-import { caseTest, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { approve, compare, copyRepo, gitPath, gitPathOf, hunksOf, outcome, patchOf, readOk, repoOf, resultOf, subcommand, SUCCEEDED, TIMEOUT_MS, withService, type Comparison } from "./hunk-harness";
+import { caseTest, siblingDeadline, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 for (const module of ["revert", "workbench-review", "comparison"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 useFixtureRoot();
@@ -408,6 +408,56 @@ describe("revert lines: the bound and the token (spec FR-011, plan.md D2, D13)",
       write(repo, "g.txt", "g\n");
       const later = await readOk(service, r.repositoryId);
       expect(outcome(await review(service, r, later, { comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! }))).toEqual({ state: "failed", code: "INVALID_REQUEST" });
+    }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("revert lines: the read round of the review (T074, spec SC-007)", () => {
+  const FILE = { "f.txt": "a\nb\nc\nd\n" };
+  const CHANGED = { "f.txt": "a\nB\nc\nd\n" };
+  type Call = { arguments: readonly string[] };
+  // The Git reads of a line review that need no result of another read.
+  const ROUND: [string, (call: Call) => boolean][] = [
+    ["ls-files --stage", (c) => subcommand(c.arguments) === "ls-files" && c.arguments.includes("--stage")],
+    ["check-attr", (c) => subcommand(c.arguments) === "check-attr" && !c.arguments.includes("--cached")],
+    ["check-attr --cached", (c) => subcommand(c.arguments) === "check-attr" && c.arguments.includes("--cached")],
+    ["ls-files --eol", (c) => subcommand(c.arguments) === "ls-files" && c.arguments.includes("--eol")],
+    ["cat-file blob", (c) => subcommand(c.arguments) === "cat-file" && c.arguments.includes("blob")],
+  ];
+
+  caseTest("T074", "read round: ls-files --stage, check-attr, check-attr --cached, ls-files --eol, and cat-file all start before the first of them ends", SHELL, () =>
+    withService({ name: "t074-round" }, async (service) => {
+      const repo = build("round", FILE, CHANGED);
+      const r = await service.register(repo);
+      const read = await readOk(service, r.repositoryId);
+      const { c } = await comparisonOf(service, r, read, "f.txt");
+      const from = service.runner.calls.length;
+      await reviewOk(service, r, read, { comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! });
+      const calls = service.runner.calls.slice(from);
+      const round = ROUND.map(([name, match]) => ({ name, found: calls.filter(match) }));
+      expect(round.map(({ name, found }) => ({ name, count: found.length }))).toEqual(ROUND.map(([name]) => ({ name, count: 1 })));
+      // The double records `at` before the start and `durationMs` after the exit, both from `performance.now()`.
+      const firstEnd = Math.min(...round.map(({ found }) => found[0]!.at + found[0]!.durationMs!));
+      expect(round.map(({ name, found }) => ({ name, startedBeforeFirstEnd: found[0]!.at < firstEnd }))).toEqual(ROUND.map(([name]) => ({ name, startedBeforeFirstEnd: true })));
+    }),
+    TIMEOUT_MS,
+  );
+
+  // T399 seam, 001 contract §5 "Deadline outcomes": the cat-file deadline closes the operation Job, so ls-files --stage ends with `exitCode` null and no `deadline`.
+  caseTest("T074", "read round: a cat-file deadline gives DEADLINE when the Job close ends ls-files --stage, whose check comes first", SHELL, () =>
+    withService({ name: "t074-deadline" }, async (service) => {
+      const repo = build("deadline", FILE, CHANGED);
+      const r = await service.register(repo);
+      const read = await readOk(service, r.repositoryId);
+      const { c } = await comparisonOf(service, r, read, "f.txt");
+      const [stage, blob] = [ROUND[0]![1], ROUND[4]![1]];
+      const from = service.runner.calls.length;
+      const release = siblingDeadline(service, blob, stage);
+      const response = await review(service, r, read, { comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! }).finally(release);
+      const calls = service.runner.calls.slice(from);
+      const exitOf = (match: (call: Call) => boolean) => calls.filter(match).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+      expect({ stage: exitOf(stage), blob: exitOf(blob), state: response.state, code: response.code }).toEqual({ stage: ["closed"], blob: ["deadline"], state: "failed", code: "DEADLINE" });
     }),
     TIMEOUT_MS,
   );

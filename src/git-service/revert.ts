@@ -15,7 +15,7 @@ import { compareKeys, treeKey } from "../contracts/tree-order";
 import { attributeArgs, blobArgs, blobHashProofArgs, cachedAttributeArgs, checkoutTempArgs, indexPathArgs, lineEndingPathArgs, objectCheckArgs, OID_HEX, statusArgs } from "./commands";
 import { parsePatch, type PatchHunk } from "./diff-parser";
 import { HUNK_REFUSAL_REASONS, hunkEligibility, IndexFormatError, rawIndexEntries, type RawIndexEntry } from "./eligibility";
-import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
+import { createCollector, isDeadlineStop, RunnerRefusal, settleSteps, sizeDeadlineMs, stepUnits, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
 import { applyToContent } from "./hunk-candidate";
 import { canonicalIndex, hunkApprovals, indexOf, indexSession, isStop, lingeringText, missingObject, prepareHunk, PROFILE_TEXTS, publishIndex, settled, stepOf, type Ending, type Fact, type Failure, type PrepareOptions, type PublicationSession, type Refusal, type Stop } from "./hunk-publish";
 import { LOCKED_REMEDY } from "./index-lock";
@@ -573,21 +573,34 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   // An unstaged change and a staged change that is no new file always have an index entry.
   if (e.modes![1] === ABSENT_MODE) return { code: "MALFORMED_GIT_OUTPUT" };
   const indexEntry: Entry = { mode: e.modes![1]!, oid: e.oids![1]! };
-  const indexed = await indexEntriesOf(ctx, [path]);
+  // The reads that need no other result start together. Their checks below keep the plan.md D2 and D4 order.
+  // `indexBlob` reads the snapshot entry. The `indexed` check refuses another entry before the blob counts.
+  const round = await settleSteps(
+    [
+      indexEntriesOf(ctx, [path]),
+      factsOf(ctx, [{ root: "worktreeRoot", path: names }], { digest: true, detail: true, content: w.wsl !== undefined }),
+      attributesOf(ctx, [path], attributeArgs()),
+      attributesOf(ctx, [path], cachedAttributeArgs()),
+      eolOf(ctx, path),
+      indexBlob(ctx, indexEntry.oid),
+    ],
+    isDeadlineStop,
+  );
+  // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads, so a deadline decides first.
+  const expired = round.find(isDeadlineStop);
+  if (expired !== undefined) return expired as Stop;
+  const [indexed, facts, workingAttributes, indexAttributes, eol, base] = round;
   if (!("value" in indexed)) return "code" in indexed && indexed.code === "WORKBENCH_UNAVAILABLE" ? unavailable("path") : indexed;
   // The edge case "Another Git process changes the index": the index entry binds the shown comparison.
   if (!sameEntry(indexed.value.get(latin1(path)) ?? "absent", indexEntry)) return STALE;
 
-  const facts = await factsOf(ctx, [{ root: "worktreeRoot", path: names }], { digest: true, detail: true, content: w.wsl !== undefined });
   if (!("value" in facts)) return facts;
   const fact = facts.value[0]!;
   if (fact.kind === "absent") return STALE;
   const reason = factReason(fact);
   if (reason !== null) return SUPPORT.includes(reason) ? unsupported(reason) : unavailable(reason as WorkbenchUnavailableReason);
   if (fact.kind !== "file") return { code: "MALFORMED_GIT_OUTPUT" };
-  const workingAttributes = await attributesOf(ctx, [path], attributeArgs());
   if (!("value" in workingAttributes)) return workingAttributes;
-  const indexAttributes = await attributesOf(ctx, [path], cachedAttributeArgs());
   if (!("value" in indexAttributes)) return indexAttributes;
   const [work, cached] = [workingAttributes.value[0]!, indexAttributes.value[0]!];
   // The comparison decided its support with these values.
@@ -612,7 +625,6 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   const working = workingOf(fact);
   if (working === null) return { code: "MALFORMED_GIT_OUTPUT" };
 
-  const eol = await eolOf(ctx, path);
   if (!("value" in eol)) return eol;
   const autocrlf = autocrlfOf(listing);
   if (autocrlf === null) return unsupported("line-endings");
@@ -621,7 +633,6 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   if (bytes === "stale") return STALE;
   // Data-model §4 `expectedBlobId`: the partial patch goes reversed from the new side of the comparison.
   // The new side is the index blob (staged), or the index blob with every hunk (unstaged). Staged, the result is the new index content of the Unstage lines candidate.
-  const base = await indexBlob(ctx, indexEntry.oid);
   if (!("value" in base)) return base;
   let side: Uint8Array | null = base.value;
   if (!staged) for (const h of [...c.hunks].reverse()) side = side === null ? null : applyToContent(side, h, false);

@@ -228,6 +228,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   const lists = useRef<Partial<Record<ListName, ListHandle>>>({});
   const root = useRef<HTMLDivElement>(null);
   const body = useRef<HTMLDivElement>(null);
+  // The `markKey` of a pending Space. A reconcile read gives each entry a new `entryId`, and the selection follows the category and path (requests.ts `commit`).
   const pending = useRef<string | null>(null);
   const running = useRef(false);
   const reasonShown = useRef<string | null>(null);
@@ -324,10 +325,10 @@ export function ChangesPane(props: ChangesPaneProps) {
     if (isExtra(entry)) return reason(STAGE_UNCHANGED);
     if (p.fileActionRunning || running.current) return reason(BUSY_REASON);
     if (p.selection?.entryId !== entry.entryId) {
-      pending.current = entry.entryId;
+      pending.current = markKey(entry);
       return p.onSelect(entry.entryId);
     }
-    if (p.selection.comparisonId === null) pending.current = entry.entryId;
+    if (p.selection.comparisonId === null) pending.current = markKey(entry);
     else void run(entry, p.selection.comparisonId);
   }
 
@@ -335,13 +336,14 @@ export function ChangesPane(props: ChangesPaneProps) {
   useEffect(() => {
     reason(null);
     status(null);
-    const id = pending.current;
-    if (id === null) return;
-    if (selection?.entryId !== id) return void (pending.current = null);
-    if (selection.comparisonId === null) return;
+    const key = pending.current;
+    if (key === null) return;
+    const entry = live.current.entries.find((e) => e.entryId === selection?.entryId);
+    if (entry === undefined || markKey(entry) !== key) return void (pending.current = null);
+    const comparisonId = selection?.comparisonId ?? null;
+    if (comparisonId === null) return;
     pending.current = null;
-    const entry = live.current.entries.find((e) => e.entryId === id);
-    if (entry) void run(entry, selection.comparisonId);
+    void run(entry, comparisonId);
   }, [selection?.entryId, selection?.comparisonId]);
 
   useEffect(() => {
@@ -383,7 +385,7 @@ export function ChangesPane(props: ChangesPaneProps) {
     const item = (event.target as Element).closest?.('[role="treeitem"]') as HTMLElement | null;
     const id = item?.dataset.entryId;
     focused.current = id === undefined ? null : (listedRef.current.find((e) => e.entryId === id) ?? null);
-    if (pending.current !== null && id !== pending.current) pending.current = null;
+    if (pending.current !== null && (focused.current === null || markKey(focused.current) !== pending.current)) pending.current = null;
     reason(null);
     status(null);
   };

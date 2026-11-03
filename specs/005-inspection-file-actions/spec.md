@@ -66,6 +66,11 @@ The user approved the mockup boards "Commit view: submodule selected" and "Histo
 - Q: Do the SC-012 budgets hold in the packaged build? → A: Orchestrator decision 2026-10-31, from the packaged T108 and T111 measurements (research.md R18 "Packaged cost"). The marks budget is 55 ms per clean submodule on Windows: 5.5 s for 100 and 14.08 s for 256. The worst packaged median was 48.9 ms per submodule. The preview budget is 400 ms. The worst packaged preview median after the speed fix was 376.1 ms (rerun on 3a7b5395).
 - Q: Does the marks read get a WSL budget in v0.1.0? → A: Orchestrator decision 2026-10-31. No. The current route stays. A submodule that the 30 s deadline does not reach shows `failed` with `DEADLINE`. SC-012 records the measured WSL cost.
 
+### Session 2026-11-03
+
+- Q: When does Stage file of a moved submodule ship? → A: User decision: "Before v0.1.0". Stage file and Unstage file accept a submodule whose recorded commit moved. The parent index gets the commit that the submodule HEAD names, as `git add -- <path>` does (FR-077 to FR-080).
+- Q: Do Stage all changes, Stage folder, and Stage selected include a moved submodule? → A: User decision: "Stage it too". They include it, as `git add -A` does. A row with only local edits stays out, as FR-075 states (FR-081).
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows the commit details of a selected history row, with the static line "Changed files are not shown in this version." Feature 004 adds the Commit view with file trees, Show in Explorer for a file, a one-line ignore action, and the Submodules group. This feature makes history inspectable and makes the Commit view a place to act on files. Git Extensions is the reference for the functions, and Arbareto must be faster and safer.
@@ -264,6 +269,24 @@ A developer selects a submodule row in the Commit view or in the History diff. T
 
 ---
 
+### User Story 11 - Stage a moved submodule (Priority: P1, v0.1.0)
+
+A developer moves a submodule to another commit inside the submodule. In the parent Commit view, the developer stages the new commit from the row, with Space, or with Stage all changes. Unstage file puts the recorded commit back.
+
+**Why this priority**: Today Stage file refuses every submodule. One moved submodule also refuses Stage all changes for every file. The user must run `git add` in a terminal. Git Extensions stages it.
+
+**Independent Test**: In a fixture with a submodule moved one commit, stage the row. Compare `ls-files -z --stage` of the parent with the same listing after Git's own `git add -- <path>` on a copy. Repeat with Stage all changes and `git add -A`, with a regular file, a moved submodule, and a submodule with only local edits.
+
+**Acceptance Scenarios**:
+
+1. **Given** a submodule vendor/libfmt 3 commits ahead of the index. **When** I select its row in Changes and choose Stage file. **Then** the index records the commit that the preview shows as new, and the row moves to Staged.
+2. **Given** that staged row. **When** I choose Unstage file. **Then** the index records the HEAD commit of the parent again, and the row moves back to Changes.
+3. **Given** a moved submodule, a submodule vendor/parser with only local edits, and a modified file. **When** I choose Stage all changes. **Then** the moved submodule and the file are staged in one step, and vendor/parser stays in Changes with its marks.
+4. **Given** a selected moved submodule whose HEAD moves again before I choose Stage file. **When** I choose Stage file. **Then** the application refuses it as stale and changes no index entry.
+5. **Given** a submodule row with only local edits. **When** I focus its Stage button. **Then** the button is unavailable with "The submodule commit is unchanged. Commit the local edits inside the submodule first."
+
+---
+
 ### Edge Cases
 
 - A merge commit has more than 63 parents. The picker offers the parents up to the 001 bound, as the history view does.
@@ -301,12 +324,15 @@ A developer selects a submodule row in the Commit view or in the History diff. T
 - The settings of a submodule name a status program, such as a command-valued `core.fsmonitor` or a clean filter. No status runs inside it. The row "Working tree" states the reason. Changes does not list the submodule for local edits only.
 - A gitlink has no entry in `.gitmodules`. The preview shows "Nested repository" in place of "Submodule", and the reason line.
 - A repository has more than 256 initialized submodules. Arbareto checks the first 256 in index order for local edits. The others state the bound in the row "Working tree".
+- The HEAD of a moved submodule is on a branch without a commit. Stage file refuses with "The submodule branch has no commit yet. Commit inside the submodule first." (FR-078).
+- A gitlink that `.gitmodules` does not name moves to another commit. Stage file stages it, as `git add -- <path>` does (FR-077).
+- A submodule is conflicted, is deleted, or is part of a rename record. Stage file and Unstage file refuse it. A multi-file action that holds it refuses as a whole (FR-080, FR-081).
 
 ## Requirements *(mandatory)*
 
 ### Scope Boundaries
 
-Include the changed files and the diff of a selected History commit, with a parent picker for a merge commit. Include folders-first tree order in every file tree and in the References tree. Include Show in Explorer for a folder row. Include Delete and Delete permanently of Changes-list rows and folders. Include a docked ignore editor for the root `.gitignore` and for `info/exclude`, with an exact preview. Include Open submodule in the same window and a link back to the parent. Include a blame view of committed lines. Include a branch name card and an upstream-gone mark. Include the submodule change preview and the local-edit marks of submodules (2026-10-31).
+Include the changed files and the diff of a selected History commit, with a parent picker for a merge commit. Include folders-first tree order in every file tree and in the References tree. Include Show in Explorer for a folder row. Include Delete and Delete permanently of Changes-list rows and folders. Include a docked ignore editor for the root `.gitignore` and for `info/exclude`, with an exact preview. Include Open submodule in the same window and a link back to the parent. Include a blame view of committed lines. Include a branch name card and an upstream-gone mark. Include the submodule change preview and the local-edit marks of submodules (2026-10-31). Include Stage file, Unstage file, and the multi-file stage actions for a submodule whose recorded commit moved (2026-11-03). Exclude hunk and line actions on a submodule, and the staging of a conflicted, deleted, or renamed submodule.
 
 Exclude the Files tab of History, blame of uncommitted lines, Open with, File history, a combined diff of a merge commit, and editing of subfolder `.gitignore` files and of `core.excludesFile`. Exclude WSL ignore reads beyond the one ignore file that the editor loads. Exclude Delete of staged-list rows, submodules, and nested repositories. Exclude the commit message spell check and the other WSL parity items (feature 006). Exclude Bitbucket and Jira integration. Exclude the Git Extensions file-list actions that the user did not request: internal edit, difftool, Rename or Move, Reset file to a revision, Assume unchanged, Skip worktree, and Stop tracking.
 
@@ -334,7 +360,11 @@ This feature changes these requirements for builds that include it. The earlier 
 - **004 plan.md:483**: "A folder row gives Show in Explorer the reason "Show in Explorer takes one file. Select a file in the folder." (contract gap: `revealPath` takes one entry)." The sentence goes. A folder row offers Show in Explorer (FR-018, FR-019).
 - **003 FR-020 and the 004 sidebar text**: The visible ", not present" after an upstream name goes. The gone mark of FR-064 replaces it.
 - **001 FR-007** (`specs/001-desktop-qualification/spec.md:395`): "Changes inside a submodule MUST stay outside these categories. A submodule gitlink MUST appear only when its checked-out or staged commit differs from the recorded commit." A submodule with only local edits also appears in Changes, with its mark (FR-075). Its content still stays outside the categories. The parent status keeps `--ignore-submodules=dirty` (research.md R18).
-- **001 FR-011** (`specs/001-desktop-qualification/spec.md:399`) and **001 plan.md "Limitation text"**: A submodule entry shows the preview of FR-069 to FR-074, not the limitation text "This entry is a submodule or a nested repository.". Its hunk and file actions stay unsupported.
+- **001 FR-011** (`specs/001-desktop-qualification/spec.md:399`) and **001 plan.md "Limitation text"**: A submodule entry shows the preview of FR-069 to FR-074, not the limitation text "This entry is a submodule or a nested repository.". Its hunk and file actions stay unsupported. Amended 2026-11-03: the file actions of a moved submodule are supported (FR-077 to FR-080). The hunk actions stay unsupported.
+- **001 FR-038** (`specs/001-desktop-qualification/spec.md:447`), its clarification (`:53`), and User Story 2 scenario 11 (`:221`): "Both actions MUST refuse conflicted entries, submodules, …". Stage file and Unstage file accept a moved submodule (FR-077 to FR-080). Conflicted, deleted, and renamed submodules stay refused.
+- **001 plan.md "Limitation text"** (`specs/001-desktop-qualification/plan.md:577`): "The reason line and the accessible description of the unavailable hunk and file actions keep it." A gitlink row never shows the sentence. Its file-action reason uses the FR-080 texts. An untracked nested repository keeps the sentence.
+- **001 contract §4 "File staging"** and **§12** (`specs/001-desktop-qualification/contracts/operations.md:316`, `:1671`): "`submodule`: a gitlink on either side" and "Hunk and file staging refuse submodules with reason `submodule`." File staging accepts a moved gitlink and adds the reason `submodule-unborn` (contract Δ4).
+- **004 FR-038** (`specs/004-workbench-ux/spec.md:425`): "One refused file MUST refuse the whole action and name the file and its reason." A moved submodule passes as one file. A row with only local edits stays out of the set and refuses nothing (FR-081).
 - **001 contract §7** (`specs/001-desktop-qualification/contracts/operations.md:1048`): "Superproject reads never start Git inside a submodule." The new reads `readSubmoduleChange` and `readSubmoduleWork` start fixed commands inside a submodule, as `reviewSubmodules` does (contract Δ3).
 
 ### Functional Requirements
@@ -448,6 +478,15 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-075**: Changes MUST list an initialized submodule whose commit is unchanged when its own status shows tracked or untracked changes. The row MUST show the mark "modified content" or "untracked content" with the tooltip "The submodule has local edits. Its commit is unchanged.". A submodule row with a changed commit MUST show the same marks. Arbareto MUST check at most 256 submodules for each status read, at most 8 at the same time. A submodule MUST NOT be read beyond its own status. Stage file, Stage selected, and Stage all changes MUST NOT cover a row with only local edits. Its stage button MUST be unavailable with "The submodule commit is unchanged. Commit the local edits inside the submodule first.".
 - **FR-076**: The preview and the marks MUST run inside a WSL distro through the distro's Git, under the feature 001 WSL rules. A new selection MUST cancel the preview read that runs.
 
+#### Submodule staging (2026-11-03, v0.1.0)
+
+- **FR-077**: Stage file MUST accept an Unstaged gitlink entry whose commit moved. The fact is a porcelain v2 `1` record with `C` as the second character of `<sub>`, and mode 160000 in `mI` and `mW`. Stage file MUST set the index entry to mode 160000 and the commit that the submodule HEAD names, at stage 0, as `git add -- <path>` does. It MUST NOT write an object, run a filter, or read working-file content. It MUST NOT change the submodule. A gitlink that `.gitmodules` does not name follows the same rule.
+- **FR-078**: Before Stage file, the service MUST locate the submodule with the plan D11 checks 3 to 5 and read its HEAD commit inside it. A failed check MUST refuse with the FR-080 text. A HEAD on a branch without a commit MUST refuse with "The submodule branch has no commit yet. Commit inside the submodule first.". The commit MUST equal the new ID that the shown preview names (FR-070). Another commit MUST refuse the action as stale.
+- **FR-079**: The 001 FR-038 checks MUST apply. The service MUST read the submodule HEAD again immediately before publication. Another commit MUST refuse with `STALE_SELECTION` and change no index entry. Before publication, the candidate index MUST hold exactly one stage-0 entry at the path, with mode 160000 and that commit, and no other change. Without this proof, the action MUST refuse with a typed error.
+- **FR-080**: Unstage file MUST accept a Staged gitlink entry whose index side has mode 160000 and whose `X` is `M` or `A`. It MUST restore the HEAD mode and commit, or remove an added gitlink from the index. Stage file and Unstage file MUST still refuse a conflicted gitlink, a deleted gitlink, a type change, and a rename or copy record that holds a gitlink. The reason line of such a row MUST state "Arbareto stages and unstages only a moved submodule commit. Use Git in a terminal for this change.". No row with a gitlink MUST show "This entry is a submodule or a nested repository.". An untracked nested repository keeps that text. Hunk and line actions on a submodule stay unsupported. Feature 008 Revert stays unchanged for a submodule.
+- **FR-081**: Stage selected, Stage folder, and Stage all changes MUST include each moved submodule in their one index step. Unstage selected, Unstage folder, and Unstage all MUST include each staged gitlink that FR-080 accepts. A row with only local edits (FR-075) MUST stay out of the set and MUST NOT refuse it. A submodule that FR-080 refuses MUST refuse the whole action, as 004 FR-038 states.
+- **FR-082**: The row Stage button and Space of a moved submodule MUST start Stage file. While the preview of the selected row is pending, Stage file MUST stay unavailable with "Arbareto reads the Git facts.". A row with only local edits keeps the FR-075 reason. Every FR-077 to FR-081 rule MUST also hold in a WSL repository, through the distro's Git under the feature 001 WSL rules.
+
 ### Key Entities *(include if feature involves data)*
 
 - **Commit changes**: One commit, the chosen parent, and the list of changed files with status, paths, modes, and object IDs. It belongs to one history view.
@@ -460,6 +499,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **Branch tracking facts**: The full name, the upstream, whether the upstream reference exists, the ahead and behind counts, and the worktree that holds the branch.
 - **Submodule change**: The path, the kind (submodule or nested repository), the old and the new commit, the new and the removed counts, at most 50 commits per side, and a state: commits, missing, not initialized, or single (an added or a deleted gitlink).
 - **Submodule work state**: Per initialized submodule of one status read: modified content, untracked content, or a typed reason why Arbareto did not check it.
+- **Gitlink stage binding**: The path, the submodule HEAD commit that the comparison read, and the usual file-action binding of 001 FR-038 without a working file.
 
 ## Success Criteria *(mandatory)*
 
@@ -477,6 +517,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **SC-010**: Keyboard-only users complete each P1 story and the ignore editor story. Each new control has an accessible name, visible focus, and a contrast of at least 4.5:1.
 - **SC-011**: A review of the requirement-to-test map finds no outcome that Git message text, timing, or a name pattern decides.
 - **SC-012**: In every submodule fixture, each preview count and commit list equals Git's own `rev-list --left-right --count` and `log` inside the submodule. Each mark equals the submodule's own porcelain v2 status. No submodule program runs in a preview, and no status runs in a submodule whose settings name a status program. A preview shows within 400 ms after the selection (warm packaged build, median of 10). The 400 ms is the worst packaged median of 376.1 ms plus a margin (orchestrator decision 2026-10-31, research.md R18 "Packaged cost"). On Windows, on fixtures with 100 and 256 initialized clean submodules, the last mark shows within 55 ms per submodule after the Changes list (warm packaged build, median of 10). The 55 ms is the worst packaged median of 48.9 ms per submodule plus a margin (orchestrator decision 2026-10-31, research.md R18 "Packaged cost"). WSL has no budget in v0.1.0. T108 records the measured WSL cost at 20 and 100 submodules.
+- **SC-013**: In every moved-submodule fixture, on Windows and in WSL, the parent `ls-files -z --stage` bytes after Stage file equal those after Git's own `git add -- <path>` on a copy. After Stage all changes, they equal those after `git add -A` on a copy. After Unstage file, they equal those after `git restore --staged -- <path>`. A HEAD move between the preview and publication leaves the index file bytes unchanged.
 
 ## Assumptions
 

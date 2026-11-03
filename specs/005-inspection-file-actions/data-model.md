@@ -183,3 +183,11 @@ Each section names its source. Field names are contract names. "001 data-model ย
 - `limited`: the count of gitlinks after the first 256 in index order. They have no entry.
 - `extraRows`: the entries with `checked`, `modified` or `untracked` true, and no record in the parent status. The renderer lists them in Changes (spec FR-075).
 - Counts: the Changes count, the folder counts, and the History Working directory count add the `extraRows` count once the result arrives.
+
+## 17. Gitlink stage binding (2026-11-03)
+
+- Scope: a retained comparison or a multi-file item of a moved gitlink (plan D20 rule 2).
+- `head`: the full object ID that `rev-parse --verify -q HEAD` printed inside the submodule. The `readComparison` result carries it as `gitlink: {oid}`.
+- The binding of the 001 data-model ยง6 row "File approval" applies with `working: null`. `head` takes the place of the working-file values.
+- Checkpoints: plan D20 rule 2 steps 1 to 4 run again. Another `head` gives `STALE_SELECTION`.
+- Lifetime: the lifetime of its comparison or of its multi-file request.

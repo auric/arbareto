@@ -313,7 +313,7 @@ A refused entry gives `UNSUPPORTED_COMPARISON` with one of these reasons. Operat
 
 - `type`: a type change, or a working path that is not a regular file.
 - `symlink`: a symbolic link on either side. A type change with a symbolic link on either side gives `type`. `symlink` applies only without a type change.
-- `submodule`: a gitlink on either side, or an untracked nested repository.
+- `submodule`: a gitlink on either side, or an untracked nested repository. Amended by feature 005 (2026-11-03, user decision): `stage` accepts a moved gitlink, and `unstage` accepts a staged gitlink change. The reason `submodule-unborn` applies to a moved gitlink whose submodule HEAD has no commit (005 contract Δ4).
 - `index-flag`: an intent-to-add, assume-unchanged, or skip-worktree entry.
 - `path`: the data-model §5 path rule applies. Outside WSL, a tracked entry also gets `path` when another stage-0 index path names the same file identity. The service checks only the other paths whose components have the same count and the same lengths. NTFS `$UpCase` maps each UTF-16 unit to one unit, so every case collision meets this check. Two hard links with such paths both get `path`. So the rule fails closed for them. Hard links with other component lengths stay unchecked.
 - `rename`: an Unstaged rename record. Only `stage` meets it.
@@ -1668,7 +1668,7 @@ Submodule initialization and update are in this slice (spec FR-047 to FR-054). T
 - `updateSubmodules` initializes and updates every submodule recursively to the commit that its parent records. Submodule HEADs, folders, and settings equal those of Git's own `submodule update --init --recursive` (probe S20). The recorded differences touch only remote-tracking refs, one skipped fetch, and the environment of hooks ("Update protocol" step 5).
 - The app runs that work in phases for each submodule ("Update protocol"). It fetches first and checks the refs of the submodule again. Then Git checks out without a fetch. The user decided this order on 2026-10-01 (spec Clarifications).
 - It never selects single submodules, never adds, removes, or syncs one, and never runs a command in each. It passes no `--remote`, `--force`, `--merge`, `--rebase`, `--checkout`, or `--recursive`.
-- Other operations keep their submodule rules. Reads pass `--ignore-submodules=dirty` and start no Git process inside a submodule. Hunk and file staging refuse submodules with reason `submodule`.
+- Other operations keep their submodule rules. Reads pass `--ignore-submodules=dirty` and start no Git process inside a submodule. Hunk and file staging refuse submodules with reason `submodule`. Amended by feature 005 (2026-11-03, user decision): file staging accepts a moved gitlink (005 contract Δ4).
 
 ### Discovery notice
 

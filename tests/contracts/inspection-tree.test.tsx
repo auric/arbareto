@@ -131,6 +131,14 @@ describe("submodule and nested-repository rows (spec FR-015, US3-4)", () => {
       expect([layout, below.length]).toEqual([layout, 2]);
     }
   });
+
+  // Data-model §3: a nested-repository row is one row, an untracked record that ends with `/`.
+  test("a nested-repository record is one file row in the tree layout, also below a folder, and no folder row holds it", () => {
+    const untracked = [entry("untracked", "x/"), entry("untracked", "m/y/"), entry("untracked", "m/z.txt")];
+    const rows = allOpen((toggled) => changesRows(untracked, "tree", toggled, true));
+    const shown = rows.filter((r) => r.kind !== "section").map((r) => [r.kind, label(r), r.depth]);
+    expect(shown).toEqual([["folder", "m/", 1], ["file", "m/y/", 2], ["file", "m/z.txt", 2], ["file", "x/", 1]]);
+  });
 });
 
 // ---- The lazy Changes tree (spec SC-009, quickstart Q32) ----
@@ -143,7 +151,9 @@ function eagerRows(entries: ChangeEntry[], toggled: ReadonlySet<string>, open: b
   const tree = (list: ChangeEntry[], scope: string, depth: number, untracked: boolean, out: Row[], extra: number) => {
     const root: F = { name: "", children: new Map(), count: 0, shown: 0 };
     for (const e of list) {
-      const parts = atob(e.pathBytes).split("/");
+      // Data-model §3: a record that ends with `/` is one nested-repository leaf.
+      const raw = atob(e.pathBytes);
+      const parts = (raw.endsWith("/") ? raw.slice(0, -1) : raw).split("/");
       const kept = keep === undefined || keep(e) ? 1 : 0;
       let node = root;
       node.count++;

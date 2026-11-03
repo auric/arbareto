@@ -621,7 +621,8 @@ describe("T119 Stage file of a moved submodule (FR-078 to FR-082, plan D20)", ()
     const nested = entry("untracked", "nested/");
     const { world } = await setup({ entries: [nested], work: work({ entries: [] }) });
     world.answers.readComparison = movedComparison(null, "submodule");
-    await click(button("Flat layout"));
+    expect(text(item("Changes", "nested/"))).toContain("nested/");
+    expect(buttons("Stage file nested/", item("Changes", "nested/"))).toHaveLength(1);
     await click(item("Changes", "nested/"));
     expect(describedBy(button("Stage file (Space)"))).toBe(line(LIMITATION));
     expect(text(document.body)).not.toContain(GITLINK_TEXT);

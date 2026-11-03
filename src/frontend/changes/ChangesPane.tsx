@@ -1245,7 +1245,10 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
     );
   }
   const entry = row.entry;
-  const [folder, name] = splitPath(entry.path, GIT_SEPARATORS);
+  // Data-model §3: a nested-repository record ends with `/`, and its row name keeps it.
+  const nested = entry.path.endsWith("/");
+  const [folder, base] = splitPath(nested ? entry.path.slice(0, -1) : entry.path, GIT_SEPARATORS);
+  const name = nested ? `${base}/` : base;
   const direction = directionOf(entry.category);
   const mark = letter(entry);
   const submodule = entry.submodule?.startsWith("S") === true;

@@ -416,6 +416,26 @@ describe("multi-select and multi-file actions (FR-034 to FR-036, FR-038 to FR-04
     expect(text(document.querySelector("footer")!)).toContain("Stage files did not start: One action covers at most 10,000 files and 512 MiB of working files.");
   });
 
+  // Feature 005 plan.md D20 "Refusal texts": the named entry's facts choose the text, never the reason alone.
+  test("a refused set names a gitlink with the D20 text, an untracked nested repository with the 001 text, and submodule-unborn with its text (005 FR-080)", async () => {
+    const gone = { ...entry("unstaged", "gone", ".D"), submodule: "SC..", modes: ["160000", "160000", "000000"] } as ChangeEntry;
+    const moved = { ...entry("unstaged", "moved", ".M"), submodule: "SC..", modes: ["160000", "160000", "160000"] } as ChangeEntry;
+    const nested = entry("untracked", "nested/");
+    const double = await openCommitView(createWorld({ entries: [gone, moved, nested] }));
+    const footer = () => text(document.querySelector("footer")!);
+    const refuse = async (reason: string, entryId: string) => {
+      await click(button("Stage all changes"));
+      await act(async () => double.pending("applyFiles")!.resolve({ requestId: fixtureId(0x5ff), state: "rejected", code: "UNSUPPORTED_COMPARISON", result: { reason, entryId } }));
+      await settle();
+    };
+    await refuse("submodule", gone.entryId);
+    expect(footer()).toContain("Stage files did not start: gone. Arbareto stages and unstages only a moved submodule commit. Use Git in a terminal for this change.");
+    await refuse("submodule", nested.entryId);
+    expect(footer()).toContain("Stage files did not start: nested/. This entry is a submodule or a nested repository.");
+    await refuse("submodule-unborn", moved.entryId);
+    expect(footer()).toContain("Stage files did not start: moved. The submodule branch has no commit yet. Commit inside the submodule first.");
+  });
+
   test("the stage-files counters show in the status bar with Cancel, and the running reason goes only into the tooltip and the description (D15)", async () => {
     const files = ["a.ts", "b.ts"].map((p) => entry("unstaged", p, ".M"));
     const double = await openCommitView(createWorld({ entries: files }));

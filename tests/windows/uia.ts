@@ -124,6 +124,7 @@ const SLOT = {
   get_CurrentProcessId: 20,
   get_CurrentName: 23,
   get_CurrentAcceleratorKey: 24,
+  get_CurrentHasKeyboardFocus: 26,
   get_CurrentIsEnabled: 28,
   get_CurrentBoundingRectangle: 43,
   // IUIAutomationElement3
@@ -358,23 +359,25 @@ function eachWindow<T>(processId: number, search: (window: Pointer) => T | null)
   return null;
 }
 
+function nameCondition(name: string, controlType: number | undefined): Pointer {
+  if (controlType !== undefined && !Object.values(ControlType).includes(controlType as never)) throw new UiaError("BAD_ARGUMENT", `controlType ${controlType}`);
+  const byName = propertyCondition(UIA_NamePropertyId, name);
+  if (controlType === undefined) return byName;
+  let byType: Pointer | null = null;
+  try {
+    byType = propertyCondition(UIA_ControlTypePropertyId, controlType);
+    return outCall(uia(), "CreateAndCondition", [P, P], [byName, byType])!;
+  } finally {
+    // The And condition holds its own references.
+    release(byType);
+    release(byName);
+  }
+}
+
 // The first descendant in tree order whose Name equals `name`, and whose control type equals `controlType` when given. UI Automation also shows an owned dialog as a descendant of its owner window.
 export async function find(processId: number, name: string, timeoutMs: number, controlType?: number): Promise<Element> {
   checkArgs(processId, name, timeoutMs);
-  if (controlType !== undefined && !Object.values(ControlType).includes(controlType as never)) throw new UiaError("BAD_ARGUMENT", `controlType ${controlType}`);
-  const byName = propertyCondition(UIA_NamePropertyId, name);
-  let condition = byName;
-  if (controlType !== undefined) {
-    let byType: Pointer | null = null;
-    try {
-      byType = propertyCondition(UIA_ControlTypePropertyId, controlType);
-      condition = outCall(uia(), "CreateAndCondition", [P, P], [byName, byType])!;
-    } finally {
-      // The And condition holds its own references.
-      release(byType);
-      release(byName);
-    }
-  }
+  const condition = nameCondition(name, controlType);
   try {
     return await poll(timeoutMs, `no element named ${JSON.stringify(name)} in process ${processId}`, () =>
       eachWindow(processId, (window) => {
@@ -382,6 +385,35 @@ export async function find(processId: number, name: string, timeoutMs: number, c
         return found === null ? null : new Element(found);
       }),
     );
+  } finally {
+    release(condition);
+  }
+}
+
+// Every match of `find` below all top-level windows of the process, once at least one exists.
+export async function findAll(processId: number, name: string, timeoutMs: number, controlType?: number): Promise<Element[]> {
+  checkArgs(processId, name, timeoutMs);
+  const condition = nameCondition(name, controlType);
+  try {
+    return await poll(timeoutMs, `no element named ${JSON.stringify(name)} in process ${processId}`, () => {
+      const elements: Element[] = [];
+      try {
+        eachWindow(processId, (window) => {
+          const found = outCall(window, "FindAll", [i32, P], [TreeScope_Descendants, condition]);
+          if (found === null) return null;
+          try {
+            for (let i = 0, n = length(found); i < n; i++) elements.push(new Element(outCall(found, "GetElement", [i32], [i])!));
+          } finally {
+            release(found);
+          }
+          return null;
+        });
+      } catch (error) {
+        for (const element of elements) element.release();
+        throw error;
+      }
+      return elements.length === 0 ? null : elements;
+    });
   } finally {
     release(condition);
   }
@@ -465,6 +497,13 @@ export function setValue(element: Element, text: string): void {
       lib().oleaut32.SysFreeString(value);
     }
   });
+}
+
+// Chromium `AXPlatformNodeWin` computes HasKeyboardFocus from the DOM focus of the page, also when its window is not in the foreground.
+export function hasKeyboardFocus(element: Element): boolean {
+  const value = new Int32Array(1);
+  hr("get_CurrentHasKeyboardFocus", slotCall(element.self, SLOT.get_CurrentHasKeyboardFocus, [P], [ptr(value)]));
+  return value[0] !== 0;
 }
 
 // Chromium maps `disabled` and `aria-disabled="true"` to IsEnabled false.

@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/toolti
 import { KEYS, scopedAction } from "../keyboard/shortcuts";
 import { FILE_LANE, type Profile } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
+import { SubmodulePreview, useSubmoduleChange, type ChangeRead, type SubmoduleReader } from "../changes/SubmodulePreview";
 import type { BlameRequest, HistoryView, Inspection } from "../state/history-view";
 import { textOf } from "../state/history-view";
 import { READS_TRUST_TEXT } from "../trust/TrustChip";
@@ -154,13 +155,15 @@ export type CommitChangesProps = {
   /** The Changed files width and layout. The Workbench keeps them, so they survive the blame view. */
   panes: HistoryPanes;
   onPanes(next: Partial<HistoryPanes>): void;
+  /** Feature 005 plan.md D19: the preview reads and Open submodule of a submodule row. */
+  submodules?: SubmoduleReader;
 };
 export type HistoryPanes = { width: number; layout: "tree" | "flat" };
 // Plan.md D15 "History view": the Changed files region is 288 px wide.
 export const HISTORY_PANES: HistoryPanes = { width: 288, layout: "tree" };
 
 /** The Changed files and diff regions of the selected commit (spec FR-005). Wide and narrow: side by side with a splitter. Constrained: the list above the diff. */
-export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame, filterRef, panes, onPanes }: CommitChangesProps) {
+export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame, filterRef, panes, onPanes, submodules }: CommitChangesProps) {
   const readView = () => view.readView(oid, false);
   const viewId = useSyncExternalStore(view.subscribe, readView, readView);
   const state = useSyncExternalStore(inspection.subscribe, inspection.getState, inspection.getState);
@@ -206,6 +209,9 @@ export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame
   const headingId = useId();
   const noMatch = query !== "" && sorted.length > 0 && rows.length === 0;
   const selected = file === null ? null : (sorted.find((e) => e.fileId === file.fileId) ?? null);
+  // Contract Δ3 `readSubmoduleChange`: `record` is the `fileId` of the retained listing of this view, commit, and parent.
+  const source = selected?.kind === "submodule" && result !== null ? { kind: "commit" as const, viewId: result.viewId, oid: result.oid, parent: index, record: selected.fileId } : null;
+  const change = useSubmoduleChange(submodules, source, null);
 
   const list = (
     <section
@@ -274,6 +280,8 @@ export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame
     <CommitDiff
       entry={selected}
       file={file}
+      change={change}
+      submodules={submodules}
       onBlame={() => {
         if (selected === null || result === null) return;
         // Plan.md D12 "Sources": a deleted row blames its old path at the chosen parent.
@@ -502,7 +510,8 @@ type PierreHunk = NonNullable<Parameters<typeof import("../changes/PatchView").d
 
 /** Plan.md D3 "Diff facts", one fact row each. */
 function Facts({ result }: { result: CommitFile }) {
-  const { rename, mode, submodule, typeChange } = result.facts;
+  // Plan D19: a submodule row shows the preview, not a fact row.
+  const { rename, mode, typeChange } = result.facts;
   const facts: ReactNode[] = [];
   if (rename) facts.push(`Renamed from ${textOf(rename.oldPath)} (${rename.score}% similar).`);
   if (mode)
@@ -511,11 +520,6 @@ function Facts({ result }: { result: CommitFile }) {
         Mode <code>{mode.old}</code> → <code>{mode.new}</code>.
       </>,
     );
-  if (submodule) {
-    if (submodule.old === null && submodule.new !== null) facts.push(`Submodule commit added: ${shortId(submodule.new)}.`);
-    else if (submodule.new === null && submodule.old !== null) facts.push(`Submodule commit removed: ${shortId(submodule.old)}.`);
-    else if (submodule.old !== null && submodule.new !== null) facts.push(`Submodule commit ${shortId(submodule.old)} → ${shortId(submodule.new)}.`);
-  }
   if (result.binary) facts.push(BINARY_TEXT);
   if (typeChange) facts.push(`Type changed from ${KIND_WORD[typeChange.old]} to ${KIND_WORD[typeChange.new]}.`);
   return (
@@ -528,7 +532,7 @@ function Facts({ result }: { result: CommitFile }) {
 }
 
 /** The diff of the selected file: the 32 px header, the fact rows, and `PatchView` without hunk actions and line selection (spec FR-014). */
-function CommitDiff({ entry, file, onBlame }: { entry: Entry | null; file: FileRead; onBlame(): void }) {
+function CommitDiff({ entry, file, change, submodules, onBlame }: { entry: Entry | null; file: FileRead; change: ChangeRead | null; submodules: SubmoduleReader | undefined; onBlame(): void }) {
   const copy = useCopy();
   const result = file?.state === "loaded" ? file.result : null;
   const patch = useMemo(() => (result?.patch == null ? null : decodePatch(result.patch)), [result]);
@@ -558,7 +562,7 @@ function CommitDiff({ entry, file, onBlame }: { entry: Entry | null; file: FileR
   const path = entry === null ? null : textOf(entry.pathBytes);
   const anchor = at === null || hunks?.patch !== patch ? null : (hunks.list[at] ?? null);
   const body =
-    file === null || entry === null ? null
+    file === null || entry === null || file.state === "submodule" ? null
     : file.state === "loading" ? <p className="p-2 text-muted-text">{READING_DIFF}</p>
     : file.state === "failed" ? <p className="p-2">{file.remedy?.text ?? (file.reason === "path" ? PATH_TEXT : failureText("The diff", file.code))}</p>
     : (
@@ -576,6 +580,13 @@ function CommitDiff({ entry, file, onBlame }: { entry: Entry | null; file: FileR
           </div>
         )}
       </>
+    );
+  // Spec FR-010 and FR-069: a submodule row shows the preview without the Working tree row.
+  if (entry?.kind === "submodule" && path !== null)
+    return (
+      <section aria-label="Diff of the selected file" data-slot="history-diff" data-section="historyDiff" tabIndex={-1} className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <SubmodulePreview path={path} pathBytes={entry.pathBytes} change={change ?? "pending"} reader={submodules} />
+      </section>
     );
   return (
     <section aria-label="Diff of the selected file" data-slot="history-diff" data-section="historyDiff" tabIndex={-1} className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onKeyDown}>

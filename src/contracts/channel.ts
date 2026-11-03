@@ -18,6 +18,7 @@ import {
   RECOVERY_MARKERS_PER_HANDSHAKE,
   REGISTER_VERSION_BYTES,
   REGISTERED_DEADLINE_CAP_MS,
+  REVERT_FILE_BYTES,
   STALL_NOTICE_MS,
   STREAMED_PROCESS_INPUT_BYTES,
   SUBMODULE_REVIEW_SUBMODULES,
@@ -221,9 +222,18 @@ export type ProcessContext = z.infer<typeof ProcessContext>;
 const ms = (cap: number) => z.int().min(1).max(cap);
 // Contract §6 "Channel frames" `limits`. The context and the policy pick the cap.
 export const BootstrapLimits = z.strictObject({ deadlineMs: ms(BOOTSTRAP_DEADLINE_CAP_MS) }).meta({ title: "BootstrapLimits" });
+// Feature 008 contract Δ3: the size rule replaces REGISTERED_DEADLINE_CAP_MS only for this array of a registered operation.
+// So the frame bound of `deadlineMs` is the safe integer range, and `registeredCap` keeps the cap for every other `run`.
+export const SIZE_RULE_ARGUMENTS: readonly string[] = ["--no-lazy-fetch", "checkout-index", "--temp", "--stdin", "-z"];
+export const isSizeRuleCall = (args: unknown): boolean => Array.isArray(args) && args.length === SIZE_RULE_ARGUMENTS.length && SIZE_RULE_ARGUMENTS.every((arg, i) => args[i] === arg);
 export const RegisteredLimits = z
-  .strictObject({ deadlineMs: ms(REGISTERED_DEADLINE_CAP_MS), stallMs: z.literal(STALL_NOTICE_MS).optional() })
+  .strictObject({ deadlineMs: ms(Number.MAX_SAFE_INTEGER), stallMs: z.literal(STALL_NOTICE_MS).optional() })
   .meta({ title: "DeadlineLimits" });
+// zod can run a refinement on a value whose fields failed.
+const registeredCap = (sizeRule: boolean) => (r: { arguments?: unknown; limits?: unknown }) => {
+  const deadline = typeof r.limits === "object" && r.limits !== null ? (r.limits as { deadlineMs?: unknown }).deadlineMs : undefined;
+  return typeof deadline !== "number" || deadline <= REGISTERED_DEADLINE_CAP_MS || (sizeRule && isSizeRuleCall(r.arguments));
+};
 export const NetworkLimits = z
   .strictObject({ inactivityMs: ms(SUBMODULE_UPDATE_INACTIVITY_MS), ceilingMs: ms(SUBMODULE_UPDATE_CEILING_MS), stallMs: z.literal(STALL_NOTICE_MS) })
   .meta({ title: "NetworkLimits" });
@@ -264,7 +274,17 @@ const Component = z
   .refine((name) => name.length <= FILE_FACT_COMPONENT_UNITS && name.isWellFormed() && NATIVE.isComponent(name));
 const FileFactEntry = z.strictObject({ root: z.enum(["worktreeRoot", "gitDirectory", "commonDirectory"]), path: z.array(Component).min(1) });
 // Feature 005 contract Δ6: `content` asks for the bytes of one ignore file. The shell refuses it outside WSL.
-const fileFacts = { type: z.literal("fileFacts"), ...call, operationId: Identifier, digest: z.boolean(), files: z.array(FileFactEntry).min(1).max(FILE_FACT_ENTRIES), content: z.boolean().optional() };
+// Feature 008 contract Δ6: `detail` adds the replace facts of a file. `stream` digests without the 1 MiB bound. A revert review asks for it without a marker.
+const fileFacts = {
+  type: z.literal("fileFacts"),
+  ...call,
+  operationId: Identifier,
+  digest: z.boolean(),
+  files: z.array(FileFactEntry).min(1).max(FILE_FACT_ENTRIES),
+  content: z.boolean().optional(),
+  detail: z.boolean().optional(),
+  stream: z.boolean().optional(),
+};
 
 // Contract §6 "File facts": `lastWrite` is a signed 64-bit integer in decimal.
 const STAMP = /^(?:0|-?[1-9][0-9]{0,18})$/;
@@ -288,6 +308,41 @@ const DeleteExpected = z.union([
 ]);
 // Feature 005 contract Δ5 and Δ6 `fileReplace`: 0 to 1 MiB of bytes.
 const IgnoreBytes = Base64.refine((data) => decodedBytes(data) <= IGNORE_TARGET_BYTES);
+// Feature 008 contract Δ5 and Δ6: the bytes of a line revert. The ignore targets keep their 1 MiB rule.
+// Bun 1.4.4 matches the `Base64` pattern up to about 6,193,148 decoded bytes, far above REVERT_FILE_BYTES (research.md R11).
+const ReplaceBytes = Base64.refine((data) => decodedBytes(data) <= REVERT_FILE_BYTES);
+const Uint32 = z.int().min(0).max(0xffff_ffff);
+// Data-model §3 `working` and contract Δ6 `facts`: the bound facts of the target. SDDL holds `owner`, `group`, and `dacl`.
+const WindowsWorkingFacts = z
+  .strictObject({ size: Count, sha256: Fingerprint, attributes: Uint32, links: z.int().min(1), owner: Text.min(1), group: Text.min(1), dacl: Text.min(1), creationTime: Stamp })
+  .meta({ title: "WindowsWorkingFacts" });
+// typify drops the `xattr` const, so the shell checks it.
+const WslWorkingFacts = z
+  .strictObject({ size: Count, sha256: Fingerprint, mode: Uint32, uid: Uint32, gid: Uint32, links: z.int().min(1), xattr: z.literal(false) })
+  .meta({ title: "WslWorkingFacts" });
+// Contract Δ6 (batch 1 review): a Git temporary file is never named `.git` in any ASCII case.
+const TempName = Component.refine((name) => name.replace(/[A-Z]/g, (c) => c.toLowerCase()) !== ".git");
+// Git's temporary file of `checkout-index --temp` (data-model §8a).
+const ReplaceSource = z.strictObject({ name: TempName, size: Count, sha256: Fingerprint }).meta({ title: "FileReplaceSource" });
+const IGNORE_TARGETS: readonly unknown[] = ["gitignore", "exclude"];
+type ReplaceFrame = { target?: unknown; expected?: unknown; facts?: unknown; bytes?: unknown; source?: unknown; folders?: unknown; gitMode?: unknown };
+const digestOf = (value: unknown) => (typeof value === "object" && value !== null ? (value as { size?: unknown; sha256?: unknown }) : null);
+// zod can run a refinement on a value whose fields failed.
+const replaceRule = (r: ReplaceFrame) => {
+  if (IGNORE_TARGETS.includes(r.target)) {
+    const expected = digestOf(r.expected);
+    return typeof r.bytes === "string" && decodedBytes(r.bytes) <= IGNORE_TARGET_BYTES && (expected === null || Number(expected.size) <= IGNORE_TARGET_BYTES) && r.facts === undefined && r.source === undefined && r.folders === undefined && r.gitMode === undefined;
+  }
+  const expected = digestOf(r.expected);
+  const facts = digestOf(r.facts);
+  return (
+    (r.bytes === undefined) !== (r.source === undefined) &&
+    (r.folders === undefined || r.expected === "absent") &&
+    // Contract Δ6 `gitMode`: exactly an absent target carries the Git mode of its index entry.
+    (r.expected === "absent") === (r.gitMode !== undefined) &&
+    (expected === null ? r.facts === "absent" : facts !== null && facts.size === expected.size && facts.sha256 === expected.sha256)
+  );
+};
 
 // ---- WSL file work (contract §6 "WSL file work", "Index digest in a read") ----
 
@@ -439,16 +494,16 @@ const named = <T extends z.ZodType>(title: string, schema: T) => schema.meta({ i
 
 export const ProcessRequest = z.xor([
   z.union([
-    z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
-    z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
-    // Feature 002 contract Δ6: only a registered run takes `script`.
-    z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).meta({ title: "RunRegistered" }),
+    z.strictObject({ ...run, ...GIT_PROBE }).refine(registeredCap(false)).meta({ title: "RunGitProbe" }),
+    z.strictObject({ ...run, ...DISCOVERY }).refine(registeredCap(false)).meta({ title: "RunDiscovery" }),
+    // Feature 002 contract Δ6: only a registered run takes `script`. Feature 008 contract Δ3: only a registered run takes the size rule.
+    z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).refine(registeredCap(true)).meta({ title: "RunRegistered" }),
     // Feature 003 contract Δ6: the shell admits only the fixed clone array with the bound destination as the last item.
-    z.strictObject({ ...run, ...CLONE }).meta({ title: "RunClone" }),
+    z.strictObject({ ...run, ...CLONE }).refine(registeredCap(false)).meta({ title: "RunClone" }),
     // Feature 004 contract Δ6: the shell admits only the fixed arrays of each context.
-    z.strictObject({ ...run, ...GLOBAL_CONFIG }).meta({ title: "RunGlobalConfig" }),
-    z.strictObject({ ...run, ...WORKTREE_ADD }).meta({ title: "RunWorktreeAdd" }),
-    z.strictObject({ ...run, ...IGNORE_PREVIEW }).meta({ title: "RunIgnorePreview" }),
+    z.strictObject({ ...run, ...GLOBAL_CONFIG }).refine(registeredCap(false)).meta({ title: "RunGlobalConfig" }),
+    z.strictObject({ ...run, ...WORKTREE_ADD }).refine(registeredCap(false)).meta({ title: "RunWorktreeAdd" }),
+    z.strictObject({ ...run, ...IGNORE_PREVIEW }).refine(registeredCap(false)).meta({ title: "RunIgnorePreview" }),
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),
@@ -463,7 +518,13 @@ export const ProcessRequest = z.xor([
     z
       .strictObject({ ...fileFacts, ...REGISTERED, index: WslIndexRequest.optional() })
       // Only a request with `digest: false` takes `index`. `content` takes `digest: true` and exactly one entry.
-      .refine((r) => (r.index === undefined || r.digest === false) && (r.content !== true || (r.digest === true && Array.isArray(r.files) && r.files.length === 1))),
+      // Feature 008 contract Δ6: `stream` takes `digest: true` and no `content`.
+      .refine(
+        (r) =>
+          (r.index === undefined || r.digest === false) &&
+          (r.content !== true || (r.digest === true && Array.isArray(r.files) && r.files.length === 1)) &&
+          (r.stream !== true || (r.digest === true && r.content !== true)),
+      ),
   ),
   named("LingeringCount", z.strictObject({ type: z.literal("lingeringCount"), ...call, operationId: Identifier, commonDirectory: ChannelPath })),
   z.union([
@@ -508,17 +569,37 @@ export const ProcessRequest = z.xor([
       })
       .refine((r) => Array.isArray(r.entries) && Array.isArray(r.folders) && r.entries.length + r.folders.length > 0),
   ),
+  // Feature 008 contract Δ6: the target `working` takes `facts`, exactly one of `bytes` and `source`, and `folders` only with `expected: absent`.
+  // An absent `folders` creates no folder. The ignore targets keep `bytes` and their 1 MiB bound.
   named(
     "FileReplace",
+    z
+      .strictObject({
+        type: z.literal("fileReplace"),
+        ...call,
+        operationId: Identifier,
+        repositoryId: Identifier,
+        target: z.enum(["gitignore", "exclude", "working"]),
+        path: ChannelPath,
+        expected: z.union([z.enum(["absent"]), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "FileReplaceExpected" })]),
+        facts: z.union([z.enum(["absent"]), WindowsWorkingFacts, WslWorkingFacts]).optional(),
+        bytes: ReplaceBytes.optional(),
+        source: ReplaceSource.optional(),
+        folders: z.array(Component).min(1).max(FILE_FACT_ENTRIES).optional(),
+        gitMode: z.enum(["100644", "100755"]).optional(),
+      })
+      .refine(replaceRule),
+  ),
+  // Feature 008 contract Δ6: one Git temporary file in the worktree root, under a revert marker.
+  named(
+    "TempRemove",
     z.strictObject({
-      type: z.literal("fileReplace"),
+      type: z.literal("tempRemove"),
       ...call,
       operationId: Identifier,
       repositoryId: Identifier,
-      target: z.enum(["gitignore", "exclude"]),
-      path: ChannelPath,
-      expected: z.union([z.enum(["absent"]), z.strictObject({ size: Count.max(IGNORE_TARGET_BYTES), sha256: Fingerprint }).meta({ title: "FileReplaceExpected" })]),
-      bytes: IgnoreBytes,
+      name: TempName,
+      expected: z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "TempRemoveExpected" }),
     }),
   ),
   // typify drops a const, so `op` is an enum of one value.
@@ -567,6 +648,17 @@ export const ResolveGitReply = z.union([
 
 // Contract §6 "File facts": the codes of a component that exists but cannot be opened or read.
 export const FILE_FACT_ERRORS = ["access-denied", "sharing-violation", "io-error", "other-error"] as const;
+const WINDOWS_DETAIL = ["attributes", "owner", "group", "dacl", "creationTime", "exactName"] as const;
+const WSL_DETAIL = ["mode", "uid", "gid", "xattr", "own"] as const;
+// Feature 008 contract Δ6: `links` comes with all Windows or all WSL detail fields, and never with a part of them.
+const detailRule = (fact: Record<string, unknown>) => {
+  const windows = WINDOWS_DETAIL.filter((key) => fact[key] !== undefined).length;
+  const wsl = WSL_DETAIL.filter((key) => fact[key] !== undefined).length;
+  return fact.links === undefined ? windows + wsl === 0 : (windows === WINDOWS_DETAIL.length && wsl === 0) || (wsl === WSL_DETAIL.length && windows === 0);
+};
+// Feature 008 contract Δ6 `fileReplace` and `tempRemove`: `disk-full` and `read-only-volume` add to the file fact codes.
+export const REPLACE_ERRORS = [...FILE_FACT_ERRORS, "disk-full", "read-only-volume"] as const;
+export const REPLACE_REFUSALS = ["not-regular", "hard-link", "read-only", "encrypted", "owner", "security", "file-attributes", "xattr"] as const;
 // `digest` and `bound` exclude each other. A link carries `target` and `relative` exactly when its tag is `symlink` or `junction`.
 export const FileFact = z.union([
   z
@@ -581,8 +673,24 @@ export const FileFact = z.union([
       ownerExecute: z.boolean().optional(),
       // Feature 005 contract Δ6: the reply to a WSL `content` request adds the base64 bytes of a file up to 1 MiB, beside its digest.
       bytes: IgnoreBytes.optional(),
+      // Feature 008 contract Δ6: a `detail` request adds `links`, and the Windows or the WSL facts.
+      // `attributes` holds the `FileBasicInformation` attribute bits. `owner`, `group`, and `dacl` are SDDL. `creationTime` is a stamp as `lastWrite`.
+      links: z.int().min(1).optional(),
+      attributes: Uint32.optional(),
+      owner: Text.min(1).optional(),
+      group: Text.min(1).optional(),
+      dacl: Text.min(1).optional(),
+      creationTime: Stamp.optional(),
+      // Windows: true when an OS fact proves that each path component below the root has the requested name on disk, unit for unit (plan.md D8).
+      exactName: z.boolean().optional(),
+      mode: Uint32.optional(),
+      uid: Uint32.optional(),
+      gid: Uint32.optional(),
+      xattr: z.boolean().optional(),
+      // WSL: `st_uid` equals the effective uid of the distro process, the rule of the `replace` owner check (plan.md D9).
+      own: z.boolean().optional(),
     })
-    .refine((fact) => (fact.digest === undefined || fact.bound === undefined) && (fact.bytes === undefined || fact.digest !== undefined))
+    .refine((fact) => (fact.digest === undefined || fact.bound === undefined) && (fact.bytes === undefined || fact.digest !== undefined) && detailRule(fact))
     .meta({ title: "FileFactFile" }),
   z.strictObject({ kind: z.literal("directory"), executable: z.boolean().optional() }).meta({ title: "FileFactDirectory" }),
   z
@@ -718,10 +826,22 @@ export const FileDeleteReply = z.union([
     .meta({ title: "FileDeleteResults" }),
   z.strictObject({ type: z.literal("fileDelete"), ...call, result: z.enum(["stopped", "interrupted"]) }).meta({ title: "FileDeleteEnded" }),
 ]);
+// Feature 008 contract Δ6: `replaced` names the created folders of a `working` target, and the refusals and codes grow.
+// `folders` of a failure names the folders that the write created before it. `source: kept` names a Git temporary file that stays.
+const Created = z.array(Component).min(1).max(FILE_FACT_ENTRIES);
 export const FileReplaceReply = z.union([
   z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.enum(["replaced", "stale", "stopped", "interrupted"]) }).meta({ title: "FileReplaceResult" }),
-  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("refused"), reason: z.enum(["not-regular"]) }).meta({ title: "FileReplaceRefused" }),
-  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "FileReplaceError" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("replaced"), folders: Created }).meta({ title: "FileReplaceReplacedFolders" }),
+  // typify drops a const, so `source` is an enum of one value.
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("replaced"), folders: Created.optional(), source: z.enum(["kept"]) }).meta({ title: "FileReplaceReplacedSourceKept" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("stale"), folders: Created }).meta({ title: "FileReplaceStaleFolders" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("refused"), reason: z.enum(REPLACE_REFUSALS), folders: Created.optional() }).meta({ title: "FileReplaceRefused" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("error"), code: z.enum(REPLACE_ERRORS), folders: Created.optional() }).meta({ title: "FileReplaceError" }),
+]);
+// `stopped`: a Windows stop or deadline before the delete, so nothing was removed. `interrupted`: a WSL stop, deadline, or broken output.
+export const TempRemoveReply = z.union([
+  z.strictObject({ type: z.literal("tempRemove"), ...call, result: z.enum(["removed", "stale", "absent", "stopped", "interrupted"]) }).meta({ title: "TempRemoveResult" }),
+  z.strictObject({ type: z.literal("tempRemove"), ...call, result: z.literal("error"), code: z.enum(REPLACE_ERRORS) }).meta({ title: "TempRemoveError" }),
 ]);
 export const ShadowReply = z.union([
   z.strictObject({ type: z.literal("shadow"), ...call, shadowId: Identifier }).meta({ title: "ShadowCreated" }),
@@ -750,6 +870,8 @@ export const ProcessReply = z.xor([
   FileDeleteReply.meta({ title: "FileDeleteGroup" }),
   FileReplaceReply.meta({ title: "FileReplaceGroup" }),
   ShadowReply.meta({ title: "ShadowGroup" }),
+  // Feature 008 contract Δ6.
+  TempRemoveReply.meta({ title: "TempRemoveGroup" }),
 ]);
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
@@ -774,6 +896,10 @@ export const WORKBENCH_ACTIONS = [
   // Feature 005 contract Δ1.
   "delete",
   "ignore-save",
+  // Feature 008 contract Δ1.
+  "revert-lines",
+  "revert-files",
+  "revert-unstaged",
 ] as const;
 // Feature 004 contract Δ6: the action of a `started` frame of kind `workbench`. The close prompt names the side and the ignore target, so the action holds them.
 export const WORKBENCH_STARTED_ACTIONS = [
@@ -794,6 +920,10 @@ export const WORKBENCH_STARTED_ACTIONS = [
   "delete-files",
   "ignore-save-gitignore",
   "ignore-save-exclude",
+  // Feature 008 contract Δ2.
+  "revert-lines",
+  "revert-files",
+  "revert-unstaged",
 ] as const;
 
 const startedFields = {

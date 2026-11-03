@@ -332,7 +332,7 @@ test("the numstat reads of the three comparison scopes are exact", () => {
 
 // Contract §7 read list and T103: the attribute, line-ending, and empty-tree reads. Paths go only on stdin.
 test("the attribute, line-ending, and empty-tree reads are exact", () => {
-  expect(commands.attributeArgs()).toEqual([...R, "check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding"]);
+  expect(commands.attributeArgs()).toEqual([...R, "check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident"]);
   expect(commands.lineEndingArgs()).toEqual([...R, "ls-files", "--eol", "-z"]);
   expect(commands.emptyTreeArgs()).toEqual([...R, "hash-object", "-t", "tree", "--stdin"]);
 });

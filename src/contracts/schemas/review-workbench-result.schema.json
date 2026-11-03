@@ -1598,6 +1598,185 @@
           ],
           "additionalProperties": false,
           "title": "IgnoreSaveReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "revert-lines"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "unstaged",
+                    "staged"
+                  ]
+                },
+                "fileBytes": {
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "base64",
+                  "contentEncoding": "base64",
+                  "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                },
+                "lines": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "scope",
+                "fileBytes",
+                "lines"
+              ],
+              "additionalProperties": false,
+              "title": "RevertLinesPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "RevertLinesReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "revert-files"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "paths": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "base64",
+                    "contentEncoding": "base64",
+                    "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                  }
+                },
+                "newFiles": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "staged": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "unstaged": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "count",
+                "paths",
+                "newFiles",
+                "staged",
+                "unstaged"
+              ],
+              "additionalProperties": false,
+              "title": "RevertFilesPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "RevertFilesReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "revert-unstaged"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "paths": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "base64",
+                    "contentEncoding": "base64",
+                    "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                  }
+                },
+                "submodules": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "count",
+                "paths",
+                "submodules"
+              ],
+              "additionalProperties": false,
+              "title": "RevertUnstagedPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "RevertUnstagedReviewed"
         }
       ]
     },
@@ -1658,12 +1837,49 @@
             "ignore-not-utf8",
             "ignore-nul",
             "ignore-lone-cr",
+            "untracked",
+            "in-the-way",
+            "attributes",
+            "ident",
+            "unstaged-changes",
+            "not-regular",
+            "hard-link",
+            "read-only",
+            "encrypted",
+            "owner",
+            "security",
+            "file-attributes",
+            "xattr",
+            "nothing-to-revert",
             "untracked-in-way",
             "not-empty",
             "file",
             "other",
             "files-changed",
-            "ignore-changed"
+            "ignore-changed",
+            "revert-changed",
+            "binary",
+            "encoding",
+            "size",
+            "rename",
+            "mode",
+            "type",
+            "symlink",
+            "LFS",
+            "filter",
+            "state",
+            "line-endings",
+            "index-flag",
+            "context-only",
+            "deleted-file",
+            "new-file",
+            "eof-newline",
+            "sparse-index",
+            "split-index",
+            "index-change-hook",
+            "executable-monitor",
+            "unqualified-monitor",
+            "shared-repository"
           ]
         },
         "worktree": {
@@ -2188,6 +2404,80 @@
           ],
           "additionalProperties": false,
           "title": "SideNames"
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false,
+          "title": "WorkbenchRemedy"
+        },
+        "files": {
+          "minItems": 1,
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "binary",
+                  "encoding",
+                  "size",
+                  "rename",
+                  "mode",
+                  "type",
+                  "symlink",
+                  "submodule",
+                  "LFS",
+                  "filter",
+                  "state",
+                  "line-endings",
+                  "index-flag",
+                  "path",
+                  "context-only",
+                  "deleted-file",
+                  "new-file",
+                  "eof-newline",
+                  "untracked",
+                  "in-the-way",
+                  "attributes",
+                  "ident",
+                  "unstaged-changes",
+                  "not-regular",
+                  "hard-link",
+                  "read-only",
+                  "encrypted",
+                  "owner",
+                  "security",
+                  "file-attributes",
+                  "xattr"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "title": "RevertRefusedFile"
+          }
         }
       },
       "additionalProperties": false,

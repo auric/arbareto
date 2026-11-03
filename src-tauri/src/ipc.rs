@@ -23,7 +23,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 65] = [
+pub const OPERATIONS: [&str; 67] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -84,6 +84,8 @@ pub const OPERATIONS: [&str; 65] = [
     "readIgnoreFile",
     "previewIgnore",
     "openSubmodule",
+    "readSubmoduleChange",
+    "readSubmoduleWork",
     // Feature 006 contract Δ1.
     "listDictionaries",
     "readDictionary",
@@ -1140,6 +1142,24 @@ pub async fn open_submodule(
     request: Request<'_>,
 ) -> Result<Value, &'static str> {
     call(webview, &ipc, "openSubmodule", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_submodule_change(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readSubmoduleChange", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_submodule_work(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readSubmoduleWork", request.body().clone()).await
 }
 
 #[tauri::command]

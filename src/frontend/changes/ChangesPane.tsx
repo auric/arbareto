@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, Copy01Icon, CubeIcon, Delete02Icon, Delete04Icon, File01Icon, Folder01Icon, FolderSearchIcon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon, Tick02Icon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, Copy01Icon, CubeIcon, Delete02Icon, Delete04Icon, File01Icon, Folder01Icon, FolderSearchIcon, ListIcon, ListTreeIcon, MinusSignIcon, MoreHorizontalIcon, PlusSignIcon, Search01Icon, Tick02Icon, Undo03Icon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
-import type { ChangeEntry } from "../../contracts/envelope";
+import type { ChangeEntry, RevertFilesPlan, SubmoduleChange, SubmoduleWork } from "../../contracts/envelope";
 import { ignoreLine } from "../../contracts/ignore-line";
 import { useCopy } from "../app/RepositoryStates";
 import { ActionMenu, type ActionGroup, type ActionItem } from "../components/action-menu";
@@ -19,14 +19,18 @@ import { Splitter } from "../layout/Splitter";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { DeleteConfirm, DeleteRefusal } from "./DeleteConfirm";
 import { CUT_REASON, deleteEntries, deleteReason, IGNORE_LABEL, IGNORE_LINE_REASON, LIMIT_TEXT, NO_HISTORY, type DeletePlan, type DeleteReview, type FileActions } from "./file-actions";
+import { RevertConfirm } from "./RevertConfirm";
+import { actionName, FOLDER_REASON, MORE_ACTIONS, REVERT_UNSTAGED_LABEL, revertFilesLabel, revertReason, revertSetReason, unstagedFiles, unstagedReason, type RevertUnstagedPlan } from "./revert-text";
 import type { IgnoreTarget } from "../state/workbench";
-import { changesRows, derivedRequest, folderEntries, formatCount, overLimit, stagedRows, type FilesRequest, type Layout, type TreeRow } from "./file-tree";
+import { KIND_TEXTS } from "../resolve/texts";
+import { changeText, EXTRA_ID, extraEntries, LOCAL_EDITS_TOOLTIP, marksOf, STAGE_UNCHANGED } from "./SubmodulePreview";
+import { changesRows, conflictedRows, derivedRequest, folderEntries, formatCount, overLimit, stagedRows, type FilesRequest, type Layout, type TreeRow } from "./file-tree";
 
 // plan.md "Task flow and command placement", "Long text", "Keyboard and focus" (Roles, File list, Stage key row), and "Required visible states" (No selection, Empty/clean).
 // Feature 004 plan.md D8, D15 ("Commit view layout", "Virtual tree", "Limited status", "Multi-select", "Row and hunk buttons", "Ignore items"), spec FR-029 to FR-040, FR-045, FR-086.
 
 type Category = ChangeEntry["category"];
-type ListName = "changes" | "staged";
+type ListName = "conflicted" | "changes" | "staged";
 
 export const HELP_LINE = "Arrow keys show a file. Space stages or unstages it.";
 export const BUSY_REASON = "A file action is running. Wait for its result.";
@@ -38,7 +42,7 @@ export const NO_FILE_MATCH = "No file matches the filter.";
 export type FileDirection = "stage" | "unstage" | "resolve";
 export type FileAction = { direction: FileDirection; comparisonId: string; entryId: string };
 /** The T202 `runFileAction` result. `text` of a refusal is the full status bar sentence. */
-export type FileActionResult = { state: "succeeded" } | { state: "failed" } | { state: "refused"; text: string };
+export type FileActionResult = { state: "succeeded" } | { state: "failed" } | { state: "refused"; text: string; quiet?: boolean };
 /** The selected entry and the ID of its shown comparison. `comparisonId` is null while its read is pending. */
 export type PaneSelection = { entryId: string; comparisonId: string | null } | null;
 
@@ -49,6 +53,8 @@ export type FilesProps = {
   reason: string | null;
   /** A mutation runs. The reason then goes only into the tooltip and the accessible description (plan.md D15). */
   running: boolean;
+  /** Feature 004 spec FR-105: a merge or a rebase is in progress. The reason then follows the running rule, and the row buttons take it too. */
+  quiet?: boolean;
   /** Contract Δ4 "Status cut" `untracked`. */
   cut: boolean;
   /** Feature 005 plan.md D6: the reason that blocks every Delete, such as an unfinished operation, or null. */
@@ -65,6 +71,19 @@ export type FilesProps = {
   onOpenSubmodule?(path: string): void;
   /** Feature 005 plan.md D11 "Availability" of the submodule row with these path bytes. */
   submoduleReason?(pathBytes: string): string | null;
+  /** Feature 008 plan.md D5 and D12: Revert file. `deleteBlock` also blocks it (spec FR-002). */
+  revert?: RevertFiles;
+  /** The snapshot of the shown read. A new one closes an open Revert confirmation (feature 008 data-model §10). */
+  snapshotId?: string;
+};
+
+/** Feature 008 contract Δ3 `revert-files` and `revert-unstaged`. A review gives null after a refusal, which the status shows. `run` gives true for `succeeded`. */
+export type RevertFiles = {
+  review(entryIds: string[], label: string): Promise<{ token: string; plan: RevertFilesPlan } | null>;
+  /** `files` is the count of the REVERT_CHECKING line. */
+  reviewUnstaged(label: string, files: number): Promise<{ token: string; plan: RevertUnstagedPlan } | null>;
+  /** `unstaged` selects the Revert all unstaged changes result texts. */
+  run(token: string, label: string, entryIds: string[], unstaged: boolean): Promise<boolean>;
 };
 
 export type ChangesPaneProps = {
@@ -79,8 +98,8 @@ export type ChangesPaneProps = {
   filterRef?: Ref<HTMLInputElement>;
   /** The T202 `runFileAction`. */
   onFileAction(action: FileAction): Promise<FileActionResult>;
-  /** Feeds the T145 reason line. Null clears it. */
-  onReason?(text: string | null): void;
+  /** Feeds the T145 reason line. Null clears it. `quiet` keeps the text as a hidden description (spec FR-105). */
+  onReason?(text: string | null, quiet?: boolean): void;
   /** Feeds the second live element of the status bar. Null clears it. */
   onStatus?(text: string | null): void;
   fileActionRunning?: boolean;
@@ -105,13 +124,18 @@ export type ChangesPaneProps = {
   untrackedOpen?: boolean;
   onUntrackedOpen?(open: boolean): void;
   files?: FilesProps;
+  /** Feature 005 plan.md D19: the `readSubmoduleWork` result of this snapshot and the change of the selected submodule row, each null until it arrives. */
+  submodules?: { work: SubmoduleWork | null; change: SubmoduleChange | null };
 };
+
+/** Plan D19 row facts of a submodule row: the marks, a row with only local edits, and the Change text of the selected row. */
+type RowSub = { marks: readonly string[]; extra: boolean; change: string | null; newCommits: boolean };
 
 // The compact file row height (plan.md density table).
 const ROW_HEIGHT = 26;
 // shortcut: plain rows up to this count, as the 001 list did. TanStack Virtual takes larger lists (plan.md "Keyboard and focus").
 const VIRTUAL_MIN = 200;
-const listOf = (category: Category): ListName => (category === "staged" ? "staged" : "changes");
+const listOf = (category: Category): ListName => (category === "staged" ? "staged" : category === "conflicted" ? "conflicted" : "changes");
 const directionOf = (category: Category): FileDirection => (category === "staged" ? "unstage" : category === "conflicted" ? "resolve" : "stage");
 const ROW_LABEL: Record<FileDirection, string> = { stage: "Stage file", unstage: "Unstage file", resolve: "Mark resolved" };
 // The CommitActions board icons of the row menu items.
@@ -123,6 +147,9 @@ type ListHandle = { focusKey(key: string): void; focusHeading(): void };
 // Data-model §14: the marks and the Shift anchor keep their entry by category and path bytes, because each status read gives new entry IDs.
 type Marked = { list: ListName; keys: ReadonlySet<string>; anchor: string | null };
 const markKey = (e: ChangeEntry) => `${e.category}:${e.pathBytes}`;
+const isExtra = (e: ChangeEntry) => e.entryId.startsWith(EXTRA_ID);
+const NO_FOLDERS: ReadonlySet<string> = new Set();
+const GIT_SLASH = "/";
 
 /** plan.md Stage key row order in one list: the shown row at the next row of `before`, then at the previous one, else null for the list heading. Row keys survive a read. */
 function survivor(before: readonly TreeRow[], key: string, shown: ReadonlyMap<string, TreeRow>): TreeRow | null {
@@ -150,15 +177,54 @@ export function ChangesPane(props: ChangesPaneProps) {
   const [menu, setMenu] = useState<{ key: string; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
   const closed = useRef<{ list: ListName; key: string; before: readonly TreeRow[] } | null>(null);
   const [confirm, setConfirm] = useState<{ review: DeleteReview; anchor: HTMLElement } | null>(null);
+  const [revertConfirm, setRevertConfirm] = useState<{ token: string; action: "revert-files" | "revert-unstaged"; plan: RevertFilesPlan | RevertUnstagedPlan; hidden: number; label: string; entryIds: string[]; key: string | null; anchor: HTMLElement; snapshotId: string | undefined } | null>(null);
+  const [headerMenu, setHeaderMenu] = useState(false);
+  const headerMore = useRef<HTMLButtonElement>(null);
+  if (revertConfirm !== null && revertConfirm.snapshotId !== files?.snapshotId) setRevertConfirm(null);
+  const reverting = useRef(false);
+  // Spec FR-042: the row key of a confirmed revert. Its removal moves the selection as Stage file does.
+  const revertMove = useRef<string | null>(null);
   const copy = useCopy();
   // Spec FR-101: Filter files filters only the shown rows. The derived actions and every count keep the status read.
   const [query, setQuery] = useState("");
 
   // The rows build from the entries of this snapshot. The Untracked rows build only while the section is open (plan.md D15).
+  // Plan D19 "Rows": the rows with only local edits join only the shown Changes rows. No derived action or entry map holds them.
+  const work = props.submodules?.work ?? null;
+  const extras = useMemo(() => extraEntries(work, entries), [work, entries]);
+  const listed = useMemo(() => (extras.length === 0 ? entries : [...entries, ...extras]), [entries, extras]);
+  const listedRef = useRef(listed);
+  listedRef.current = listed;
+  // Plan D19 "Rows": the tracked folders whose stage set holds no entry, because only rows with only local edits lie below them.
+  const extraFolders = useMemo(() => {
+    if (extras.length === 0) return NO_FOLDERS;
+    const candidates = new Set<string>();
+    const ancestors = (pathBytes: string) => {
+      const parts = atob(pathBytes).split(GIT_SLASH);
+      return parts.slice(1).map((_, i) => parts.slice(0, i + 1).join(GIT_SLASH));
+    };
+    for (const e of extras) for (const folder of ancestors(e.pathBytes)) candidates.add(folder);
+    // The same set as `folderEntries` with the direction "stage": every entry that is not staged.
+    for (const e of entries) if (e.category !== "staged") for (const folder of ancestors(e.pathBytes)) candidates.delete(folder);
+    return new Set([...candidates].map((folder) => btoa(folder)));
+  }, [extras, entries]);
+  const onlyExtras = (row: TreeRow, list: ListName) => row.kind === "folder" && list === "changes" && !row.untracked && extraFolders.has(row.folder);
   const rows = useMemo(() => {
     const keep = query === "" ? undefined : (e: ChangeEntry) => matches(e.path, query);
-    return { changes: changesRows(entries, layout, toggled, untrackedOpen, keep), staged: stagedRows(entries, layout, toggled, keep) };
-  }, [entries, layout, toggled, untrackedOpen, query]);
+    return { conflicted: conflictedRows(entries), changes: changesRows(listed, layout, toggled, untrackedOpen, keep), staged: stagedRows(entries, layout, toggled, keep) };
+  }, [entries, listed, layout, toggled, untrackedOpen, query]);
+  const selectedChange = props.submodules?.change ?? null;
+  const subs = useMemo(() => {
+    const byPath = new Map((work?.entries ?? []).map((e) => [e.pathBytes, e]));
+    const out = new Map<string, RowSub>();
+    for (const e of listed) {
+      if (e.submodule?.startsWith("S") !== true || e.category === "conflicted") continue;
+      const own = selection?.entryId === e.entryId && selectedChange?.pathBytes === e.pathBytes ? selectedChange : null;
+      const newCommits = own?.state.state === "commits" && own.state.added > 0;
+      out.set(markKey(e), { marks: e.category === "staged" ? [] : marksOf(byPath.get(e.pathBytes)), extra: isExtra(e), change: own === null ? null : changeText(own), newCommits });
+    }
+    return out;
+  }, [listed, work, selection?.entryId, selectedChange]);
   const lists = useRef<Partial<Record<ListName, ListHandle>>>({});
   const root = useRef<HTMLDivElement>(null);
   const body = useRef<HTMLDivElement>(null);
@@ -209,14 +275,14 @@ export function ChangesPane(props: ChangesPaneProps) {
     setQuery(next);
     // Spec FR-101: a row that the filter hides leaves the selection. No other file gets selected.
     const selected = live.current.selection === null ? undefined : alive.get(live.current.selection.entryId);
-    if (next !== "" && selected !== undefined && !matches(selected.path, next)) live.current.onClearSelection?.();
+    if (next !== "" && selected !== undefined && selected.category !== "conflicted" && !matches(selected.path, next)) live.current.onClearSelection?.();
     if (next !== "") setMarked((m) => (m === null ? m : { ...m, keys: new Set([...m.keys].filter((k) => !byKey.has(k) || matches(byKey.get(k)!.path, next))) }));
   };
 
-  const reason = (text: string | null) => {
+  const reason = (text: string | null, quiet = false) => {
     if (text === null && reasonShown.current === null) return;
     reasonShown.current = text;
-    live.current.onReason?.(text);
+    live.current.onReason?.(text, quiet);
   };
   const status = (text: string | null) => {
     if (text === null && !statusShown.current) return;
@@ -227,7 +293,8 @@ export function ChangesPane(props: ChangesPaneProps) {
   // Moves focus to the shown row at the next row of `before`, at the previous row, or to the list heading. `select` also selects a file.
   function moveFrom(list: ListName, before: readonly TreeRow[], key: string, select: boolean) {
     const target = survivor(before, key, new Map(shown.current[list].map((r) => [r.key, r])));
-    const handle = lists.current[list];
+    // The last resolved Conflicted row removes its section, so focus goes to the Changes heading.
+    const handle = lists.current[list] ?? (list === "conflicted" ? lists.current.changes : undefined);
     if (target === null) return handle?.focusHeading();
     if (select && target.kind === "file") live.current.onSelect(target.entry.entryId);
     handle?.focusKey(target.key);
@@ -246,7 +313,7 @@ export function ChangesPane(props: ChangesPaneProps) {
     if (reasonShown.current === BUSY_REASON) reason(null);
     if (result.state === "succeeded") moveFrom(listOf(entry.category), list, entry.pathBytes, true);
     else if (result.state === "refused") {
-      reason(result.text);
+      reason(result.text, result.quiet === true);
       if (!live.current.operationRunning) status(result.text);
     }
   }
@@ -254,6 +321,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   /** The 001 Stage key on one file: select first, then act on its comparison. A row button takes the same path. */
   function actOnEntry(entry: ChangeEntry) {
     const p = live.current;
+    if (isExtra(entry)) return reason(STAGE_UNCHANGED);
     if (p.fileActionRunning || running.current) return reason(BUSY_REASON);
     if (p.selection?.entryId !== entry.entryId) {
       pending.current = entry.entryId;
@@ -302,9 +370,11 @@ export function ChangesPane(props: ChangesPaneProps) {
     const kept = fileRows(rows[list]).find((r) => r.key === lost.pathBytes);
     focused.current = kept?.entry ?? null;
     if (kept !== undefined) return;
+    const select = revertMove.current === lost.pathBytes;
+    revertMove.current = null;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
-    moveFrom(list, fileRows(before.rows[list]), lost.pathBytes, false);
+    moveFrom(list, fileRows(before.rows[list]), lost.pathBytes, select);
   }, [entries, rows]);
 
   const onFocus = (event: ReactFocusEvent) => {
@@ -312,7 +382,7 @@ export function ChangesPane(props: ChangesPaneProps) {
     if (!root.current?.contains(event.target as Node)) return;
     const item = (event.target as Element).closest?.('[role="treeitem"]') as HTMLElement | null;
     const id = item?.dataset.entryId;
-    focused.current = id === undefined ? null : (live.current.entries.find((e) => e.entryId === id) ?? null);
+    focused.current = id === undefined ? null : (listedRef.current.find((e) => e.entryId === id) ?? null);
     if (pending.current !== null && id !== pending.current) pending.current = null;
     reason(null);
     status(null);
@@ -327,9 +397,11 @@ export function ChangesPane(props: ChangesPaneProps) {
   };
 
   // Feature 004 plan.md D8 and spec FR-034 to FR-040: the multi-file actions. Each binds the shown read.
+  // Plan D15 running rule and spec FR-105: the reason shows only in the tooltip and the accessible description.
+  const quiet = files !== undefined && (files.running || files.quiet === true);
   const filesReason = (request: FilesRequest): string | null => {
     if (files === undefined) return null;
-    if (files.running) return files.reason;
+    if (quiet) return files.reason;
     if (files.cut && request.kind !== "selected" && request.direction === "stage") return CUT_REASON;
     if (files.reason !== null) return files.reason;
     if (request.entryIds.length === 0) return null;
@@ -339,7 +411,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   async function runFiles(request: FilesRequest, label: string) {
     if (files === undefined || request.entryIds.length === 0 || running.current || live.current.fileActionRunning) return;
     const why = filesReason(request);
-    if (why !== null) return void (files.running || status(`${label} is unavailable: ${why}`));
+    if (why !== null) return void (quiet || status(`${label} is unavailable: ${why}`));
     running.current = true;
     try {
       const response = await files.actions.run(request);
@@ -352,17 +424,18 @@ export function ChangesPane(props: ChangesPaneProps) {
   const selectedLabel = (list: ListName, n: number) => `${list === "staged" ? "Unstage" : "Stage"} selected (${formatCount(n)})`;
   const folderLabel = (list: ListName) => (list === "staged" ? "Unstage folder" : "Stage folder");
   // The folder row button shows the reasons that need no entry count. The count limit refuses at the action (runFiles).
-  const folderReason = (list: ListName) => (files === undefined ? null : files.running ? files.reason : list === "changes" && files.cut ? CUT_REASON : files.reason);
+  const folderReason = (list: ListName) => (files === undefined ? null : quiet ? files.reason : list === "changes" && files.cut ? CUT_REASON : files.reason);
   const folderRequest = (row: Extract<TreeRow, { kind: "folder" }>, list: ListName) => derivedRequest(entries, "folder", { folder: row.folder, direction: list === "staged" ? "unstage" : "stage" });
 
   function onSpace(row: TreeRow, list: ListName, event: ReactKeyboardEvent) {
     const p = live.current;
     if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || event.repeat || event.nativeEvent.isComposing || p.modalOpen || p.menuOpen) return;
     event.preventDefault();
+    if (onlyExtras(row, list)) return reason(STAGE_UNCHANGED);
     if (row.kind === "folder") return void runFiles(folderRequest(row, list), folderLabel(list));
     if (row.kind === "section") return void runFiles(derived.untracked, "Stage all untracked");
     // Plan.md D15 "Multi-select": Space acts on the selection when it holds more than one entry.
-    const marks = shownMarks?.list === list ? shownMarks.ids : null;
+    const marks = shownMarks?.list === list && list !== "conflicted" ? shownMarks.ids : null;
     if (marks !== null && marks.size > 1 && marks.has(row.entry.entryId)) return void runFiles(selectedRequest(list, [...marks]), selectedLabel(list, marks.size));
     actOnEntry(row.entry);
   }
@@ -375,7 +448,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   };
   const deleteWhy = (set: readonly ChangeEntry[]) => deleteReason(set) ?? (files === undefined ? null : files.running ? files.reason : (files.deleteBlock ?? null));
   async function startDelete(row: TreeRow, mode: DeletePlan["mode"], anchor: HTMLElement) {
-    if (files === undefined || row.kind === "section" || running.current) return;
+    if (files === undefined || row.kind === "section" || running.current || (row.kind === "file" && isExtra(row.entry))) return;
     const set = deleteSet(row);
     const why = deleteWhy(set.entries);
     if (why !== null) return void (files.running || status(why));
@@ -390,11 +463,74 @@ export function ChangesPane(props: ChangesPaneProps) {
     else status(review.text);
   }
 
+  // Feature 008 spec FR-018 and FR-023: Revert file acts on the marked rows of the list, else on the row.
+  const revertSet = (row: Extract<TreeRow, { kind: "file" }>, list: ListName): ChangeEntry[] => {
+    const marks = shownMarks?.list === list && shownMarks.ids.size > 1 && shownMarks.ids.has(row.entry.entryId) ? shownMarks.ids : null;
+    return marks === null ? [row.entry] : entries.filter((e) => marks.has(e.entryId));
+  };
+  function revertWhy(row: TreeRow, set: readonly ChangeEntry[]): string | null {
+    if (row.kind === "folder") return FOLDER_REASON;
+    if (row.kind === "section") return revertReason("untracked", "")!;
+    const own = revertSetReason(set);
+    if (own !== null) return own;
+    return files === undefined ? null : files.running ? files.reason : (files.deleteBlock ?? null);
+  }
+  async function startRevert(row: TreeRow, list: ListName, anchor: HTMLElement) {
+    const revert = files?.revert;
+    if (files === undefined || revert === undefined || reverting.current) return;
+    const set = row.kind === "file" ? revertSet(row, list) : [];
+    const why = revertWhy(row, set);
+    if (why !== null) return void (files.running || status(why));
+    const label = actionName(revertFilesLabel(set.length));
+    const entryIds = set.map((e) => e.entryId);
+    const snapshotId = files.snapshotId;
+    reverting.current = true;
+    try {
+      const review = await revert.review(entryIds, label);
+      if (mounted.current && review !== null) setRevertConfirm({ ...review, action: "revert-files", hidden: 0, label, entryIds, key: row.kind === "file" ? row.entry.pathBytes : null, anchor, snapshotId });
+    } finally {
+      reverting.current = false;
+    }
+  }
+  // Feature 008 spec FR-026 and plan D6: Revert all unstaged changes covers the rows that Filter files hides.
+  const { covered, own } = useMemo(() => ({ covered: unstagedFiles(entries), own: unstagedReason(entries) }), [entries]);
+  const unstagedWhy = own ?? (files === undefined ? null : files.running ? files.reason : (files.deleteBlock ?? null));
+  async function startRevertUnstaged(anchor: HTMLElement) {
+    const revert = files?.revert;
+    if (files === undefined || revert === undefined || reverting.current) return;
+    if (unstagedWhy !== null) return void (files.running || status(unstagedWhy));
+    const label = actionName(REVERT_UNSTAGED_LABEL);
+    const hidden = query === "" ? 0 : covered.filter((e) => !matches(e.path, query)).length;
+    const snapshotId = files.snapshotId;
+    reverting.current = true;
+    try {
+      const review = await revert.reviewUnstaged(label, covered.length);
+      if (mounted.current && review !== null) setRevertConfirm({ ...review, action: "revert-unstaged", hidden, label, entryIds: covered.map((e) => e.entryId), key: null, anchor, snapshotId });
+    } finally {
+      reverting.current = false;
+    }
+  }
+  async function confirmRevert(chosen: NonNullable<typeof revertConfirm>) {
+    setRevertConfirm(null);
+    revertMove.current = chosen.key;
+    const ok = (await files?.revert?.run(chosen.token, chosen.label, chosen.entryIds, chosen.action === "revert-unstaged")) === true;
+    if (!mounted.current) return;
+    if (ok) setMarked(null);
+    else revertMove.current = null;
+  }
+
   // Spec FR-053: an untracked row, an index addition (porcelain v2 X = `A`), and an unborn HEAD have no path at HEAD.
   const blameReason = (entry: ChangeEntry) => (entry.category === "untracked" || entry.xy?.[0] === "A" || files?.unborn === true ? NO_HISTORY : null);
   function menuGroups(row: TreeRow, list: ListName, anchor: HTMLElement): ActionGroup[] {
     if (row.kind === "section") return [[{ label: "Stage all untracked", icon: PlusSignIcon, keys: KEYS.stageEntry, reason: filesReason(derived.untracked), onSelect: () => void runFiles(derived.untracked, "Stage all untracked") }]];
     const first: ActionItem[] = [];
+    if (row.kind === "file" && isExtra(row.entry)) {
+      // Plan D19 "Rows": the row has no status entry, so Show in Explorer (contract Δ3 `revealPath` takes an `entryId`) and the file actions do not apply.
+      const entry = row.entry;
+      const open = files?.onOpenSubmodule;
+      const items: ActionItem[] = open === undefined ? [] : [{ label: "Open submodule", icon: CubeIcon, reason: files?.submoduleReason?.(entry.pathBytes) ?? null, onSelect: () => open(entry.path) }];
+      return [[...items, { label: "Copy path", icon: Copy01Icon, onSelect: () => copy(entry.path) }]];
+    }
     if (row.kind === "file") {
       const entry = row.entry;
       const submodule = entry.submodule?.startsWith("S") === true;
@@ -405,18 +541,17 @@ export function ChangesPane(props: ChangesPaneProps) {
       if (!submodule && blame !== undefined) first.push({ label: "Blame", reason: blameReason(entry), onSelect: () => blame(entry) });
     } else if (files !== undefined) {
       const request = folderRequest(row, list);
-      first.push({ label: folderLabel(list), icon: list === "staged" ? MinusSignIcon : PlusSignIcon, keys: KEYS.stageEntry, reason: filesReason(request), onSelect: () => void runFiles(request, folderLabel(list)) });
+      const why = onlyExtras(row, list) ? STAGE_UNCHANGED : filesReason(request);
+      first.push({ label: folderLabel(list), icon: list === "staged" ? MinusSignIcon : PlusSignIcon, keys: KEYS.stageEntry, reason: why, onSelect: () => void runFiles(request, folderLabel(list)) });
     }
     const path = row.kind === "file" ? row.entry.path : row.path;
     first.push({ label: "Copy path", icon: Copy01Icon, onSelect: () => copy(path) });
     if (files !== undefined) {
       // Plan.md D5: a folder reveals through an entry below it, and the folder bytes replace the entry path.
-      const reveal = () => {
-        if (row.kind === "file") return files.actions.reveal(row.entry.entryId, row.entry.path);
-        const below = folderEntries(entries, row.folder, list === "staged" ? "unstage" : "stage")[0];
-        if (below !== undefined) files.actions.reveal(below.entryId, row.path, row.folder);
-      };
-      first.push({ label: "Show in Explorer", icon: FolderSearchIcon, onSelect: reveal });
+      // Contract Δ3 `revealPath` names an entry, so a folder without one below it has no Show in Explorer.
+      const below = row.kind === "file" ? undefined : folderEntries(entries, row.folder, list === "staged" ? "unstage" : "stage")[0];
+      const reveal = () => (row.kind === "file" ? files.actions.reveal(row.entry.entryId, row.entry.path) : below !== undefined && files.actions.reveal(below.entryId, row.path, row.folder));
+      if (row.kind === "file" || below !== undefined) first.push({ label: "Show in Explorer", icon: FolderSearchIcon, onSelect: reveal });
     }
     const groups: ActionGroup[] = [first];
     const untracked = row.kind === "file" ? row.entry.category === "untracked" : row.untracked;
@@ -428,14 +563,20 @@ export function ChangesPane(props: ChangesPaneProps) {
       const line = ignoreLine(slash ? raw.subarray(0, -1) : raw, row.kind === "folder" || slash);
       groups.push((["gitignore", "exclude"] as const).map((target) => ({ label: IGNORE_LABEL[target], icon: ViewOffSlashIcon, reason: line.ok ? null : IGNORE_LINE_REASON[line.reason], onSelect: () => void (line.ok && onIgnore(target, line.line)) })));
     }
-    if (list === "changes" && files !== undefined) {
+    // Feature 008 plan.md D12: Revert file has its own group without a label, directly above Delete from disk, and last in the Staged list.
+    if (files?.revert !== undefined) {
+      const set = row.kind === "file" ? revertSet(row, list) : [];
+      const why = revertWhy(row, set);
+      groups.push([{ label: revertFilesLabel(Math.max(1, set.length)), icon: Undo03Icon, danger: true, keys: KEYS.revertFiles, reason: why, running: why !== null && files.running && why === files.reason, onSelect: () => void startRevert(row, list, anchor) }]);
+    }
+    if (list !== "staged" && files !== undefined) {
       const why = deleteWhy(deleteSet(row).entries);
-      const quiet = why !== null && files.running && why === files.reason;
+      const hush = why !== null && files.running && why === files.reason;
       groups.push({
         label: "Delete from disk",
         items: [
-          { label: "Delete…", icon: Delete02Icon, danger: true, keys: KEYS.deleteFiles, reason: why, running: quiet, onSelect: () => void startDelete(row, "recycle", anchor) },
-          { label: "Delete permanently…", icon: Delete04Icon, danger: true, keys: KEYS.deletePermanently, reason: why, running: quiet, onSelect: () => void startDelete(row, "permanent", anchor) },
+          { label: "Delete…", icon: Delete02Icon, danger: true, keys: KEYS.deleteFiles, reason: why, running: hush, onSelect: () => void startDelete(row, "recycle", anchor) },
+          { label: "Delete permanently…", icon: Delete04Icon, danger: true, keys: KEYS.deletePermanently, reason: why, running: hush, onSelect: () => void startDelete(row, "permanent", anchor) },
         ],
       });
     }
@@ -451,12 +592,18 @@ export function ChangesPane(props: ChangesPaneProps) {
     files,
     filesReason,
     folderReason: folderReason(list),
+    rowReason,
+    subs,
+    extraIds: extraRefs,
+    extraFolders,
     register: (handle: ListHandle | null) => void (handle ? (lists.current[list] = handle) : delete lists.current[list]),
     onSelect: (entry: ChangeEntry) => {
       setMarked(null);
       if (live.current.selection?.entryId !== entry.entryId) live.current.onSelect(entry.entryId);
     },
     onMark: (entry: ChangeEntry, mode: "toggle" | "range", visible: readonly ChangeEntry[]) => {
+      // The Conflicted section has no multi-file action, so a mark key selects the row.
+      if (list === "conflicted") return void (live.current.selection?.entryId === entry.entryId || live.current.onSelect(entry.entryId));
       const current = shownMarks?.list === list ? shownMarks : null;
       const base = current?.ids ?? new Set(live.current.selection !== null && visible.some((e) => e.entryId === live.current.selection!.entryId) ? [live.current.selection.entryId] : []);
       const anchor = current !== null ? current.anchor : (live.current.selection?.entryId ?? entry.entryId);
@@ -488,12 +635,14 @@ export function ChangesPane(props: ChangesPaneProps) {
       });
     },
     onDelete: (row: TreeRow, mode: DeletePlan["mode"], anchor: HTMLElement) => void startDelete(row, mode, anchor),
+    onRevert: (row: TreeRow, anchor: HTMLElement) => void startRevert(row, list, anchor),
     onMenu: (row: TreeRow, anchor: HTMLElement, byKey = false) => {
       if (row.kind === "file") focused.current = row.entry;
       setMenu({ key: row.key, list, anchor, byKey });
     },
     onRowAction: (row: TreeRow) => {
       if (row.kind === "file") actOnEntry(row.entry);
+      else if (onlyExtras(row, list)) reason(STAGE_UNCHANGED);
       else if (row.kind === "folder") void runFiles(folderRequest(row, list), folderLabel(list));
       else void runFiles(derived.untracked, "Stage all untracked");
     },
@@ -517,11 +666,19 @@ export function ChangesPane(props: ChangesPaneProps) {
   }, [menu]);
 
   const changes = rows.changes;
-  const working = derived.changes.entryIds.length;
+  // FR-104: conflicted entries show only in the Conflicted section.
+  const conflictedCount = rows.conflicted.length;
+  const working = derived.changes.entryIds.length - conflictedCount + extras.length;
   const stagedCount = derived.staged.entryIds.length;
   const changesMarks = shownMarks?.list === "changes" ? shownMarks.ids : null;
   const untrackedReason = derived.untracked.entryIds.length === 0 ? null : filesReason(derived.untracked);
   const untrackedReasonId = useId();
+  const rowReasonId = useId();
+  const extraStageId = useId();
+  const extraTipId = useId();
+  const extraRefs = useMemo(() => ({ stage: extraStageId, tip: extraTipId }), [extraStageId, extraTipId]);
+  // One object per reason keeps the memoized rows (spec SC-007).
+  const rowReason = useMemo(() => (files?.quiet === true && files.reason !== null ? { text: files.reason, id: rowReasonId } : null), [files?.quiet, files?.reason, rowReasonId]);
   const helpId = useId();
   const stagedMarks = shownMarks?.list === "staged" ? shownMarks.ids : null;
   const untrackedCount = changes.find((r) => r.kind === "section")?.count ?? 0;
@@ -576,31 +733,70 @@ export function ChangesPane(props: ChangesPaneProps) {
       </p>
       <div ref={body} data-slot="changes-pane" className={`flex min-h-0 flex-1 ${sideBySide ? "flex-row" : "flex-col"}`}>
         <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+          {conflictedCount === 0 ? null : (
+            // Plan D15 "Conflict guidance": always expanded, with no collapse control and no layout buttons.
+            <section data-section="conflicted" tabIndex={-1} className="flex max-h-[40%] min-h-0 shrink-0 flex-col border-b border-divider">
+              <ListHeading level={2} label="Conflicted" count={conflictedCount} rowHeight={rowHeight} />
+              <TreeList {...listProps("conflicted")} label="Conflicted" layout="flat" cut={false} untrackedCount={0} section={null} fit />
+            </section>
+          )}
+          {extras.length === 0 ? null : (
+            <>
+              <span id={extraStageId} hidden>
+                {STAGE_UNCHANGED}
+              </span>
+              <span id={extraTipId} hidden>
+                {LOCAL_EDITS_TOOLTIP}
+              </span>
+            </>
+          )}
+          {files?.quiet !== true || files.reason === null ? null : (
+            <span id={rowReasonId} hidden>
+              {files.reason}
+            </span>
+          )}
           <ListHeading level={2} label="Changes" count={working} rowHeight={rowHeight}>
             {files === undefined ? null : (
               <>
                 {changesMarks !== null && changesMarks.size > 1 ? (
-                  <FilesButton label={selectedLabel("changes", changesMarks.size)} keys={KEYS.stageEntry} request={selectedRequest("changes", [...changesMarks])} reasonOf={filesReason} running={files.running} onRun={runFiles} />
+                  <FilesButton label={selectedLabel("changes", changesMarks.size)} keys={KEYS.stageEntry} request={selectedRequest("changes", [...changesMarks])} reasonOf={filesReason} running={quiet} onRun={runFiles} />
                 ) : null}
-                <FilesButton label="Stage all changes" request={derived.changes} reasonOf={filesReason} running={files.running} onRun={runFiles} />
+                <FilesButton label="Stage all changes" request={derived.changes} reasonOf={filesReason} running={quiet} onRun={runFiles} />
               </>
             )}
             <span role="group" aria-label="Layout" className="flex items-center">
               <IconButton icon={ListTreeIcon} label="Tree layout" aria-pressed={layout === "tree"} onClick={() => setLayout("tree")} />
               <IconButton icon={ListIcon} label="Flat layout" aria-pressed={layout === "flat"} onClick={() => setLayout("flat")} />
             </span>
+            {/* Feature 008 plan.md D12 "Changes header" (board Menu-changes-header): the item has no key (spec FR-026). */}
+            {files?.revert === undefined ? null : (
+              <Tooltip>
+                <ActionMenu
+                  label={MORE_ACTIONS}
+                  groups={[[{ label: REVERT_UNSTAGED_LABEL, icon: Undo03Icon, danger: true, reason: unstagedWhy, running: unstagedWhy !== null && files.running && unstagedWhy === files.reason, onSelect: () => void (headerMore.current && startRevertUnstaged(headerMore.current)) }]]}
+                  open={headerMenu}
+                  onOpenChange={setHeaderMenu}
+                  trigger={
+                    <TooltipTrigger render={<Button ref={headerMore} variant="ghost" size="icon-sm" aria-label={MORE_ACTIONS} style={{ width: "var(--h-row-button)", height: "var(--h-row-button)" }} />}>
+                      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+                    </TooltipTrigger>
+                  }
+                />
+                <TooltipContent>{MORE_ACTIONS}</TooltipContent>
+              </Tooltip>
+            )}
           </ListHeading>
-          {complete && working === 0 ? <p className="px-2 text-muted-text">Working tree clean</p> : null}
+          {complete && working === 0 && conflictedCount === 0 ? <p className="px-2 text-muted-text">Working tree clean</p> : null}
           {/* Plan D15 "Commit view texts": the sidebar shows no help line. The text stays the description of the Changes tree. */}
           <p id={helpId} hidden>
             {helpLine}
           </p>
           {untrackedReason === null ? null : (
-            <p id={untrackedReasonId} data-slot="files-reason" hidden={files?.running} className="shrink-0 px-2 text-muted-text">
+            <p id={untrackedReasonId} data-slot="files-reason" hidden={quiet} className="shrink-0 px-2 text-muted-text">
               {`Stage all untracked is unavailable: ${untrackedReason}`}
             </p>
           )}
-          <TreeList {...listProps("changes")} label="Changes" describedBy={helpId} layout={layout} cut={files?.cut === true} untrackedCount={untrackedCount} section={{ reason: untrackedReason, reasonId: untrackedReasonId }} />
+          <TreeList {...listProps("changes")} label="Changes" describedBy={helpId} layout={layout} cut={files?.cut === true} untrackedCount={untrackedCount} section={{ reason: untrackedReason, reasonId: untrackedReasonId, quiet }} />
         </section>
         {stageBar === undefined || stageBar === null ? null : (
           // plan.md "Section minima": one row-button row. In a file band, the bar stands between the two lists.
@@ -629,9 +825,9 @@ export function ChangesPane(props: ChangesPaneProps) {
             {files === undefined ? null : (
               <>
                 {stagedMarks !== null && stagedMarks.size > 1 ? (
-                  <FilesButton label={selectedLabel("staged", stagedMarks.size)} keys={KEYS.stageEntry} request={selectedRequest("staged", [...stagedMarks])} reasonOf={filesReason} running={files.running} onRun={runFiles} />
+                  <FilesButton label={selectedLabel("staged", stagedMarks.size)} keys={KEYS.stageEntry} request={selectedRequest("staged", [...stagedMarks])} reasonOf={filesReason} running={quiet} onRun={runFiles} />
                 ) : null}
-                <FilesButton label="Unstage all" request={derived.staged} reasonOf={filesReason} running={files.running} onRun={runFiles} />
+                <FilesButton label="Unstage all" request={derived.staged} reasonOf={filesReason} running={quiet} onRun={runFiles} />
               </>
             )}
           </ListHeading>
@@ -654,6 +850,9 @@ export function ChangesPane(props: ChangesPaneProps) {
         />
       ) : (
         <DeleteRefusal text={confirm.review.text} finalFocus={() => (confirm.anchor.isConnected ? confirm.anchor : null)} onClose={() => setConfirm(null)} />
+      )}
+      {revertConfirm === null ? null : (
+        <RevertConfirm plan={revertConfirm.plan} hidden={revertConfirm.hidden} finalFocus={() => (revertConfirm.anchor.isConnected ? revertConfirm.anchor : null)} onCancel={() => setRevertConfirm(null)} onConfirm={() => void confirmRevert(revertConfirm)} />
       )}
     </div>
   );
@@ -717,10 +916,18 @@ type TreeListProps = {
   files?: FilesProps;
   cut: boolean;
   untrackedCount: number;
-  /** The Stage all untracked reason and the ID of its line. */
-  section: { reason: string | null; reasonId: string } | null;
+  /** The Stage all untracked reason and the ID of its line. `quiet` shows the reason only in the tooltip. */
+  section: { reason: string | null; reasonId: string; quiet?: boolean } | null;
   filesReason(request: FilesRequest): string | null;
   folderReason: string | null;
+  /** Spec FR-105: the reason of the stage and unstage row buttons, and the ID of its hidden element. */
+  rowReason: { text: string; id: string } | null;
+  /** Plan D19: the submodule row facts by `category:pathBytes`, and the IDs of the hidden texts of rows with only local edits. */
+  subs: ReadonlyMap<string, RowSub>;
+  extraIds: { stage: string; tip: string };
+  extraFolders: ReadonlySet<string>;
+  /** The list takes the height of its rows. Its section caps it at 40% of the pane, and the list then scrolls, so the list below it stays in view. */
+  fit?: boolean;
   register(handle: ListHandle | null): void;
   onSelect(entry: ChangeEntry): void;
   onMark(entry: ChangeEntry, mode: "toggle" | "range", visible: readonly ChangeEntry[]): void;
@@ -728,11 +935,12 @@ type TreeListProps = {
   onToggle(row: TreeRow, open?: boolean): void;
   onMenu(row: TreeRow, anchor: HTMLElement, byKey?: boolean): void;
   onDelete(row: TreeRow, mode: DeletePlan["mode"], anchor: HTMLElement): void;
+  onRevert(row: TreeRow, anchor: HTMLElement): void;
   onRowAction(row: TreeRow): void;
 };
 
 /** One list: a WAI-ARIA tree with one Tab stop, roving focus, and multi-select. TanStack Virtual renders only the rows near the view (spec FR-086). */
-function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedId, marks, files, cut, untrackedCount, section, folderReason, register, onSelect, onMark, onSpace, onToggle, onMenu, onDelete, onRowAction }: TreeListProps) {
+function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedId, marks, files, cut, untrackedCount, section, folderReason, rowReason, subs, extraIds, extraFolders, fit = false, register, onSelect, onMark, onSpace, onToggle, onMenu, onDelete, onRevert, onRowAction }: TreeListProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const elements = useRef(new Map<string, HTMLElement>());
   const toFocus = useRef<string | null>(null);
@@ -787,11 +995,17 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
     const at = index(item?.dataset.key ?? null);
     if (at < 0) return;
     const row = rows[at]!;
-    // Feature 005 plan.md D15 keyboard map: Del and Shift+Del act only in the Changes list, on the row itself.
-    const del = list === "changes" && event.target === item && !event.repeat ? scopedAction(event.nativeEvent, "changesList") : null;
+    // Feature 005 plan.md D15 keyboard map: Del and Shift+Del act only in the Changes and Conflicted lists, on the row itself.
+    const del = list !== "staged" && event.target === item && !event.repeat ? scopedAction(event.nativeEvent, "changesList") : null;
     if (del === "deleteFiles" || del === "deletePermanently") {
       event.preventDefault();
       return onDelete(row, del === "deletePermanently" ? "permanent" : "recycle", item!);
+    }
+    // Feature 008 spec FR-046: R acts on the row itself, and a held R opens at most one review.
+    if (item !== null && event.target === item && scopedAction(event.nativeEvent, list === "staged" ? "stagedList" : "changesList") === "revertFiles") {
+      event.preventDefault();
+      if (!event.repeat) onRevert(row, item);
+      return;
     }
     // Space and Enter act only on the row itself, never on a button inside it.
     if (event.key === " " || event.key === "Enter") {
@@ -867,7 +1081,7 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
       aria-label={label}
       aria-describedby={describedBy}
       aria-multiselectable="true"
-      className="relative min-h-(--h-row) flex-1 overflow-y-auto px-1"
+      className={`relative min-h-(--h-row) overflow-y-auto px-1 ${fit ? "min-h-0" : "flex-1"}`}
       onKeyDown={onKeyDown}
     >
       {rows.length === 0 ? null : (
@@ -882,7 +1096,12 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
                 layout={layout}
                 sectionReason={section?.reason ?? null}
                 sectionReasonId={section?.reasonId}
+                sectionQuiet={section?.quiet === true}
                 folderReason={folderReason}
+                rowReason={rowReason}
+                sub={row.kind === "file" ? subs.get(markKey(row.entry)) : undefined}
+                extraFolder={row.kind === "folder" && list === "changes" && !row.untracked && extraFolders.has(row.folder)}
+                extraIds={extraIds}
                 selected={row.kind === "file" && (marks !== null && marks.size > 0 ? marks.has(row.entry.entryId) : row.entry.entryId === selectedId)}
                 tabStop={item.index === activeIndex}
                 cut={cut}
@@ -916,7 +1135,13 @@ type RowProps = {
   /** The Stage all untracked reason and the ID of its line. */
   sectionReason: string | null;
   sectionReasonId?: string;
+  sectionQuiet: boolean;
   folderReason: string | null;
+  rowReason: { text: string; id: string } | null;
+  sub: RowSub | undefined;
+  extraIds: { stage: string; tip: string };
+  /** A folder row of only rows with only local edits. */
+  extraFolder: boolean;
   selected: boolean;
   tabStop: boolean;
   cut: boolean;
@@ -935,11 +1160,11 @@ function letter(entry: ChangeEntry): string {
   return (entry.category === "staged" ? xy[0] : xy[1]) ?? "";
 }
 
-// Plan D16 "Geometry": M in Warning text, A and ? in Added text, D in Removed text, other letters in Text. The letter is text, so color is never the only cue.
-const LETTER_COLOR: Record<string, string> = { M: "text-warning", A: "text-added", "?": "text-added", D: "text-removed" };
+// Plan D16 "Geometry" and D15 "Conflict guidance": M and U in Warning text, A and ? in Added text, D in Removed text, other letters in Text. The letter is text, so color is never the only cue.
+const LETTER_COLOR: Record<string, string> = { M: "text-warning", U: "text-warning", A: "text-added", "?": "text-added", D: "text-removed" };
 
 /** One row. The row button shows on pointer hover and on focus (spec FR-032). The path keeps the file name whole (plan.md "Long text"). */
-const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonId, folderReason, selected, tabStop, cut, untrackedCount, hasFiles, top, height, events }: RowProps) {
+const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonId, sectionQuiet, folderReason, rowReason, sub, extraIds, extraFolder, selected, tabStop, cut, untrackedCount, hasFiles, top, height, events }: RowProps) {
   const style: CSSProperties = { position: "absolute", top: 0, left: 0, right: 0, height, transform: `translateY(${top}px)`, paddingLeft: 8 + 16 * row.depth };
   const onRowAction = () => events.action(row);
   const common = {
@@ -957,7 +1182,7 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
     onContextMenu: (event: ReactMouseEvent<HTMLElement>) => events.menu(row, event),
   } as const;
   const chevron = (expanded: boolean) => <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />;
-  const rowButton = (label: string, icon: typeof PlusSignIcon, reason: string | null) => (
+  const rowButton = (label: string, icon: typeof PlusSignIcon, reason: string | null, reasonId?: string) => (
     <IconButton
       icon={icon}
       label={label}
@@ -965,6 +1190,8 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
       note={reason ?? undefined}
       tabIndex={-1}
       disabled={reason !== null}
+      focusableWhenDisabled
+      aria-describedby={reason === null ? undefined : reasonId}
       className="invisible group-hover:visible group-focus:visible group-focus-within:visible"
       onClick={(event) => {
         event.stopPropagation();
@@ -980,21 +1207,23 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
         <span className="min-w-0 truncate font-semibold">{cut ? cutHeading(untrackedCount) : "Untracked"}</span>
         {cut ? null : <span className="num ml-auto text-muted-text">{formatCount(row.count)}</span>}
         {hasFiles ? (
-          <Button
-            variant="outline"
-            size="sm"
-            tabIndex={-1}
-            disabled={sectionReason !== null}
-            focusableWhenDisabled
-            aria-describedby={sectionReason === null ? undefined : sectionReasonId}
-            className={cut ? "ml-auto" : undefined}
-            onClick={(event) => {
-              event.stopPropagation();
-              onRowAction();
-            }}
-          >
-            Stage all untracked
-          </Button>
+          <RunningTooltip reason={sectionQuiet ? sectionReason : null}>
+            <Button
+              variant="outline"
+              size="sm"
+              tabIndex={-1}
+              disabled={sectionReason !== null}
+              focusableWhenDisabled
+              aria-describedby={sectionReason === null ? undefined : sectionReasonId}
+              className={cut ? "ml-auto" : undefined}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRowAction();
+              }}
+            >
+              Stage all untracked
+            </Button>
+          </RunningTooltip>
         ) : null}
       </div>
     );
@@ -1011,7 +1240,7 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
         <span aria-hidden="true" className="num ml-auto text-muted-text">
           {formatCount(row.count)}
         </span>
-        {hasFiles ? rowButton(label, list === "staged" ? MinusSignIcon : PlusSignIcon, folderReason) : null}
+        {hasFiles ? rowButton(label, list === "staged" ? MinusSignIcon : PlusSignIcon, extraFolder ? STAGE_UNCHANGED : folderReason, extraFolder ? extraIds.stage : rowReason?.id) : null}
       </div>
     );
   }
@@ -1020,17 +1249,55 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
   const direction = directionOf(entry.category);
   const mark = letter(entry);
   const submodule = entry.submodule?.startsWith("S") === true;
+  const conflicted = entry.category === "conflicted";
+  // Plan D15 "Conflict guidance": the name states the kind of the porcelain v2 `u` record.
+  const kind = conflicted && entry.xy !== undefined ? KIND_TEXTS[entry.xy] : undefined;
+  const letterMark = (
+    <span aria-hidden="true" data-slot="status-letter" className={`w-4 shrink-0 text-center ${LETTER_COLOR[mark] ?? "text-text"}`}>
+      {mark}
+    </span>
+  );
+  // Plan D19 "Row accessible name".
+  const label =
+    conflicted ? `${entry.path}, conflicted${kind === undefined ? "" : `, ${kind.toLowerCase()}`}`
+    : sub === undefined ? entry.path
+    : [`${entry.path}, submodule, modified`, ...(sub.newCommits ? ["new commits"] : []), ...sub.marks].join(", ");
+  const marks =
+    sub === undefined || sub.marks.length === 0 ? null : (
+      <span aria-hidden="true" data-slot="submodule-marks" className="shrink-0 text-muted-text">
+        {sub.marks.join(", ")}
+      </span>
+    );
+  const stageReason = sub?.extra === true ? { text: STAGE_UNCHANGED, id: extraIds.stage } : rowReason;
   return (
-    <div {...common} data-entry-id={entry.entryId} aria-selected={selected} aria-label={entry.path}>
+    <div {...common} data-entry-id={entry.entryId} aria-selected={selected} aria-label={label} aria-describedby={sub?.extra === true ? extraIds.tip : undefined}>
       <HugeiconsIcon icon={submodule ? CubeIcon : File01Icon} strokeWidth={2} aria-hidden="true" data-slot="row-icon" className={submodule ? "size-(--icon-size) shrink-0 text-muted-text" : "size-(--icon-size) shrink-0"} />
       <span aria-hidden="true" className="flex min-w-0 flex-1 whitespace-nowrap">
         {layout === "tree" ? null : <span className="min-w-0 shrink-[1000] truncate">{folder}</span>}
         <span className="min-w-0 truncate">{name}</span>
       </span>
-      <span aria-hidden="true" data-slot="status-letter" className={`w-4 shrink-0 text-center ${LETTER_COLOR[mark] ?? "text-text"}`}>
-        {mark}
-      </span>
-      {rowButton(`${ROW_LABEL[direction]} ${name}`, direction === "unstage" ? MinusSignIcon : PlusSignIcon, null)}
+      {sub?.change == null ? null : (
+        <span aria-hidden="true" className="shrink-0 text-muted-text">
+          {sub.change}
+        </span>
+      )}
+      {marks === null ? null : sub?.extra === true ? (
+        <Tooltip>
+          <TooltipTrigger render={marks} />
+          <TooltipContent>{LOCAL_EDITS_TOOLTIP}</TooltipContent>
+        </Tooltip>
+      ) : (
+        marks
+      )}
+      {conflicted ? (
+        <Tooltip>
+          <TooltipTrigger render={letterMark} />
+          <TooltipContent>Unmerged</TooltipContent>
+        </Tooltip>
+      ) : (
+        letterMark
+      )}
+      {rowButton(`${ROW_LABEL[direction]} ${name}`, direction === "unstage" ? MinusSignIcon : PlusSignIcon, direction === "resolve" ? null : (stageReason?.text ?? null), stageReason?.id)}
     </div>
   );
 });

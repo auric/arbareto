@@ -11,6 +11,7 @@ import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_U
 import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand, type RemedyValue } from "../contracts/remedy-command";
 import type { StallRemedy } from "../contracts/submodules";
+import type { ComparisonReader } from "./comparison";
 import type { Exclusion } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
@@ -37,8 +38,21 @@ export type WorkbenchAction = WorkbenchPayload["action"];
 export type PayloadOf<A extends WorkbenchAction> = Extract<WorkbenchPayload, { action: A }>;
 type RunRequest = Extract<ServiceRequest, { operation: "runWorkbench" }>;
 
+// Feature 008 plan.md D13: the in-process observer of a revert run. `path` holds the base64 path bytes. Production passes none.
+// `before-index`: right before `publishIndex` (plan.md D7), with the first path of the index part. `checkout-index`: after plan.md D5a step 2, with the first path of the batch.
+export interface RevertCheckpoint {
+  step: "before-index" | "checkout-index" | "before-write";
+  path: string;
+  operationId: string;
+}
+
 // The context of a handler. Its reader also maps an entry of a shown snapshot and reads the workspace. Its runner also sends the `wslFiles` walks.
-export type WorkbenchContext = PublishContext & { reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace" | "selection"> };
+// Feature 008 plan.md D3: `comparisons` gives `revert-lines` the retained comparison.
+export type WorkbenchContext = PublishContext & {
+  reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace" | "selection">;
+  comparisons: Pick<ComparisonReader, "get">;
+  revertCheckpoint?: (checkpoint: RevertCheckpoint) => Promise<void> | void;
+};
 
 // Contract Δ3 "Every review reads": the HEAD capture, the operation markers, and the trust listing.
 export interface Common {
@@ -86,8 +100,8 @@ export interface WorkbenchRun {
 }
 
 export interface WorkbenchHandler<A extends WorkbenchAction, B> {
-  // Contract Δ3 refusals from the payload alone. They come before any Git process.
-  precheck?(payload: PayloadOf<A>, w: Workspace): Refused | null;
+  // Contract Δ3 refusals from the payload and the retained comparisons alone. They come before any Git process.
+  precheck?(payload: PayloadOf<A>, w: Workspace, sources: Pick<WorkbenchContext, "comparisons">): Refused | null;
   observe(ctx: WorkbenchContext, payload: PayloadOf<A>, common: Common): Promise<Observation<B>>;
   // Contract Δ6: the `action` of the `started` frame.
   started(payload: PayloadOf<A>): NonNullable<MutationStarted["action"]>;
@@ -110,15 +124,21 @@ const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "merget
 
 // Contract Δ7 "Mutation trust": `config-save` runs no repository program, so it needs no class. `mergetool` takes the class `mergetool`.
 // Every other action takes the class `workbench`.
-// Feature 005 contract Δ7: `delete` and `ignore-save` run no repository program either.
-const CLASSLESS: ReadonlySet<string> = new Set(["config-save", "delete", "ignore-save"]);
+// Feature 005 contract Δ7: `delete` and `ignore-save` run no repository program either. Feature 008 contract Δ7: neither do the revert actions.
+const REVERT_ACTIONS = ["revert-lines", "revert-files", "revert-unstaged"] as const;
+const REVERTS: ReadonlySet<string> = new Set(REVERT_ACTIONS);
+const CLASSLESS: ReadonlySet<string> = new Set(["config-save", "delete", "ignore-save", ...REVERT_ACTIONS]);
 const classOf = (action: string): "workbench" | "mergetool" | null => (CLASSLESS.has(action) ? null : action === "mergetool" ? "mergetool" : "workbench");
 // Plan.md O-20: the result of a trust refusal by the trust listing of this repository.
 const REPOSITORY_GATE = { trustGate: "repository" } as const;
 // Feature 005 contract Δ9 `STALE_REVIEW` reasons of each action.
-const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed" };
-// The observation refusal of each feature 005 action that names a changed bound fact (contract Δ3 review refusals). Another refusal passes through.
-const FACT_REFUSALS: Readonly<Record<string, ErrorCode>> = { delete: "STALE_SELECTION", "ignore-save": "STALE_REVIEW" };
+// Feature 008 contract Δ9: `revert-changed`.
+const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed", ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, "revert-changed"])) };
+// The observation refusals of each feature 005 and 008 action that name a changed bound fact (contract Δ3 review refusals). Another refusal passes through.
+// Feature 008 data-model §2: the reviewed revert passed every file, support, and profile refusal, so such a refusal at the run is a changed bound fact.
+// It also keeps the run result in RunWorkbenchResult, which has no form for a review refusal value.
+const REVERT_FACTS: readonly ErrorCode[] = ["STALE_SELECTION", "WORKBENCH_UNAVAILABLE", "UNSUPPORTED_COMPARISON", "UNSUPPORTED_HUNK_PROFILE"];
+const FACT_REFUSALS: Readonly<Record<string, readonly ErrorCode[]>> = { delete: ["STALE_SELECTION"], "ignore-save": ["STALE_REVIEW"], ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, REVERT_FACTS])) };
 
 // ---- Shared reads ----
 
@@ -211,7 +231,8 @@ registerWorkbenchAction<"ignore-save", IgnoreSaveBound>("ignore-save", {
 interface Issued {
   repositoryId: string;
   generation: number;
-  payload: WorkbenchPayload;
+  // Null after the run that consumed the token ends. Only a repeat run reads a consumed token, and it needs `repositoryId` and `consumed` alone.
+  payload: WorkbenchPayload | null;
   head: Head;
   operationState: OperationState;
   trust: { fingerprint: string; required: boolean };
@@ -230,16 +251,20 @@ export interface WorkbenchOptions extends Pick<HistoryReaderOptions, "listingTup
   runner: PublishContext["runner"];
   trust: Trust;
   reader: WorkbenchContext["reader"];
+  comparisons: WorkbenchContext["comparisons"];
   registry: OperationRegistry;
   exclusion: Exclusion;
   respond: (response: Response) => unknown;
   // Test seam only. Production uses the monotonic `performance.now()` for the 60 s lifetime.
   now?: () => number;
+  // Test seam only. Production never sets it.
+  revertCheckpoint?: WorkbenchContext["revertCheckpoint"];
 }
 
 export function createWorkbench(o: WorkbenchOptions) {
   const { registry } = o;
   const now = o.now ?? (() => performance.now());
+  const sources = { reader: o.reader, comparisons: o.comparisons, ...(o.revertCheckpoint === undefined ? {} : { revertCheckpoint: o.revertCheckpoint }) };
   const tokens = new Map<string, Issued>();
 
   // Contract §9 acceptance order: a consumed token answers the repeat before any other check. So does a token in use by another run.
@@ -284,26 +309,26 @@ export function createWorkbench(o: WorkbenchOptions) {
 
   // Data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, and any other difference STALE_REVIEW. A trust code keeps its gate (plan.md O-20).
   // Feature 005 contract Δ3: a bound fact of `delete` or `ignore-save` that changed gives STALE_REVIEW with the reason of its action.
-  function staleOf(e: Issued, again: Full | Refused | Failure | Stop, generation: number): { code: ErrorCode; result?: unknown } | Stop | null {
+  function staleOf(e: Issued, action: WorkbenchPayload["action"], again: Full | Refused | Failure | Stop, generation: number): { code: ErrorCode; result?: unknown } | Stop | null {
     if (isStop(again) || "code" in again) return again;
-    const action = e.payload.action;
     const factsChanged = Object.hasOwn(STALE_REASONS, action) ? { code: "STALE_REVIEW" as const, result: { action, reason: STALE_REASONS[action] } } : { code: "STALE_REVIEW" as const };
     if ("refused" in again) {
       if (again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED") return { code: again.refused, result: again.result };
       if (again.refused === "CONFLICTED") return { code: "CONFLICTED", result: again.result };
-      if (Object.hasOwn(FACT_REFUSALS, action)) return again.refused === FACT_REFUSALS[action] ? factsChanged : { code: again.refused, ...(again.result === undefined ? {} : { result: again.result }) };
+      if (Object.hasOwn(FACT_REFUSALS, action)) return FACT_REFUSALS[action]!.includes(again.refused) ? factsChanged : { code: again.refused, ...(again.result === undefined ? {} : { result: again.result }) };
       return factsChanged;
     }
     if ((e.trust.required || required(action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED", result: REPOSITORY_GATE };
     const same = generation === e.generation && Bun.deepEquals({ head: e.head, state: e.operationState }, { head: again.common.head, state: again.common.operationState }, true);
-    if (!same) return { code: "STALE_REVIEW" };
+    // Feature 008 contract Δ3 `runWorkbench`: any difference of the frame's observation gives `revert-changed`. The 005 contract names no reason for a HEAD change.
+    if (!same) return REVERTS.has(action) ? factsChanged : { code: "STALE_REVIEW" };
     return Bun.deepEquals(e.bound, again.bound, true) ? null : factsChanged;
   }
 
-  async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, token: string, e: Issued): Promise<void> {
-    const handler = handlers.get(e.payload.action)!;
-    const context: WorkbenchContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-    await runMarked(o, { operationId, kind: "workbench", action: handler.started(e.payload), workspace: w }, context, async ({ ctx, q, refuse, resolved }) => {
+  async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, token: string, e: Issued, payload: WorkbenchPayload): Promise<void> {
+    const handler = handlers.get(payload.action)!;
+    const context: WorkbenchContext = { runner: o.runner, trust: o.trust, ...sources, operationId, signal, workspace: w, installation };
+    await runMarked(o, { operationId, kind: "workbench", action: handler.started(payload), workspace: w }, context, async ({ ctx, q, refuse, resolved }) => {
       let lastDescendants = 0;
       const remedy = (template: string, values: Record<string, RemedyValue>): string | null => {
         const git = installation.selectedPath;
@@ -322,7 +347,7 @@ export function createWorkbench(o: WorkbenchOptions) {
         q,
         common,
         get before(): Observed {
-          if (before === null) throw new Error(`${e.payload.action} reads no observation before its run`);
+          if (before === null) throw new Error(`${payload.action} reads no observation before its run`);
           return before;
         },
         // Plan.md D2: each step runs under the policy `integrate` with the 003 limits and the 15 s stall notice.
@@ -371,17 +396,19 @@ export function createWorkbench(o: WorkbenchOptions) {
       });
 
       // Contract Δ3 `runWorkbench` step 2: every bound value again, from an own trust listing.
-      const again = await observeAll(ctx, e.payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
-      const stale = staleOf(e, again, w.generation);
+      const again = await observeAll(ctx, payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
+      const stale = staleOf(e, payload.action, again, w.generation);
       if (stale !== null) return refuse(stale);
       const later = accept(token, operationId);
       if (!later.ok) return refuse({ code: "code" in later ? later.code : "UNKNOWN_TARGET" });
       e.consumed = operationId;
+      // The run uses its own observation. A consumed token keeps no bound facts (up to MULTI_FILE_ACTION_FILES file plans).
+      e.bound = null;
       const full = again as Full;
-      if (handler.observeBefore === false) return void (await handler.run(runOf(full.common, null), e.payload, full.bound));
+      if (handler.observeBefore === false) return void (await handler.run(runOf(full.common, null), payload, full.bound));
       const before = await observe(ctx, false);
       if (!("value" in before)) return refuse(before);
-      await handler.run(runOf(full.common, before.value), e.payload, full.bound);
+      await handler.run(runOf(full.common, before.value), payload, full.bound);
     });
   }
 
@@ -398,12 +425,12 @@ export function createWorkbench(o: WorkbenchOptions) {
       for (const [key, e] of tokens) if (e.repositoryId === repositoryId) tokens.delete(key);
     },
 
-    // Contract Δ3 refusals from the payload alone. The caller answers them before it schedules any Git process.
-    precheck: (payload: WorkbenchPayload, w: Workspace): Refused | null => handlers.get(payload.action)?.precheck?.(payload, w) ?? null,
+    // Contract Δ3 refusals from the payload and the retained comparisons alone. The caller answers them before it schedules any Git process.
+    precheck: (payload: WorkbenchPayload, w: Workspace): Refused | null => handlers.get(payload.action)?.precheck?.(payload, w, sources) ?? null,
 
     // Contract Δ3 `reviewWorkbench`. A refusal issues no token.
     async review(t: ReadHistoryTarget, payload: WorkbenchPayload): Promise<ReviewOutcome> {
-      const ctx: WorkbenchContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
+      const ctx: WorkbenchContext = { runner: o.runner, trust: o.trust, ...sources, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
       const observed = await observeAll(ctx, payload, () => sharedListing({ trust: o.trust, listingTuple: o.listingTuple }, t));
       if (isStop(observed)) return { result: observed.stop };
       if ("code" in observed) return { result: "failed", code: observed.code };
@@ -439,15 +466,18 @@ export function createWorkbench(o: WorkbenchOptions) {
       const accepted = accept(token);
       if (!accepted.ok) return void registry.apply(operationId, { type: "invalid-approval", code: "code" in accepted ? accepted.code : "UNKNOWN_TARGET" });
       const e = accepted.entry;
+      // An accepted token is neither consumed nor running, so it keeps its payload.
+      const payload = e.payload!;
       if (e.repositoryId !== request.repositoryId) return void registry.apply(operationId, { type: "invalid-approval", code: "UNKNOWN_TARGET" });
       // Contract Δ7 "Mutation trust": the reviewed listing decides before any process.
-      const cls = classOf(e.payload.action);
+      const cls = classOf(payload.action);
       const gate = cls === null ? null : o.trust.gate(w, { approvalRequired: { [cls]: e.trust.required }, inputLimited: false }, installation, cls);
       if (gate !== null) return void registry.apply(operationId, { type: "invalid-approval", code: gate }, REPOSITORY_GATE);
       // Contract §2: the token is in use before the first await. A run that ends before the consumption leaves it to a later run (data-model §2).
       e.running = operationId;
-      void execute(w, installation, operationId, signal, token, e).finally(() => {
+      void execute(w, installation, operationId, signal, token, e, payload).finally(() => {
         if (e.consumed === null) e.running = null;
+        else e.payload = null;
       });
     },
   };

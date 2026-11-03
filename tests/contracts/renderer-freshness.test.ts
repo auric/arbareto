@@ -232,16 +232,22 @@ describe("obsolete responses", () => {
     o.requests.dispose();
   });
 
-  test("an operation completion notice still appears when its display result is discarded", async () => {
+  test("an operation end with a discarded display result still runs the reconcile read and resolves when it ends", async () => {
     const o = await opened();
     await o.advance(1000);
     workspaceResponse(o.last("readWorkspace"), snapshot(2, o.first.entries));
     await flush();
+    const reads = o.of("readWorkspace").length;
     const outcome: BridgeResponse = { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", repositoryGeneration: 1, result: {} };
-    o.requests.mutationEnded("applyFile", outcome);
+    let ended = false;
+    void o.requests.mutationEnded("applyFile", outcome).then(() => void (ended = true));
     await flush();
-    expect(o.requests.state().outcomes).toContainEqual(outcome);
+    expect(o.of("readWorkspace").slice(reads).map((c) => c.payload)).toEqual([{ refresh: false, check: "full" }]);
     expect(o.requests.state().workspace?.generation).toBe(2);
+    expect(ended).toBe(false);
+    workspaceResponse(o.last("readWorkspace"), snapshot(2, o.first.entries));
+    await flush();
+    expect(ended).toBe(true);
     o.requests.dispose();
   });
 
@@ -250,14 +256,16 @@ describe("obsolete responses", () => {
     const reads = () => o.of("readWorkspace").length;
     const before = reads();
     const expired: BridgeResponse = { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "APPROVAL_EXPIRED", repositoryGeneration: 1 };
-    o.requests.mutationEnded("updateSubmodules", expired);
+    let expiredEnded = false;
+    void o.requests.mutationEnded("updateSubmodules", expired).then(() => void (expiredEnded = true));
     await flush();
-    expect(o.requests.state().outcomes).toContainEqual(expired);
+    expect(expiredEnded).toBe(true);
     expect(reads()).toBe(before);
     const changed: BridgeResponse = { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "REPOSITORY_CHANGED", repositoryGeneration: 1 };
-    o.requests.mutationEnded("updateSubmodules", changed);
+    let changedEnded = false;
+    void o.requests.mutationEnded("updateSubmodules", changed).then(() => void (changedEnded = true));
     await flush();
-    expect(o.requests.state().outcomes).toContainEqual(changed);
+    expect(changedEnded).toBe(false);
     expect(o.of("readWorkspace").slice(before).map((c) => c.payload)).toEqual([{ refresh: false, check: "full" }]);
     o.requests.dispose();
   });
@@ -282,16 +290,44 @@ describe("approvals", () => {
     o.requests.dispose();
   });
 
-  test("a pending read never keeps a mutation capability", async () => {
+  test("a pending read of another entry drops the capability; a pending read of the shown entry in the same snapshot gives it back", async () => {
     const o = await shown();
+    const capability = o.requests.state().capability;
     o.requests.selectEntry(o.first.entries[1]!.entryId);
     await flush();
     expect(o.requests.state().capability).toBeNull();
     o.requests.selectEntry(o.target.entryId);
     await flush();
-    expect(o.requests.state().capability).toBeNull();
+    expect(o.requests.state().capability).toEqual(capability);
     o.requests.dispose();
   });
+
+  // Feature 008 contract Δ8: a pending re-read of the shown comparison keeps the capability. The service still refuses a stale run.
+  for (const [name, fresh] of [
+    ["a new comparisonId", true],
+    ["the same comparisonId", false],
+  ] as const) {
+    test(`an equal full read keeps the capability while its comparison read is pending; a reply with ${name} gives the capability of that reply`, async () => {
+      const o = await shown();
+      const capability = o.requests.state().capability!;
+      const comparisons = o.of("readComparison").length;
+      // A focus return sends a full read with refresh: false, as the WSL poll does.
+      o.focus.set(false);
+      o.focus.set(true);
+      await flush();
+      expect(o.last("readWorkspace").payload).toEqual({ refresh: false, check: "full" });
+      workspaceResponse(o.last("readWorkspace"), { ...o.first });
+      await flush();
+      expect(o.of("readComparison")).toHaveLength(comparisons + 1);
+      expect(o.requests.state().capability).toBe(capability);
+      const value = fresh ? { ...o.value, comparisonId: crypto.randomUUID() } : o.value;
+      echo(o.last("readComparison"), { result: value });
+      await flush();
+      expect(o.requests.state().capability).toEqual({ comparisonId: value.comparisonId, snapshotId: o.first.snapshotId, repositoryGeneration: 1 });
+      if (!fresh) expect(o.requests.state().capability).toBe(capability);
+      o.requests.dispose();
+    });
+  }
 
   for (const [name, digests, kept] of [
     ["keeps the hunk selection when the new comparison has a hunk with the same digest", ["1".repeat(64), "2".repeat(64)], 1],
@@ -535,12 +571,12 @@ describe("superseded comparison reads", () => {
     echo(older, { state: "canceled", code: "CANCELED" });
     await flush();
     expect(o.requests.state().comparison).toBeNull();
-    expect(o.requests.state().outcomes).toEqual([]);
+    expect(o.requests.state().readFailure).toBeNull();
     const value = comparison(o.first.snapshotId, b.entryId, ["1".repeat(64)]);
     echo(newer, { result: value });
     await flush();
     expect(o.requests.state().comparison?.result).toEqual(value);
-    expect(o.requests.state().outcomes).toEqual([]);
+    expect(o.requests.state().readFailure).toBeNull();
     o.requests.dispose();
   });
 

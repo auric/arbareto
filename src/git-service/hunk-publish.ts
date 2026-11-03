@@ -803,6 +803,98 @@ export function startPublication<A extends Admission>(o: HunkPublisherOptions & 
   void publish(o, request, w, installation, operationId, signal, approvalClaim(o.approvals, key), admitted, p);
 }
 
+// Plan.md D7: one index publication and its owned files. `run`, `foreign`, and `releaseOwned` feed the reconciliation of the caller.
+export interface IndexSession extends PublicationSession {
+  claim: PublicationClaim;
+  // Contract §5: the retained digests of recovery. `publishIndex` sets `candidate` and the WSL `token`.
+  kept: RetainedPublication;
+  foreign: string[];
+  // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once. True: a WSL `remove` left the ownership unknown.
+  releaseOwned(processesEnded: boolean): Promise<boolean>;
+}
+
+// The session of one publication. Its runner records the exits of `ctx.runner`.
+export function indexSession(context: PublishContext, path: Uint8Array, claim: PublicationClaim, kept: RetainedPublication): IndexSession {
+  const rec = recording(context.runner);
+  const ctx: PublishContext = { ...context, runner: rec };
+  const w = ctx.workspace;
+  const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, publishStarted: false, published: false, executionLast: 0, listing: null };
+  const foreign: string[] = [];
+  const releaseOwned = async (processesEnded: boolean): Promise<boolean> => {
+    const { lock, candidatePath } = run;
+    run.lock = null;
+    run.candidatePath = null;
+    if (w.wsl !== undefined) return releaseWsl(ctx, lock, candidatePath, run.candidate?.digest ?? null, processesEnded, foreign);
+    if (lock !== null && (await lock.release().catch(() => "remove-failed" as const)) === "remove-failed") foreign.push(lock.path);
+    if (candidatePath !== null) foreign.push(...(await removeOwned([candidatePath, `${candidatePath}.lock`], processesEnded)));
+    return false;
+  };
+  return { ctx, rec, run, path, claim, kept, foreign, releaseOwned };
+}
+
+// Plan.md D7 and research.md R3 steps 4 and 13: the claim, the owned lock, `prepare`, and the publication of the checked candidate.
+// It sends no registry event. `publishing` runs right before the publication, so the caller can report its phase.
+export async function publishIndex(
+  o: Pick<HunkPublisherOptions, "runner" | "hunkCheckpoint">,
+  s: IndexSession,
+  steps: { prepare(s: PublicationSession): Promise<Refusal | Stop | null>; publishing?(): void },
+): Promise<Ending> {
+  const { ctx, run, kept, claim } = s;
+  const { workspace: w, signal, operationId } = ctx;
+  if (!claim.consume(operationId)) return { code: claim.refusal() };
+  // Research R3 step 4 and contract §4 "File staging" step 2.
+  if (signal.aborted) return CANCELED;
+  const refuse = async (locked: Exclude<LockResult | WslLockResult, { ok: true }>) => {
+    const answer = "ok" in locked && "code" in locked ? await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null) : null;
+    return lockRefusal(locked, typeof answer === "number" ? answer : null, ctx.trust.currentTrustId(w) !== undefined);
+  };
+  let publishVia: (c: Candidate) => Promise<PublishResult | WslPublishResult | Failure | Stop>;
+  if (w.wsl !== undefined) {
+    // Contract §4 "Process end": this run starts the anchor of the operation before `lock`.
+    if ((await processEnd(ctx)) === "noFact") return stepFailed();
+    if (signal.aborted) return CANCELED;
+    const locked = await wslLock(ctx);
+    if ("unknown" in locked) {
+      run.lock = { path: locked.unknown.path, release: locked.unknown.removeByToken };
+      kept.token = locked.unknown.token;
+    }
+    if (!("ok" in locked) || !locked.ok) return refuse(locked);
+    const lock = locked.lock;
+    run.lock = lock;
+    kept.token = lock.token;
+    publishVia = (c) => lock.publish(basename(c.path), c.digest, signal);
+  } else {
+    const locked = await createIndexLock(w.indexPath);
+    if (!locked.ok) return refuse(locked);
+    const lock = locked.lock;
+    run.lock = lock;
+    publishVia = (c) => lock.publish(c.bytes, c.mtimeNs);
+  }
+  const lockPath = run.lock.path;
+  const refused = await steps.prepare(s);
+  if (refused !== null) return refused;
+  const candidate = run.candidate!;
+  // Research R3 step 13 and contract §4 step 8.
+  kept.candidate = candidate.digest;
+  steps.publishing?.();
+  run.publishing = true;
+  run.publishStarted = true;
+  const result = await publishVia(candidate);
+  // A WSL refusal is no typed result, so `publishing` stays set (contract §9 "publish without a typed result").
+  if (!isStop(result) && !("published" in result)) return refusalOf(result);
+  run.publishing = false;
+  if (isStop(result)) return result;
+  if (!result.published) {
+    // Contract §4 "WSL index publication": after `notOwned`, no owned lock remains at the path.
+    if (result.reason === "notOwned") run.lock = null;
+    return publishRefusal(result, lockPath);
+  }
+  run.published = true;
+  run.lock = null;
+  await o.hunkCheckpoint?.({ step: 13, operationId });
+  return { published: true };
+}
+
 // Research R3 steps 1 to 14 for an admitted request. The caller started `operationId` in the registry.
 export async function publish<A extends Admission>(o: HunkPublisherOptions & PublicationStores, request: PublicationRequest, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, claim: PublicationClaim, a: A, p: Omit<PublicationSteps<A>, "admit">): Promise<void> {
   const { registry, retained } = o;
@@ -816,87 +908,20 @@ export async function publish<A extends Admission>(o: HunkPublisherOptions & Pub
   }
   if (!entered.ok) return notEntered(registry, operationId, entered);
   const marker = entered;
-  const rec = recording(o.runner);
-  const ctx: PublishContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-  const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, publishStarted: false, published: false, executionLast: 0, listing: null };
-  const foreign: string[] = [];
-  // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
-  const releaseOwned = async (processesEnded: boolean): Promise<boolean> => {
-    const { lock, candidatePath } = run;
-    run.lock = null;
-    run.candidatePath = null;
-    if (w.wsl !== undefined) return releaseWsl(ctx, lock, candidatePath, run.candidate?.digest ?? null, processesEnded, foreign);
-    if (lock !== null && (await lock.release().catch(() => "remove-failed" as const)) === "remove-failed") foreign.push(lock.path);
-    if (candidatePath !== null) foreign.push(...(await removeOwned([candidatePath, `${candidatePath}.lock`], processesEnded)));
-    return false;
-  };
+  // Contract §5: the digests stay until reconciliation succeeds, so recovery can compare them.
+  const kept: RetainedPublication = { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: null };
+  const session = indexSession({ runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation }, path, claim, kept);
+  const { ctx, rec, run, foreign, releaseOwned } = session;
   const extra = () => (foreign.length > 0 ? { foreign } : undefined);
   try {
     registry.apply(operationId, { type: "marker-recorded" });
     o.owners.set(operationId, request.repositoryId);
-    // Contract §5: the digests stay until reconciliation succeeds, so recovery can compare them.
-    const kept: RetainedPublication = { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: null };
     retained.set(operationId, kept);
-
-    const steps = async (): Promise<Ending> => {
-      if (!claim.consume(operationId)) return { code: claim.refusal() };
-      // Research R3 step 4 and contract §4 "File staging" step 2.
-      if (signal.aborted) return CANCELED;
-      const refuse = async (locked: Exclude<LockResult | WslLockResult, { ok: true }>) => {
-        const answer = "ok" in locked && "code" in locked ? await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null) : null;
-        return lockRefusal(locked, typeof answer === "number" ? answer : null, o.trust.currentTrustId(w) !== undefined);
-      };
-      let publishVia: (c: Candidate) => Promise<PublishResult | WslPublishResult | Failure | Stop>;
-      if (w.wsl !== undefined) {
-        // Contract §4 "Process end": this run starts the anchor of the operation before `lock`.
-        if ((await processEnd(ctx)) === "noFact") return stepFailed();
-        if (signal.aborted) return CANCELED;
-        const locked = await wslLock(ctx);
-        if ("unknown" in locked) {
-          run.lock = { path: locked.unknown.path, release: locked.unknown.removeByToken };
-          kept.token = locked.unknown.token;
-        }
-        if (!("ok" in locked) || !locked.ok) return refuse(locked);
-        const lock = locked.lock;
-        run.lock = lock;
-        kept.token = lock.token;
-        publishVia = (c) => lock.publish(basename(c.path), c.digest, signal);
-      } else {
-        const locked = await createIndexLock(w.indexPath);
-        if (!locked.ok) return refuse(locked);
-        const lock = locked.lock;
-        run.lock = lock;
-        publishVia = (c) => lock.publish(c.bytes, c.mtimeNs);
-      }
-      const lockPath = run.lock.path;
-      const refused = await p.prepare(a, { ctx, rec, run, path });
-      if (refused !== null) return refused;
-      const candidate = run.candidate!;
-      // Research R3 step 13 and contract §4 step 8.
-      kept.candidate = candidate.digest;
-      registry.progress(operationId, "publication");
-      run.publishing = true;
-      run.publishStarted = true;
-      const result = await publishVia(candidate);
-      // A WSL refusal is no typed result, so `publishing` stays set (contract §9 "publish without a typed result").
-      if (!isStop(result) && !("published" in result)) return refusalOf(result);
-      run.publishing = false;
-      if (isStop(result)) return result;
-      if (!result.published) {
-        // Contract §4 "WSL index publication": after `notOwned`, no owned lock remains at the path.
-        if (result.reason === "notOwned") run.lock = null;
-        return publishRefusal(result, lockPath);
-      }
-      run.published = true;
-      run.lock = null;
-      await o.hunkCheckpoint?.({ step: 13, operationId });
-      return { published: true };
-    };
 
     let ending: Ending;
     let unexpected = false;
     try {
-      ending = await steps();
+      ending = await publishIndex(o, session, { prepare: (s) => p.prepare(a, s), publishing: () => registry.progress(operationId, "publication") });
     } catch {
       unexpected = !signal.aborted;
       ending = signal.aborted ? CANCELED : stepFailed();
@@ -935,12 +960,51 @@ export async function publish<A extends Admission>(o: HunkPublisherOptions & Pub
 
 type ApplyHunkRequest = Extract<ServiceRequest, { operation: "applyHunk" }>;
 // `hunk`: the retained hunk, or the sub-hunk of the selected lines.
+export type HunkAdmitted = { approval: Pick<HunkApproval, "binding">; comparison: RetainedComparison; hunk: PatchHunk };
+// The parts of the publisher that `prepareHunk` uses. A revert run gives its own progress (plan.md D7).
+export type PrepareOptions = { registry: Pick<OperationRegistry, "progress">; hunkCheckpoint?: HunkPublisherOptions["hunkCheckpoint"] };
+
+// Research R3 steps 5 to 12 under the lock: the Stage lines and Unstage lines `prepare`. The scope of the comparison gives the direction.
+export async function prepareHunk(o: PrepareOptions, { approval: { binding }, comparison: c, hunk }: HunkAdmitted, { ctx, rec, run, path }: PublicationSession): Promise<Refusal | Stop | null> {
+  const { workspace: w, signal, operationId } = ctx;
+  const wsl = w.wsl !== undefined;
+  const checkpoint = async (step: 5 | 11): Promise<Refusal | Stop | null> => {
+    const policy = await observePolicy(ctx, path);
+    if ("listing" in policy) run.listing = policy.listing;
+    const refused = checkpointRefusal(binding, policy, await observeState(ctx, path, binding.working !== null, canonicalIndex(ctx, binding.index)), w.objectFormat, wsl);
+    if (refused !== null) return refused;
+    // A WSL read folds no working version, so the whole-file digest of the comparison decides last (contract §4 "Binding", §9).
+    if (wsl && c.scope !== "head-to-index") {
+      const read = differs(c.working, await settled(signal, wholeWorking(ctx, path)));
+      if (!("value" in read)) return isStop(read) ? read : refusalOf(read);
+      if (read.value) return STALE;
+    }
+    await o.hunkCheckpoint?.({ step, operationId });
+    return signal.aborted ? CANCELED : null;
+  };
+  o.registry.progress(operationId, "preflight");
+  const first = await checkpoint(5);
+  if (first !== null) return first;
+  // Research R3 steps 6 to 10.
+  o.registry.progress(operationId, "candidate-verification");
+  const prepared = await prepareCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest, comparison: c, hunk });
+  run.executionLast = rec.execution ?? 0;
+  if (!prepared.ok) {
+    run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
+    const refused = candidateRefusal(prepared.failure);
+    return "check" in refused ? await missingObject(ctx, run.listing, c.entry.oids?.[1], refused.check) : refused;
+  }
+  run.candidate = prepared.candidate;
+  run.candidatePath = besideIndex(w, prepared.candidate.path);
+  // Research R3 steps 11 and 12.
+  return checkpoint(11);
+}
+
 type Admitted = { approval: HunkApproval; comparison: RetainedComparison; hunk: PatchHunk };
 
 export function createHunkPublisher(o: HunkPublisherOptions) {
   const stores: PublicationStores = { retained: new Map(), owners: new Map() };
   const shared = { ...o, ...stores };
-  const { registry } = o;
 
   function admit(request: ApplyHunkRequest, w: Workspace, key: ApprovalKey): Admitted | { code: ErrorCode; result?: unknown } {
     const { comparisonId, hunkId, snapshotId, direction } = request.payload;
@@ -974,41 +1038,7 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     return { approval, comparison: c, hunk };
   }
 
-  // Research R3 steps 5 to 12 under the lock.
-  async function prepare({ approval: { binding }, comparison: c, hunk }: Admitted, { ctx, rec, run, path }: PublicationSession): Promise<Refusal | Stop | null> {
-    const { workspace: w, signal, operationId } = ctx;
-    const wsl = w.wsl !== undefined;
-    const checkpoint = async (step: 5 | 11): Promise<Refusal | Stop | null> => {
-      const policy = await observePolicy(ctx, path);
-      if ("listing" in policy) run.listing = policy.listing;
-      const refused = checkpointRefusal(binding, policy, await observeState(ctx, path, binding.working !== null, canonicalIndex(ctx, binding.index)), w.objectFormat, wsl);
-      if (refused !== null) return refused;
-      // A WSL read folds no working version, so the whole-file digest of the comparison decides last (contract §4 "Binding", §9).
-      if (wsl && c.scope !== "head-to-index") {
-        const read = differs(c.working, await settled(signal, wholeWorking(ctx, path)));
-        if (!("value" in read)) return isStop(read) ? read : refusalOf(read);
-        if (read.value) return STALE;
-      }
-      await o.hunkCheckpoint?.({ step, operationId });
-      return signal.aborted ? CANCELED : null;
-    };
-    registry.progress(operationId, "preflight");
-    const first = await checkpoint(5);
-    if (first !== null) return first;
-    // Research R3 steps 6 to 10.
-    registry.progress(operationId, "candidate-verification");
-    const prepared = await prepareCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest, comparison: c, hunk });
-    run.executionLast = rec.execution ?? 0;
-    if (!prepared.ok) {
-      run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
-      const refused = candidateRefusal(prepared.failure);
-      return "check" in refused ? await missingObject(ctx, run.listing, c.entry.oids?.[1], refused.check) : refused;
-    }
-    run.candidate = prepared.candidate;
-    run.candidatePath = besideIndex(w, prepared.candidate.path);
-    // Research R3 steps 11 and 12.
-    return checkpoint(11);
-  }
+  const prepare = (a: Admitted, s: PublicationSession) => prepareHunk(o, a, s);
 
   // Contract §8: the bound working version, else no working-file effect. A WSL comparison binds the whole-file digest.
   async function working({ approval: { binding }, comparison: c }: Admitted, ctx: PublishContext, path: Uint8Array): Promise<Fact<boolean>> {

@@ -354,12 +354,33 @@ export function untrackedNumstatArgs(path: string): string[] {
 
 // T103: the attributes of the support decision. Paths go only on stdin.
 export function attributeArgs(): string[] {
-  return read("check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding");
+  return read("check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident");
 }
 
 // Contract §4: `mixed` on the index or working side refuses hunks. `i/none` does not mean a missing object.
+// This array has no pathspec, so Git lists the whole index. The comparison names its keys with `lineEndingPathArgs` (T073).
 export function lineEndingArgs(): string[] {
   return read("ls-files", "--eol", "-z");
+}
+
+// Feature 008 research.md R7: the attributes of `attributeArgs` in the index direction. Paths go only on stdin.
+export function cachedAttributeArgs(): string[] {
+  return read("check-attr", "--cached", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident");
+}
+
+// Feature 008 contract Δ3: the index entries and the line endings of literal paths after `--`.
+export function indexPathArgs(paths: readonly string[]): string[] {
+  return read("ls-files", "--stage", "-z", "--", ...pathItems(paths));
+}
+
+export function lineEndingPathArgs(paths: readonly string[]): string[] {
+  return read("ls-files", "--eol", "-z", "--", ...pathItems(paths));
+}
+
+// Feature 008 plan.md D5a step 2: Git writes the working-tree form of each stdin path to its own temporary file in the worktree root,
+// and prints `<temp> TAB <path> NUL`. `--temp` takes no index lock, writes no index, and runs no hook (research.md R4, R10).
+export function checkoutTempArgs(): string[] {
+  return [NO_LAZY_FETCH, "checkout-index", "--temp", "--stdin", "-z"];
 }
 
 // The empty tree OID of the object format, with empty stdin. Without `-w`, Git writes no object.
@@ -541,6 +562,44 @@ export function submoduleHeadRefArgs(location: SubmoduleLocation): string[] {
 // Object IDs go only on stdin.
 export function submoduleObjectCheckArgs(location: SubmoduleLocation): string[] {
   return submoduleRead(location, "cat-file", "--batch-check");
+}
+
+// Feature 005 contract Δ3 `readSubmoduleChange` and `readSubmoduleWork`, plan.md D19. None of these reads loads the submodule index except `submoduleStatusArgs`.
+// Plan.md D11 check 5 for a read: Git prints the worktree root of the repository that `--git-dir=.git` names.
+export function submoduleToplevelArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "rev-parse", "--show-toplevel");
+}
+
+// git-cat-file(1) `-e`: exit 0 when the object exists and peels to a commit.
+export function submoduleCommitExistsArgs(location: SubmoduleLocation, oid: string, objectFormat: ObjectFormat): string[] {
+  return submoduleRead(location, "cat-file", "-e", `${treeItem(oid, objectFormat)}^{commit}`);
+}
+
+// git-rev-list(1) `--left-right --count`: the commits only in `old`, a TAB, the commits only in `new`.
+export function submoduleCountArgs(location: SubmoduleLocation, old: string, next: string, objectFormat: ObjectFormat): string[] {
+  return submoduleRead(location, "rev-list", "--left-right", "--count", `${treeItem(old, objectFormat)}...${treeItem(next, objectFormat)}`);
+}
+
+// The commits of `include` that `exclude` does not reach. `--no-show-signature` overrides `log.showSignature`, so no signature program runs.
+export function submoduleLogArgs(location: SubmoduleLocation, include: string, exclude: string, objectFormat: ObjectFormat, maxCount: number): string[] {
+  if (!(Number.isSafeInteger(maxCount) && maxCount > 0)) throw new TypeError("count refused");
+  return submoduleRead(
+    location,
+    "log",
+    "-z",
+    "--no-show-signature",
+    "--no-color",
+    "--encoding=UTF-8",
+    "--format=%H%x00%s",
+    `--max-count=${maxCount}`,
+    treeItem(include, objectFormat),
+    `^${treeItem(exclude, objectFormat)}`,
+  );
+}
+
+// Contract Δ3 `readSubmoduleWork` step 3: the submodule's own status. The caller checks its settings first.
+export function submoduleStatusArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignore-submodules=dirty");
 }
 
 // Git `is_tip_reachable` (builtin/submodule--helper.c:2493-2514): exit 0 without output means that a ref or HEAD reaches the target.

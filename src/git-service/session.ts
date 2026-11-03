@@ -4,7 +4,7 @@
 import { Handshake } from "../contracts/channel";
 import { validateRequest, type ChangeEntry, type Response, type ServiceRequest } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
-import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, READ_DEADLINE_MS, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
 import { isWindows, NATIVE } from "../contracts/native-path";
@@ -45,12 +45,14 @@ import { createTrackingReader } from "./tracking";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
-import { createWorkbench } from "./workbench-review";
+import { createWorkbench, type WorkbenchOptions } from "./workbench-review";
 import type { Fact } from "./hunk-publish";
 import { readIgnoreFile } from "./ignore";
 import { createIgnorePreview } from "./ignore-preview";
 import { checkSubmodule, submoduleOutcome, type SubmoduleRefusal } from "./submodule-open";
+import { createSubmoduleReads, sideId, workspaceIds } from "./submodule-change";
 import "./file-delete";
+import "./revert";
 import "./switch";
 import "./branch-ops";
 import "./merge-rebase";
@@ -90,6 +92,8 @@ export interface SessionOptions {
   // Test seam only. Production never sets it. The service awaits it before each folder check and clone check of an update row,
   // and before the program re-check of a nested active-set read.
   submoduleCheckpoint?: SubmoduleUpdaterOptions["submoduleCheckpoint"];
+  // Test seam only. Production never sets it. Feature 008 plan.md D13: the service awaits it before each working-file write of a revert run.
+  revertCheckpoint?: WorkbenchOptions["revertCheckpoint"];
   // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`. Tests set a lower value.
   historyViewCommits?: number;
   // Feature 002 contract Δ3 "Matching probe": the probe commits that each run must list. Only tests set other sets.
@@ -124,7 +128,7 @@ function revealTarget(w: Workspace, bytes: Uint8Array): string | null {
   return NATIVE.path.join(w.worktreeRoot, ...(text.endsWith("/") ? text.slice(0, -1) : text).split("/"));
 }
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, revertCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -215,8 +219,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     onRelease: (viewId) => commitChanges.dropView(viewId),
   });
   const approvals = createApprovals(approvalClock);
-  // Contract §5: comparison eviction invalidates its approvals.
-  const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
+  // Contract §5: comparison eviction invalidates its approvals. 008 contract Δ5: a comparison with a consumed approval is never kept.
+  const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId), spent: (comparisonId) => approvals.spent(comparisonId) });
   const reviews = createCommitReviewer({ runner, trust, approvals, now: approvalClock });
   const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
@@ -234,9 +238,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
   const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
   const syncs = createSyncer({ runner, trust, reader, approvals, registry, exclusion, respond });
-  const workbench = createWorkbench({ runner, trust, reader, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
+  const workbench = createWorkbench({ runner, trust, reader, comparisons, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }), ...(revertCheckpoint === undefined ? {} : { revertCheckpoint }) });
   // Feature 005 data-model §7: one preview base per workspace and target, dropped at the workspace release.
   const previews = createIgnorePreview({ runner, trust });
+  const submoduleReads = createSubmoduleReads({ runner, trust, environment, readDeadlineMs: readDeadlineMs ?? READ_DEADLINE_MS });
   const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
@@ -432,6 +437,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const endRead = (operationId: string, end: ReadEnd<ReadResult, ReadResult | null>) => {
     if (end.kind === "canceled") return void registry.apply(operationId, { type: "processes-stopped" });
     if (end.kind === "deadline") return void registry.apply(operationId, { type: "read-deadline" });
+    if (end.kind === "failed") return void registry.apply(operationId, { type: "read-complete", result: "failed", code: "GIT_FAILED" });
     const outcome = end.outcome.result === "failed" && end.reread !== null ? end.reread : end.outcome;
     if (outcome.result === "deadline") return void registry.apply(operationId, { type: "read-deadline" });
     if (outcome.result === "canceled") {
@@ -464,7 +470,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
         | "readCommitFile"
         | "readBlame"
         | "readIgnoreFile"
-        | "previewIgnore";
+        | "previewIgnore"
+        | "readSubmoduleChange"
+        | "readSubmoduleWork";
       repositoryId: string;
     },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
@@ -482,7 +490,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       ...(selection === undefined ? {} : { selection }),
       // Feature 005 contract Δ3 `readBlame`: each step has its own deadline, and the blame step takes HISTORY_PROCESS_DEADLINE_MS.
       // Contract Δ3 `previewIgnore`: 30 s per process, and no deadline for the whole preview.
-      ...(request.operation === "reviewSubmodules" || request.operation === "readBlame" || request.operation === "previewIgnore" ? { deadline: false as const } : {}),
+      ...(request.operation === "reviewSubmodules" || request.operation === "readBlame" || request.operation === "previewIgnore" || request.operation === "readSubmoduleWork" ? { deadline: false as const } : {}),
       run: (work) => run({ operationId, signal: work }).catch(() => failed),
       failed: (outcome) => outcome.result === "failed" || outcome.result === "deadline",
       reread: (target) => reread(target).catch(() => null),
@@ -987,6 +995,43 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     scheduleRead(request, (t) => previews.preview({ ...t, workspace, installation, snapshot: found.snapshot }, request.payload), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "previewIgnore");
   };
 
+  // Feature 005 contract Δ3 `readSubmoduleChange`: the source decides at acceptance. A new request cancels the running one.
+  const readSubmoduleChange: Handler<"readSubmoduleChange"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { source } = request.payload;
+    let target: Parameters<typeof submoduleReads.readSubmoduleChange>[1];
+    if (source.kind === "workspace") {
+      const found = reader.entry(request.repositoryId, request.repositoryGeneration, source.snapshotId, source.entryId);
+      if (!found.ok) {
+        const { operationId } = registry.start("readSubmoduleChange", request.requestId);
+        return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+      }
+      const ids = workspaceIds(found.entry);
+      if (ids === null) return reject(request.requestId, "INVALID_REQUEST");
+      target = { path: new Uint8Array(Buffer.from(found.entry.pathBytes, "base64")), ...ids, index: found.snapshot.indexEntries, ...(found.snapshot.indexCut ? { indexCut: true as const } : {}) };
+    } else {
+      const entry = commitChanges.submoduleRecord(request.repositoryId, source.viewId, source.oid, source.parent, source.record);
+      if ("refused" in entry) return reject(request.requestId, entry.refused);
+      target = { path: entry.path, old: sideId(entry.modes[0], entry.oids[0]), new: sideId(entry.modes[1], entry.oids[1]) };
+    }
+    scheduleRead(request, (t) => submoduleReads.readSubmoduleChange({ ...t, workspace, installation }, target), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleChange");
+  };
+
+  // Feature 005 contract Δ3 `readSubmoduleWork`: the snapshot decides at acceptance. The read keeps its own 001 read deadline, so the finished targets stay.
+  const readSubmoduleWork: Handler<"readSubmoduleWork"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const found = reader.selection(request.repositoryId, request.repositoryGeneration, request.payload.snapshotId);
+    if (!found.ok) {
+      const { operationId } = registry.start("readSubmoduleWork", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+    }
+    scheduleRead(request, (t) => submoduleReads.readSubmoduleWork({ ...t, workspace, installation }, found.snapshot), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleWork");
+  };
+
   // Feature 005 contract Δ3 `openSubmodule`, plan.md D11: the checks in the parent, then the 001 registration of the bound folder.
   // The top level of the discovery must be the bound folder (the `destination` of the registration).
   const openSubmodule: Handler<"openSubmodule"> = (request) => {
@@ -1122,7 +1167,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       // Contract Δ3: a name such as `@` refuses before any Git process, so the refusal takes no read slot and no re-read.
       const refused = workbench.precheck(request.payload, workspace);
       if (refused !== null) {
-        if (refused.refused === "INVALID_REQUEST") return reject(request.requestId, "INVALID_REQUEST");
+        // Contract §9: SERVICE_UNAVAILABLE is always a `rejected` result.
+        if (refused.refused === "INVALID_REQUEST" || refused.refused === "SERVICE_UNAVAILABLE") return reject(request.requestId, refused.refused);
         const { operationId } = registry.start("reviewWorkbench", request.requestId);
         registry.apply(operationId, { type: "valid-read" });
         return void registry.apply(operationId, { type: "read-complete", result: "failed", code: refused.refused }, refused.result);
@@ -1154,6 +1200,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readIgnoreFile: readIgnore,
     previewIgnore,
     openSubmodule,
+    readSubmoduleChange,
+    readSubmoduleWork,
     listDictionaries: dictionaries?.listDictionaries,
     readDictionary: dictionaries?.readDictionary,
     downloadDictionary: dictionaries?.downloadDictionary,

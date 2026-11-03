@@ -128,6 +128,11 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   readIgnoreFile: { renderer: () => ({ target: "gitignore" }), service: () => ({ target: "exclude" }) },
   previewIgnore: { renderer: () => ({ target: "gitignore", text: "Ki5sb2cK", snapshotId: id() }), service: () => ({ target: "gitignore", text: "", snapshotId: id() }) },
   openSubmodule: { renderer: () => ({ repositoryId: id(), path: "lib/core" }), service: () => ({ repositoryId: id(), bootstrapId: id(), path: "lib/core" }) },
+  readSubmoduleChange: {
+    renderer: () => ({ source: { kind: "workspace", snapshotId: id(), entryId: id() } }),
+    service: () => ({ source: { kind: "commit", viewId: id(), oid: "a".repeat(40), parent: 0, record: 2 } }),
+  },
+  readSubmoduleWork: { renderer: () => ({ snapshotId: id() }), service: () => ({ snapshotId: id() }) },
   // Feature 006 contract Δ1 and Δ3.
   listDictionaries: { renderer: () => ({}), service: () => ({}) },
   readDictionary: { renderer: () => ({ language: "uk", file: "index.dic", offset: 0 }), service: () => ({ language: "uk", file: "index.dic", offset: 0 }) },
@@ -164,6 +169,8 @@ const GENERATION_REQUIRED = [
   "readBlame",
   "readIgnoreFile",
   "previewIgnore",
+  "readSubmoduleChange",
+  "readSubmoduleWork",
 ];
 const GENERATION_ABSENT = NAMES.filter((n) => !GENERATION_REQUIRED.includes(n) && n !== "readWorkspace");
 
@@ -199,6 +206,8 @@ const REPOSITORY_BOUND = [
   "readBlame",
   "readIgnoreFile",
   "previewIgnore",
+  "readSubmoduleChange",
+  "readSubmoduleWork",
 ];
 // Feature 003 data-model §11: a sync target names its repository, and a clone target without a workspace names none.
 // Feature 004 contract Δ3 `readGitSettings`: without `repositoryId`, the read runs in the `globalConfig` context.
@@ -238,9 +247,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, the 6 feature 005 contract Δ1 operations, the 7 feature 006 contract Δ1 operations, and the feature 007 openReleaseLink", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, the 8 feature 005 contract Δ1 operations, the 7 feature 006 contract Δ1 operations, and the feature 007 openReleaseLink", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(65);
+    expect(OPERATIONS.length).toBe(67);
   });
 
   for (const name of NAMES) {

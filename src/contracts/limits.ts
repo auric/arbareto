@@ -80,6 +80,11 @@ export const SUBMODULE_REVIEW_SUBMODULES = 256;
 export const SUBMODULE_REVIEW_NESTING_LEVELS = 8;
 export const SUBMODULE_GITMODULES_BYTES = 1 * MIB;
 export const SUBMODULE_PROGRESS_EVENTS_PER_SECOND = 4;
+// Feature 005 contract Δ5: `readSubmoduleChange` and `readSubmoduleWork`.
+export const SUBMODULE_CHANGE_COMMITS = 50;
+export const SUBMODULE_CHANGE_OUTPUT_BYTES = 256 * KIB;
+export const SUBMODULE_WORK_TARGETS = SUBMODULE_REVIEW_SUBMODULES;
+export const SUBMODULE_WORK_PARALLEL = 8;
 export const WSL_DISTRO_START_MS = 60 * SECOND_MS;
 export const WSL_POLL_GAP_MS = 1 * SECOND_MS;
 export const WSL_ANCHOR_LINE_INTERVAL_MS = 1 * SECOND_MS;
@@ -201,3 +206,8 @@ export const PERSONAL_WORD_CODE_POINTS = 100;
 // Test only: the packaged gate of plan.md D3.
 export const DICTIONARY_LOAD_GATE_MS = 10 * SECOND_MS;
 export const DICTIONARY_LANGUAGE_MEMORY_BYTES = 256 * MIB;
+
+// Feature 008 contract Δ5 "Finite bounds". The 001 to 006 bounds above stay in force.
+// The bytes of one `fileReplace` `working` frame of a line revert. Revert file and Revert all unstaged changes have no byte bound.
+// Research.md R11: the working bytes (at most 1 MiB), the restored lines of the other side (at most 1 MiB), and one CR per restored diff line.
+export const REVERT_FILE_BYTES = 2 * COMPARED_RAW_VERSION_BYTES + CANONICAL_DIFF_LINES;

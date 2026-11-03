@@ -598,13 +598,14 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
             <WorkingLineCell lanes={lanes} spacing={spacing} rowHeight={rowHeight} part="start" line={line} />
             <span aria-hidden="true" className="flex min-w-0 flex-1 items-center gap-2 whitespace-nowrap">
               <span className="shrink-0">{special.working[0]}</span>
-              <span className="truncate text-muted-text">{special.working[1]}</span>
+              {/* Feature 004 plan.md D15 "Conflict guidance": the chip follows the name, in Warning text. */}
               {special.conflicted === null ? null : (
-                <span className="flex shrink-0 items-center gap-1">
+                <span className="flex shrink-0 items-center gap-1 text-warning">
                   <WarningIcon />
                   {special.conflicted}
                 </span>
               )}
+              <span className="truncate text-muted-text">{special.working[1]}</span>
             </span>
           </>,
           { "data-row-id": WORKING_ROW },

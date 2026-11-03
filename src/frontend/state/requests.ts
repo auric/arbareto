@@ -59,8 +59,6 @@ export type RequestState = {
   blocked: boolean;
   /** The Refreshing marker. Only a user Refresh sets it. */
   refreshing: boolean;
-  /** Operation completion notices. A discarded display result never removes one. */
-  outcomes: readonly BridgeResponse[];
   /** Each repository open and user Refresh adds 1. The History-ready mark counts it. */
   historyEpoch: number;
   /** The `nextRequestSeq()` value when the request of `refs` was sent. */
@@ -91,7 +89,6 @@ const INITIAL: RequestState = {
   capability: null,
   blocked: false,
   refreshing: false,
-  outcomes: [],
   historyEpoch: 0,
   refsSeq: 0,
   headRead: null,
@@ -155,7 +152,10 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
   let paging: { snapshot: WorkspaceSnapshot; entries: ChangeEntry[] } | null = null;
   let latestSelectionId: string | null = null;
   // The request facts of the shown comparison.
-  let shown: { selectionId: string; generation: number; snapshotId: string } | null = null;
+  type ComparisonRequest = { selectionId: string; generation: number; snapshotId: string; entryId: string };
+  let shown: ComparisonRequest | null = null;
+  // The newest comparison request. It is pending while its selectionId is `latestSelectionId` and not that of `shown`.
+  let latest: ComparisonRequest | null = null;
   let reconciling: object | null = null;
   let historyInFlight = 0;
   let latestRefs: object | null = null;
@@ -163,6 +163,8 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
   // Contract §11 "Change polling": the WSL poll timer, a poll that fell due during another read, and the running poll.
   let pollTimer: unknown = null;
   let pollDue = false;
+  // Feature 008 contract Δ8: the revert runs in flight. No change poll starts while one runs.
+  let runs = 0;
   let poll: { operationId: string | null; cancel: boolean } | null = null;
   let focused = false;
   let interval: unknown = null;
@@ -176,7 +178,9 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     const result = comparisonFields(next.comparison?.result);
     const workspace = next.workspace;
     // A pending comparison read or a pending reconciling read never keeps a capability (contract §8).
-    if (!result || !workspace || !shown || shown.selectionId !== latestSelectionId || next.comparison?.state !== "succeeded" || reconciling !== null || blocked(workspace)) return null;
+    // Feature 008 contract Δ8: a pending read of the shown entry in the shown snapshot keeps it. An entry ID names one entry of one snapshot, so the scope is the same.
+    const rereads = shown !== null && latest !== null && latest.selectionId === latestSelectionId && latest.entryId === shown.entryId && latest.snapshotId === shown.snapshotId && latest.generation === shown.generation;
+    if (!result || !workspace || !shown || (shown.selectionId !== latestSelectionId && !rereads) || next.comparison?.state !== "succeeded" || reconciling !== null || blocked(workspace)) return null;
     if (shown.snapshotId !== workspace.snapshotId || shown.generation !== workspace.generation || result.snapshotId !== workspace.snapshotId) return null;
     const kept = state.capability;
     if (kept?.comparisonId === result.comparisonId && kept.snapshotId === workspace.snapshotId && kept.repositoryGeneration === workspace.generation) return kept;
@@ -235,14 +239,14 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     pollTimer = clock.setTimeout(() => {
       pollTimer = null;
       if (!repository || !focused || !wsl()) return;
-      if (reads() > 0 || paging !== null) pollDue = true;
+      if (reads() > 0 || paging !== null || runs > 0) pollDue = true;
       else readWorkspace(false, "full", true);
     }, POLL_MS);
   }
 
   // A poll never starts beside another read of the workspace. A poll that fell due starts when the last read ends.
   function readEnded() {
-    if (reads() > 0 || paging !== null || !repository) return;
+    if (reads() > 0 || paging !== null || runs > 0 || !repository) return;
     if (pollDue && focused && wsl()) {
       pollDue = false;
       readWorkspace(false, "full", true);
@@ -335,7 +339,8 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     const e = epoch;
     const selectionId = crypto.randomUUID();
     latestSelectionId = selectionId;
-    const request = { selectionId, generation: workspace.generation, snapshotId: workspace.snapshotId };
+    const request = { selectionId, generation: workspace.generation, snapshotId: workspace.snapshotId, entryId };
+    latest = request;
     update({});
     userRead();
     comparisonsInFlight++;
@@ -398,7 +403,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
   // The Windows interval poll. A WSL workspace polls through `armPoll` instead (contract §11 "Change polling").
   // Without a snapshot, the location is unknown, and contract §11 forbids `changes` for WSL.
   function tick() {
-    if (!repository || !focused || pendingReads > 0 || paging !== null || wsl()) return;
+    if (!repository || !focused || pendingReads > 0 || paging !== null || runs > 0 || wsl()) return;
     readWorkspace(false, fullDue || state.workspace === null ? "full" : "changes");
   }
 
@@ -443,6 +448,8 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     pollTimer = null;
     pollDue = false;
     poll = null;
+    runs = 0;
+    latest = null;
   }
 
   return {
@@ -460,7 +467,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       reset();
       latestSelectionId = null;
       sessionBlocked = false;
-      state = { ...INITIAL, outcomes: state.outcomes, historyEpoch: state.historyEpoch + 1 };
+      state = { ...INITIAL, historyEpoch: state.historyEpoch + 1 };
       set({ repository: registration });
       start(registration, true);
     },
@@ -494,9 +501,21 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       if (hunkId === null || hunks.some((h) => h.hunkId === hunkId)) set({ selectedHunk: hunkId });
     },
 
-    /** Records the completion notice, then reads the workspace in full to reconcile (contract §3). Resolves when the reconcile read ends. */
+    /** Feature 008 contract Δ8: pauses the change polls for one revert run. Call the result after `mutationEnded` of the run, so the reconcile read goes first. */
+    pausePolls(): () => void {
+      const e = epoch;
+      let done = false;
+      runs++;
+      return () => {
+        if (done || e !== epoch) return;
+        done = true;
+        runs--;
+        readEnded();
+      };
+    },
+
+    /** Reads the workspace in full to reconcile after a mutation (contract §3). Resolves when the reconcile read ends. The caller shows the completion notice. */
     mutationEnded(operation: string, response: BridgeResponse): Promise<void> {
-      set({ outcomes: [...state.outcomes, response] });
       if (APPROVAL_OPERATIONS.has(operation) && response.code !== undefined && APPROVAL_ENDED.has(response.code) && state.selection) requestComparison(state.selection.entryId);
       // Contract §9: an expired submodule token starts no Git process. The Submodules group answers it with a new `reviewSubmodules`, which a read would race.
       if (operation === "updateSubmodules" && response.state === "rejected" && response.code === "APPROVAL_EXPIRED") return Promise.resolve(update({}));

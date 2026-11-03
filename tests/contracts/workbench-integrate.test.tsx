@@ -432,7 +432,7 @@ describe("Run, conflicts, and keys (FR-023, FR-027, plan D15)", () => {
   }
 
   test("the 003 conflict row shows Abort in the Removed text (plan D16)", async () => {
-    await render(<ConflictRow operationState="rebasing" conflicted={2} reason={null} onAction={async () => null} />);
+    await render(<ConflictRow operationState="rebasing" conflicted={2} reason={null} onAction={async () => null} onResolve={() => {}} />);
     const abort = [...document.querySelectorAll("button")].find((b) => text(b).startsWith("Abort"))!;
     expect(abort.className).toContain("text-removed");
   });

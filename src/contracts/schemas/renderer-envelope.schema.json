@@ -3295,6 +3295,99 @@
               ],
               "additionalProperties": false,
               "title": "ReviewIgnoreSave"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "revert-lines"
+                },
+                "snapshotId": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "comparisonId": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "hunkId": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "lines": {
+                  "minItems": 1,
+                  "maxItems": 20000,
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20000
+                  }
+                }
+              },
+              "required": [
+                "action",
+                "snapshotId",
+                "comparisonId",
+                "hunkId"
+              ],
+              "additionalProperties": false,
+              "title": "ReviewRevertLines"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "revert-files"
+                },
+                "snapshotId": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "entryIds": {
+                  "minItems": 1,
+                  "maxItems": 10000,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  }
+                }
+              },
+              "required": [
+                "action",
+                "snapshotId",
+                "entryIds"
+              ],
+              "additionalProperties": false,
+              "title": "ReviewRevertFiles"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "revert-unstaged"
+                },
+                "snapshotId": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                }
+              },
+              "required": [
+                "action",
+                "snapshotId"
+              ],
+              "additionalProperties": false,
+              "title": "ReviewRevertUnstaged"
             }
           ],
           "title": "ReviewWorkbenchPayload"
@@ -4160,6 +4253,186 @@
       ],
       "additionalProperties": false,
       "title": "OpenSubmoduleRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "readSubmoduleChange"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "workspace"
+                    },
+                    "snapshotId": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                    },
+                    "entryId": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "snapshotId",
+                    "entryId"
+                  ],
+                  "additionalProperties": false,
+                  "title": "SubmoduleWorkspaceSource"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "commit"
+                    },
+                    "viewId": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                    },
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    "parent": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 63
+                    },
+                    "record": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 99999
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "viewId",
+                    "oid",
+                    "parent",
+                    "record"
+                  ],
+                  "additionalProperties": false,
+                  "title": "SubmoduleCommitSource"
+                }
+              ]
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "additionalProperties": false,
+          "title": "ReadSubmoduleChangePayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "repositoryId",
+        "repositoryGeneration",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ReadSubmoduleChangeRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "readSubmoduleWork"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "snapshotId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "snapshotId"
+          ],
+          "additionalProperties": false,
+          "title": "ReadSubmoduleWorkPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "repositoryId",
+        "repositoryGeneration",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ReadSubmoduleWorkRequest"
     },
     {
       "type": "object",

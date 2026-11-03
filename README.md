@@ -32,6 +32,7 @@ These features work on the `main` branch today.
 - Changed files of a commit in the history view, blame, file delete, and an ignore editor.
 - Commit message search, with steps through the matches in the full graph.
 - Working changes and a diff view. Stage and unstage files, folders, hunks, or selected lines.
+- Revert selected lines, hunks, files, or all unstaged changes, after a confirmation.
 - Spell check of the commit message, with downloadable dictionary languages.
 - Commit, amend the last commit, and commit and push in one step.
 - Fetch, pull, and push with the upstream branch. You choose the default pull mode. Ahead and behind counts show on each branch.

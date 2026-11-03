@@ -112,6 +112,15 @@ export async function gitmodulesSource<S>(
   return head === false ? null : head;
 }
 
+// `cat-file --batch-check` of `HEAD:.gitmodules`: `<name> missing` for an absent object, `<oid> <type> <size>` otherwise.
+// A `<rev>:<path>` name loads no index. Null: the output is not that form.
+export function headGitmodulesOf(out: Uint8Array, objectFormat: ObjectFormat): boolean | null {
+  const line = /^([^\n]*)\n$/.exec(latin1(out))?.[1] ?? null;
+  if (line === "HEAD:.gitmodules missing") return false;
+  const found = line === null ? null : /^(\S+) (?:blob|tree|commit|tag) [0-9]+$/.exec(line);
+  return found !== null && isObjectId(found[1]!, objectFormat) ? true : null;
+}
+
 // Contract §11 "Paths and file access": the path forms of one workspace. A Windows workspace uses its native paths everywhere.
 // A WSL workspace gives Git and the remedy commands Linux paths. Its folder metadata goes through the UNC form.
 export interface PathForms {
@@ -316,13 +325,13 @@ interface Module {
   url?: string;
   update?: string;
 }
-interface Gitmodules {
+export interface Gitmodules {
   byName: Map<string, Module>;
   // The path bytes (latin1) to the name. A later `path` value of a name replaces its earlier path (`gitmodules_cb` sets `overwrite`).
   nameOf: Map<string, string>;
 }
 
-function parseGitmodules(bytes: Uint8Array): Gitmodules | null {
+export function parseGitmodules(bytes: Uint8Array): Gitmodules | null {
   if (bytes.length > 0 && bytes[bytes.length - 1] !== NUL) return null;
   const byName = new Map<string, Module>();
   const pathOf = new Map<string, string>();
@@ -1382,11 +1391,9 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           const source = await gitmodulesSource(entryExists(file, path), input.indexEntries, objectFormat, async () => {
             const r = await git(objectCheckArgs(), { input: new TextEncoder().encode("HEAD:.gitmodules\n") });
             if (r.code !== 0) throw failed("GIT_FAILED");
-            const line = oneLine(r.out);
-            if (line === "HEAD:.gitmodules missing") return false;
-            const found = line === null ? null : /^(\S+) (?:blob|tree|commit|tag) [0-9]+$/.exec(line);
-            if (found === null || !isObjectId(found[1]!, objectFormat)) throw failed("MALFORMED_GIT_OUTPUT");
-            return true;
+            const has = r.limited ? null : headGitmodulesOf(r.out, objectFormat);
+            if (has === null) throw failed("MALFORMED_GIT_OUTPUT");
+            return has;
           });
           observed.push({ gitmodulesSource: source });
           if (Array.isArray(source)) {

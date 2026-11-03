@@ -33,6 +33,10 @@ const LOCAL_BRANCH_PREFIX: &str = "refs/heads/";
 pub(crate) const SPELLING_LANGUAGES: usize = 3;
 /// Feature 004 data-model §1: a remote-tracking branch lies under this prefix.
 const REMOTE_BRANCH_PREFIX: &str = "refs/remotes/";
+/// Feature 008 contract Δ5 `REVERT_FILE_BYTES`: the bytes of one `fileReplace` `working` frame of a line revert.
+pub(crate) const REVERT_FILE_BYTES: usize = 2_117_152;
+/// Contract §5 `FILE_FACT_ENTRIES`: the most folder names of one `fileReplace` `working` frame.
+const REPLACE_FOLDERS: usize = 64;
 
 macro_rules! generated {
     ($($module:ident),*) => {
@@ -302,6 +306,77 @@ pub fn handshake(value: &Value) -> Result<handshake::Handshake, Code> {
 /// Only phase `wsl-starting` carries `distro` (contract §11 "Distro start").
 /// Only phases `fetch` and `update` carry `path`, and they always carry it (contract §2).
 /// A phase of feature 003 contract Δ2 carries only the counters `percent`, `remoteIndex`, and `remoteCount`.
+/// Feature 008 contract Δ6 and Δ10 `fileReplace` `working`: the field rules that typify drops.
+/// Exactly one of `bytes` and `source`, the byte bound, the folder count and names, `folders` only with `expected: absent`,
+/// and `facts` that bind the size and digest of `expected`. The request handler checks the path rule and the marker action.
+pub(crate) fn working_replace(request: &process_request::FileReplace) -> Result<(), Code> {
+    use process_request::{FileReplaceExpected as E, FileReplaceFacts as F, FileReplaceTarget};
+    let expected = match &request.expected {
+        E::String(_) => None,
+        E::FileReplaceExpected { sha256, size } => Some((*size, sha256.as_str())),
+    };
+    let facts = match request.facts.as_ref().ok_or(INVALID)? {
+        F::String(_) => None,
+        F::WindowsWorkingFacts {
+            sha256,
+            size,
+            creation_time,
+            ..
+        } => {
+            creation_time.parse::<i64>().map_err(|_| INVALID)?;
+            Some((*size, sha256.as_str()))
+        }
+        // typify drops the `xattr` const `false`.
+        F::WslWorkingFacts {
+            sha256,
+            size,
+            xattr: false,
+            ..
+        } => Some((*size, sha256.as_str())),
+        F::WslWorkingFacts { .. } => return Err(INVALID),
+    };
+    // The generated type checks the padded base64 pattern, so the text length gives the byte count.
+    let bytes_fit = request.bytes.as_ref().is_none_or(|bytes| {
+        let padding = bytes.bytes().rev().take_while(|&b| b == b'=').count();
+        (bytes.len() / 4 * 3).saturating_sub(padding) <= REVERT_FILE_BYTES
+    });
+    let source_fits = request
+        .source
+        .as_ref()
+        .is_none_or(|source| source.size >= 0 && temp_name(&source.name));
+    if !matches!(request.target, FileReplaceTarget::Working)
+        // Contract Δ6 `gitMode`: exactly an absent target carries the Git mode of its index entry.
+        || request.git_mode.is_some() != expected.is_none()
+        || request.bytes.is_some() == request.source.is_some()
+        || !bytes_fit
+        || !source_fits
+        || expected != facts
+        || expected.is_some_and(|(size, _)| size < 0)
+        || request.folders.len() > REPLACE_FOLDERS
+        || (!request.folders.is_empty() && expected.is_some())
+        || !request
+            .folders
+            .iter()
+            .all(|name| crate::file_facts::is_component(name))
+    {
+        return Err(INVALID);
+    }
+    Ok(())
+}
+
+/// Feature 008 contract Δ6 `tempRemove`: one name component in the worktree root and a size that typify reads as `i64`.
+pub(crate) fn temp_remove(request: &process_request::TempRemove) -> Result<(), Code> {
+    if request.expected.size < 0 || !temp_name(&request.name) {
+        return Err(INVALID);
+    }
+    Ok(())
+}
+
+/// Contract Δ6 (batch 1 review): a Git temporary file is one name component, never `.git` in any ASCII case.
+fn temp_name(name: &str) -> bool {
+    crate::file_facts::is_component(name) && !name.eq_ignore_ascii_case(".git")
+}
+
 /// Feature 004 contract Δ2: `stage-files` carries only `fileIndex` and `fileCount`, `config` only `keyIndex` and `keyCount`,
 /// and each other feature 004 phase no counter.
 pub fn progress(value: &Value) -> bool {
@@ -317,7 +392,10 @@ pub fn progress(value: &Value) -> bool {
                 | P::Clone
                 | P::Pageant,
             ) => Some(&SYNC_COUNTERS),
-            Some(P::StageFiles | P::DeleteFiles) => Some(&["fileIndex", "fileCount"]),
+            // Feature 008 contract Δ2: `revert-files` counts files, and `revert-index` carries no counter.
+            Some(P::StageFiles | P::DeleteFiles | P::RevertFiles) => {
+                Some(&["fileIndex", "fileCount"])
+            }
             // Feature 005 contract Δ2.
             Some(P::Blame) => Some(&["blamed", "total"]),
             Some(P::Config) => Some(&["keyIndex", "keyCount"]),
@@ -334,7 +412,8 @@ pub fn progress(value: &Value) -> bool {
                 | P::Mergetool
                 | P::Worktree
                 | P::IgnoreSave
-                | P::Preview,
+                | P::Preview
+                | P::RevertIndex,
             ) => Some(&[]),
             _ => None,
         };
@@ -904,6 +983,7 @@ pub mod reply {
     }
 
     /// Feature 005 contract Δ6 `fileReplace`: `replaced`, `stale`, `stopped`, `interrupted`, `refused not-regular`, or `error`.
+    /// Feature 008 contract Δ6: `replaced` with the created `folders`, and the other refusals.
     pub fn file_replace(call_id: &str, result: crate::file_replace::ReplaceResult) -> Value {
         use crate::file_replace::ReplaceResult as V;
         use p::FileReplaceGroup as G;
@@ -914,17 +994,103 @@ pub mod reply {
             result,
             type_: type_.clone(),
         };
+        let refusal = |reason| G::Refused {
+            call_id: field(call_id),
+            folders: Vec::new(),
+            reason,
+            result: "refused".to_string(),
+            type_: type_.clone(),
+        };
         encode(p::ProcessReply::FileReplaceGroup(match result {
             V::Replaced => plain(R::Replaced),
             V::Stale => plain(R::Stale),
             V::Stopped => plain(R::Stopped),
             V::Interrupted => plain(R::Interrupted),
-            V::NotRegular => G::Refused {
+            V::NotRegular => refusal(p::FileReplaceRefusedReason::NotRegular),
+            V::Refused(reason) => refusal(reason),
+            V::Error(code) => G::Error {
                 call_id: field(call_id),
-                reason: p::FileReplaceRefusedReason::NotRegular,
-                result: "refused".to_string(),
+                code,
+                folders: Vec::new(),
+                result: "error".to_string(),
                 type_,
             },
+            // Contract Δ6: a path inside the Git directory by identity is an invalid request.
+            V::Invalid => return refused(call_id, p::RefusedCode::InvalidRequest),
+        }))
+    }
+
+    /// Feature 008 contract Δ6 `fileReplace` `working`: the result with the created folders and the source that stays.
+    /// `stopped` and `interrupted` carry no folders: a stop comes before the write, and a WSL stop leaves them unknown.
+    pub fn file_replace_written(call_id: &str, written: &crate::file_replace::Written) -> Value {
+        use crate::file_replace::ReplaceResult as V;
+        use p::FileReplaceGroup as G;
+        let folders = written.folders.as_slice();
+        let type_ = || "fileReplace".to_string();
+        let reply = match &written.result {
+            V::Replaced if written.source_kept => G::ReplacedSourceKept {
+                call_id: field(call_id),
+                folders: names(folders),
+                result: "replaced".to_string(),
+                source: p::FileReplaceReplacedSourceKeptSource::Kept,
+                type_: type_(),
+            },
+            V::Replaced if !written.folders.is_empty() => G::ReplacedFolders {
+                call_id: field(call_id),
+                folders: names(folders),
+                result: "replaced".to_string(),
+                type_: type_(),
+            },
+            V::Stale if !written.folders.is_empty() => G::StaleFolders {
+                call_id: field(call_id),
+                folders: names(folders),
+                result: "stale".to_string(),
+                type_: type_(),
+            },
+            V::NotRegular | V::Refused(_) if !written.folders.is_empty() => G::Refused {
+                call_id: field(call_id),
+                folders: names(folders),
+                reason: match &written.result {
+                    V::Refused(reason) => *reason,
+                    _ => p::FileReplaceRefusedReason::NotRegular,
+                },
+                result: "refused".to_string(),
+                type_: type_(),
+            },
+            V::Error(code) if !written.folders.is_empty() => G::Error {
+                call_id: field(call_id),
+                code: *code,
+                folders: names(folders),
+                result: "error".to_string(),
+                type_: type_(),
+            },
+            result => return file_replace(call_id, result.clone()),
+        };
+        encode(p::ProcessReply::FileReplaceGroup(reply))
+    }
+
+    /// The folder names of a reply, each in its generated type.
+    fn names<T: FromStr<Err: Debug>>(folders: &[String]) -> Vec<T> {
+        folders.iter().map(|name| field(name)).collect()
+    }
+
+    /// Feature 008 contract Δ6 `tempRemove`: `removed`, `stale`, `absent`, or `error`.
+    pub fn temp_remove(call_id: &str, result: crate::file_replace::TempResult) -> Value {
+        use crate::file_replace::TempResult as V;
+        use p::TempRemoveGroup as G;
+        use p::TempRemoveResultResult as R;
+        let type_ = "tempRemove".to_string();
+        let plain = |result: R| G::Result {
+            call_id: field(call_id),
+            result,
+            type_: type_.clone(),
+        };
+        encode(p::ProcessReply::TempRemoveGroup(match result {
+            V::Removed => plain(R::Removed),
+            V::Stale => plain(R::Stale),
+            V::Absent => plain(R::Absent),
+            V::Stopped => plain(R::Stopped),
+            V::Interrupted => plain(R::Interrupted),
             V::Error(code) => G::Error {
                 call_id: field(call_id),
                 code: field(&code.to_string()),
@@ -932,6 +1098,16 @@ pub mod reply {
                 type_,
             },
         }))
+    }
+
+    /// Contract Δ6 `tempRemove`: a Windows stop or deadline comes before the delete, so nothing was removed.
+    pub fn temp_remove_stopped(call_id: &str) -> Value {
+        temp_remove(call_id, crate::file_replace::TempResult::Stopped)
+    }
+
+    /// Contract Δ6 `tempRemove`: a WSL stop, deadline, or broken output leaves the outcome unknown.
+    pub fn temp_remove_interrupted(call_id: &str) -> Value {
+        temp_remove(call_id, crate::file_replace::TempResult::Interrupted)
     }
 
     /// Feature 005 contract Δ6: a stop or a deadline of a Windows `fileReplace` walk before the write.
@@ -1217,7 +1393,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 44] = [
+    const NOT_READ: [&str; 46] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1259,6 +1435,8 @@ mod tests {
         "preview-ignore-result",
         "open-submodule-result",
         "reveal-path-result",
+        "read-submodule-change-result",
+        "read-submodule-work-result",
         // Feature 006 contract Δ10. The shell writes the `openLicenceLink` result and never reads it.
         "list-dictionaries-result",
         "dictionary-run-result",
@@ -1318,8 +1496,25 @@ mod tests {
                         )
                     ) =>
                 {
-                    valid(typed::<process_request::ProcessRequest>(&value).is_some())
+                    // Feature 008 contract Δ3 and Δ6: only the `checkout-index --temp` array takes a deadline above the cap.
+                    let deadline = value["limits"]["deadlineMs"].as_u64();
+                    let capped = deadline.is_none_or(|ms| {
+                        ms <= crate::process_requests::REGISTERED_DEADLINE_MS
+                            || value["arguments"] == json!(crate::process_requests::CHECKOUT_TEMP)
+                    });
+                    valid(typed::<process_request::ProcessRequest>(&value).is_some() && capped)
                 }
+                // Feature 008 contract Δ10: the field rules of `working_replace` and `temp_remove`.
+                Ok(value) if value["type"] == "fileReplace" && value["target"] == "working" => {
+                    typed(&value)
+                        .ok_or(INVALID)
+                        .and_then(|request| working_replace(&request))
+                        .map_err(|code| text_of(&code))
+                }
+                Ok(value) if value["type"] == "tempRemove" => typed(&value)
+                    .ok_or(INVALID)
+                    .and_then(|request| temp_remove(&request))
+                    .map_err(|code| text_of(&code)),
                 // Feature 005 contract Δ6: the field rules of `file_delete::parse` and `file_replace::parse`.
                 Ok(value) if value["type"] == "fileDelete" => typed(&value)
                     .ok_or(INVALID)
@@ -1408,9 +1603,11 @@ mod tests {
         // Feature 006 T061 adds the 5 `read-dictionary-result` chunk vectors, 2 of them new (contract Δ1).
         // Feature 007 T011 adds the 2 `handshake` vectors of a `signing` key and a `release` channel.
         // Feature 007 T013 adds 3 `native-first-envelope` vectors for `openReleaseLink` (contracts/release.md §5).
+        // Feature 008 T006 adds 4 `mutation-request`, 4 `progress`, 9 `fileReplace`, 2 `tempRemove`, and 2 `fileFacts` vectors (contract Δ10).
+        // WP4 adds the 2 `run` vectors of the size rule. The batch 1 gaps add 4 `fileReplace` and 1 `tempRemove` request vectors.
         assert_eq!(
             checked,
-            if cfg!(windows) { 238 } else { 233 },
+            if cfg!(windows) { 266 } else { 261 },
             "shell-read vectors"
         );
     }
@@ -1458,6 +1655,18 @@ mod tests {
         assert!(trust_record(&record), "{record}");
         let facts = vec![
             Fact::File {
+                attributes: None,
+                creation_time: None,
+                dacl: None,
+                exact_name: None,
+                gid: None,
+                group: None,
+                links: None,
+                mode: None,
+                owner: None,
+                uid: None,
+                xattr: None,
+                own: None,
                 bound: None,
                 bytes: None,
                 digest: Some(reply::digest(&"a".repeat(64))),
@@ -2145,6 +2354,132 @@ mod tests {
                 "{built}"
             );
         }
+    }
+
+    /// Feature 008 contract Δ5, Δ6, and Δ10: the frame rules that no golden vector holds, because 2 MiB is too large for a vector file.
+    #[test]
+    fn the_feature_008_frame_rules_outside_json_schema_are_checked_in_rust() {
+        use base64::Engine;
+        let b64 = |len: usize| base64::engine::general_purpose::STANDARD.encode(vec![0_u8; len]);
+        let digest = "a".repeat(64);
+        let frame = |fields: Value| {
+            let mut value = json!({
+                "type": "fileReplace",
+                "callId": "0f0f0f0f-0000-4000-8000-000000000001",
+                "operationId": "0f0f0f0f-0000-4000-8000-000000000004",
+                "repositoryId": "0f0f0f0f-0000-4000-8000-000000000005",
+                "target": "working",
+                "path": "//host/repo/a.txt",
+                "expected": "absent",
+                "facts": "absent",
+            });
+            value
+                .as_object_mut()
+                .expect("object")
+                .extend(fields.as_object().expect("object").clone());
+            // Contract Δ6 `gitMode`: an absent target carries the Git mode of its index entry.
+            if value["expected"] == "absent" && value.get("gitMode").is_none() {
+                value["gitMode"] = json!("100644");
+            }
+            value
+        };
+        let working = |fields: Value| {
+            typed::<process_request::FileReplace>(&frame(fields))
+                .ok_or(INVALID)
+                .and_then(|request| working_replace(&request))
+        };
+        assert_eq!(working(json!({ "bytes": b64(REVERT_FILE_BYTES) })), Ok(()));
+        assert_eq!(
+            working(json!({ "bytes": b64(REVERT_FILE_BYTES + 1) })),
+            Err(INVALID)
+        );
+        for text in ["eAo", "eA=o", "e===", "eAo*"] {
+            assert_eq!(working(json!({ "bytes": text })), Err(INVALID), "{text}");
+        }
+        let folders = |count: usize| (0..count).map(|i| format!("d{i}")).collect::<Vec<_>>();
+        let source = json!({ "name": ".merge_file_a1B2c3", "size": 40, "sha256": digest });
+        assert_eq!(
+            working(json!({ "source": source, "folders": folders(64) })),
+            Ok(())
+        );
+        assert_eq!(
+            working(json!({ "source": source, "folders": folders(65) })),
+            Err(INVALID)
+        );
+        assert_eq!(
+            working(json!({ "source": { "name": "..", "size": 40, "sha256": digest } })),
+            Err(INVALID)
+        );
+        assert_eq!(
+            working(json!({ "source": { "name": ".merge_file_x", "size": -1, "sha256": digest } })),
+            Err(INVALID)
+        );
+        let windows = json!({ "size": 12, "sha256": digest, "attributes": 32, "links": 1, "owner": "S-1-5-18", "group": "S-1-5-18", "dacl": "D:(A;;FA;;;SY)", "creationTime": "1" });
+        let present = json!({ "size": 12, "sha256": digest });
+        assert_eq!(
+            working(json!({ "expected": present, "facts": windows, "bytes": "" })),
+            Ok(())
+        );
+        assert_eq!(
+            working(
+                json!({ "expected": present, "facts": windows, "bytes": "", "folders": ["d"] })
+            ),
+            Err(INVALID)
+        );
+        assert_eq!(
+            working(json!({ "expected": present, "facts": "absent", "bytes": "" })),
+            Err(INVALID)
+        );
+        let mut far = windows.clone();
+        far["creationTime"] = json!("9999999999999999999");
+        assert_eq!(
+            working(json!({ "expected": present, "facts": far, "bytes": "" })),
+            Err(INVALID)
+        );
+        let wsl = json!({ "size": 12, "sha256": digest, "mode": 33188, "uid": 0, "gid": 0, "links": 1, "xattr": true });
+        assert_eq!(
+            working(json!({ "expected": present, "facts": wsl, "bytes": "" })),
+            Err(INVALID)
+        );
+        // Only the ignore targets reach `file_replace::parse`, and they take no `working` field.
+        let parsed = |value: Value| {
+            typed::<process_request::FileReplace>(&value)
+                .ok_or(INVALID)
+                .and_then(|request| crate::file_replace::parse(&request).map(drop))
+        };
+        let ignore = |fields: Value| {
+            let mut value =
+                frame(json!({ "target": "gitignore", "path": "//host/repo/.gitignore" }));
+            let object = value.as_object_mut().expect("object");
+            object.remove("facts");
+            object.extend(fields.as_object().expect("object").clone());
+            value
+        };
+        assert_eq!(parsed(frame(json!({ "bytes": "" }))), Err(INVALID));
+        assert_eq!(parsed(ignore(json!({ "bytes": "" }))), Ok(()));
+        assert_eq!(
+            parsed(ignore(json!({ "bytes": "", "source": source }))),
+            Err(INVALID)
+        );
+        assert_eq!(
+            parsed(ignore(json!({ "bytes": "", "facts": "absent" }))),
+            Err(INVALID)
+        );
+        let remove = |name: &str, size: i64| {
+            typed::<process_request::TempRemove>(&json!({
+                "type": "tempRemove",
+                "callId": "0f0f0f0f-0000-4000-8000-000000000001",
+                "operationId": "0f0f0f0f-0000-4000-8000-000000000004",
+                "repositoryId": "0f0f0f0f-0000-4000-8000-000000000005",
+                "name": name,
+                "expected": { "size": size, "sha256": digest },
+            }))
+            .ok_or(INVALID)
+            .and_then(|request| temp_remove(&request))
+        };
+        assert_eq!(remove(".merge_file_a1B2c3", 40), Ok(()));
+        assert_eq!(remove("a/b", 40), Err(INVALID));
+        assert_eq!(remove(".merge_file_a1B2c3", -1), Err(INVALID));
     }
 
     #[test]

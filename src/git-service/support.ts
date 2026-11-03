@@ -14,8 +14,8 @@ export type SupportReason = (typeof SUPPORT_REASONS)[number];
 
 export type SupportDecision = { supported: true } | { supported: false; code: "UNSUPPORTED_COMPARISON"; reason: SupportReason } | { supported: false; code: "MALFORMED_GIT_OUTPUT" };
 
-// The attributes of `attributeArgs`, in request order.
-export const SUPPORT_ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding"] as const;
+// The attributes of `attributeArgs`, in request order. Feature 008 research.md R6 adds `ident` last.
+export const SUPPORT_ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident"] as const;
 export type SupportAttributes = Record<(typeof SUPPORT_ATTRIBUTES)[number], string>;
 
 // builtin/ls-files.c `write_eolinfo`. An empty value means no regular file on that side, or an unreadable one.
@@ -106,14 +106,23 @@ export function parseEolListing(stdout: Uint8Array): EolListing | null {
   return listing;
 }
 
+const ATTRIBUTE_FILE = new TextEncoder().encode(".gitattributes");
+
+// T073: the `EolListing` keys that `decideSupport` reads, as path bytes. A tracked entry reads its own record.
+// An untracked entry reads the `.gitattributes` key of each folder, from its own folder to the worktree root.
+export function eolPaths(path: Uint8Array, untracked: boolean): Uint8Array[] {
+  if (!untracked) return [path];
+  const keys: Uint8Array[] = [];
+  for (let end = path.lastIndexOf(SLASH); ; end = path.lastIndexOf(SLASH, end - 1)) {
+    keys.push(Buffer.concat([path.subarray(0, end + 1), ATTRIBUTE_FILE]));
+    if (end <= 0) return keys;
+  }
+}
+
 // Research R3 "Untracked hunk content": check-in reads the index `.gitattributes` only without a working file (attr.c `read_attr`).
 // `diff --no-index` loads no index, so such an entry in the folder of the path or an ancestor refuses the untracked read.
 function indexOnlyAttributes(path: Uint8Array, eol: EolListing): boolean {
-  for (let end = path.lastIndexOf(SLASH); ; end = path.lastIndexOf(SLASH, end - 1)) {
-    const folder = end < 0 ? "" : latin1(path.subarray(0, end + 1));
-    if (eol.get(`${folder}.gitattributes`)?.some((r) => r.working === "")) return true;
-    if (end <= 0) return false;
-  }
+  return eolPaths(path, true).some((key) => eol.get(latin1(key))?.some((r) => r.working === ""));
 }
 
 // Body lines only. A function heading is a cut file line, and a marker line is translated Git text.

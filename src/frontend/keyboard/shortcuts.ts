@@ -10,6 +10,8 @@ export type Section =
   | "noticeHeading"
   | "references"
   | "historyList"
+  // Feature 004 plan.md D15 "Conflict guidance": the Conflicted section before Changes, while it shows.
+  | "conflicted"
   | "workingChanges"
   | "staged"
   | "comparison"
@@ -147,8 +149,8 @@ export function filterTarget(view: "history" | "commit" | "settings", focused: {
 // Feature 004 plan.md D15 keyboard map. A region calls `scopedAction` from its own key handler, so each key acts only there (spec FR-087).
 
 /** The focused region of a scoped key. */
-// Feature 005 plan.md D15 adds the Changes list, the Submodules group row, and the ignore editor panel.
-export type KeyScope = "localBranchRow" | "remoteBranchRow" | "historyRow" | "diff" | "fileList" | "message" | "panel" | "settingsView" | "changesList" | "submoduleRow" | "ignoreEditor";
+// Feature 005 plan.md D15 adds the Changes list, the Submodules group row, and the ignore editor panel. Feature 008 plan.md D12 adds the Staged list.
+export type KeyScope = "localBranchRow" | "remoteBranchRow" | "historyRow" | "diff" | "fileList" | "message" | "panel" | "settingsView" | "changesList" | "submoduleRow" | "ignoreEditor" | "stagedList";
 export type ScopedAction =
   | "switch"
   | "merge"
@@ -166,7 +168,9 @@ export type ScopedAction =
   | "deleteFiles"
   | "deletePermanently"
   | "openSubmodule"
-  | "closeEditor";
+  | "closeEditor"
+  | "revertLines"
+  | "revertFiles";
 const BRANCH_ROWS: readonly KeyScope[] = ["localBranchRow", "remoteBranchRow"];
 /** `aria` is the `aria-keyshortcuts` value, `text` is the visible key text. */
 export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: readonly KeyScope[] }> = {
@@ -187,6 +191,9 @@ export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: re
   deletePermanently: { aria: "Shift+Delete", text: "Shift+Del", scopes: ["changesList"] },
   openSubmodule: { aria: "Enter", text: "Enter", scopes: ["submoduleRow"] },
   closeEditor: { aria: "Escape", text: "Esc", scopes: ["ignoreEditor"] },
+  // Feature 008 plan.md D12.
+  revertLines: { aria: "R", text: "R", scopes: ["diff"] },
+  revertFiles: { aria: "R", text: "R", scopes: ["changesList", "stagedList"] },
 };
 const BY_KEY = new Map(Object.entries(KEYS).flatMap(([action, k]) => k.scopes.map((scope) => [`${scope} ${k.aria}`, action as ScopedAction] as const)));
 
@@ -210,7 +217,7 @@ export type SectionState = {
 };
 
 const ORDERS: Record<Panel, readonly Section[]> = {
-  commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "statusRegion"],
+  commit: ["header", "noticeHeading", "references", "historyList", "conflicted", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "statusRegion"],
   details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "changedFiles", "historyDiff", "statusRegion"],
   settings: ["header", "noticeHeading", "scopeBar", "pageList", "pageContent", "statusRegion"],
 };

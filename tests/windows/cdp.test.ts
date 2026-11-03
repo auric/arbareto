@@ -37,6 +37,13 @@ describe("T079 cdp.ts key events", () => {
     ]);
   });
 
+  test("R gives virtual key 82 with the code KeyR, as feature 008 scopedAction matches it by keyCode", () => {
+    expect(keyEvents("r", 0, { typed: true })).toEqual([
+      { type: "rawKeyDown", key: "r", code: "KeyR", windowsVirtualKeyCode: 82, modifiers: 0 },
+      { type: "keyUp", key: "r", code: "KeyR", windowsVirtualKeyCode: 82, modifiers: 0 },
+    ]);
+  });
+
   test("a typed key with text and no modifier goes as keyDown with its text; with a modifier it stays rawKeyDown", () => {
     expect(keyEvents("Enter", 0, { typed: true })[0]).toEqual({ type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers: 0, text: "\r", unmodifiedText: "\r" });
     expect(keyEvents("Enter")[0]).toEqual({ type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers: 0 });

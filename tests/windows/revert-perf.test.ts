@@ -42,7 +42,7 @@ const SAMPLE_MS = 250;
 const IDLE_POLL_MS = 10;
 // The retained growth is read this long after the run end (T048 RCA request of 2026-11-02).
 const RETAIN_MS = 30_000;
-// The window of the raw memory baselines next to the single-sample ones (T048 limit case RCA).
+// SC-007 memory (user decision 2026-11-03): the length of the windows whose medians give the baseline and the retained value.
 const WINDOW_MS = 5_000;
 const MIB = 1024 * 1024;
 
@@ -333,8 +333,9 @@ async function sampleAfter(s: Sampler, timeMs: number): Promise<Sample> {
   }
   throw new Error(`no memory sample after ${timeMs} within ${STEP_LIMIT_MS} ms`);
 }
-// The growth from the last sample before `from` to the peak sample up to the first sample after `to`.
-// `split` is the growth of each kind at that peak sample. `retained` is the growth at the first sample RETAIN_MS after `to`.
+// SC-007 memory (amended 2026-11-03, user decision): the baseline is the median of the WINDOW_MS window that ends at the last sample before `from`.
+// `growth` is the peak sample up to the first sample after `to` minus that baseline. `retained` is the median of the WINDOW_MS window that ends at the first sample RETAIN_MS after `to` minus that baseline.
+// The `sample*` values and `split` use the single last sample before `from`. They are observations only.
 async function growth(s: Sampler, from: number, to: number) {
   const after = await sampleAfter(s, to);
   const before = s.samples.filter((x) => x.timeMs <= from).at(-1);
@@ -342,17 +343,19 @@ async function growth(s: Sampler, from: number, to: number) {
   const peakSample = s.samples.filter((x) => x.timeMs > from && x.timeMs <= after.timeMs).reduce((a, b) => (b.totalPrivateBytes > a.totalPrivateBytes ? b : a));
   const later = await sampleAfter(s, to + RETAIN_MS);
   const split = (x: Sample) => Object.fromEntries(KINDS.map((k) => [k, x[k] - before[k]])) as Record<Kind, number>;
-  const beforeWindow = windowTotals(s.samples, before.timeMs);
+  const beforeWindow = windowTotals(s.samples, before.timeMs, "the run start");
   const before5sMedian = median(beforeWindow);
   const before5sMin = Math.min(...beforeWindow);
-  const after5sMedian = median(windowTotals(s.samples, later.timeMs));
+  const after5sMedian = median(windowTotals(s.samples, later.timeMs, "the retained point"));
   return {
     before: before.totalPrivateBytes,
     beforeSplit: Object.fromEntries(KINDS.map((k) => [k, before[k]])) as Record<Kind, number>,
     peak: peakSample.totalPrivateBytes,
-    growth: peakSample.totalPrivateBytes - before.totalPrivateBytes,
+    growth: peakSample.totalPrivateBytes - before5sMedian,
+    sampleGrowth: peakSample.totalPrivateBytes - before.totalPrivateBytes,
     split: split(peakSample),
-    retained: later.totalPrivateBytes - before.totalPrivateBytes,
+    retained: after5sMedian - before5sMedian,
+    sampleRetained: later.totalPrivateBytes - before.totalPrivateBytes,
     retainedSplit: split(later),
     afterMs: later.timeMs,
     before5sMedian,
@@ -361,7 +364,16 @@ async function growth(s: Sampler, from: number, to: number) {
   };
 }
 // The totals of the samples in the WINDOW_MS window that ends at `endMs`, that sample included.
-const windowTotals = (samples: Sample[], endMs: number) => samples.filter((x) => x.timeMs > endMs - WINDOW_MS && x.timeMs <= endMs).map((x) => x.totalPrivateBytes);
+// A window needs a sample at or before its start, so it holds a full WINDOW_MS of samples. A shorter window fails the run.
+function windowTotals(samples: Sample[], endMs: number, what: string): number[] {
+  if (!samples.some((x) => x.timeMs <= endMs - WINDOW_MS)) throw new Error(`less than ${WINDOW_MS} ms of memory samples before ${what} at ${endMs}`);
+  return samples.filter((x) => x.timeMs > endMs - WINDOW_MS && x.timeMs <= endMs).map((x) => x.totalPrivateBytes);
+}
+// Waits until the sampler holds WINDOW_MS of samples, so the baseline window of run 0 is full.
+async function fullWindow(s: Sampler): Promise<void> {
+  const first = await sampleAfter(s, 0);
+  await sampleAfter(s, first.timeMs + WINDOW_MS);
+}
 // With ARBARETO_PERF_SAMPLES_DIR set, writes each sample once to `<dir>/<name>-<start time>.jsonl`, tagged with the run whose after sample ends its range, plus one mark line per run for `from`, the end, and the after sample.
 function samplesWriter(name: string): (s: Sampler, run: number, fromMark: string, fromMs: number, toMs: number, g: Awaited<ReturnType<typeof growth>>) => void {
   const dir = process.env.ARBARETO_PERF_SAMPLES_DIR;
@@ -382,10 +394,10 @@ const mib = (n: number) => (n / MIB).toFixed(1);
 // 001 spec.md "warm-up" rule: a bound for every run includes the warm-up run 0. A median never includes it.
 const runsText = (runs: number[]) => `runs ${js(runs)}`;
 const splitText = (x: Record<Kind, number>) => KINDS.map((k) => `${k} ${mib(x[k])}`).join(", ");
-// The memory line of one run: the counted peak growth, its split by process kind, and the retained growth.
+// The memory lines of one run: the counted growth and retained growth from the window medians, then the single-sample values and the split by process kind.
 const memoryLine = (what: string, run: number, g: Awaited<ReturnType<typeof growth>>, peakBudget: number, retainedBudget?: number) =>
-  `OBSERVATION ${TASK}: ${what} run ${run}: private bytes before ${g.before} (MiB: ${splitText(g.beforeSplit)}), peak ${g.peak}, growth ${mib(g.growth)} MiB, budget ${mib(peakBudget)} MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.retained)} MiB${retainedBudget === undefined ? "" : `, budget ${mib(retainedBudget)} MiB`}: ${splitText(g.retainedSplit)}` +
-  `\nOBSERVATION ${TASK}: ${what} run ${run}: ${WINDOW_MS / 1000} s windows: before5sMedian ${g.before5sMedian}, before5sMin ${g.before5sMin}, after5sMedian ${g.after5sMedian}; growth from the median ${mib(g.peak - g.before5sMedian)} MiB, from the min ${mib(g.peak - g.before5sMin)} MiB; retained from the median ${mib(g.after5sMedian - g.before5sMedian)} MiB, from the min ${mib(g.after5sMedian - g.before5sMin)} MiB`;
+  `OBSERVATION ${TASK}: ${what} run ${run}: ${WINDOW_MS / 1000} s windows: before5sMedian ${g.before5sMedian}, before5sMin ${g.before5sMin}, after5sMedian ${g.after5sMedian}; peak ${g.peak}; growth from the median ${mib(g.growth)} MiB, budget ${mib(peakBudget)} MiB, from the min ${mib(g.peak - g.before5sMin)} MiB; retained from the median ${mib(g.retained)} MiB${retainedBudget === undefined ? "" : `, budget ${mib(retainedBudget)} MiB`}, from the min ${mib(g.after5sMedian - g.before5sMin)} MiB` +
+  `\nOBSERVATION ${TASK}: ${what} run ${run}: single samples: private bytes before ${g.before} (MiB: ${splitText(g.beforeSplit)}), growth ${mib(g.sampleGrowth)} MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.sampleRetained)} MiB: ${splitText(g.retainedSplit)}`;
 
 // ---- Host facts ----
 
@@ -851,8 +863,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
       const s = await windowsSession("limit", repo);
       const sampler = startSampler(s.app.pid);
       const writeSamples = samplesWriter("t048-limit");
-      // PowerShell starts in about a second. A run needs one sample before its start.
-      await sampleAfter(sampler, 0);
+      await fullWindow(sampler);
       try {
         await until<string>(s.c, "10,000 unstaged files", count("Changes"), (v) => v === n);
         // Every-run bounds cover the warm-up run 0. The SC-011 probe run RUNS + 1 stays out, because its memory holds the probe typing.
@@ -956,7 +967,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         if (services.length !== 1) throw new Error(`the app has ${services.length} ${SERVICE_EXE} processes`);
         const sampler = startSampler(services[0]!.pid);
         const writeSamples = samplesWriter("t048-gib");
-        await sampleAfter(sampler, 0);
+        await fullWindow(sampler);
         try {
           // The 64 MiB bound covers every run, the warm-up run 0 included. The SC-011 probe run RUNS + 1 stays out, because its memory holds the probe typing.
           const ends: number[] = [];

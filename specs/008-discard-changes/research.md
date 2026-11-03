@@ -114,7 +114,7 @@ The 005 `wslFiles` mode `replace` (`src/contracts/wsl-process.json` `replace_one
 
 - Budgets: spec SC-007. The busy, confirmation, 1 GiB, and Cancel budgets were fixed before the measurement. The refreshed-diff, multi-file, and 10,000-file memory budgets come from the batch 4 measurements, as a product trade-off under constitution VII. R15 "Batch 4 budget decisions" holds their approval state.
 - Fixture: the 001 moderate fixture plus a generated revert fixture: 1,000 tracked files of 4 KiB with unstaged changes, 100 files with staged and unstaged changes, one 1 MiB text file with a 2,000-line diff, and one 8 MiB binary file. `tests/windows/perf-fixtures.ts` builds it into the fixture cache.
-- Method: the packaged build, warm, median of 10 runs on the reference PC with Windows Defender on, as 005 SC-001 measured. The times run from the key or click input to the visible state through UI Automation events and the CDP marks of `tests/windows/inspection-perf.test.ts`. Memory: the `PrivateMemorySize64` sum through `scripts/windows/measure-ram.ps1 -Json`. The 1 GiB case measures the service process subtree (`arbareto-git.exe` and its children). The limit case at 10,000 files measures the whole `arbareto.exe` tree.
+- Method: the packaged build, warm, median of 10 runs on the reference PC with Windows Defender on, as 005 SC-001 measured. The times run from the key or click input to the visible state through UI Automation events and the CDP marks of `tests/windows/inspection-perf.test.ts`. Memory: the `PrivateMemorySize64` sum through `scripts/windows/measure-ram.ps1 -Json`. The 1 GiB case measures the service process subtree (`arbareto-git.exe` and its children). The limit case at 10,000 files measures the whole `arbareto.exe` tree. Amended 2026-11-03 (user decision): the "before" value of the limit case and of the 1 GiB case is the median of the 250 ms samples in the 5 s window before the run starts (at the limit, before the confirmation click). The peak growth is the highest sample up to the run end minus that median. The retained growth is the median of the 5 s window that ends 30 s after the run end minus that median. A window with less than 5 s of samples fails the run. The single-sample values and the 5 s minimum stay as `OBSERVATION` lines. R15 "Memory baseline decision, 2026-11-03" records the cause.
 - WSL: the same fixture copied into the owned distro folder, measured from the Windows package.
 
 ## R13 Texts
@@ -635,7 +635,7 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - Cause of fail 1: the "before" value of each growth is one 250 ms sample. After the app frees memory, that sample can move by up to about 60 MiB. No product change. The T050 rerun passed with the same method and the same budgets.
 - Fails 2 to 4, 005 inspection cases: T060 SC-007 Open submodule 457 ms, T061 Q6 growth 441.7 MiB, and Q21 first preview 6.8 s. Cause: the 008 branch did not have the main budgets `4cd73b4c` and the speed fix `3a3c1131` (005 T112). The merge `2b0af4be` brought main into 008. The T050 rerun gives these cases green.
 - T075 to T079 came after this full run. The targeted rerun covers them: cargo, the WSL revert suites alone, and T047 on a new package (block "Package run (T050)"). `tests/git/revert-refusal.test.ts` and `tests/git/revert-frame.test.ts` gave 68 pass, 0 fail on `7878565b`.
-- Open: the other `tests/git/revert-*.test.ts` suites (`revert-bytes`, `revert-facts`, `revert-files`, `revert-lines`, `revert-races`, `revert-staged`, `revert-unstaged`) did not run after T075 and the main merge `2b0af4be`.
+- On `c7bb0ee3` (code of `884ef2cd`), `tests/git/revert-bytes`, `revert-facts`, `revert-files`, `revert-lines`, `revert-races`, `revert-staged`, and `revert-unstaged` gave 140 pass, 0 fail, 0 skip (442 s, `ARBARETO_WSL_DISTRO=Ubuntu-26.04`).
 - Control mutation: the block "Package run (T050)" records it. It ran on a control package of `623876bf`.
 - The T048 limit case runs again in the combined 007 T028 full run before the v0.1.0 tag. A miss there stays a failure, unless the user approves a trade-off (constitution VII).
 
@@ -657,10 +657,10 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 | --- | --- | --- | --- |
 | Text file | 25.1 (100) | 330.7 (500) | 1,110.1 (1,500) |
 | Hunk | 31.9 (100) | 314.4 (500) | 971.4 (1,500) |
-| Binary file | 20.4 (100) | 304.2 (500) | 1,109.7 (1,500) |
+| Binary file | 20.4 (100) | 304.2 (no assert) | 1,109.7 (1,500) |
 | Lines | 35.3 (100) | 365.8 (500) | 1,331.1 (1,500) |
 | Revert file, 100 files | | | 3,165.8 (4,800) |
-| Revert all unstaged, 1,000 files | 27.5 (100) | 1,177.4 (3,000) | 19,282.5 (30,000) |
+| Revert all unstaged, 1,000 files | 27.5 (no assert) | 1,177.4 (3,000) | 19,282.5 (30,000) |
 | 10,000 files | | | 293,306.9 (330,000); Cancel 56.1 (1,000) |
 | 1 GiB binary file | | | 11,865.2 (30,000) |
 | WSL, 1,000 files | | | 262,070.9 (322,000) |
@@ -672,3 +672,21 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - SC-009 focus: the CDP DOM focus is on Cancel. UI Automation `HasKeyboardFocus` (the provider focus, from the same DOM focus) is true on Cancel and false on the other button. This holds for T047 (Revert lines) and for T079 (Revert file and Revert unstaged changes). Control: with the expected values swapped, the T047 and the T079 cases turn red.
 - Unverified: the OS system focus (`GetFocusedElement`). The test session never owns the foreground window, because the terminal owns it. Verify the system focus later in Windows Sandbox or a VM.
 - SC-009 status: the CDP focus and the UI Automation provider focus are verified for User Stories 1 to 4. The OS system focus and the 150% and 225% text scale cases are unverified.
+
+### Memory baseline decision, 2026-11-03
+
+- Cause: the "before" value of each T048 memory growth was one 250 ms sample. After the app frees memory, that sample can move by up to about 60 MiB. With that same method, the limit case missed in T049 and passed in T050.
+- Decision: the user chose "5 s median" on 2026-11-03. The "before" value is the median of the 5 s window before the run. The retained value is the median of the 5 s window that ends 30 s after the run end. The budgets do not change. R12 holds the method.
+- Scope: the 10,000-file limit case and the 1 GiB case. Both use `growth()` in `tests/windows/revert-perf.test.ts`.
+- Offline replay of the T050 samples through the new code: the limit case passes (run 0 peak 298.5 MiB, retained 61.1 MiB; runs 1 to 10 peak at most 169.8 MiB, retained at most −33.0 MiB). The 1 GiB runs 1 to 10 pass (peak at most 31.8 MiB). The 1 GiB run 0 started 108 ms after the first sample, so its window was short and the new code refuses it. The test now waits for 5 s of samples before run 0.
+- The combined 007 T028 full run is the first full run with the median method. It saves the raw samples through `ARBARETO_PERF_SAMPLES_DIR`.
+
+### T053 analyze and converge, 2026-11-03
+
+- Artifacts: spec.md, plan.md, and tasks.md after the memory baseline decision. `/speckit-analyze` found no CRITICAL and no HIGH issue.
+- MEDIUM 1: T002 stays open. Its tick needs a green `bun run test:windows` (block "Batch 0 fact gate (T005)"). The T049 run had 4 fails, and T050 ran single suites.
+- LOW 1: T058 stays open. It needs a Linux host.
+- LOW 2: 32 FR and SC IDs are not named in tasks.md. Each one has a row with test files in the "Requirement-to-test map (T051)", and each named file exists.
+- LOW 3: the T049 text still says "Until T079 passes". T079 passes. SC-009 stays partial until T080 passes.
+- `/speckit-converge`: converged. It appended no task. The T075 to T079 fixes are in the code: `file_facts.rs` returns `Err(status)`, the WSL replace uses `Time::HiRes`, and `revert-frame`, `revert-refusal`, and `revert-packaged` hold the new cases. The open SC-009 items are T080 (after v0.1.0).
+- Not verified: converge checked the map files and the T075 to T079 fixes, not each FR again in the code. T052 did that full check on `0457d99c`.

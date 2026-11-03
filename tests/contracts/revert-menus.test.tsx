@@ -233,6 +233,16 @@ describe("Revert file in the row menus (FR-018, FR-023, FR-045, boards Menu-chan
     await click(revert);
     expect(double.count("reviewWorkbench")).toBe(0);
   });
+
+  test("a Conflicted row: Revert file… is unavailable with the CONFLICTED reason and sends nothing (FR-002)", async () => {
+    const { double } = await openFiles(workbench, [entry("conflicted", "c.ts", { xy: "UU" })]);
+    await contextMenu(item("Conflicted", "c.ts"));
+    const revert = menuItem("Revert file…");
+    expect(revert.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(revert)).toBe("Resolve the 1 conflicted file first.");
+    await click(revert);
+    expect(double.count("reviewWorkbench")).toBe(0);
+  });
 });
 
 // tasks.md T036 (feature 008, WP4). Story US3. Spec FR-026. Plan D11 item labels, D12 "Changes header" (board Menu-changes-header).

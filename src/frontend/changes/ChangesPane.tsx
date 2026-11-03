@@ -1002,7 +1002,7 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
       return onDelete(row, del === "deletePermanently" ? "permanent" : "recycle", item!);
     }
     // Feature 008 spec FR-046: R acts on the row itself, and a held R opens at most one review.
-    if (item !== null && event.target === item && scopedAction(event.nativeEvent, list === "changes" ? "changesList" : "stagedList") === "revertFiles") {
+    if (item !== null && event.target === item && scopedAction(event.nativeEvent, list === "staged" ? "stagedList" : "changesList") === "revertFiles") {
       event.preventDefault();
       if (!event.repeat) onRevert(row, item);
       return;

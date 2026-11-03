@@ -222,6 +222,15 @@ describe("R in the Changes and Staged lists (FR-018, FR-046)", () => {
     });
   }
 
+  test("R on a Conflicted row shows the CONFLICTED reason and opens no review (FR-002)", async () => {
+    const { double } = await openFiles(workbench, [entry("conflicted", "c.ts", { xy: "UU" })]);
+    const event = await rowKey(item("Conflicted", "c.ts"));
+    expect(event.defaultPrevented).toBe(true);
+    expect(statusBar()).toContain("Resolve the 1 conflicted file first.");
+    expect(double.count("reviewWorkbench")).toBe(0);
+    expect(document.querySelectorAll('[role="alertdialog"]')).toHaveLength(0);
+  });
+
   test("a key repeat opens nothing, and a second R during the review sends no second review", async () => {
     const { double } = await openFiles(workbench, [entry("unstaged", "a.ts")]);
     await rowKey(item("Changes", "a.ts"), { repeat: true });

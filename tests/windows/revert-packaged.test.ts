@@ -22,7 +22,7 @@ import { missingCapability, uncPath, useWslFolder, wslHost, type WslCapability, 
 import { connectPage, freePort, keyEvents, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import { appEnv, COMMIT_VIEW, descendants, findInstalledApp, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { close, ControlType, find, findLiveRegions, foregroundSkip, invoke, MAX_CALL_MS, MAX_WAIT_MS, readText, setValue, UiaError, waitFocus, type Element } from "./uia";
+import { close, ControlType, find, findAll, findLiveRegions, foregroundSkip, hasKeyboardFocus, invoke, MAX_CALL_MS, MAX_WAIT_MS, readText, setValue, UiaError, waitFocus, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./contrast.ts", "../wsl/wsl-host.ts", "../wsl/fixtures.ts"]) printOrigin(helper, import.meta.dir);
 // The package under test holds these sources. The `APP` line names the installed binary and its SHA-256.
@@ -206,6 +206,35 @@ async function waitStatus(processId: number, text: string, ms = ACTION_WAIT_MS):
     if (seen.has(text)) return [...seen];
   }
   throw new Error(`no status region reads ${js(text)} after ${ms} ms: ${js([...seen])}`);
+}
+
+// ---- UI Automation focus on Cancel ----
+
+// GetFocusedElement gives the system focus, which exists only in the foreground window. An agent session never owns the foreground.
+// Chromium `AXPlatformNodeWin` sets HasKeyboardFocus on the element with the DOM focus, with no window focus check.
+async function uiaFocusOnCancel(processId: number, task: string, other: string): Promise<void> {
+  const foreground = foregroundSkip(processId);
+  if (foreground === null) {
+    await waitFocus(processId, "Cancel", MAX_WAIT_MS);
+    return;
+  }
+  const left = (end: number) => Math.max(0, Math.min(MAX_WAIT_MS, Math.ceil(end - performance.now())));
+  let seen: unknown = null;
+  for (const end = performance.now() + MAX_WAIT_MS; ; await Bun.sleep(50)) {
+    const buttons: Element[] = [];
+    try {
+      buttons.push(...(await findAll(processId, "Cancel", left(end), ControlType.Button)));
+      buttons.push(...(await findAll(processId, other, left(end), ControlType.Button)));
+      const count = { cancel: buttons.filter((b) => b.name === "Cancel").length, other: buttons.filter((b) => b.name === other).length };
+      if (count.cancel !== 1 || count.other !== 1) throw new Error(`${task}: the dialog needs one Cancel and one ${js(other)} button; process ${processId} has ${js(count)}`);
+      seen = buttons.map((b) => ({ name: b.name, hasKeyboardFocus: hasKeyboardFocus(b) }));
+      if (js(seen) === js([{ name: "Cancel", hasKeyboardFocus: true }, { name: other, hasKeyboardFocus: false }])) break;
+    } finally {
+      for (const b of buttons) b.release();
+    }
+    if (performance.now() >= end) throw new Error(`${task}: no UIA HasKeyboardFocus on Cancel alone after ${MAX_WAIT_MS} ms: ${js(seen)}`);
+  }
+  console.log(`OBSERVATION ${task}: UIA HasKeyboardFocus on Cancel (provider focus, the DOM focus source); system focus unverified: ${foreground}`);
 }
 
 // ---- The run reply ----
@@ -534,10 +563,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
         expect(texts).toEqual({ body: LINES_BODY, buttons: ["Cancel", LINES_BUTTON], notice: true });
         expect(await unnamed(s.c, DIALOG)).toEqual([]);
         expect(focusVisible(await s.c.evaluate(FOCUS_STYLE))).toBe(true);
-        // UI Automation reports the focus of the foreground window only.
-        const foreground = foregroundSkip(s.app.pid);
-        if (foreground === null) await waitFocus(s.app.pid, "Cancel", MAX_WAIT_MS);
-        else console.log(`SKIP ${TASK} UIA focus on Cancel: ${foreground} (unverified; the CDP focus is on Cancel)`);
+        await uiaFocusOnCancel(s.app.pid, "T047", LINES_BUTTON);
 
         // Enter right after the open activates Cancel.
         await press(s.c, "Enter");
@@ -584,8 +610,9 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
 
   // ---- SC-009: US2 to US4 by keyboard ----
 
-  // src/frontend/changes/revert-text.ts `revertUnstagedTexts` title, `REVERT_UNSTAGED_LABEL`, and `MORE_ACTIONS`.
+  // src/frontend/changes/revert-text.ts `revertUnstagedTexts` title and button, `REVERT_UNSTAGED_LABEL`, and `MORE_ACTIONS`.
   const UNSTAGED_TITLE = "Revert all unstaged changes?";
+  const UNSTAGED_BUTTON = "Revert unstaged changes";
   const REVERT_UNSTAGED_ITEM = "Revert all unstaged changes…";
   const MORE_ACTIONS = "More actions";
   // action-menu.tsx: the accessible name of an item is its `menu-label` text.
@@ -601,18 +628,15 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
       const before = { digest: fileDigest(repo, PATH), index: indexOf(repo) };
       const state = () => ({ digest: fileDigest(repo, PATH), index: indexOf(repo) });
       const s = await windowsSession("t079-keys", repo);
-      const cancelFocused = async (title: string) => {
+      const cancelFocused = async (title: string, button: string) => {
         await until<string | null>(s.c, `the confirmation ${title}`, dialogTitle, (v) => v === title, ACTION_WAIT_MS);
         await until<Active>(s.c, "the first focus on Cancel", ACTIVE, (a) => a.dialog && a.text === "Cancel");
-        // UI Automation reports the focus of the foreground window only.
-        const foreground = foregroundSkip(s.app.pid);
-        if (foreground === null) await waitFocus(s.app.pid, "Cancel", MAX_WAIT_MS);
-        else console.log(`SKIP ${TASK} UIA focus on Cancel: ${foreground} (unverified; the CDP focus is on Cancel)`);
+        await uiaFocusOnCancel(s.app.pid, "T079", button);
       };
       try {
         await rowByKeyboard(s, PATH, ACTION_WAIT_MS, "staged");
         await press(s.c, "r");
-        await cancelFocused(FILE_TITLE);
+        await cancelFocused(FILE_TITLE, FILE_BUTTON);
         await press(s.c, "Escape");
         await closedWithoutRun(s, "Escape on Revert file", state, before);
         await until<Active>(s.c, "the focus back on the Staged row", ACTIVE, (a) => a.tree === "staged" && a.label === PATH);
@@ -624,7 +648,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
         // action-menu.tsx `focusFirst`: a menu that a key opens focuses its first enabled item.
         await until<string | null>(s.c, `the focus on ${REVERT_UNSTAGED_ITEM}`, FOCUSED_ITEM, (v) => v === REVERT_UNSTAGED_ITEM);
         await press(s.c, "Enter");
-        await cancelFocused(UNSTAGED_TITLE);
+        await cancelFocused(UNSTAGED_TITLE, UNSTAGED_BUTTON);
         await press(s.c, "Escape");
         await closedWithoutRun(s, "Escape on Revert all unstaged changes", state, before);
       } finally {

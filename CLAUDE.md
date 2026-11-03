@@ -16,7 +16,7 @@
 ## Spec Kit
 
 - Use GitHub Spec Kit v1.0.12 as the only feature-planning process.
-- Constitution: `.specify/memory/constitution.md`. Version 4.0.1 is ratified.
+- Constitution: `.specify/memory/constitution.md`. Version 4.0.0 is ratified.
 - Active feature: `.specify/feature.json`. It selects `specs/001-desktop-qualification`.
 - Read `spec.md`, `plan.md`, and `tasks.md` from the selected feature directory.
 - Keep one active feature. Manage Git branches explicitly; branch changes alone do not select a feature.

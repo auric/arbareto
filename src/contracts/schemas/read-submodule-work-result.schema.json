@@ -1,0 +1,246 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "snapshotId": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "entries": {
+      "maxItems": 256,
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "pathBytes": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "path": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "const": "checked"
+              },
+              "modified": {
+                "type": "boolean"
+              },
+              "untracked": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "pathBytes",
+              "path",
+              "state",
+              "modified",
+              "untracked"
+            ],
+            "additionalProperties": false,
+            "title": "SubmoduleWorkChecked"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pathBytes": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "path": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "const": "not-initialized"
+              }
+            },
+            "required": [
+              "pathBytes",
+              "path",
+              "state"
+            ],
+            "additionalProperties": false,
+            "title": "SubmoduleWorkNotInitialized"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pathBytes": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "path": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "const": "unchecked"
+              },
+              "reason": {
+                "type": "string",
+                "const": "programs"
+              }
+            },
+            "required": [
+              "pathBytes",
+              "path",
+              "state",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "title": "SubmoduleWorkSkipped"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pathBytes": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "path": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "const": "unchecked"
+              },
+              "reason": {
+                "type": "string",
+                "const": "failed"
+              },
+              "code": {
+                "type": "string",
+                "enum": [
+                  "INVALID_REQUEST",
+                  "PROTOCOL_VERSION",
+                  "UNKNOWN_OPERATION",
+                  "UNKNOWN_TARGET",
+                  "FRAME_LIMIT",
+                  "BUSY",
+                  "WORKSPACE_LIMIT",
+                  "GIT_UNAVAILABLE",
+                  "GIT_CHANGED",
+                  "GIT_UNSUPPORTED",
+                  "WEBVIEW_UNAVAILABLE",
+                  "WEBVIEW_UNSUPPORTED",
+                  "WSL_UNAVAILABLE",
+                  "REPOSITORY_UNAVAILABLE",
+                  "REPOSITORY_CHANGED",
+                  "UNSUPPORTED_REPOSITORY",
+                  "OPERATION_IN_PROGRESS",
+                  "CONFLICTED",
+                  "LOCKED",
+                  "UNSUPPORTED_SUBMODULE",
+                  "TRUST_REQUIRED",
+                  "TRUST_CHANGED",
+                  "STALE_SELECTION",
+                  "STALE_REVIEW",
+                  "APPROVAL_EXPIRED",
+                  "UNSUPPORTED_HUNK_PROFILE",
+                  "MALFORMED_GIT_OUTPUT",
+                  "OUTPUT_LIMIT",
+                  "OBJECT_MISSING",
+                  "UNSUPPORTED_COMPARISON",
+                  "DISPLAY_MAPPING_FAILED",
+                  "GRAPH_LAYOUT_LIMITED",
+                  "WORKTREE_CHANGING",
+                  "IDENTITY_REQUIRED",
+                  "HOOK_FAILED",
+                  "SIGNING_FAILED",
+                  "GIT_FAILED",
+                  "PROCESS_OWNERSHIP_FAILED",
+                  "PICKER_FAILED",
+                  "DEADLINE",
+                  "CANCELED",
+                  "COMMIT_ENCODING_UNSUPPORTED",
+                  "COMPLETED_WITH_EFFECTS",
+                  "FAILED_WITH_EFFECTS",
+                  "STATE_UNKNOWN",
+                  "SERVICE_UNAVAILABLE",
+                  "RECOVERY_MARKER_FAILED",
+                  "HISTORY_CHANGED",
+                  "UNSUPPORTED_FILTER_TEXT",
+                  "SEARCH_UNSUPPORTED",
+                  "SYNC_UNAVAILABLE",
+                  "PUSH_REJECTED",
+                  "PUTTY_UNAVAILABLE",
+                  "DESTINATION_NOT_EMPTY",
+                  "WORKBENCH_UNAVAILABLE",
+                  "UNTRACKED_IN_WAY",
+                  "STASH_KEPT",
+                  "BLAME_UNAVAILABLE",
+                  "SUBMODULE_UNAVAILABLE",
+                  "DICTIONARY_UNAVAILABLE"
+                ]
+              }
+            },
+            "required": [
+              "pathBytes",
+              "path",
+              "state",
+              "reason",
+              "code"
+            ],
+            "additionalProperties": false,
+            "title": "SubmoduleWorkFailed"
+          }
+        ],
+        "title": "SubmoduleWorkEntry"
+      }
+    },
+    "extraRows": {
+      "maxItems": 256,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "pathBytes": {
+            "type": "string",
+            "minLength": 1,
+            "format": "base64",
+            "contentEncoding": "base64",
+            "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pathBytes",
+          "path"
+        ],
+        "additionalProperties": false,
+        "title": "SubmoduleExtraRow"
+      }
+    },
+    "limited": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": [
+    "snapshotId",
+    "entries",
+    "extraRows",
+    "limited"
+  ],
+  "additionalProperties": false,
+  "title": "ReadSubmoduleWorkResult"
+}

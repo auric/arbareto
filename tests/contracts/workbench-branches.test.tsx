@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, itemLabel, mountWorkbench, oid, press, settings, settle, sizeSwitcherList, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { answer, button, click, createWorld, hoverTooltip, itemLabel, keyboardFocus, mountWorkbench, oid, press, settings, settle, sizeSwitcherList, succeeded, text, unmountAll, type World } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T040 (feature 004, WP12). Stories US1 and US2. Spec FR-007 to FR-020, SC-003, SC-014. Plan D3, D4, D15, D16. Data-model §1, §3, §4. Contract Δ3, Δ9, Δ14.
@@ -133,9 +133,11 @@ describe("branch button (FR-007)", () => {
   test("during a merge, the inline sync reason line takes only the width that the branch button leaves (plan.md D15 Top bar row)", async () => {
     await mountWorkbench(workbench, branchWorld(undefined, { operationState: "merging" }));
     const group = document.querySelector<HTMLElement>('header [role="group"][aria-label="Remote sync"]')!;
-    const line = [...group.querySelectorAll<HTMLElement>("[title]")].find((e) => (e.getAttribute("title") ?? "").includes("A merge or a rebase is in progress."));
+    const line = [...group.querySelectorAll<HTMLElement>("span[id]")].find((e) => text(e).includes("A merge or a rebase is in progress."));
     expect(line).toBeDefined();
     expect(text(line!)).toBe("Pull, Push: A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.");
+    expect(line!.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(line!)).toEqual(["Pull, Push: A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band."]);
     // `contain: inline-size` gives the reason no content width, so it never claims the width of the branch text. The control names stay whole.
     const [names, reason] = [...line!.children] as HTMLElement[];
     expect(text(names!)).toBe("Pull, Push:");
@@ -160,7 +162,11 @@ describe("branch button (FR-007)", () => {
     expect(text(counts)).toBe("↑2 ↓3");
     // T115: a zero minimum let the counts vanish without an ellipsis. One em keeps the ellipsis while the branch name shrinks.
     expect(counts.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-[1em]", "truncate", "shrink-[1000]"]));
-    expect(counts.getAttribute("title")).toBe("2 ahead, 3 behind");
+    expect(counts.hasAttribute("title")).toBe(false);
+    // 001 plan.md "Icons": the button tooltip gives the full counts on its second line.
+    await keyboardFocus(b);
+    expect([...document.querySelectorAll('[data-slot="tooltip-content"] > span')].map((s) => text(s))).toEqual(["Switch to another branch.", "2 ahead, 3 behind"]);
+    await press(b, "Escape");
     const name = b.querySelector<HTMLElement>('[data-slot="branch-text"]')!;
     expect(name.compareDocumentPosition(counts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(b.getAttribute("aria-label")).toBe("main, 2 ahead, 3 behind");
@@ -314,7 +320,9 @@ describe("branch list (FR-008, FR-009, FR-013, SC-003)", () => {
     await mountWorkbench(workbench, branchWorld());
     await openList();
     const signup = options()[2]!;
-    const note = [...signup.querySelectorAll<HTMLElement>("[title]")].find((s) => s.title === "Open C:\\wt\\sample-signup")!;
+    expect(signup.querySelector("[title]")).toBeNull();
+    const note = [...signup.querySelectorAll<HTMLElement>("span")].find((s) => s.textContent === "Open C:\\wt\\sample-signup")!;
+    expect(await hoverTooltip(note)).toEqual(["Open C:\\wt\\sample-signup"]);
     // A zero basis: the note takes only the width that the name leaves, so the name never shrinks for it.
     expect(note.className.split(/\s+/)).toEqual(expect.arrayContaining(["flex-1", "min-w-0", "truncate"]));
     const name = [...signup.querySelectorAll("span")].find((s) => s.textContent === "signup")!;

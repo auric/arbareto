@@ -730,7 +730,8 @@ type Failure = { code: string | null; remedy?: { text: string } };
 type ChangesKey = { viewId: string; oid: string; parent: number };
 export type ChangesRead = ChangesKey & ({ state: "loading" } | { state: "loaded"; result: CommitChanges } | ({ state: "failed"; trust: boolean } & Failure));
 // `reason` is the `UNSUPPORTED_COMPARISON` reason (contract Δ3 `readCommitFile`).
-export type FileRead = { changesId: string; fileId: number } & ({ state: "loading" } | { state: "loaded"; result: CommitFile } | ({ state: "failed"; reason?: string } & Failure));
+// `submodule`: feature 005 plan.md D19 shows the submodule preview, so the row sends no `readCommitFile`.
+export type FileRead = { changesId: string; fileId: number } & ({ state: "loading" } | { state: "submodule" } | { state: "loaded"; result: CommitFile } | ({ state: "failed"; reason?: string } & Failure));
 export type BlameRun =
   | { state: "running"; operationId: string | null; blamed?: number; total?: number }
   | { state: "done"; result: Blame }
@@ -852,6 +853,11 @@ export function createInspection(bridge: InspectionBridge, target: () => { repos
     const changesId = c.result.changesId;
     const f = state.file;
     if (f !== null && f.changesId === changesId && f.fileId === fileId && f.state !== "failed") return;
+    // The `CommitChanges` schema gives `files[i].fileId === i`.
+    if (c.result.files[fileId]?.kind === "submodule") {
+      fileRead.drop();
+      return set({ file: { changesId, fileId, state: "submodule" } });
+    }
     set({ file: { changesId, fileId, state: "loading" } });
     const response = await fileRead.run((onProgress) => bridge.readCommitFile(target(), { changesId, fileId }, onProgress));
     if (response === null) return;

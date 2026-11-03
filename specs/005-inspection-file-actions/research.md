@@ -493,7 +493,7 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Time: the process deadlines, also the 30 s deadline of each preview process, and the 60 s review token are contract bounds with typed codes (`DEADLINE`, `APPROVAL_EXPIRED`). The 400 ms preview pause sets only the send time (contract Δ3 `previewIgnore`). The blame progress rate limit sets only the event count.
 - Tests: refusal tests assert the code and the reason. The T060 checks assert app texts of plan D15, not Git text. The T061 timings measure the SC budgets and decide no product outcome.
 - Open coverage, not a heuristic: the T059 rows that skip with `shell-double-wsl-file-actions`, the T060 and T061 rows until T063 runs the package, N2 and the FR-028 warning (`volume-without-recycle-bin`), and the 001 capture check of T061.
-- Plan question: SC-007 names "a normal open" without a definition. T060 takes Repository ▸ Open folder… with the folder picker, driven by UI Automation without human time, as the normal open.
+- Plan question: SC-007 names "a normal open" without a definition. T060 takes Repository ▸ Open folder… with the folder picker, driven by UI Automation without human time, as the normal open. Superseded on 2026-10-27: see "Budget decisions of 2026-10-27".
 
 **Batch 4 follow-ups T078 to T080, 2026-10-24.** In `C:\Projects\arbareto-l6` on 005-batch4 after 3642738c. No task is ticked: the T063 run decides.
 - T078: `tests/git/bun-runner.ts` now serves a WSL `fileDelete`, `fileReplace`, `shadow`, and `ignorePreview` run by the shell route, with a `file:line` reference to `src-tauri/src` at each rule. The five T059 rows that skipped with `shell-double-wsl-file-actions` now run. `tests/wsl/inspection-wsl.test.ts` alone on Ubuntu-26.04: 39 pass, 1 skip (F15), 0 fail, 40 tests, 438 s. All 21 `ORIGIN` lines are under the worktree. All 50 `OBSERVATION` lines hold on Git 2.55.0.
@@ -528,8 +528,147 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Packaged, after the change, the open step alone (a copy of the Q32 case without the Delete part, 3 runs): rows after 45.9 ms, 43.6 ms, and 43.8 ms; Event Timing durations 64 ms, 56 ms, and 64 ms. The bound is 100 ms.
 - Not measured: the long tasks of the open. The Event Timing duration includes the render and the paint.
 
+**Budget decisions of 2026-10-27.** The user set four budgets from the recorded packaged runs. T103 encodes them. The logs are in local scratch.
+
+*SC-002 memory budget for v0.1.0.*
+- Recorded Q6 peak growth of the process-tree private bytes, in the packaged runs after T090 (c38e0c34): 412.7, 479.6, 527.0, 420.8, 551.2, 559.8, 348.8, 487.4, and 478.6 MiB (2026-10-25 to 2026-10-27).
+- The last two runs used the installed 006 build (app SHA-256 prefix 4a94f1dc). Its app code equals main except the tests.
+- The runs before T090 gave 512.8 to 805.3 MiB. T090 changed the measured renderer code, so they do not count.
+- No recorded run holds a settled value. T103 adds the settled sample after the limit text and logs it beside the peak.
+- Rule: the highest recorded peak growth, 559.8 MiB, plus a 64 MiB margin (the original budget), rounded up to whole MiB. Bound: 624 MiB.
+- The user range "+413 to 527 MiB" did not hold the 551.2 and 559.8 MiB runs of 2026-10-26. The bound uses all runs after T090.
+- Follow-up after the release: T104 pages the changed-files list as the History list pages, and restores 64 MiB.
+
+*SC-005 directory-only patterns.*
+- The 005 performance report of 2026-10-25 measured one standalone `check-ignore` of 100,000 paths: 0.45 to 0.58 s without `big/`, 3.8 to 4.0 s with it, and 7.05 s with two such patterns.
+- Cause: for a pattern with PATTERN_FLAG_MUSTBEDIR, Git resolves the type of each input path (dir.c `last_matching_pattern_from_list`), and `check-ignore` passes `DT_UNKNOWN`.
+- Rule: the largest measured increase per pattern, 4.0 s - 0.45 s = 3.55 s. The two-pattern run gives (7.05 s - 0.45 s) / 2 = 3.30 s, which is less.
+- The T087 single-process run of 4,051 ms has no paired run without the pattern, so it does not enter the rule.
+- Bound: 5 s plus 3.55 s for each directory-only pattern of the ignore files. The test counts the patterns with the dir.c parse rules.
+- Packaged Q21 with one pattern gave first previews of 6,787 to 7,790 ms and later previews of 2,232 to 3,447 ms (2026-10-27). The bound is 8,550 ms.
+- A second Q21 case replaces `big/` with `/big`, which ignores the same folder without the flag. It must meet 5 s.
+
+*SC-007 normal open.* This record replaces the T062 plan question choice of 2026-10-24 (Open folder… with the folder picker).
+- A normal open is Recent repositories (Ctrl+R), then Enter on the entry of the repository. Its time runs from the Enter keydown, the same start as Open submodule.
+- The time ends when the repository switcher shows the repository.
+- Open submodule and Open parent repository may take 150 ms more. The parent safety checks of FR-049 run before the registration, and they stay there.
+- Each Open submodule adds a recent entry (FR-051, `service.rs` `registered_root`), so the Recent repositories list holds both repositories.
+- The earlier T060 runs measured the normal open from the `choose_repository` reply: medians of 218 to 384 ms against 445 to 566 ms for the key opens.
+
+*SC-009 Delete probes.*
+- The Q32 Delete case sends at least 20 probe inputs during the Delete, so one slow frame does not decide the p95. The Enter that starts the Delete counts in the p95 and in the 500 ms maximum.
+- The shortest recorded `run_workbench` call of the Delete took 1,260 ms (report of 2026-10-25). 20 probes then need at most 63 ms each, so the case sends one each 50 ms.
+- With 21 inputs, the nearest-rank p95 is the 20th input in order, so one slow Enter alone does not decide it.
+
+*T103 packaged runs, 2026-10-27.* Installed 006 build (app SHA-256 prefix 4a94f1dc), tests from this checkout, two runs per case.
+- SC-002: pass, pass. Peak growth 377.3 and 514.5 MiB; settled growth 225.5 and 293.5 MiB; bound 624 MiB.
+- SC-005 with `big/` (bound 8,550 ms): fail, pass. Run 1 had one first preview of 11,376 ms; the other first previews took 6,727 to 7,832 ms. Run 2 took 6,755 to 7,600 ms. Later previews took 2,219 to 2,590 ms.
+- SC-005 with `/big` (bound 5,000 ms): fail, fail. First previews: medians 5,294 and 4,957 ms, maxima 9,836 and 5,486 ms. Later previews: 1,245 to 2,220 ms. The first preview without a directory-only pattern does not meet 5 s.
+- SC-007: pass, pass. Medians in ms: Open submodule 788 and 431 against the normal open 790 and 369; parent button 861 and 484 against 948 and 382.
+- SC-009 Delete: pass, pass. 25 and 32 probes; p95 40 and 64 ms; max 56 and 88 ms (the Enter).
+- Controls, one run each: SC-002 bound 1 MiB, SC-005 per-pattern cost 0 ms, and SC-009 probe minimum 1,000 failed. SC-007 allowance 0 ms passed, because Open submodule was faster than the normal open in that run. SC-007 allowance -1,000 ms failed. Each file was restored with the same SHA-256.
+
+**Read and preview speed of 2026-10-27 (T112).** The first SC-005 preview missed 5 s with `/big`. A CPU profile and the Git call timeline of the 100,000-entry fixture gave three causes. The logs are in local scratch.
+- `fingerprintOf` gave the hasher 4 updates and 3 allocations for each field, 7 fields per index entry. A full read spent about 0.84 s there.
+- The status parser `latin1` built its string one char per byte. A full read spent about 0.5 s there.
+- The first preview ran `ls-files -z --stage -v` (6.4 MB) again. The status read had kept the same listing in the snapshot `indexEntries`. With a full read 380 ms before the preview, that listing waited about 2.2 s.
+- Fix 1: the digest collects the same bytes in one 64 KiB buffer and gives the hasher few large updates. A test compares the digest with the old form on 6 entry sets, also above the buffer size.
+- Fix 2: `latin1` uses `Buffer.toString("latin1")`. A test parses each of the 256 byte values in X.
+- Fix 3: the base takes the snapshot `indexEntries` only when the raw index and shared index SHA-256 equal the snapshot `indexFingerprint` (001 contract §11 "Change polling"). Else, and for a WSL workspace, the listing runs. Control: with the listing always on, the no-listing test failed.
+- Bun shell double, 4 rounds each, `main` e0d5799c against T112. Full read: 3,013 to 3,834 ms before, 1,561 to 1,730 ms after.
+- First preview with a full read 380 ms before: 4,209 to 4,492 ms before, 2,631 to 2,850 ms after. Alone: 2,641 to 2,811 ms before, 1,630 to 1,966 ms after.
+- Later previews did not change: 821 to 1,061 ms before, 853 to 1,111 ms after.
+- Packaged, T112 build installed (service SHA-256 prefix ed70d55a), two runs, both cases passed in both runs.
+- SC-005 with `big/` (bound 8,550 ms): first previews, medians 5,225 and 5,606 ms, maxima 5,614 and 6,065 ms. Later previews: medians 2,326 and 2,485 ms.
+- SC-005 with `/big` (bound 5,000 ms): first previews, medians 2,941 and 3,288 ms, maxima 3,072 and 3,482 ms. Later previews: medians 1,266 and 1,418 ms.
+- The T103 runs before T112 gave first-preview medians of 5,294 and 4,957 ms with `/big`.
+
+*T108 packaged run, 2026-10-31.* Build of 3a7b5395 installed, tests from this checkout (local scratch `pkg-preview-1031b`). Warm, median of 10.
+- Windows: 100 clean submodules 3,439.5 ms (bound 5,500 ms), 256 clean submodules 8,815.2 ms (bound 14,080 ms). Both pass.
+- Control: with a bound of 1 ms per submodule, both cases failed.
+- WSL Ubuntu-26.04, current route: 20 submodules 3,431 ms, 100 submodules 14,649 ms. `DEADLINE` states: 0 in 10 runs at each size.
+- R18 "Cost" records the same times.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.
 
 This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL folder walk with `chdir` and `stat(".")` (D7, D10, Δ11); the folder removal through the held `DELETE` handles with the `a/b/c` cargo test (D7); the junction case in FR-031 and in the contract gaps; the self-check against the index-aware listings RI and RT, which keeps the skip-worktree blob step (D9, F11, F19); the base64 editor text and the 2 MiB bound (D1, O-6, Δ5); the exact section filter of `readCommitFile` (D3, Q4); the `long-path` refusal of plain Delete (D6, N10); N3b and N11; `-c core.longpaths=true` for the shadow, without the `long-path` preview limit (D9, F15); `config get --all --type=path` and `--inter-hunk-context=0` (D12); the exact shadow folder; the R path order; `sharing-violation`; the `name-case` open by the volume case rule (D9); the `fileReplace` rename window in the contract gaps; Save during an unfinished operation and with conflicts (spec FR-046, D10, Δ3); the decided open items O-1 to O-8. It added O-9 for the `blame.ignoreRevsFile` reset rule and corrected F10: a nested repository expands to the one record `x/`. The 004 contract already holds `ignore-not-regular` and `ignore-size` (004 contracts/operations.md:271), so Δ9 keeps them and drops only `not-regular`.
+
+## R18 Submodule change preview and local-edit marks (user decisions of 2026-10-30 and 2026-10-31)
+
+**Sources**: the approved mockup boards "Commit view: submodule selected" and "History: submodule change" (local scratch, sample data, approved 2026-10-31); the investigator report of 2026-10-30 (local scratch); the Git documentation; repository code at main f3ebb833, read through CodeGraph.
+
+**User decisions**
+
+- 2026-10-30: a selected submodule row shows what the change holds, not the limitation text. This applies in the Commit view and in History (spec FR-069 to FR-074).
+- 2026-10-31: a submodule with local edits and an unchanged commit also shows in Changes, with the mark "modified content" (spec FR-075). This changes 001 FR-007.
+- 2026-10-31: both designs ship in v0.1.0. The mockup texts are approved, also the ones that the boards marked as proposed.
+
+**Code today (main f3ebb833)**
+
+- The diff area shows `LIMITATION_TEXT.submodule` "This entry is a submodule or a nested repository." (`src/frontend/changes/limitation-text.ts:17`).
+- History shows "Submodule commit <old> → <new>." for a gitlink row (`src/frontend/history/CommitChanges.tsx`, investigator report).
+- `statusArgs` passes `--ignore-submodules=dirty` (`src/git-service/commands.ts:75-78`). The parser accepts `<sub>` as `N...` or `S[C.][M.][U.]` (`src/git-service/status-parser.ts:161`). With `dirty`, `<m>` and `<u>` are always `.`.
+
+**Git facts (doc)**
+
+- git-status(1) "Changed Tracked Entries": `<sub>` is `S<c><m><u>` for a submodule. `<c>` is `C` when the commit changed, `<m>` is `M` when it has tracked changes, and `<u>` is `U` when it has untracked changes.
+- git-status(1) `--ignore-submodules=<when>`: `none` reports a submodule as modified for untracked content, modified content, or a moved HEAD. `dirty` ignores all changes to the work tree of submodules and reports only commit changes.
+- git-cat-file(1) `-e`: exit zero when the object exists and is valid. Otherwise the exit is non-zero. `<oid>^{commit}` (gitrevisions(7)) also requires a commit.
+- git-rev-list(1) `--count` with `--left-right`: Git prints the left and the right count, separated by a tab. For `<old>...<new>`, left counts the commits only in `<old>` (removed) and right the commits only in `<new>` (new).
+- git-log(1) `-z`: NUL separates the commits. `--format=%H%x00%s` gives the full ID, NUL, and the subject. `--max-count=50` bounds the list. `--no-show-signature` overrides `log.showSignature`, so no signature program runs.
+
+**Safety facts (001 research R5, probe of 2026-09-29)**
+
+- Without `--ignore-submodules=dirty`, `status --porcelain=v2` started `git status --porcelain=2` inside each submodule. That child ran the submodule's own `core.fsmonitor` and clean filter. The parent trust listing cannot see submodule configuration (001 `contracts/operations.md` §7, "Status and diff reads pass `--ignore-submodules=dirty`").
+- So the parent status keeps `--ignore-submodules=dirty`. The local-edit marks come from a separate read per submodule, behind a check of that submodule's own configuration (contract `readSubmoduleWork`). This is the "documented equivalent" of `none`: the same `<m>` and `<u>` meaning, from the submodule's own status, with a gate the parent cannot give.
+- `rev-parse --verify -q HEAD`, `cat-file -e`, `rev-list --count`, and `log` without a pathspec load no index and run no filter (source reasoning, R13 pattern). T106 verifies each with a `core.fsmonitor` and a clean filter canary in the submodule.
+
+**Rejected**
+
+- Parse `diff --submodule=log` output. Its lines are English text ("Submodule <path> <a>..<b>:", "(new commits)"), not a machine format.
+- Pass `--ignore-submodules=none` to the parent status. Git then runs submodule programs that no gate covers (above).
+- Pass `-c core.fsmonitor=false` to the parent status. Command-scope entries reach the submodule children, but a clean filter driver name comes from submodule attributes. No fixed `-c` list covers every driver.
+
+**Cost**
+
+- The marks cost one `config list` and one `status` per initialized submodule and refresh. The 001 T192 record gives a `config list` median wall of 48 ms to 62 ms on Windows. The status of a clean submodule depends on its size. The read runs after `readWorkspace` and does not delay the list (plan D19).
+- Bound: at most 256 submodules per read (`SUBMODULE_WORK_TARGETS`, equal to the 001 §5 submodule review bound) and 8 at the same time (orchestrator decision 2026-10-31, below). Each status ends once it shows one tracked record and one untracked record. T108 measures the cost on fixtures with 100 and 256 initialized submodules. SC-012 holds the budget of 55 ms per submodule on Windows ("Packaged cost" below).
+- T108 record of 2026-10-31, in-process service with the shell test double, warm, median of 10 (`tests/git/submodule-change.test.ts`, `tests/wsl/inspection-wsl.test.ts`). Each target runs three Git processes: `rev-parse --show-toplevel`, `config list`, and `status`.
+  - Windows, Git 2.56.0.windows.2: 100 clean submodules 4,540 ms (min 4,388, max 4,570). 256 clean submodules 11,317 ms (min 11,192, max 11,588). Each process takes 60 ms to 63 ms on average.
+  - Windows after the review fixes of 2026-10-31 (the location check and `config list` run side by side, and only the status program keys go to the trust check): 100 clean submodules 3,905 ms (min 3,683, max 4,032), 256 clean submodules 9,651 ms (min 9,605, max 11,542). An earlier run of the same code gave 3,575 ms and 9,702 ms. Each process takes 65 ms to 73 ms on average.
+  - WSL Ubuntu-26.04, Git 2.55: 100 clean submodules reach the 30 s read deadline (median 30,174 ms). 84 to 88 of 102 targets give a state, and the rest give `failed` with DEADLINE.
+  - A budget of 2 s for 100 submodules does not hold on either route.
+  - T108 packaged record of 2026-10-31 on 3a7b5395 (local scratch `pkg-preview-1031b`), warm, median of 10. Windows: 100 clean submodules 3,439.5 ms (bound 5,500), 256 clean submodules 8,815.2 ms (bound 14,080). The control with a bound of 1 ms per submodule failed both cases. WSL Ubuntu-26.04, current route: 20 submodules 3,431 ms (min 3,305, max 3,642), 100 submodules 14,649 ms (min 14,350, max 14,917). No run gave a `DEADLINE` state (0 in 10 runs at each size).
+- Speed study of 2026-10-31 (investigator, local scratch `sc012-speed`). Harness without the service and IPC, Windows, warm, median, 3 Git processes per target:
+
+  | Submodules | 1 at a time | 4 at a time | 8 at a time | 16 at a time |
+  | --- | --- | --- | --- | --- |
+  | 100 | 11,631 ms (measured) | 4,509 ms (measured) | 3,962 ms (measured) | 4,007 ms (measured) |
+  | 256 | not run | 12,057 ms (measured) | 8,836 to 10,552 ms (a test run started during it) | 7,543 to 10,624 ms (a test run started during it) |
+
+  - The cost is Git process starts, not Git work. The three processes are `rev-parse --show-toplevel`, `config list --show-scope --show-origin -z`, and `status --porcelain=v2 -z --untracked-files=normal --ignore-submodules=dirty`.
+  - Windows has a floor of about 13 ms per process from 8 at a time (measured). So 2 s for 100 submodules (300 processes) cannot hold. 8 at a time is 12% faster than 4 at 100 submodules. 16 adds nothing.
+  - WSL Ubuntu-26.04, 2 submodules (indicative): 168 ms per Git process through the wrapper, mostly the `wsl.exe` start. A fixed two-phase loop script takes 321 ms against 1,009 ms for the current route.
+  - Status does not stop early: Git collects the whole status before it prints the first record (Git builtin/commit.c:1655 collect, :1663 print). The stop after one tracked and one untracked record saves only output, not Git work.
+  - No cheap authoritative "changed?" signal exists for a submodule. A stat or mtime check would be a heuristic, so the read runs the full status for each target.
+  - Git Extensions (GPL-3.0, ideas only, commit d77a4f07): the parent status runs without `--ignore-submodules`, so submodule fsmonitor and filter programs run. Then one `git diff` runs per changed submodule, one at a time, in the background, at most every 15 s. It parses the English "-dirty" text. Arbareto takes none of these steps.
+- Orchestrator decisions of 2026-10-31, from this study: 8 at the same time (`SUBMODULE_WORK_PARALLEL`). SC-012 on Windows: at most 45 ms per clean submodule (39.6 ms measured at 8 at a time, plus a margin), so 4.5 s for 100 and 11.5 s for 256. The "Packaged cost" decision below replaces this value. WSL keeps the current route in v0.1.0 with no budget, and a target past the 30 s deadline gives `failed` with `DEADLINE`. After the release, T114 gives pages of 16 (first marks in about 0.7 s, estimated), and T115 adds the WSL script `submoduleWork`.
+
+**Packaged cost (investigator reports of 2026-10-31, local scratch `inv-perf-1031` and `inv-pkg-1031`)**
+
+- Marks, Windows, per clean submodule at 8 at the same time: a raw spawn harness of the three Git processes takes 31 ms to 33 ms (measured). The in-process service adds at most 2 ms (measured). The packaged build takes about 48 ms, and its worst median was 48.9 ms (measured).
+- So about 15 ms per submodule comes from outside the service: the shell process path or the frame channel. That is about 5 ms per Git process. The cause is not split yet. T116 splits it.
+- Preview before the speed fix: 7 serial steps. These are the read gate, the file facts, `kindOf`, check 5 `--show-toplevel`, the two `cat-file -e`, `rev-list`, and the two `log`. The in-process service took a median of 291.5 ms for 20 runs (measured).
+- Some runs stall in one process for about 120 ms (measured: 413.8 ms and 420.2 ms against a median of 291.5 ms). The cause is unknown. T116 splits it.
+- Speed fix of 2026-10-31 (plan.md D19 "Order"): 4 serial steps. `kindOf` runs beside check 5. `rev-list` and the two `log` run together. The two `cat-file -e` run only after a failed `rev-list`, so `missing` still comes only from their exit code. Each check and its order stay.
+- Orchestrator decisions of 2026-10-31, from these measurements: the marks budget is 55 ms per clean submodule on Windows (5.5 s for 100, 14.08 s for 256). The first preview budget was 350 ms. The rerun below replaces it.
+- Packaged rerun on 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031b`), warm, median of 10. History preview 345.4 ms, Changes preview 376.1 ms. The runs fall into two groups: about 215 ms to 250 ms and about 330 ms to 384 ms, with one first run of 669 ms. The gap matches the stall of about 120 ms in one Git process (above). Orchestrator decision 2026-10-31: the preview budget is 400 ms, the worst packaged median of 376.1 ms plus a margin. It replaces 350 ms. T116 splits the stall after the v0.1.0 release.
+- T111 packaged rerun on 35a130d1 against the package of 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031c`), warm, median of 10. Changes preview 287.3 ms, History preview 214.6 ms, budget 400 ms. Both cases pass. The control with a budget of 1 ms failed both cases on the time bound.
+
+**Git Extensions (GPL-3.0, ideas only; investigator report of 2026-10-30)**
+
+- Git Extensions shows a selected submodule in the commit dialog and in the revision diff as a summary: the commit range, the commit counts, the commit subjects, and a dirty state of the submodule work tree.
+- Its file list marks a submodule with local edits, also when the commit is unchanged.
+- Arbareto takes the summary and the mark. It reads the facts from machine-readable output only.

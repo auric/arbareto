@@ -12,6 +12,7 @@ import type { BranchEntry } from "../../src/frontend/state/workbench";
 import type { TrackLabel } from "../../src/frontend/state/tracking";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { hoverTooltip } from "./sync-fake";
 
 printOrigin("../../src/frontend/branches/BranchCard.tsx", import.meta.dir);
 printOrigin("../../src/frontend/branches/BranchButton.tsx", import.meta.dir);
@@ -247,7 +248,9 @@ describe("keys and names (spec FR-066, FR-067, US8-3)", () => {
     const host = await sidebar();
     const target = row(host, `${LONG},`);
     const name = target.getAttribute("aria-label");
-    expect(target.getAttribute("aria-describedby")).toBeNull();
+    // 001 plan.md "Icons": the counts tooltip text stays the description without the card.
+    const closed = () => (target.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent);
+    expect(closed()).toEqual(["Counts compare with the remote-tracking branch from the last fetch, not with the remote itself."]);
     stubCut(nameOf(target), true);
     await focus(target);
     expect(target.getAttribute("aria-label")).toBe(name);
@@ -255,7 +258,7 @@ describe("keys and names (spec FR-066, FR-067, US8-3)", () => {
     expect(described).toContain(card());
     await press(target, "Escape");
     await settle();
-    expect(target.getAttribute("aria-describedby")).toBeNull();
+    expect(closed()).toEqual(["Counts compare with the remote-tracking branch from the last fetch, not with the remote itself."]);
   });
 
   test("the card starts no bridge call and calls no sidebar callback", async () => {
@@ -284,7 +287,8 @@ describe("the gone mark (spec FR-064, US9-1 to US9-3, plan.md O-1)", () => {
     const target = row(host, "fix-old-cache,");
     const mark = target.querySelector<HTMLElement>('[data-slot="gone-mark"]')!;
     expect(mark).not.toBeNull();
-    expect(mark.getAttribute("title")).toBe("The upstream origin/fix-old-cache no longer exists.");
+    expect(mark.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(mark)).toEqual(["The upstream origin/fix-old-cache no longer exists."]);
     const svg = mark.querySelector("svg")!;
     expect(paths(svg)).toEqual(paths(await reference()));
     expect(svg.getAttribute("class")?.split(" ")).toContain("size-4");
@@ -415,7 +419,8 @@ describe("the branch list rows (spec FR-064, FR-065)", () => {
     await openList(fake);
     const gone = option("fix-old-cache");
     const mark = gone.querySelector<HTMLElement>('[data-slot="gone-mark"]')!;
-    expect(mark.getAttribute("title")).toBe("The upstream origin/fix-old-cache no longer exists.");
+    expect(mark.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(mark)).toEqual(["The upstream origin/fix-old-cache no longer exists."]);
     expect(listName(gone).compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Contract Δ14: the 003 note "Upstream gone" stays visible, and the name says it once.
     expect(text(gone)).toContain("Upstream gone");

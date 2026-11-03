@@ -9,7 +9,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import { stubLayout } from "./history-fake";
-import { answer, button, buttons, click, createWorld, expectChromiumFocus, itemLabel, keyboardFocus, mountWorkbench, press, settle, snapshot as snapshotOf, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, expectChromiumFocus, hoverTooltip, itemLabel, keyboardFocus, mountWorkbench, press, settle, snapshot as snapshotOf, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T042 (feature 004, WP14). Story US4 and the FR-098 box of US11. Spec FR-029 to FR-048, FR-086, FR-098, SC-006, SC-014.
 // Plan D8, D9, D15 ("Commit view layout", "Virtual tree", "Limited status", "Multi-select", "Line selection", "Row and hunk buttons", "Ignore items", "Message editor"), D16, and O-11.
@@ -952,7 +952,7 @@ describe("message editor (FR-047) and Amend last commit (FR-098)", () => {
     expect(unborn.calls).toEqual([]);
     for (const operationState of ["merging", "rebasing"]) {
       const t = await tray({ operationState, amend: box });
-      expect(describedBy(t.host.querySelector('input[type="checkbox"]')!)).toBe("A merge or a rebase is in progress.");
+      expect(describedBy(t.host.querySelector('input[type="checkbox"]')!)).toBe("A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.");
     }
   });
 
@@ -1009,7 +1009,7 @@ describe("Working directory row (plan D15, O-11)", () => {
 
   test("the summary counts have thousands separators", async () => {
     const { WorkingSummary } = await import("../../src/frontend/commit/WorkingSummary");
-    const host = await render(<WorkingSummary working={12_345} staged={1_200} onOpen={() => {}} />);
+    const host = await render(<WorkingSummary working={12_345} staged={1_200} conflicted={0} onOpen={() => {}} onResolve={() => {}} />);
     expect(text(host)).toContain("12,345 working changes, 1,200 staged");
   });
 
@@ -1235,7 +1235,7 @@ describe("virtual list (FR-086, SC-007 component check)", () => {
 // --- Batch 3 follow-up: D16 status letters and the Staged block (T091) -------------------------------------------
 
 describe("status letters and the Staged block (plan D16, T091)", () => {
-  test("M uses Warning text, A and ? Added text, D Removed text, and every other letter Text", async () => {
+  test("M and U use Warning text, A and ? Added text, D Removed text, and every other letter Text (T132)", async () => {
     const entries = [
       entry("unstaged", "m.ts", ".M"),
       entry("unstaged", "d.ts", ".D"),
@@ -1247,14 +1247,14 @@ describe("status letters and the Staged block (plan D16, T091)", () => {
     ];
     const host = await render(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} layout="flat" untrackedOpen />);
     const letterOf = (path: string) => {
-      const row = [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.getAttribute("aria-label") === path)!;
+      const row = [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.getAttribute("aria-label") === path || r.getAttribute("aria-label")?.startsWith(`${path}, `))!;
       const mark = row.querySelector<HTMLElement>('[data-slot="status-letter"]')!;
       return [mark.textContent, mark.className.split(/\s+/).find((c) => /^text-(warning|added|removed|text|muted-text)$/.test(c))];
     };
     expect(letterOf("m.ts")).toEqual(["M", "text-warning"]);
     expect(letterOf("d.ts")).toEqual(["D", "text-removed"]);
     expect(letterOf("t.ts")).toEqual(["T", "text-text"]);
-    expect(letterOf("c.ts")).toEqual(["U", "text-text"]);
+    expect(letterOf("c.ts")).toEqual(["U", "text-warning"]);
     expect(letterOf("u.ts")).toEqual(["?", "text-added"]);
     expect(letterOf("a.ts")).toEqual(["A", "text-added"]);
     expect(letterOf("r.ts")).toEqual(["R", "text-text"]);
@@ -1420,5 +1420,307 @@ describe("Filter files (FR-101, Q29)", () => {
     expect([...host.querySelectorAll('[role="treeitem"]')].map((i) => i.getAttribute("aria-label"))).toEqual(["Untracked, 100,000"]);
     // The section can still hold matches, so the pane states no "no match".
     expect(text(host)).not.toContain("No file matches the filter.");
+  });
+});
+
+// --- Conflict guidance (tasks.md T131 to T134) ---------------------------------------------------------------------
+// Spec FR-102 to FR-106, SC-017. Plan D15 "Conflict guidance". The conflict state comes only from porcelain v2 `u` records (category `conflicted`).
+
+const RESOLVE = "Resolve conflicts";
+const RESOLVE_TIP = "Open the Commit view and select the first conflicted file.";
+const OPERATION_REASON = "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.";
+const workingRow = () => document.querySelector<HTMLElement>('section[aria-label="History"] [role="option"][data-row-id="working-directory"]')!;
+const dock = () => document.querySelector<HTMLElement>('section[aria-label="Dock"]')!;
+const bandRow = () => document.querySelector<HTMLElement>('[data-slot="notice-band"] [data-slot="conflict-row"]')!;
+// The board "Merge in progress": 3 working changes, 2 staged, 2 conflicted. The conflicted paths are given out of tree order.
+function mergeBoard() {
+  const conflicted = [entry("conflicted", "src/format.ts", "UU"), entry("conflicted", "src/config.ts", "UU")];
+  const rest = [entry("unstaged", "README.md", ".M"), entry("unstaged", "f.ts", ".M"), entry("untracked", "notes.txt"), entry("staged", "src/cli.ts", "M."), entry("staged", "src/width.ts", "A.")];
+  return { conflicted, all: [...conflicted, ...rest] };
+}
+function mergeWorld(entries: ChangeEntry[] = mergeBoard().all) {
+  const world = createWorld({ operationState: "merging", entries });
+  world.answers.readComparison = (args) => {
+    const payload = args[1] as { snapshotId: string; entryId: string };
+    const e = entries.find((x) => x.entryId === payload.entryId)!;
+    const resolve = e.category === "conflicted";
+    return succeeded({
+      comparisonId: crypto.randomUUID(),
+      snapshotId: payload.snapshotId,
+      entryId: payload.entryId,
+      scope: e.category === "staged" ? "head-to-index" : "index-to-worktree",
+      completeness: { state: "complete" },
+      patch: b64(resolve ? `diff --cc ${e.path}\n` : PATCH),
+      hunks: resolve ? [] : [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)],
+      support: resolve ? "state" : "supported",
+      fileAction: resolve ? "resolve" : e.category === "staged" ? "unstage" : "stage",
+      remedy: null,
+    });
+  };
+  return world;
+}
+// The text that a sighted user sees: hidden elements, visually hidden elements, and tooltips stay out.
+function visibleText(element: Element) {
+  const copy = element.cloneNode(true) as Element;
+  for (const e of copy.querySelectorAll('[hidden], .sr-only, [data-slot="tooltip-content"]')) e.remove();
+  return text(copy);
+}
+
+describe("conflicted count in History (T131, FR-103)", () => {
+  test("with 2 u records, the row shows 2 conflicted in Warning text, and the dock states the counts with Resolve conflicts before Open Commit view (Enter)", async () => {
+    await mountWorkbench(workbench, mergeWorld());
+    const chip = [...workingRow().querySelectorAll<HTMLElement>(".text-warning")].find((e) => text(e) === "2 conflicted");
+    expect(chip).toBeDefined();
+    await click(workingRow());
+    expect(text(dock())).toContain("3 working changes, 2 staged, 2 conflicted");
+    expect([...dock().querySelectorAll<HTMLElement>(".text-warning")].map((e) => text(e))).toEqual(["2 conflicted"]);
+    expect([...dock().querySelectorAll("button")].map((b) => text(b))).toEqual([RESOLVE, "Open Commit view (Enter)"]);
+    await keyboardFocus(button(RESOLVE, dock()));
+    expect(tooltipText()).toBe(RESOLVE_TIP);
+  });
+
+  test("without u records, the dock keeps the 004 text and one button", async () => {
+    await mountWorkbench(workbench, createWorld({ operationState: "merging", entries: board().all }));
+    await click(workingRow());
+    expect(text(dock())).toContain("9 working changes, 3 staged");
+    expect(text(dock())).not.toContain("conflicted");
+    expect([...dock().querySelectorAll("button")].map((b) => text(b))).toEqual(["Open Commit view (Enter)"]);
+  });
+
+  test("Enter on the row still opens the Commit view while files are conflicted", async () => {
+    await mountWorkbench(workbench, mergeWorld());
+    await click(workingRow());
+    const list = document.querySelector<HTMLElement>("[data-history-list]")!;
+    await act(async () => list.focus());
+    await press(list, "Enter");
+    expect(commitView()).not.toBeNull();
+  });
+
+  test("the summary counts of the conflicted form have thousands separators", async () => {
+    const { WorkingSummary } = await import("../../src/frontend/commit/WorkingSummary");
+    const host = await render(<WorkingSummary working={12_345} staged={1_200} conflicted={1_001} onOpen={() => {}} onResolve={() => {}} />);
+    expect(text(host)).toContain("12,345 working changes, 1,200 staged, 1,001 conflicted");
+  });
+});
+
+describe("Conflicted section (T132, FR-104, FR-030)", () => {
+  const paths = ["src/z/b.ts", "a.ts", "src/c.ts", "src/a/d.ts"];
+  const conflictedEntries = () => paths.map((p) => entry("conflicted", p, "UU"));
+  const pane = (entries: ChangeEntry[]) => render(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} layout="tree" untrackedOpen />);
+  const rowsOf = (host: ParentNode) => [...tree("Conflicted", host).querySelectorAll<HTMLElement>('[role="treeitem"]')];
+
+  test("u records group into the Conflicted tree above Changes, in tree order with full paths, and not into the Changes tree", async () => {
+    const conflicted = conflictedEntries();
+    const host = await pane([...conflicted, entry("unstaged", "src/c2.ts", ".M")]);
+    // The tree order of the Staged list for the same paths.
+    const expected = stagedRows(conflicted.map((e) => ({ ...e, category: "staged" }) as ChangeEntry), "flat", new Set()).flatMap((r) => (r.kind === "file" ? [r.entry.path] : []));
+    expect(rowsOf(host).map((r) => r.getAttribute("aria-label")!.split(", ")[0])).toEqual(expected);
+    expect(rowsOf(host).map((r) => text(r.querySelector('span[aria-hidden="true"]')!))).toEqual(expected);
+    const changes = [...tree("Changes", host).querySelectorAll<HTMLElement>('[role="treeitem"]')].map((r) => r.dataset.entryId);
+    for (const e of conflicted) expect(changes).not.toContain(e.entryId);
+    const heading = host.querySelector('[data-list-heading="Conflicted"]')!;
+    expect(heading.compareDocumentPosition(host.querySelector('[data-list-heading="Changes"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect([...heading.children].map((e) => text(e))).toEqual(["Conflicted", "4"]);
+  });
+
+  test("U uses Warning text with the tooltip Unmerged, and the accessible name is <path>, conflicted, <kind>", async () => {
+    const host = await pane([entry("conflicted", "src/config.ts", "UU"), entry("conflicted", "gone.ts", "UD")]);
+    const row = (label: string) => rowsOf(host).find((r) => r.getAttribute("aria-label") === label);
+    const config = row("src/config.ts, conflicted, both modified")!;
+    expect(config).toBeDefined();
+    expect(row("gone.ts, conflicted, deleted by them")).toBeDefined();
+    const mark = config.querySelector<HTMLElement>('[data-slot="status-letter"]')!;
+    expect(mark.textContent).toBe("U");
+    expect(mark.classList.contains("text-warning")).toBe(true);
+    expect(await hoverTooltip(mark)).toEqual(["Unmerged"]);
+    expect(buttons("Mark resolved config.ts", config)).toHaveLength(1);
+  });
+
+  test("the section has no collapse control and no layout buttons, Filter files does not hide its rows, and it is one Tab stop with roving focus", async () => {
+    const host = await pane([...conflictedEntries(), entry("unstaged", "README.md", ".M")]);
+    const section = host.querySelector<HTMLElement>('[data-section="conflicted"]')!;
+    expect(section.querySelector("[aria-expanded]")).toBeNull();
+    expect(buttons("Tree layout", section)).toHaveLength(0);
+    expect(buttons("Flat layout", section)).toHaveLength(0);
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="Filter files"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "zzz-no-match");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    expect(rowsOf(host)).toHaveLength(4);
+    expect(tree("Changes", host).querySelectorAll('[role="treeitem"]')).toHaveLength(0);
+    expect(rowsOf(host).filter((r) => r.tabIndex === 0)).toHaveLength(1);
+    await act(async () => rowsOf(host)[0]!.focus());
+    await press(rowsOf(host)[0]!, "ArrowDown");
+    expect(document.activeElement === rowsOf(host)[1]).toBe(true);
+    expect(rowsOf(host).filter((r) => r.tabIndex === 0)).toEqual([rowsOf(host)[1]!]);
+  });
+
+  test("without u records, the section does not show", async () => {
+    const host = await pane(board().all);
+    expect(host.querySelector('[role="tree"][aria-label="Conflicted"]')).toBeNull();
+    expect(host.querySelector('[data-list-heading="Conflicted"]')).toBeNull();
+  });
+});
+
+describe("quiet rule during a merge or a rebase (T133, FR-105)", () => {
+  // The control is unavailable, keeps focus, describes the reason by hidden text, and shows it as its tooltip.
+  async function expectQuiet(control: HTMLElement) {
+    expect(control.getAttribute("aria-disabled")).toBe("true");
+    expect(control.hasAttribute("disabled")).toBe(false);
+    const ids = (control.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
+    // The hunk toolbar reason line drops the final period of each part (HunkControls.tsx `ReasonLine`).
+    const described = ids.map((id) => document.getElementById(id)).filter((e) => e?.textContent?.includes(OPERATION_REASON.replace(/\.$/, "")));
+    expect(described).toHaveLength(1);
+    expect(described[0]!.closest("[hidden], .sr-only")).not.toBeNull();
+    await keyboardFocus(control);
+    expect(document.activeElement === control).toBe(true);
+    expect(tooltipText()).toContain(OPERATION_REASON);
+  }
+
+  for (const operationState of ["merging", "rebasing"] as const) {
+    test(`${operationState}: the Commit view shows the reason as no visible text, and each blocked control gives it as tooltip and description`, async () => {
+      const restore = sizeTrees(600);
+      try {
+        const world = mergeWorld();
+        world.operationState = operationState;
+        if (operationState === "rebasing") world.head = { state: "detached", oid: world.oids[0]! };
+        await openCommitView(world);
+        const view = commitView()!;
+        expect(visibleText(view)).not.toContain(OPERATION_REASON);
+        await expectQuiet(button("Stage all changes", view));
+        await expectQuiet(button("Unstage all", view));
+        await expectQuiet(button("Stage all untracked", view));
+        await expectQuiet(button("Stage file README.md", view));
+        await expectQuiet(button("Unstage file cli.ts", view));
+        await clickWith(item("Changes", "README.md"), { ctrlKey: true });
+        await clickWith(item("Changes", "f.ts"), { ctrlKey: true });
+        await expectQuiet(button("Stage selected (2)", view));
+        await clickWith(item("Staged", "src/cli.ts"), { ctrlKey: true });
+        await clickWith(item("Staged", "src/width.ts"), { ctrlKey: true });
+        await expectQuiet(button("Unstage selected (2)", view));
+        await click(item("Changes", "f.ts"));
+        await settle();
+        const pane = view.querySelector<HTMLElement>('[data-section="comparison"]')!;
+        expect(buttons("Stage hunk", pane)).toHaveLength(2);
+        await expectQuiet(buttons("Stage hunk", pane)[0]!);
+        await expectQuiet(button("Stage selected hunk", pane));
+        await expectQuiet(view.querySelector<HTMLInputElement>('input[type="checkbox"]')!);
+        await expectQuiet(button("Commit (Ctrl+Enter)", view));
+        expect(visibleText(view)).not.toContain(OPERATION_REASON);
+      } finally {
+        restore();
+      }
+    });
+  }
+
+  test("a reason other than the operation keeps its visible line", async () => {
+    const files = { actions: {} as never, reason: "A status page is still loading.", running: false, cut: false };
+    const host = await render(<ChangesPane entries={board().all} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} files={files} />);
+    expect(visibleText(host)).toContain("Stage all changes is unavailable: A status page is still loading.");
+  });
+});
+
+describe("Resolve conflicts focus (T134, FR-106, FR-087)", () => {
+  // The first Conflicted row in tree order is selected and focused, and its resolve view shows in the diff area.
+  async function expectFirstRow() {
+    await settle();
+    expect(commitView()).not.toBeNull();
+    const rows = [...document.querySelectorAll<HTMLElement>('[data-file-tree="conflicted"] [role="treeitem"]')];
+    expect(rows[0]!.getAttribute("aria-label")).toBe("src/config.ts, conflicted, both modified");
+    expect(rows[0]!.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement === rows[0]).toBe(true);
+    expectChromiumFocus(rows[0]!);
+    expect(commitView()!.querySelector('[data-section="comparison"] section[aria-label="Resolve src/config.ts"]')).not.toBeNull();
+  }
+
+  test("from History, the band button switches to the Commit view, selects and focuses the first Conflicted row, and shows its resolve view", async () => {
+    await mountWorkbench(workbench, mergeWorld());
+    expect(commitView()).toBeNull();
+    await click(button(RESOLVE, bandRow()));
+    await expectFirstRow();
+  });
+
+  test("from History, the dock button does the same", async () => {
+    await mountWorkbench(workbench, mergeWorld());
+    await click(workingRow());
+    await click(button(RESOLVE, dock()));
+    await expectFirstRow();
+  });
+
+  test("in the Commit view, the band button does the same without a view switch", async () => {
+    await openCommitView(mergeWorld());
+    await click(item("Changes", "README.md"));
+    await click(button(RESOLVE, bandRow()));
+    await expectFirstRow();
+  });
+
+  test("the Commit F6 order puts Conflicted after the notice band and before Changes", async () => {
+    await openCommitView(mergeWorld());
+    await act(async () => document.querySelector<HTMLElement>('[data-section="header"] button')!.focus());
+    const seen: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      await press(document.activeElement!, "F6");
+      seen.push((document.activeElement as HTMLElement).closest<HTMLElement>("[data-section]")!.dataset.section!);
+    }
+    expect(seen).toEqual(["noticeHeading", "conflicted", "workingChanges", "staged"]);
+  });
+});
+
+// Review fixes of 2026-10-31 for T131 to T133.
+describe("conflict guidance review fixes", () => {
+  test("Del on a Changes row during a merge states the 005 delete-block text in the status bar", async () => {
+    const { deleteBlock } = await import("../../src/frontend/changes/file-actions");
+    const statuses: (string | null)[] = [];
+    const block = deleteBlock("merging", 2)!;
+    const files = { actions: {} as never, reason: OPERATION_REASON, running: false, quiet: true, cut: false, deleteBlock: block };
+    const host = await render(<ChangesPane entries={mergeBoard().all} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} onStatus={(t) => statuses.push(t)} files={files} />);
+    const row = [...tree("Changes", host).querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.getAttribute("aria-label") === "README.md")!;
+    await act(async () => row.focus());
+    await press(row, "Delete");
+    expect(statuses).toContain(block);
+  });
+
+  test("during a merge, the Stage folder row button describes the operation reason by its hidden element", async () => {
+    const files = { actions: {} as never, reason: OPERATION_REASON, running: false, quiet: true, cut: false };
+    const host = await render(<ChangesPane entries={[...mergeBoard().all, entry("unstaged", "src/x/y.ts", ".M")]} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} layout="tree" files={files} />);
+    const folder = buttons("Stage folder src/x", host)[0]!;
+    expect(folder.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(folder)).toBe(OPERATION_REASON);
+  });
+
+  test("the dock names no conflicted count outside a merge or a rebase, nor while entry pages are missing (FR-103, SC-017)", async () => {
+    await mountWorkbench(workbench, createWorld({ operationState: "conflicted", entries: mergeBoard().all }));
+    await click(workingRow());
+    expect(text(dock())).toContain("3 working changes, 2 staged");
+    expect(text(dock())).not.toContain("conflicted");
+    expect([...dock().querySelectorAll("button")].map((b) => text(b))).toEqual(["Open Commit view (Enter)"]);
+    await unmountAll();
+    const world = mergeWorld();
+    // One entry page more than the first: the next page stays pending.
+    world.answers.readWorkspace = () => succeeded({ ...snapshotOf(world), entryCount: world.entries.length + 1, cursor: fixtureId(0x99) });
+    world.answers.readEntries = undefined;
+    await mountWorkbench(workbench, world);
+    await click(workingRow());
+    expect(text(dock())).not.toContain("conflicted");
+    expect([...dock().querySelectorAll("button")].map((b) => text(b))).toEqual(["Open Commit view (Enter)"]);
+  });
+
+  test("250 conflicted entries render a bounded window of rows, and the Conflicted list scrolls by itself with one Tab stop", async () => {
+    const restore = sizeTrees(600);
+    try {
+      const many = Array.from({ length: 250 }, (_, i) => entry("conflicted", `c/f${String(i).padStart(3, "0")}.ts`, "UU"));
+      const host = await render(<ChangesPane entries={[...many, entry("unstaged", "README.md", ".M")]} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} />);
+      const list = tree("Conflicted", host);
+      const rendered = list.querySelectorAll('[role="treeitem"]').length;
+      expect(rendered).toBeLessThan(250);
+      expect(list.classList.contains("overflow-y-auto")).toBe(true);
+      expect([...list.closest<HTMLElement>('[data-section="conflicted"]')!.classList].some((c) => c.startsWith("max-h-"))).toBe(true);
+      expect(list.querySelectorAll('[role="treeitem"][tabindex="0"]')).toHaveLength(1);
+      expect(tree("Changes", host).querySelectorAll('[role="treeitem"]').length).toBe(1);
+    } finally {
+      restore();
+    }
   });
 });

@@ -6,7 +6,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { Fragment, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { TextTooltip } from "./text-tooltip";
 
 // Feature 004 plan.md D15 "Switcher popover": the pattern of the 001 `RepositorySwitcher`, spec FR-008 and FR-086.
 
@@ -25,7 +25,8 @@ export type SwitcherPopoverProps<T> = {
   trigger: ReactElement;
   /** The visible content of the trigger. */
   children: ReactNode;
-  tooltip: string;
+  /** An array shows one line per item. */
+  tooltip: string | readonly string[];
   filterLabel: string;
   listLabel: string;
   /** The row height in DIPs (`metrics(...).row`). */
@@ -66,10 +67,9 @@ export const matches = (text: string, query: string) => text.toLowerCase().inclu
 export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tooltip, ...list }: SwitcherPopoverProps<T>) {
   return (
     <Popover open={open} onOpenChange={(next) => onOpenChange(next)}>
-      <Tooltip>
-        <TooltipTrigger render={<PopoverTrigger render={trigger} />}>{children}</TooltipTrigger>
-        <TooltipContent>{tooltip}</TooltipContent>
-      </Tooltip>
+      <TextTooltip text={tooltip}>
+        <PopoverTrigger render={trigger}>{children}</PopoverTrigger>
+      </TextTooltip>
       {/* Plan D16 "Geometry": 380 DIPs wide, opened below the button and aligned to its end. 001 plan.md "Dialog sizes": at most 60% of the client height. */}
       <PopoverContent align="end" className="max-h-[min(60vh,calc(100vh-32px))] w-[min(380px,calc(100vw-32px))]">
         {open ? <SwitcherList {...list} /> : null}

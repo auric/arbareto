@@ -31,7 +31,7 @@ const HOST_PLATFORM = process.platform === "win32" ? "windows" : "posix";
 // Every invalid vector of these schemas carries `repair`. The repaired text must pass, so a second fault cannot mask the named one.
 // Feature 004 T034 adds the workbench result schemas, and T060 the worktree and Git settings result schemas. Contract Δ3 adds the `reviewCommit` result schema.
 // Feature 005 T002 adds its result schemas.
-const INSPECTION_RESULTS = ["read-commit-changes-result", "read-commit-file-result", "read-blame-result", "read-ignore-file-result", "preview-ignore-result", "open-submodule-result", "reveal-path-result"];
+const INSPECTION_RESULTS = ["read-commit-changes-result", "read-commit-file-result", "read-blame-result", "read-ignore-file-result", "preview-ignore-result", "open-submodule-result", "reveal-path-result", "read-submodule-change-result", "read-submodule-work-result"];
 const FAULT_SCHEMAS = [
   "registration-result",
   "open-recent-repository-result",
@@ -174,7 +174,13 @@ describe("golden vectors", () => {
   test("each feature 005 operation, code, phase, private request, reply, marker action, and result has its vectors", () => {
     const texts = (kind: string, schema: string) => vectors.filter((v) => v.kind === kind && v.vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
     const operations = ["renderer-envelope", "service-envelope", "native-first-envelope"].flatMap((schema) => texts("valid", schema)).map((t) => t.operation);
-    expect(operations).toEqual(expect.arrayContaining(["readCommitChanges", "readCommitFile", "readBlame", "readIgnoreFile", "previewIgnore", "openSubmodule"]));
+    expect(operations).toEqual(expect.arrayContaining(["readCommitChanges", "readCommitFile", "readBlame", "readIgnoreFile", "previewIgnore", "openSubmodule", "readSubmoduleChange", "readSubmoduleWork"]));
+    // Contract Δ3 (2026-10-31): both sources of `readSubmoduleChange` and each result state.
+    const kinds = (kind: string) => texts(kind, "renderer-envelope").filter((t) => t.operation === "readSubmoduleChange").map((t) => (t.payload as { source: { kind: string } }).source.kind);
+    expect(kinds("valid")).toEqual(expect.arrayContaining(["workspace", "commit"]));
+    expect(texts("valid", "read-submodule-change-result").map((t) => (t.state as { state: string } | undefined)?.state ?? t.reason)).toEqual(expect.arrayContaining(["commits", "missing", "not-initialized", "single", "path"]));
+    expect(texts("valid", "read-submodule-work-result").flatMap((t) => (t.entries as { state: string; reason?: string }[]).map((e) => e.reason ?? e.state))).toEqual(expect.arrayContaining(["checked", "not-initialized", "programs", "failed"]));
+    expect(texts("valid", "read-submodule-work-result").every((t) => typeof t.limited === "number")).toBe(true);
     expect(texts("valid", "native-first-envelope").map((t) => t.operation)).toContain("openSubmodule");
     expect(texts("invalid", "native-first-envelope").map((t) => t.operation)).toContain("openSubmodule");
     const payloads = (kind: string) => texts(kind, "renderer-envelope").filter((t) => t.operation === "reviewWorkbench").map((t) => (t.payload as { action: string }).action);

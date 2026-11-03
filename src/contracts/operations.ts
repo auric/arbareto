@@ -68,6 +68,8 @@ export const OPERATION_NAMES = [
   "readIgnoreFile",
   "previewIgnore",
   "openSubmodule",
+  "readSubmoduleChange",
+  "readSubmoduleWork",
   // Feature 006 contract Δ1.
   "listDictionaries",
   "readDictionary",

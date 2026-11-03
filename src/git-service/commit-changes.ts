@@ -239,6 +239,8 @@ export interface Listing {
   repositoryId: string;
   viewId: string;
   oid: string;
+  // The parent index of the request.
+  parent: number;
   // The parent or the empty tree. Null for the base `shallow`.
   base: string | null;
   objectFormat: ObjectFormat;
@@ -313,7 +315,7 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
     const w = t.workspace;
     drop(target.viewId);
     try {
-      const listing: Omit<Listing, "base" | "raw" | "offsets"> = { changesId: crypto.randomUUID(), repositoryId: w.repositoryId, viewId: target.viewId, oid: target.oid, objectFormat: w.objectFormat };
+      const listing: Omit<Listing, "base" | "raw" | "offsets"> = { changesId: crypto.randomUUID(), repositoryId: w.repositoryId, viewId: target.viewId, oid: target.oid, parent, objectFormat: w.objectFormat };
       const parents = [...target.parents];
       const value = (base: object, files: unknown[], completeness: object) => ({ changesId: listing.changesId, viewId: target.viewId, oid: target.oid, parents, base, files, completeness });
       // Plan.md D3 step 3: a root that the view shallow set holds runs no command.
@@ -390,6 +392,15 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
     return { listing, entry };
   }
 
+  // Feature 005 contract Δ3 `readSubmoduleChange`: the record `record` of the retained listing of `viewId` for `oid` and `parent`, with mode 160000 on a side.
+  function submoduleRecord(repositoryId: string, viewId: string, oid: string, parent: number, record: number): RawEntry | { refused: "UNKNOWN_TARGET" | "INVALID_REQUEST" } {
+    const listing = byView.get(viewId);
+    if (listing === undefined || listing.repositoryId !== repositoryId || listing.oid !== oid || listing.parent !== parent) return { refused: "UNKNOWN_TARGET" };
+    const found = entryOf(listing.changesId, record);
+    if ("refused" in found) return found;
+    return found.entry.modes.includes(GITLINK) ? found.entry : { refused: "INVALID_REQUEST" };
+  }
+
   // Data-model §2 `facts`, from the listing alone.
   function factsOf(e: RawEntry) {
     const [oldMode, newMode] = e.modes;
@@ -464,6 +475,7 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
     readCommitFile,
     // The retained entry, for the acceptance checks of `readCommitFile` and `readBlame`.
     entry: entryOf,
+    submoduleRecord,
     // Contract Δ8: a new call or a view release drops the listing of that view.
     dropView: drop,
     release(repositoryId: string): void {

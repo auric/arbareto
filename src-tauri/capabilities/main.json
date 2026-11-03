@@ -61,6 +61,8 @@
     "allow-read-ignore-file",
     "allow-preview-ignore",
     "allow-open-submodule",
+    "allow-read-submodule-change",
+    "allow-read-submodule-work",
     "allow-list-dictionaries",
     "allow-read-dictionary",
     "allow-download-dictionary",

@@ -205,7 +205,7 @@ describe("rows (data-model §4, FR-009, FR-015)", () => {
     expect(notice.className.split(" ")).toContain("bg-warning-fill");
   });
 
-  // 006 T055: the `more` count of removed languages (plan.md D17, proposed 2026-10-25).
+  // 006 T055: the `more` count of removed languages (plan.md D17, final 2026-10-27).
   test("the more count of removed languages follows the named notices, in the plural and the singular", async () => {
     await render({ removed: [{ language: "xx", name: "Klingon" }], more: 1_204 });
     const notices = () => [...panel("Languages").querySelectorAll("p")].map((p) => text(p));
@@ -225,6 +225,48 @@ describe("rows (data-model §4, FR-009, FR-015)", () => {
     expect(cellTexts("uk")[4]).toBe("Failed");
     expect(rowButtons("uk")).toEqual(["Remove Ukrainian"]);
     expect(text(messageOf("uk")!)).toBe("Arbareto cannot load the Ukrainian dictionary. Spell check uses the other languages.");
+  });
+
+  // 006 T067: `readDictionary` refuses a Changed language as `changed`, so the row names the cause and the fix (plan.md D17).
+  test("a failed load of a selected Changed language keeps Changed and shows the changed-files text", async () => {
+    const r = await render({ languages: ["en", "uk"], states: { uk: { state: "changed" } } });
+    await act(async () => r.store.setLanguage("uk", "failed"));
+    await settle();
+    expect(cellTexts("uk")[4]).toBe("Changed");
+    expect(rowButtons("uk")).toEqual(["Download Ukrainian", "Import… Ukrainian", "Remove Ukrainian"]);
+    expect(text(messageOf("uk")!)).toBe("The Ukrainian dictionary files changed. Download the dictionary again.");
+  });
+
+  // 006 T067: the reconcile removed the files, so the row names the cause and the fix (plan.md D17).
+  test("a failed load of a selected language with the catalog-changed notice shows the catalog-changed text", async () => {
+    const r = await render({ languages: ["en", "sv"], states: { sv: { state: "not-downloaded", notice: "catalog-changed" } } });
+    await act(async () => r.store.setLanguage("sv", "failed"));
+    await settle();
+    expect(cellTexts("sv")[4]).toBe("Not downloaded");
+    expect(text(messageOf("sv")!)).toBe("This Arbareto release has new Swedish dictionary files. Download the dictionary again.");
+  });
+
+  // 006 T067: the preview names only the loaded languages, as the editor chip does (plan.md D17).
+  test("the chip preview names only the loaded languages, and No language loaded when none loaded", async () => {
+    const r = await render({ languages: ["en", "uk"], states: { uk: { state: "ready" } } });
+    const preview = () => [...panel("Selected languages").querySelectorAll("p")].map((p) => text(p)).find((t) => t.startsWith("Chip: "));
+    await act(async () => r.store.setLanguage("en", "loaded"));
+    await act(async () => r.store.setLanguage("uk", "failed"));
+    await settle();
+    expect(preview()).toBe("Chip: Spelling: English");
+    await act(async () => r.store.setLanguage("en", "failed"));
+    await settle();
+    expect(preview()).toBe("Chip: Spelling: No language loaded");
+  });
+
+  // 006 T065: data-model §4 and the DictionaryFailures board (user decision, 2026-10-27).
+  test("a failed load of English keeps Bundled and shows the load text below it", async () => {
+    const r = await render({ languages: ["en", "uk"], states: { uk: { state: "ready" } } });
+    await act(async () => r.store.setLanguage("en", "failed"));
+    await settle();
+    expect(cellTexts("en")[4]).toBe("Bundled");
+    expect(rowButtons("en")).toEqual(["Show licence of English"]);
+    expect(text(messageOf("en")!.querySelector('[role="status"]')!)).toBe("Arbareto cannot load the English dictionary. Spell check uses the other languages.");
   });
 
   test("the loading text shows until the states load, and a failed listing names its code", async () => {
@@ -332,7 +374,7 @@ describe("download, import, and their texts (FR-010 to FR-012, FR-016)", () => {
     ["import-mismatch", refused("import-mismatch"), "These files are not the Ukrainian files of the catalog. Arbareto did not import them."],
     ["import-unreadable", refused("import-unreadable", { folder: "D:/Offline/uk" }), "Arbareto could not read the Ukrainian files in D:/Offline/uk."],
     ["busy", refused("busy"), "Another dictionary download or import runs. Wait for it to end."],
-    // 006 T055: plan.md D17 texts proposed 2026-10-25.
+    // 006 T055: plan.md D17 texts, final 2026-10-27.
     ["DEADLINE", failed("DEADLINE"), "The Ukrainian import did not end within 120 seconds. Arbareto did not import the files. Select Import… again."],
     ["PICKER_FAILED", { requestId: fixtureId(45), operationId: OP, state: "rejected", code: "PICKER_FAILED" }, "Arbareto could not open the folder picker. Select Import… again."],
     ["another code", failed("INVALID_REQUEST"), "Import… Ukrainian did not complete: INVALID_REQUEST."],
@@ -347,6 +389,16 @@ describe("download, import, and their texts (FR-010 to FR-012, FR-016)", () => {
       expect(rowButtons("uk")).toEqual(["Download Ukrainian", "Import… Ukrainian"]);
       expect(text(messageOf("uk")!)).toBe(message);
     });
+
+  // 006 T065: data-model §4 and the DictionaryFailures board (user decision, 2026-10-27).
+  test("a failed import of a Changed row keeps Changed and its actions and shows the import text", async () => {
+    const r = await render({ states: { pl: { state: "changed" } } });
+    await click(button("Import… Polish"));
+    await answer(r.double.pending("importDictionary"), refused("import-mismatch"));
+    expect(cellTexts("pl")[4]).toBe("Changed");
+    expect(rowButtons("pl")).toEqual(["Download Polish", "Import… Polish", "Remove Polish"]);
+    expect(text(messageOf("pl")!.querySelector('[role="status"]')!)).toBe("These files are not the Polish files of the catalog. Arbareto did not import them.");
+  });
 
   // 006 T055: data-model §4 "Importing… | importing" for the import of this window.
   test("the own import shows Importing… with no actions until it ends", async () => {
@@ -392,7 +444,7 @@ describe("licence link and licence text (FR-015, plan.md D12)", () => {
     const r = await render({ states: { uk: { state: "ready" } } });
     await click(button("Show licence of Ukrainian"));
     expect(r.double.pending("readDictionary")!.args[0]).toEqual({ language: "uk", file: "license", offset: 0 });
-    // 006 T055: plan.md D17 loading text, proposed 2026-10-25.
+    // 006 T055: plan.md D17 loading text, final 2026-10-27.
     expect(text(page().querySelector('[data-slot="licence-panel"] [role="status"]')!)).toBe("Arbareto reads the licence text…");
     const body = "GNU GENERAL PUBLIC LICENSE\n<b>sample</b> **bold**\n";
     await answer(r.double.pending("readDictionary"), chunk(body));
@@ -508,6 +560,8 @@ describe("selection (FR-009, data-model §8)", () => {
 
   test("Selected languages lists the order with Move up and Move down, their tooltips, the first and last reasons, and the chip preview", async () => {
     const r = await render({ languages: ["en", "uk", "ru"], states: { uk: { state: "ready" }, ru: { state: "ready" } } });
+    for (const id of ["en", "uk", "ru"]) await act(async () => r.store.setLanguage(id, "loaded"));
+    await settle();
     const selected = panel("Selected languages");
     expect(parts(selected.querySelector("div")!)).toEqual(["Selected languages", "3"]);
     expect([...selected.querySelectorAll("li")].map((li) => parts(li).slice(0, 2))).toEqual([["1", "English"], ["2", "Ukrainian"], ["3", "Russian"]]);

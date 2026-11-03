@@ -1,0 +1,8 @@
+{
+  "schema": "read-submodule-work-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"snapshotId\":\"0f0f0f0f-0000-4000-8000-000000000007\",\"entries\":[{\"pathBytes\":\"bGliL2NvcmU=\",\"path\":\"lib/core\",\"state\":\"checked\",\"modified\":true,\"untracked\":false},{\"pathBytes\":\"dmVuZG9y\",\"path\":\"vendor\",\"state\":\"unchecked\",\"reason\":\"programs\"},{\"pathBytes\":\"ZGVhZA==\",\"path\":\"dead\",\"state\":\"unchecked\",\"reason\":\"failed\",\"code\":\"DEADLINE\"},{\"pathBytes\":\"bGFzdA==\",\"path\":\"last\",\"state\":\"unchecked\",\"reason\":\"limit\"},{\"pathBytes\":\"YmFyZQ==\",\"path\":\"bare\",\"state\":\"not-initialized\"}],\"extraRows\":[{\"pathBytes\":\"bGliL2NvcmU=\",\"path\":\"lib/core\"}],\"limited\":3}",
+  "repair": {
+    "entries.3": null
+  }
+}

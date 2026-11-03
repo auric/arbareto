@@ -4,8 +4,8 @@
 // 006 data-model §1 and §2: the schema of src/contracts/dictionaries.json. The service, the renderer, and the build parse the file with it.
 
 import { z } from "zod";
-import { DICTIONARY_CATALOG_ENTRIES, DICTIONARY_LANGUAGE_BYTES } from "./limits";
-import { compareNames as compareNameBytes } from "./tree-order";
+import { DICTIONARY_CATALOG_ENTRIES, DICTIONARY_LANGUAGE_BYTES } from "./limits.ts";
+import { compareNames as compareNameBytes } from "./tree-order.ts";
 
 // Data-model §2: a language ID, at most 32 bytes. The form holds only ASCII, so the code point bound is the byte bound.
 export const LANGUAGE_ID_BYTES = 32;

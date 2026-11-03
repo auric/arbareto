@@ -5,12 +5,19 @@ import { Alert02Icon, SpellCheckIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import type { SpellView } from "./engine";
-import type { SpellingState } from "./store";
+import type { SpellingSetting, SpellingState } from "./store";
 import { SPELLING_TEXTS as T } from "./texts";
 
 // 006 plan.md D8 "Chip" and "Count", D16 "Commit editor", D17 "Commit editor".
 
 export type SpellStatus = { text: string; lines: string[]; tone: "normal" | "off" | "warning"; count: string | null };
+
+/** The chip text. Plan.md D17: the loaded languages in selection order. */
+export function chipText(setting: SpellingSetting, languages: SpellingState["languages"], languageName: (id: string) => string): string {
+  if (!setting.enabled) return T.off;
+  const loaded = setting.languages.filter((id) => languages.get(id) === "loaded");
+  return loaded.length > 0 ? T.chip(loaded.map(languageName)) : T.none;
+}
 
 /** The chip, its tooltip lines, and the count. Null until the first settings response, and with spell check on until the catalog loads. */
 export function spellStatus(state: SpellingState, view: SpellView): SpellStatus | null {
@@ -24,7 +31,7 @@ export function spellStatus(state: SpellingState, view: SpellView): SpellStatus 
   const loaded = setting.languages.filter((id) => state.languages.get(id) === "loaded");
   const failed = setting.languages.filter((id) => state.languages.get(id) === "failed");
   const loading = setting.languages.filter((id) => !loaded.includes(id) && !failed.includes(id));
-  const text = loaded.length > 0 ? T.chip(loaded.map(languageName)) : T.none;
+  const text = chipText(setting, state.languages, languageName);
   const lines = [text, ...failed.map((id) => T.cannotLoad(languageName(id))), ...loading.map((id) => T.stillLoads(languageName(id))), ...(view.limited ? [T.limit] : [])];
   // The count stays away above 64 KiB, because no round checked that text.
   const count = loaded.length > 0 && !view.composing && !view.limited ? T.count(view.marks.length) : null;

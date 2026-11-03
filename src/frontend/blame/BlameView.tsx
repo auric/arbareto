@@ -9,6 +9,7 @@ import type { Blame } from "../../contracts/envelope";
 import type { BlameUnavailableReason } from "../../contracts/errors";
 import { OutputTail, unknownFormText } from "../app/RepositoryStates";
 import { IconButton } from "../components/icon-button";
+import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { LOCAL_DATE } from "../history/CommitDetails";
 import { groupAt, textOf, type BlameState, type Inspection } from "../state/history-view";
@@ -45,7 +46,7 @@ const TOGGLES = [
 const linesText = (n: number) => `${count.format(n)} ${n === 1 ? "line" : "lines"}`;
 
 /** The gutter facts of one commit of the result, computed once per result. */
-type CommitFacts = { short: string; author: string; date: string; title: string; age: number; shallow: boolean };
+type CommitFacts = { short: string; author: string; date: string; tip: string[]; age: number; shallow: boolean };
 function commitFacts(result: Blame, now: number): CommitFacts[] {
   const ages = ageSteps(result.commits.map((c) => c.authorTime));
   return result.commits.map((c, i) => {
@@ -54,7 +55,7 @@ function commitFacts(result: Blame, now: number): CommitFacts[] {
       short: shortId(c.oid),
       author: textOf(c.author),
       date: relativeDate(c.authorTime, now),
-      title: [textOf(c.author), LOCAL_DATE.format(c.authorTime * 1000), ...(filename === null ? [] : [`Path in this commit: ${filename}`])].join("\n"),
+      tip: [textOf(c.author), LOCAL_DATE.format(c.authorTime * 1000), ...(filename === null ? [] : [`Path in this commit: ${filename}`])],
       age: ages[i]!,
       shallow: c.shallow,
     };
@@ -115,9 +116,11 @@ export function BlameView({ inspection, onBack, onSelectCommit, now = Date.now }
     <section aria-labelledby={headingId} data-slot="blame-view" className="flex min-h-0 flex-1 flex-col" onKeyDownCapture={onEscape} onKeyDown={onKeyDown} onFocus={(event) => void (focused.current = event.target)}>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
         <IconButton ref={back} icon={ArrowLeft01Icon} label="Back" keys={{ aria: "Escape", text: "Esc" }} onClick={onBack} />
-        <h2 id={headingId} className="min-w-0 flex-1 truncate font-semibold" title={path}>
-          Blame: <code>{path}</code> at <code>{shortId(oid)}</code>
-        </h2>
+        <TextTooltip text={path}>
+          <h2 id={headingId} className="min-w-0 flex-1 truncate font-semibold">
+            Blame: <code>{path}</code> at <code>{shortId(oid)}</code>
+          </h2>
+        </TextTooltip>
         <Button
           variant="outline"
           size="sm"
@@ -154,15 +157,17 @@ export function BlameView({ inspection, onBack, onSelectCommit, now = Date.now }
         {result === null ? null : <span className="num ml-auto text-muted-text">{linesText(result.lines)}</span>}
       </div>
       <Body blame={blame} inspection={inspection} headingId={headingId} now={now} onSelectCommit={onSelectCommit} cancel={cancel} focusLost={focusLost} />
-      <div role="group" aria-label="Commit age, older to newer" title={LEGEND} className="flex shrink-0 items-center gap-2 border-t border-divider px-2" style={{ minHeight: 28 }}>
-        <span className="text-muted-text">Older</span>
-        <span aria-hidden="true" className="flex">
-          {[1, 2, 3, 4, 5, 6, 7].map((age) => (
-            <span key={age} data-age={age} className="age-bar block h-3 w-4" style={{ background: `var(--age-${age})` }} />
-          ))}
-        </span>
-        <span className="text-muted-text">Newer</span>
-      </div>
+      <TextTooltip text={LEGEND}>
+        <div role="group" aria-label="Commit age, older to newer" aria-description={LEGEND} className="flex shrink-0 items-center gap-2 border-t border-divider px-2" style={{ minHeight: 28 }}>
+          <span className="text-muted-text">Older</span>
+          <span aria-hidden="true" className="flex">
+            {[1, 2, 3, 4, 5, 6, 7].map((age) => (
+              <span key={age} data-age={age} className="age-bar block h-3 w-4" style={{ background: `var(--age-${age})` }} />
+            ))}
+          </span>
+          <span className="text-muted-text">Newer</span>
+        </div>
+      </TextTooltip>
     </section>
   );
 }
@@ -297,8 +302,29 @@ const Line = memo(function Line({ n, group, facts, content, selected, top, event
   const first = n === group.finalStart;
   // Plan.md D15: the shallow text goes on the second line of the run, or into the tooltip of a run of one line.
   const shallowLine = facts.shallow && n === group.finalStart + 1;
-  const title = first ? (facts.shallow && group.count === 1 ? `${facts.title}\n${SHALLOW}` : facts.title) : undefined;
+  const tip = first ? (facts.shallow && group.count === 1 ? [...facts.tip, SHALLOW] : facts.tip) : null;
   const mark = group.ignored ? "?" : group.unblamable ? "*" : null;
+  const markTip = mark === "?" ? IGNORED : mark === "*" ? UNBLAMABLE : null;
+  // The tooltip facts after the author follow the line text, so a keyboard user hears them.
+  const description = [content, ...(first ? facts.tip.slice(1) : []), ...(first && facts.shallow ? [SHALLOW] : []), ...(markTip === null ? [] : [markTip])].join("\n");
+  const gutter = (
+    <span aria-hidden="true" data-slot="blame-gutter" className="flex min-w-0 gap-2 truncate px-2 font-sans">
+      {first ? (
+        <>
+          <span className="font-mono">{facts.short}</span>
+          <span className="min-w-0 truncate">{facts.author}</span>
+          <span className="ml-auto shrink-0 text-muted-text">{facts.date}</span>
+        </>
+      ) : shallowLine ? (
+        <span className="truncate text-muted-text">{SHALLOW}</span>
+      ) : null}
+    </span>
+  );
+  const markCell = (
+    <span aria-hidden="true" data-slot="blame-mark" className="text-center">
+      {mark}
+    </span>
+  );
   const style: CSSProperties = { position: "absolute", top: 0, left: 0, right: 0, height: ROW_HEIGHT, minHeight: ROW_HEIGHT, transform: `translateY(${top}px)`, gridTemplateColumns: "4px 236px 16px 40px minmax(0, 1fr)" };
   return (
     <div
@@ -308,26 +334,14 @@ const Line = memo(function Line({ n, group, facts, content, selected, top, event
       tabIndex={selected ? 0 : -1}
       aria-selected={selected}
       aria-label={`Line ${n}, ${facts.short}, ${facts.author}, ${facts.date}${group.ignored ? ", ignored" : group.unblamable ? ", unblamable" : ""}`}
-      aria-description={content}
+      aria-description={description}
       className={`list-row grid items-center ${first ? "border-t border-divider" : ""}`}
       style={style}
       onClick={(event: MouseEvent) => (event.preventDefault(), events.click(n))}
     >
       <span aria-hidden="true" data-slot="age-bar" data-age={facts.age} className="age-bar h-full" style={{ background: `var(--age-${facts.age})` }} />
-      <span aria-hidden="true" data-slot="blame-gutter" title={title} className="flex min-w-0 gap-2 truncate px-2 font-sans">
-        {first ? (
-          <>
-            <span className="font-mono">{facts.short}</span>
-            <span className="min-w-0 truncate">{facts.author}</span>
-            <span className="ml-auto shrink-0 text-muted-text">{facts.date}</span>
-          </>
-        ) : shallowLine ? (
-          <span className="truncate text-muted-text">{SHALLOW}</span>
-        ) : null}
-      </span>
-      <span aria-hidden="true" data-slot="blame-mark" title={mark === "?" ? IGNORED : mark === "*" ? UNBLAMABLE : undefined} className="text-center">
-        {mark}
-      </span>
+      {tip === null ? gutter : <TextTooltip text={tip}>{gutter}</TextTooltip>}
+      {markTip === null ? markCell : <TextTooltip text={markTip}>{markCell}</TextTooltip>}
       <span aria-hidden="true" className={`num pr-2 ${selected ? "text-text" : "text-muted-text"}`}>
         {n}
       </span>

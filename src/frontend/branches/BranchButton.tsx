@@ -6,6 +6,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { SwitcherPopover } from "../components/switcher-popover";
+import { TextTooltip } from "../components/text-tooltip";
 import { KEYS } from "../keyboard/shortcuts";
 import { branchName } from "../history/HistoryView";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
@@ -139,7 +140,7 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
           style={{ order: 3, flex: "1000 1 auto" }}
         />
       }
-      tooltip={T.tooltip}
+      tooltip={counts === null ? T.tooltip : [T.tooltip, counts.label]}
       filterLabel={T.filter}
       listLabel={T.list}
       rowHeight={rowHeight}
@@ -170,9 +171,9 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
             {gone(e) ? <GoneMark upstream={shortRef(e.upstream!)} /> : null}
             {/* Feature 004 T116: a zero basis gives the note only the width that the name leaves. Feature 005 plan.md D13: the note "Upstream gone" keeps its width beside the mark. */}
             {n === null ? null : (
-              <span title={n} className={gone(e) && !held(e) ? "num ml-auto shrink-0 whitespace-nowrap text-muted-text" : "num min-w-0 flex-1 truncate text-right text-muted-text"}>
-                {n}
-              </span>
+              <TextTooltip text={n}>
+                <span className={gone(e) && !held(e) ? "num ml-auto shrink-0 whitespace-nowrap text-muted-text" : "num min-w-0 flex-1 truncate text-right text-muted-text"}>{n}</span>
+              </TextTooltip>
             )}
           </>
         );
@@ -206,9 +207,9 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
           </span>
         }
       />
-      {/* The counts shrink before the branch name. One em keeps their ellipsis. The title and the accessible name hold the full counts. */}
+      {/* The counts shrink before the branch name. One em keeps their ellipsis. The button tooltip and the accessible name hold the full counts. */}
       {counts === null ? null : (
-        <span data-slot="branch-counts" aria-hidden="true" title={counts.label} className="num min-w-[1em] shrink-[1000] truncate">
+        <span data-slot="branch-counts" aria-hidden="true" className="num min-w-[1em] shrink-[1000] truncate">
           {counts.text}
         </span>
       )}

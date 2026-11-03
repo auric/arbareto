@@ -1,0 +1,5 @@
+{
+  "schema": "read-submodule-change-result",
+  "expected": "valid",
+  "text": "{\"pathBytes\":\"bGliL2NvcmU=\",\"path\":\"lib/core\",\"kind\":\"submodule\",\"old\":null,\"new\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"limited\":false,\"state\":{\"state\":\"single\"}}"
+}

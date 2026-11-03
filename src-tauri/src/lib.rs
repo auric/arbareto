@@ -150,6 +150,8 @@ pub fn run() {
             ipc::read_ignore_file,
             ipc::preview_ignore,
             ipc::open_submodule,
+            ipc::read_submodule_change,
+            ipc::read_submodule_work,
             ipc::list_dictionaries,
             ipc::read_dictionary,
             ipc::download_dictionary,

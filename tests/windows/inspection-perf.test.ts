@@ -7,12 +7,14 @@
 // Page timing: the time from the `timeStamp` of the input event to the start of the first animation frame whose page holds the result.
 // It leaves out the OS input path and the compositor, so it is not the 001 visible response of the capture source (001 plan.md "Capture source").
 // SC-009 takes each input duration from the W3C Event Timing API: the time from the event to the next paint after its handlers.
+// T108 (plan.md D19, O-11): the SC-012 local-edit marks at 100 and 256 initialized clean submodules. Spec FR-075, SC-012.
 // The 001 capture check of the same steps needs the qualified 001 measurement tools. Until then it is a recorded capability skip, and the task stays open.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
-import { cpSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
+import { SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { buildPathsBound, faGit } from "../git/file-actions-fixtures";
 import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
@@ -23,9 +25,10 @@ import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./c
 import { appEnv, COMMIT_VIEW, descendants, findInstalledApp, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess, type ProcessRecord } from "./installed-app";
 import { PERF_CACHE_ROOT } from "./perf-fixtures";
 import { goneAt, seen, startPoller, type Sample } from "./process-poller";
+import { MARKED, PARENT_FILE, PARENT_TEXT, submoduleWorld } from "./submodule-perf-fixture";
 import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
-for (const helper of ["./cdp.ts", "./process-poller.ts", "./uia.ts", "./installed-app.ts", "../git/file-actions-fixtures.ts", "../git/history-diff-fixtures.ts", "../git/workbench-fixtures.ts"]) printOrigin(helper, import.meta.dir);
+for (const helper of ["./cdp.ts", "./process-poller.ts", "./uia.ts", "./installed-app.ts", "../git/file-actions-fixtures.ts", "../git/history-diff-fixtures.ts", "../git/workbench-fixtures.ts", "./submodule-perf-fixture.ts"]) printOrigin(helper, import.meta.dir);
 
 const TASK = "T061";
 const STEP_MS = MAX_WAIT_MS + MAX_CALL_MS;
@@ -45,16 +48,26 @@ const POLLER_LIFETIME_MS = 5 * 60_000;
 const LIST_MS = 300;
 const FIRST_DIFF_MS = 150;
 const NEXT_FILE_MS = 150;
+// Spec SC-005: the bound of a preview at 100,000 paths is PREVIEW_MS plus DIRECTORY_PATTERN_MS for each directory-only pattern.
 const PREVIEW_MS = 5_000;
+// Research.md "SC-005 directory-only patterns": the largest measured cost of one such pattern per 100,000 paths (4.0 s - 0.45 s).
+const DIRECTORY_PATTERN_MS = 3_550;
 const FIRST_PROGRESS_MS = 500;
 const CANCEL_MS = 1_000;
-const MEMORY_BYTES = 64 * 1024 * 1024;
+// Spec SC-002 for v0.1.0: the highest recorded peak growth (559.8 MiB) plus a 64 MiB margin, rounded up to whole MiB.
+const MEMORY_BYTES = 624 * 1024 * 1024;
 const INPUT_P95_MS = 100;
 const INPUT_MAX_MS = 500;
 // The Event Timing API reports no entry below its 16 ms minimum `durationThreshold`, so such an input counts as 16 ms.
 const EVENT_THRESHOLD_MS = 16;
 // The 001 probe interval during a workload (001 plan.md "Responsiveness metrics").
 const PROBE_INTERVAL_MS = 100;
+// Spec SC-009: the p95 of the permanent Delete counts at least this many probe inputs during the Delete.
+const DELETE_PROBES = 20;
+// The shortest recorded `run_workbench` call of the 1,000-file Delete took 1,260 ms, so 20 probes need at most 63 ms each, the key events included.
+const DELETE_PROBE_INTERVAL_MS = 50;
+// Spec SC-012: the last mark shows within this time per submodule after the Changes list. The T108 control sets it to 1.
+const MARK_MS_PER_SUBMODULE = 55;
 
 // ---- App texts (the source of each value is named) ----
 
@@ -196,8 +209,9 @@ async function closeWindow(c: Cdp, label: string): Promise<void> {
   expect({ label, p95: p95(durations) <= INPUT_P95_MS, max: Math.max(...durations) <= INPUT_MAX_MS }).toEqual({ label, p95: true, max: true });
 }
 
-// `trigger` sends the input that starts the read or action. Then a probe input goes to the page every 100 ms until `finish` resolves.
-async function probing<T>(c: Cdp, label: string, probe: () => Promise<void>, trigger: () => Promise<void>, finish: () => Promise<T>): Promise<T> {
+// `trigger` sends the input that starts the read or action. Then a probe input goes to the page every `interval` ms until `finish` resolves.
+// A case that names `minProbes` fails when fewer probes went to the page before `finish` resolved.
+async function probing<T>(c: Cdp, label: string, probe: () => Promise<void>, trigger: () => Promise<void>, finish: () => Promise<T>, options: { interval?: number; minProbes?: number } = {}): Promise<T> {
   await openWindow(c);
   await trigger();
   let finished = false;
@@ -207,14 +221,51 @@ async function probing<T>(c: Cdp, label: string, probe: () => Promise<void>, tri
     () => void (finished = true),
     () => void (finished = true),
   );
+  let probes = 0;
   while (!finished) {
     await probe();
-    await Bun.sleep(PROBE_INTERVAL_MS);
+    if (!finished) probes++;
+    await Bun.sleep(options.interval ?? PROBE_INTERVAL_MS);
   }
   const value = await running;
   await closeWindow(c, label);
+  console.log(`OBSERVATION ${TASK}: SC-009 ${label}: ${probes} probes before the end`);
+  expect({ label, probes: probes >= (options.minProbes ?? 0) }).toEqual({ label, probes: true });
   return value;
 }
+
+// ---- SC-005 directory-only patterns ----
+
+// Git v2.56.0 dir.c: `add_patterns_from_buffer` skips a UTF-8 BOM, splits at LF, drops one CR before the LF, and skips empty and `#` lines.
+// `trim_trailing_spaces` drops trailing spaces that no backslash escapes. `parse_path_pattern` drops a leading `!` and sets
+// PATTERN_FLAG_MUSTBEDIR for a last `/`. `last_matching_pattern_from_list` resolves the type of each input path for such a pattern.
+export function directoryOnlyPatterns(text: string): number {
+  const trim = (line: string) => {
+    let last: number | null = null;
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === " ") last ??= i;
+      else if (line[i] === "\\") {
+        i++;
+        if (i >= line.length) return line;
+        last = null;
+      } else last = null;
+    }
+    return last === null ? line : line.slice(0, last);
+  };
+  return (text.startsWith("\uFEFF") ? text.slice(1) : text)
+    .split("\n")
+    .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line))
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .map((line) => trim(line))
+    .map((line) => (line.startsWith("!") ? line.slice(1) : line))
+    .filter((line) => line.endsWith("/")).length;
+}
+
+test("directoryOnlyPatterns counts the patterns with PATTERN_FLAG_MUSTBEDIR", () => {
+  expect(directoryOnlyPatterns("big/\n")).toBe(1);
+  expect(directoryOnlyPatterns("/big\nx\n# c/\n\n")).toBe(0);
+  expect(directoryOnlyPatterns("\uFEFFa/\r\n!b/\nc/  \nd/\\ \ne\\/\n  /\nf/")).toBe(6);
+});
 
 // ---- Process facts ----
 
@@ -401,7 +452,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
   );
 
   test.skipIf(reason !== null)(
-    "Q6 SC-002, FR-012: the 100,001-file commit shows exactly the first files up to the bound with the limit text, and the process tree uses at most 64 MiB more than before the selection",
+    "Q6 SC-002, FR-012: the 100,001-file commit shows exactly the first files up to the bound with the limit text, and the process tree uses at most 624 MiB more than before the selection",
     async () => {
       const cached = wideLarge(GIT!);
       const repo = join(fixtureDir("t061-wide-large"), "repo");
@@ -431,9 +482,12 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         );
         expect(await s.c.evaluate<string | null>(activeRow)).toBe(cached.oids.wide!);
         for (let i = 0; i < 3; i++) samples.push(treeBytes(s.app.pid));
-        const peak = Math.max(...samples);
-        console.log(`OBSERVATION ${TASK}: SC-002 process tree private bytes before ${before}, peak ${peak}, growth ${((peak - before) / 1048576).toFixed(1)} MiB, ${shown} files shown`);
         expect(await until<boolean>(s.c, "the limit text", `document.querySelector('[data-section=changedFiles]').textContent.includes(${js(limitText(shown))})`, (v) => v)).toBe(true);
+        // The settled sample comes after the limit text shows. Only the peak has a bound.
+        const settled = treeBytes(s.app.pid);
+        const peak = Math.max(...samples, settled);
+        const mib = (bytes: number) => (bytes / 1048576).toFixed(1);
+        console.log(`OBSERVATION ${TASK}: SC-002 process tree private bytes before ${before}, peak ${peak}, growth ${mib(peak - before)} MiB, settled ${settled}, settled growth ${mib(settled - before)} MiB, bound ${mib(MEMORY_BYTES)} MiB, ${shown} files shown`);
         expect({ bounded: shown > 0 && shown < 100_001, growth: peak - before <= MEMORY_BYTES }).toEqual({ bounded: true, growth: true });
       } finally {
         await end(s);
@@ -490,45 +544,70 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
     return shown!;
   }
 
-  test.skipIf(reason !== null)(
-    "Q21 SC-005, FR-039: every preview of 100,000 paths shows within 5 s, the first preview of a snapshot and the later previews recorded apart (median of 10 each)",
-    async () => {
-      const f = buildPathsBound(GIT!, "t061-preview");
-      const s = await session("preview", f.repo);
-      try {
-        await uia(s.app.pid, COMMIT_VIEW, ControlType.Button, invoke);
-        const field = await openEditor(s.app.pid, s.c);
-        const first: number[] = [];
-        const later: number[] = [];
-        let n = 0;
-        for (let run = 0; run <= RUNS; run++) {
-          // Plan.md D9: a new snapshot builds a new base, so the next preview is the first one of that snapshot.
-          // 001 data-model §4: an equal full read keeps the snapshot. So each run adds or removes the `.M` entry of the tracked `t/.gitignore`.
-          // A comment line keeps its rules, and a tracked file adds no preview input. A new untracked file would pass PREVIEW_PATHS.
-          writeFileSync(join(f.repo, "t", ".gitignore"), run % 2 === 0 ? "x\n# t061\n" : "x\n");
-          await s.c.evaluate(`${field}.blur(); true`);
-          await newSnapshot(s.ipc, () => press(s.c, "F5"));
-          const a = await previewRun(s.c, s.ipc, field, ++n);
-          const b = await previewRun(s.c, s.ipc, field, ++n);
-          if (run === 0) continue;
-          first.push(a);
-          later.push(b);
-        }
-        const m = { first: record("SC-005 first preview of a snapshot", first, PREVIEW_MS), later: record("SC-005 later preview", later, PREVIEW_MS) };
-        expect({ first: Math.max(...first) <= PREVIEW_MS, later: Math.max(...later) <= PREVIEW_MS, firstMedian: m.first <= PREVIEW_MS, laterMedian: m.later <= PREVIEW_MS }).toEqual({ first: true, later: true, firstMedian: true, laterMedian: true });
-        // SC-009 during a preview: the probes type into the commit message field.
-        let replies = 0;
-        await probing(
-          s.c,
-          "the 100,000-path preview",
-          messageProbe(s.c),
-          async () => void (replies = await typeLine(s.c, s.ipc, field, ++n)),
-          () => until<boolean>(s.c, "the preview", previewShown(replies), (v) => v),
-        );
-      } finally {
-        await end(s);
+  // Spec SC-005: the preview bound of the repository from its own directory-only patterns. The app has an owned global config
+  // without `core.excludesFile` and an empty XDG config folder (installed-app.ts `appEnv`), so the repository files and the system config remain.
+  function previewBound(repo: string): { patterns: number; bound: number } {
+    if (Bun.spawnSync([GIT!, "config", "--system", "--get", "core.excludesFile"]).exitCode !== 1) throw new Error("the system Git config sets core.excludesFile; the case cannot count its patterns");
+    const files = git(repo, ["ls-files", "-z", "--cached", "--others", "--", ":(glob)**/.gitignore"]).split("\0").filter((p) => p !== "");
+    const exclude = git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]).trim();
+    const texts = [...files.map((p) => readFileSync(join(repo, p), "utf8")), ...(existsSync(exclude) ? [readFileSync(exclude, "utf8")] : [])];
+    const patterns = texts.reduce((n, text) => n + directoryOnlyPatterns(text), 0);
+    return { patterns, bound: PREVIEW_MS + patterns * DIRECTORY_PATTERN_MS };
+  }
+
+  // Q21 on the `buildPathsBound` fixture (100,000 inputs). `rootIgnore` replaces the root `.gitignore` text before the app starts.
+  async function previewCase(label: string, rootIgnore: string | null, patterns: number): Promise<void> {
+    const f = buildPathsBound(GIT!, `t061-${label}`);
+    if (rootIgnore !== null) writeFileSync(join(f.repo, ".gitignore"), rootIgnore);
+    const limit = previewBound(f.repo);
+    console.log(`OBSERVATION ${TASK}: SC-005 ${label}: ${limit.patterns} directory-only patterns, bound ${limit.bound} ms`);
+    expect(limit.patterns).toBe(patterns);
+    const s = await session(label, f.repo);
+    try {
+      await uia(s.app.pid, COMMIT_VIEW, ControlType.Button, invoke);
+      const field = await openEditor(s.app.pid, s.c);
+      const first: number[] = [];
+      const later: number[] = [];
+      let n = 0;
+      for (let run = 0; run <= RUNS; run++) {
+        // Plan.md D9: a new snapshot builds a new base, so the next preview is the first one of that snapshot.
+        // 001 data-model §4: an equal full read keeps the snapshot. So each run adds or removes the `.M` entry of the tracked `t/.gitignore`.
+        // A comment line keeps its rules, and a tracked file adds no preview input. A new untracked file would pass PREVIEW_PATHS.
+        writeFileSync(join(f.repo, "t", ".gitignore"), run % 2 === 0 ? "x\n# t061\n" : "x\n");
+        await s.c.evaluate(`${field}.blur(); true`);
+        await newSnapshot(s.ipc, () => press(s.c, "F5"));
+        const a = await previewRun(s.c, s.ipc, field, ++n);
+        const b = await previewRun(s.c, s.ipc, field, ++n);
+        if (run === 0) continue;
+        first.push(a);
+        later.push(b);
       }
-    },
+      const m = { first: record(`SC-005 ${label} first preview of a snapshot`, first, limit.bound), later: record(`SC-005 ${label} later preview`, later, limit.bound) };
+      expect({ first: Math.max(...first) <= limit.bound, later: Math.max(...later) <= limit.bound, firstMedian: m.first <= limit.bound, laterMedian: m.later <= limit.bound }).toEqual({ first: true, later: true, firstMedian: true, laterMedian: true });
+      // SC-009 during a preview: the probes type into the commit message field.
+      let replies = 0;
+      await probing(
+        s.c,
+        `the 100,000-path preview (${label})`,
+        messageProbe(s.c),
+        async () => void (replies = await typeLine(s.c, s.ipc, field, ++n)),
+        () => until<boolean>(s.c, "the preview", previewShown(replies), (v) => v),
+      );
+    } finally {
+      await end(s);
+    }
+  }
+
+  test.skipIf(reason !== null)(
+    "Q21 SC-005, FR-039: with one directory-only pattern, every preview of 100,000 paths shows within 5 s plus 3.55 s, the first preview of a snapshot and the later previews recorded apart (median of 10 each)",
+    () => previewCase("preview", null, 1),
+    caseTimeout(30, (2 * RUNS + 4) * STEP_LIMIT_MS),
+  );
+
+  test.skipIf(reason !== null)(
+    "Q21 SC-005, FR-039: without directory-only patterns, every preview of 100,000 paths shows within 5 s, the first preview of a snapshot and the later previews recorded apart (median of 10 each)",
+    // `/big` ignores the same folder `big` without the trailing slash.
+    () => previewCase("preview-flat", "/big\n", 0),
     caseTimeout(30, (2 * RUNS + 4) * STEP_LIMIT_MS),
   );
 
@@ -663,8 +742,14 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         const dialog = `[...document.querySelectorAll('[role=dialog]')].find((d) => d.textContent.includes('Delete 1,000 files permanently?'))`;
         await until<boolean>(s.c, "the Delete confirmation", `!!(${dialog})`, (v) => v);
         await focusOn(s.c, `[...(${dialog}).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Delete permanently')`, "Delete permanently");
-        await probing(s.c, "the permanent Delete of 1,000 files", messageProbe(s.c), () => press(s.c, "Enter"), () =>
-          until<boolean>(s.c, "the end of the Delete", `![...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].some((e) => e.getAttribute('aria-label')?.startsWith('drop, '))`, (v) => v),
+        // Spec SC-009: the trigger Enter counts in the p95 and the max, beside at least 20 probes.
+        await probing(
+          s.c,
+          "the permanent Delete of 1,000 files",
+          messageProbe(s.c),
+          () => press(s.c, "Enter"),
+          () => until<boolean>(s.c, "the end of the Delete", `![...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].some((e) => e.getAttribute('aria-label')?.startsWith('drop, '))`, (v) => v),
+          { interval: DELETE_PROBE_INTERVAL_MS, minProbes: DELETE_PROBES },
         );
       } finally {
         await end(s);
@@ -688,6 +773,93 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
     },
     caseTimeout(60, 10 * STEP_LIMIT_MS),
   );
+
+  // ---- T108: SC-012 local-edit marks (plan.md D19, O-11) ----
+
+  // The page records the first animation frame in which each check holds, on the page clock.
+  // The file watcher or F5 starts the read, so no input event starts the time. A check that holds at arm gives `ok: false`.
+  async function frames(c: Cdp, checks: string[], act: () => Promise<void>): Promise<number[]> {
+    await c.evaluate(`(() => {
+      const checks = [${checks.map((check) => `() => (${check})`).join(", ")}];
+      const armed = performance.now();
+      const times = checks.map(() => null);
+      window.__t108 = null;
+      const held = checks.findIndex((check) => check());
+      if (held >= 0) return (window.__t108 = { ok: false, why: 'check ' + held + ' held at arm', times }), true;
+      const step = () => {
+        const now = performance.now();
+        checks.forEach((check, i) => { if (times[i] === null && check()) times[i] = now; });
+        if (times.every((t) => t !== null)) return void (window.__t108 = { ok: true, why: null, times });
+        if (now - armed > ${STEP_LIMIT_MS}) return void (window.__t108 = { ok: false, why: 'a check did not hold within the limit', times });
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+      return true;
+    })()`);
+    await act();
+    const r = (await until<{ ok: boolean; why: string | null; times: (number | null)[] } | null>(c, "the timed frames", "window.__t108", (v) => v !== null, STEP_LIMIT_MS + 5_000))!;
+    if (!r.ok) throw new Error(`a timed step is not valid: ${js(r)}`);
+    return r.times as number[];
+  }
+  // Waits until no status read and no marks read has a pending IPC call, so a run starts with no read in flight.
+  async function idle(ipc: IpcLog): Promise<void> {
+    for (const end = performance.now() + STEP_LIMIT_MS; ipc.pending("read_workspace").length + ipc.pending("read_submodule_work").length > 0; await Bun.sleep(50)) {
+      if (performance.now() >= end) throw new Error(`a read still runs after ${STEP_LIMIT_MS} ms`);
+    }
+  }
+  const changesItem = (label: string) => `[...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].some((e) => e.getAttribute('aria-label') === ${js(label)})`;
+
+  // Plan D19 "Rows": MARKED has no status record, so its row with the untracked mark joins Changes when the marks read ends.
+  // Until T114, the renderer shows the marks of one read at once, so this row is the last shown mark. MARKED is the last of `count` targets.
+  for (const count of [100, 256]) {
+    test.skipIf(reason !== null)(
+      `T108 SC-012, FR-075: with ${count} initialized clean submodules, 8 at the same time, the last mark shows within ${MARK_MS_PER_SUBMODULE} ms per submodule after the Changes list (median of 10)`,
+      async () => {
+        // Contract Δ5: 8 at the same time and 256 targets per read, so every gitlink of the fixture gets a state.
+        expect({ parallel: SUBMODULE_WORK_PARALLEL, targets: SUBMODULE_WORK_TARGETS }).toEqual({ parallel: 8, targets: 256 });
+        const cached = submoduleWorld(GIT!, count);
+        expect(cached.paths.length).toBe(count);
+        const repo = join(fixtureDir(`t108-${count}`), "repo");
+        cpSync(cached.repo, repo, { recursive: true });
+        // The copy gives every file new stat data, so each index gets a refresh before the clean check.
+        for (const dir of [repo, ...cached.paths.map((p) => join(repo, ...p.split("/")))]) git(dir, ["update-index", "-q", "--refresh"]);
+        // git-status(1) porcelain v2: no record with `--ignore-submodules=none` means a clean parent and clean submodules.
+        expect(git(repo, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none"])).toBe("");
+        const s = await session(`t108-${count}`, repo);
+        try {
+          await uia(s.app.pid, COMMIT_VIEW, ControlType.Button, invoke);
+          const listed = changesItem(PARENT_FILE);
+          const marked = changesItem(`${MARKED}, submodule, modified, untracked content`);
+          const untracked = join(repo, MARKED, "t108.txt");
+          const runs: number[] = [];
+          for (let run = 0; run <= RUNS; run++) {
+            // The start state: no parent record and no mark. The marks read of the clean snapshot removes the mark (plan.md D19 "Rows across snapshots").
+            rmSync(untracked, { force: true });
+            writeFileSync(join(repo, PARENT_FILE), PARENT_TEXT);
+            await press(s.c, "F5");
+            await until<boolean>(s.c, "the start state", `!(${listed}) && !(${marked})`, (v) => v);
+            await idle(s.ipc);
+            const reads = s.ipc.finished("read_submodule_work").length;
+            // The submodule file comes first, so every snapshot with the parent record has the untracked file below MARKED.
+            const [list, mark] = await frames(s.c, [listed, marked], async () => {
+              writeFileSync(untracked, "u\n");
+              writeFileSync(join(repo, PARENT_FILE), `p ${run}\n`);
+              await press(s.c, "F5");
+            });
+            if (mark! < list!) throw new Error(`run ${run}: the mark showed ${list! - mark!} ms before the Changes list`);
+            console.log(`OBSERVATION ${TASK}: T108 ${count} submodules run ${run}: ${s.ipc.finished("read_submodule_work").length - reads} marks reads ended`);
+            if (run > 0) runs.push(mark! - list!);
+          }
+          const bound = MARK_MS_PER_SUBMODULE * count;
+          const m = record(`T108 SC-012 ${count} submodules, the Changes list to the last mark`, runs, bound);
+          expect({ count, median: m <= bound }).toEqual({ count, median: true });
+        } finally {
+          await end(s);
+        }
+      },
+      caseTimeout(30, (RUNS + 1) * 3 * STEP_LIMIT_MS + 10 * 60_000),
+    );
+  }
 
   // 001 plan.md "Capture source": the visible response comes from DXGI capture after injected input in the measurement account.
   // The 001 tools (inject.ts, capture.ts, uia.ts, external-change.ts) wait for their qualification (001 T165, T240, T242, T244), as 004 T083 does.

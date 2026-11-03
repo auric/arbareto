@@ -508,6 +508,7 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - Low (6): the `gitForm` double kept `.` and `..` and accepted U+F000 to U+F0FF segments. Fix: it folds and refuses as `wsl::linux_path` (T055).
 - Low (7), (8): docs. The Q23 host line on WSL is verified by T034. Data-model §18 moves the running run to the store.
 - Low (9): the import failure states follow the DictionaryFailures board, not data-model §4. This waits for the user.
+- User decision on item 9, 2026-10-27: the DictionaryFailures board is the authority. A failed import keeps the row state, such as "Not downloaded", and shows its text in the message row. English always shows "Bundled", with the load text under it. Data-model §4 and plan.md D16 now state this (T065). The user also accepted the five proposed D17 texts as final.
 - Low (10): the main renderer chunk was 1,032.67 kB. Fix: `SettingsView` loads through `lazy()` (T055).
 - Low (11): forced colors. Fix: the knob and the focus bar use CanvasText, and an unavailable checkbox keeps full opacity, so the GrayText rule of `index.css` shows (T055).
 

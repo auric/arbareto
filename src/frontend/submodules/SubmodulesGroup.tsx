@@ -10,6 +10,7 @@ import { CopyButton, unknownReadText, useCopy } from "../app/RepositoryStates";
 import type { createBridge, ProgressEvent } from "../bridge";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
+import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { scopedAction } from "../keyboard/shortcuts";
 import { isObject } from "../lib/utils";
@@ -647,8 +648,10 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
 /** Plan D15 "Header": the status text shrinks first and keeps one line. The tooltip gives the full text. */
 function HeaderStatus({ text, muted = false }: { text: string; muted?: boolean }) {
   return (
-    <span data-slot="header-status" title={text} className={`min-w-0 truncate font-normal whitespace-nowrap${muted ? " text-muted-text" : ""}`}>
-      {text}
-    </span>
+    <TextTooltip text={text}>
+      <span data-slot="header-status" className={`min-w-0 truncate font-normal whitespace-nowrap${muted ? " text-muted-text" : ""}`}>
+        {text}
+      </span>
+    </TextTooltip>
   );
 }

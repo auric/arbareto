@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, itemLabel, keyboardFocus, mountWorkbench, oid, press, REGISTRATION, settle, sizeSwitcherList, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, click, createWorld, hoverTooltip, itemLabel, keyboardFocus, mountWorkbench, oid, press, REGISTRATION, settle, sizeSwitcherList, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T064 (feature 004, WP21). Story US5. Spec FR-049 to FR-057. Plan D10, D15. Data-model §8. Contract Δ3, Δ9.
@@ -185,7 +185,8 @@ describe("worktree button and list (FR-049)", () => {
     const rows = options();
     for (const [index, entry] of ALL.entries()) {
       const lines = rows[index]!.querySelector<HTMLElement>('[data-slot="worktree-lines"]')!;
-      expect(lines.title).toBe(rows[index]!.getAttribute("aria-label")!);
+      expect(rows[index]!.querySelector("[title]")).toBeNull();
+      if (index === 0) expect(await hoverTooltip(lines.parentElement!)).toEqual([rows[index]!.getAttribute("aria-label")!]);
       expect(lines.children).toHaveLength(2);
       expect(text(lines.children[1]!)).toBe(entry.path as string);
       // The compact row (26) and one more line (18), as the density table gives them.
@@ -215,7 +216,8 @@ describe("worktree button and list (FR-049)", () => {
     const [shown, floor] = [...chip.children] as HTMLElement[];
     expect([text(shown!), shown!.className.split(/\s+/).includes("truncate")]).toEqual(["Locked: on a USB disk", true]);
     expect([text(floor!), floor!.getAttribute("aria-hidden"), floor!.className.split(/\s+/).includes("invisible")]).toEqual(["L…", "true", true]);
-    expect(lines.title).toBe(row.getAttribute("aria-label")!);
+    expect(row.querySelector("[title]")).toBeNull();
+    expect(await hoverTooltip(lines.parentElement!)).toEqual([row.getAttribute("aria-label")!]);
     expect(row.getAttribute("aria-label")).toContain("Locked: on a USB disk");
   });
 

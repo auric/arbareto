@@ -13,6 +13,7 @@ import type { BranchEntry } from "../../src/frontend/state/workbench";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
+import { hoverTooltip } from "./sync-fake";
 
 printOrigin("../../src/frontend/refs/ReferencesSidebar.tsx", import.meta.dir);
 registerDom();
@@ -260,7 +261,8 @@ describe("row icons and the worktree mark (Main and BranchCard boards, T080)", (
     await click(item(host, "release, folder"));
     const row = item(host, "release/1.0,");
     const mark = row.querySelector<HTMLElement>('[data-slot="worktree-mark"]')!;
-    expect({ last: row.lastElementChild === mark, hidden: mark.getAttribute("aria-hidden"), title: mark.getAttribute("title"), muted: mark.className.includes("text-muted-text") }).toEqual({ last: true, hidden: "true", title: "Checked out in C:/Repos/sample-repo-release", muted: true });
+    expect({ last: row.lastElementChild === mark, hidden: mark.getAttribute("aria-hidden"), title: mark.getAttribute("title"), muted: mark.className.includes("text-muted-text") }).toEqual({ last: true, hidden: "true", title: null, muted: true });
+    expect(await hoverTooltip(mark)).toEqual(["Checked out in C:/Repos/sample-repo-release"]);
     expect(shapes(row).at(-1)).toEqual(shapeOf(FolderGitIcon));
     expect(row.getAttribute("aria-label")).toBe("release/1.0, local branch, No upstream, Checked out in C:/Repos/sample-repo-release");
     // The open worktree holds the current branch, and a branch that no worktree holds has no mark.

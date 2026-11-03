@@ -13,6 +13,7 @@ import type { BridgeResponse } from "../bridge";
 import type { BranchEntry } from "../state/workbench";
 import { ActionMenu } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
+import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { COUNTS_TOOLTIP, type TrackLabel } from "../state/tracking";
 import { scopedAction, type ScopedAction } from "../keyboard/shortcuts";
@@ -156,7 +157,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
 }
 
 export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollElement, expanded, onExpandedChange, branches }: ReferencesSidebarProps) {
-  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId(), empty: useId(), card: useId() };
+  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId(), empty: useId(), card: useId(), counts: useId() };
   // Feature 005 plan.md D13: one branch card at a time, by row key.
   const [card, setCard] = useState<{ key: string; instant: boolean } | null>(null);
   // Exact names only: a ref that is not valid UTF-8 pairs with nothing.
@@ -394,7 +395,8 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     // Feature 005 spec FR-065: the branch and remote rows without a symbolic target have the card.
     const carded = (kind === "branch" || kind === "remote") && entry.symref === null;
     const cardOpen = carded && card?.key === node.key;
-    const describedBy = [notShown === undefined ? null : ids[notShown], cardOpen ? ids.card : null].filter((id) => id !== null).join(" ") || undefined;
+    const counted = entry.symref === null && track !== null && !noUpstream;
+    const describedBy = [notShown === undefined ? null : ids[notShown], counted ? ids.counts : null, cardOpen ? ids.card : null].filter((id) => id !== null).join(" ") || undefined;
     const view = (
       <div
         key={node.key}
@@ -431,15 +433,19 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
               </span>
             )}
             {track === null || noUpstream ? null : (
-              <span aria-hidden="true" title={`${track.label}. ${COUNTS_TOOLTIP}`} className="num ml-auto shrink-0 whitespace-nowrap">
-                {track.text}
-              </span>
+              <TextTooltip text={`${track.label}. ${COUNTS_TOOLTIP}`}>
+                <span aria-hidden="true" className="num ml-auto shrink-0 whitespace-nowrap">
+                  {track.text}
+                </span>
+              </TextTooltip>
             )}
             {/* The BranchCard board: the worktree mark at the row end. The row name states it. */}
             {heldBy == null ? null : (
-              <span data-slot="worktree-mark" aria-hidden="true" title={checkedOut(heldBy)} className={track === null || noUpstream ? "ml-auto flex shrink-0 text-muted-text" : "flex shrink-0 text-muted-text"}>
-                <HugeiconsIcon icon={FolderGitIcon} strokeWidth={2} className="size-4" />
-              </span>
+              <TextTooltip text={checkedOut(heldBy)}>
+                <span data-slot="worktree-mark" aria-hidden="true" className={track === null || noUpstream ? "ml-auto flex shrink-0 text-muted-text" : "flex shrink-0 text-muted-text"}>
+                  <HugeiconsIcon icon={FolderGitIcon} strokeWidth={2} className="size-4" />
+                </span>
+              </TextTooltip>
             )}
           </>
         ) : (
@@ -478,9 +484,11 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
             return (
               <div key={row.node.key} role="none" style={place}>
                 {rowView(row, item.index, { height: rowHeight })}
-                <p id={emptyId(row.kind)} aria-hidden="true" title={empty} className="truncate pr-2 pl-4 text-muted-text" style={{ height: rowHeight, lineHeight: `${rowHeight}px` }}>
-                  {empty}
-                </p>
+                <TextTooltip text={empty}>
+                  <p id={emptyId(row.kind)} aria-hidden="true" className="truncate pr-2 pl-4 text-muted-text" style={{ height: rowHeight, lineHeight: `${rowHeight}px` }}>
+                    {empty}
+                  </p>
+                </TextTooltip>
               </div>
             );
           })}
@@ -528,6 +536,9 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         </span>
         <span id={ids.unknown} hidden>
           {NOT_SHOWN.unknown}
+        </span>
+        <span id={ids.counts} hidden>
+          {COUNTS_TOOLTIP}
         </span>
       </>
     );

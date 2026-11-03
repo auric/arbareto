@@ -102,7 +102,8 @@ type Flags = { fileActionRunning: boolean; operationRunning: boolean; modalOpen:
 
 const BUSY = "A file action is running. Wait for its result.";
 const REFUSAL = "Stage file is unavailable: the file has a conflict";
-const LABEL: Record<ChangeEntry["category"], string> = { conflicted: "Changes", unstaged: "Changes", untracked: "Changes", staged: "Staged" };
+// Feature 004 FR-104: conflicted entries are in the Conflicted section, not in Changes.
+const LABEL: Record<ChangeEntry["category"], string> = { conflicted: "Conflicted", unstaged: "Changes", untracked: "Changes", staged: "Staged" };
 
 const [unstagedA, unstagedB, untracked, stagedA] = entries as [ChangeEntry, ChangeEntry, ChangeEntry, ChangeEntry];
 // Feature 005 spec FR-015: the lists sort by name, so "src/0.ts" keeps the conflicted entry first in the Changes list.
@@ -423,8 +424,8 @@ describe("selection follows focus", () => {
     expect(pane.reads).toEqual([unstagedB.entryId]);
     expect(document.activeElement).toBe(option(unstagedB));
     expect(option(unstagedB).getAttribute("aria-selected")).toBe("true");
-    // The Changes list starts with the conflicted entry and ends with the untracked entry. Without a layout, one page is one row.
-    for (const [key, to] of [["ArrowUp", unstagedA], ["End", untracked], ["Home", conflicted], ["PageDown", unstagedA], ["PageUp", conflicted]] as const) {
+    // The Changes list starts with unstagedA and ends with the untracked entry. The conflicted entry is in its own section (004 FR-104). Without a layout, one page is one row.
+    for (const [key, to] of [["ArrowUp", unstagedA], ["End", untracked], ["Home", unstagedA], ["PageDown", unstagedB], ["PageUp", unstagedA]] as const) {
       await press(document.activeElement!, key);
       expect(document.activeElement).toBe(option(to));
       expect(pane.reads.at(-1)).toBe(to.entryId);

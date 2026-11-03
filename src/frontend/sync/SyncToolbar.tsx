@@ -10,6 +10,7 @@ import { MENU_CONTENT } from "../app/RepositoryMenu";
 import { BLOCKED_TEXT, operationBlock } from "../changes/HunkControls";
 import { IconButton } from "../components/icon-button";
 import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
+import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -192,13 +193,15 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
       {count}
       {[...lines].map(([reason, controls], i) => (
         // Plan.md D15 "Top bar row": the line keeps its control names and an ellipsis. The reason takes only the width that the other controls leave.
-        <span key={reason} id={`${id}-${i}`} className="flex text-muted-text" style={{ flexGrow: 1 }} title={`${controls.join(", ")}: ${reason}`}>
-          <span className="shrink-0 whitespace-pre">{`${controls.join(", ")}: `}</span>
-          {/* `contain: inline-size` gives the reason no content width. */}
-          <span className="min-w-[1em] truncate" style={{ contain: "inline-size", flexGrow: 1 }}>
-            {reason}
+        <TextTooltip key={reason} text={`${controls.join(", ")}: ${reason}`}>
+          <span id={`${id}-${i}`} className="flex text-muted-text" style={{ flexGrow: 1 }}>
+            <span className="shrink-0 whitespace-pre">{`${controls.join(", ")}: `}</span>
+            {/* `contain: inline-size` gives the reason no content width. */}
+            <span className="min-w-[1em] truncate" style={{ contain: "inline-size", flexGrow: 1 }}>
+              {reason}
+            </span>
           </span>
-        </span>
+        </TextTooltip>
       ))}
     </div>
   );

@@ -7,6 +7,7 @@
 // The `wslFiles` cases run the Perl text of `src/contracts/wsl-process.json` through the contract §11 wrapper, with the arguments and the stdin tokens
 // of `src-tauri/src/wsl.rs` `files_perl`. Their operation IDs start with `0f0f0f0f-0000-4000-8009-`, and no other test uses that prefix.
 // T078: the Delete, preview, and Save rows run through the WSL file actions of the shell test double `tests/git/bun-runner.ts`.
+// T108 and T111 (plan.md D19, spec FR-076, SC-012): the marks cost at 20 and 100 submodules, and the preview and the marks through the distro Git. Run them on Ubuntu-26.04.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync, unlinkSync } from "node:fs";
@@ -26,10 +27,11 @@ import { OPERATION_MARKERS } from "../../src/git-service/commands";
 import { PREVIEW_GROUP_PATHS } from "../../src/contracts/limits";
 import { comparePaths } from "../../src/contracts/tree-order";
 import { openService, withFsCalls, type Envelope, type FsCall, type RegistrationResult, type Service, type ServiceResponse } from "../git/service-harness";
+import { gitLocation } from "../git/submodule-harness";
 import { distroGitHost, globalConfig, sh } from "./fixtures";
 import { inDistro, listScopes, OWN_SCOPE_OPERATIONS, pgrep, uncPath, useWslFolder, WSL_ENV, WSL_EXE, WSL_FILES_TEXT, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
-for (const module of ["commit-changes", "blame", "ignore", "file-delete", "workbench-review", "submodule-open", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+for (const module of ["commit-changes", "blame", "ignore", "file-delete", "workbench-review", "submodule-open", "submodule-change", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 printOrigin("../../src/git-service/diff-parser.ts", import.meta.dir);
 printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 printOrigin("../../src/git-service/line-map.ts", import.meta.dir);
@@ -1296,6 +1298,122 @@ describe("T059 service rows through the shell test double and the distro Git (qu
       }
       // The parent stays registered after each refusal.
       expect(outcome(await s.readWorkspace(parent.repositoryId))).toEqual(SUCCEEDED);
+    });
+  });
+
+  // T106 to T108: contract Δ3 `readSubmoduleChange` and `readSubmoduleWork` through the distro wrapper (spec FR-076, SC-012).
+  W("FR-071, FR-074, FR-076: readSubmoduleChange equals the distro Git's rev-list and log inside the submodule; readSubmoduleWork equals the distro parent status with none on a copy", async (w) => {
+    const h = hostOf(w);
+    const sub = buildSubmodules(gitPath(), "t106-wsl");
+    const sup = `${copyIn(w, sub.root, "t106-wsl")}/super`;
+    prepare(h, [sup, `${sup}/solo`, `${sup}/mid`, `${sup}/mid/leaf`]);
+    const old = t(h, `${sup}/solo`, ["rev-parse", "HEAD"]).trim();
+    sh(w, 'printf "a\\n" > "$1/solo/wsl-a.txt" && printf "u\\n" > "$1/mid/wsl-u.txt"', [sup]);
+    g(h, `${sup}/solo`, ["add", "--", "wsl-a.txt"]);
+    g(h, `${sup}/solo`, ["commit", "-q", "--no-verify", "-m", "wsl one"]);
+    const next = t(h, `${sup}/solo`, ["rev-parse", "HEAD"]).trim();
+    const [removed, added] = t(h, `${sup}/solo`, ["rev-list", "--left-right", "--count", `${old}...${next}`]).trim().split("\t").map(Number);
+    const subject = t(h, `${sup}/solo`, ["log", "-z", "--format=%H%x00%s", "--max-count=50", next, `^${old}`]).split(NUL);
+    sh(w, 'cp -a "$1" "$1-oracle"', [sup]);
+    const oracle: Record<string, { modified: boolean; untracked: boolean }> = {};
+    for (const record of t(h, `${sup}-oracle`, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", "solo", "mid"]).split(NUL)) {
+      const m = /^1 \S\S S[C.]([M.])([U.]) \S+ \S+ \S+ \S+ \S+ (.*)$/.exec(record);
+      if (m) oracle[m[3]!] = { modified: m[1] === "M", untracked: m[2] === "U" };
+    }
+    await withWsl(w, "t106-wsl", async (s) => {
+      const r = await s.register(uncPath(w, sup));
+      const read = await readOk(s, r.repositoryId);
+      const entry = read.entries.find((e) => e.path === "solo" && e.category === "unstaged")!;
+      const env = { repositoryId: r.repositoryId, repositoryGeneration: read.generation };
+      const change = await request<{ old: string; new: string; state: { state: string; added: number; removed: number; addedCommits: { oid: string; subject: string }[] } }>(s, "readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.snapshotId, entryId: entry.entryId } }, env);
+      expect(outcome(change)).toEqual(SUCCEEDED);
+      expect({ old: change.result!.old, new: change.result!.new, added: change.result!.state.added, removed: change.result!.state.removed, list: change.result!.state.addedCommits }).toEqual({ old, new: next, added, removed, list: [{ oid: subject[0]!, subject: subject[1]! }] });
+      const work = await request<{ entries: { path: string; state: string; modified?: boolean; untracked?: boolean }[] }>(s, "readSubmoduleWork", { snapshotId: read.snapshotId }, env);
+      expect(outcome(work)).toEqual(SUCCEEDED);
+      const shown = Object.fromEntries(work.result!.entries.filter((e) => e.state === "checked" && (e.modified || e.untracked)).map((e) => [e.path, { modified: e.modified!, untracked: e.untracked! }]));
+      expect(shown).toEqual(Object.fromEntries(Object.entries(oracle).filter(([, v]) => v.modified || v.untracked)));
+    });
+  });
+
+  // T108: the SC-012 cost of the current route (plan.md D19 "WSL"). WSL has no budget in v0.1.0, so the case records the times and the DEADLINE count.
+  // The fixture is built in the distro: a library commit, a superproject, and `count` copies of the library as gitlinks in index order.
+  const CLEAN_BUILD = [
+    'set -e; git="$1"; home="$2"; cfg="$3"; root="$4"; n="$5"',
+    'G() { env -i HOME="$home" PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL="$cfg" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_AUTHOR_DATE=2026-01-01T00:00:00+0000 GIT_COMMITTER_DATE=2026-01-01T00:00:00+0000 "$git" "$@"; }',
+    'mkdir -p "$root/lib" "$root/super/m"; G -C "$root/lib" init -q -b main; printf "lib\n" > "$root/lib/f.txt"; G -C "$root/lib" add -- f.txt; G -C "$root/lib" commit -q --no-verify -m lib',
+    'oid=$(G -C "$root/lib" rev-parse HEAD); G -C "$root/super" init -q -b main; printf "p\n" > "$root/super/p.txt"; G -C "$root/super" add -- p.txt; G -C "$root/super" commit -q --no-verify -m base',
+    ': > "$root/info"; i=0; while [ $i -lt "$n" ]; do p=$(printf "m/%03d" $i); cp -a "$root/lib" "$root/super/$p"; G -C "$root/super/$p" update-index -q --refresh; printf "160000 %s\t%s\n" "$oid" "$p" >> "$root/info"; i=$((i+1)); done',
+    'G -C "$root/super" update-index --index-info < "$root/info"; G -C "$root/super" commit -q --no-verify -m submodules',
+  ].join("\n");
+  type WorkEntry = { path: string; state: string; modified?: boolean; untracked?: boolean; reason?: string; code?: string };
+  let cleanBuilds = 0;
+  for (const count of [20, 100]) {
+    W(`T108 SC-012: readSubmoduleWork time of ${count} initialized clean submodules through the current route, median of 10 warm runs, with the DEADLINE count and no bound`, async (w) => {
+      const h = hostOf(w);
+      const root = `${h.root}/t108-${count}-${++cleanBuilds}`;
+      sh(w, CLEAN_BUILD, [w.probe.paths.git!, `${w.folder}/home`, h.globalConfig, root, String(count)]);
+      const sup = `${root}/super`;
+      // git-status(1) porcelain v2: no record with `--ignore-submodules=none` means a clean parent and clean submodules.
+      expect(t(h, sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none"])).toBe("");
+      await withWsl(w, `t108-wsl-${count}`, async (s) => {
+        const r = await s.register(uncPath(w, sup));
+        const times: number[] = [];
+        let deadlines = 0;
+        for (let run = 0; run <= 10; run++) {
+          const read = await readOk(s, r.repositoryId);
+          const started = performance.now();
+          const work = await request<{ entries: WorkEntry[]; limited: number }>(s, "readSubmoduleWork", { snapshotId: read.snapshotId }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
+          const ms = performance.now() - started;
+          expect(outcome(work)).toEqual(SUCCEEDED);
+          expect({ entries: work.result!.entries.length, limited: work.result!.limited }).toEqual({ entries: count, limited: 0 });
+          // Contract Δ3: a target that the 30 s read deadline does not reach gives `unchecked` reason `failed` with DEADLINE (plan.md D19 "WSL").
+          const late = work.result!.entries.filter((e) => e.state === "unchecked" && e.reason === "failed" && e.code === "DEADLINE").length;
+          expect(work.result!.entries.filter((e) => !(e.state === "checked" && !e.modified && !e.untracked) && !(e.state === "unchecked" && e.reason === "failed" && e.code === "DEADLINE"))).toEqual([]);
+          console.log(`OBSERVATION T108: WSL ${count} submodules run ${run}: ${ms.toFixed(0)} ms, DEADLINE ${late} (${w.distro})`);
+          if (run === 0) continue;
+          times.push(ms);
+          deadlines += late;
+        }
+        times.sort((a, b) => a - b);
+        console.log(`OBSERVATION T108: SC-012 WSL ${count} submodules: median ${((times[4]! + times[5]!) / 2).toFixed(0)} ms, min ${times[0]!.toFixed(0)} ms, max ${times.at(-1)!.toFixed(0)} ms, DEADLINE states ${deadlines} in 10 runs, no bound (${w.distro})`);
+      });
+    });
+  }
+
+  // T111: the preview and the marks run through the distro Git (spec FR-076). Only the operation-marker stat calls and the index open cross `\wsl.localhost`.
+  W("T111 FR-076: readSubmoduleChange and readSubmoduleWork run each submodule command at the distro path of the submodule, with no \\wsl.localhost read besides the operation markers and the index", async (w) => {
+    const h = hostOf(w);
+    const built = buildSubmodules(gitPath(), "t111-wsl");
+    const sup = `${copyIn(w, built.root, "t111-wsl")}/super`;
+    prepare(h, [sup, `${sup}/solo`, `${sup}/mid`, `${sup}/mid/leaf`]);
+    const old = t(h, `${sup}/solo`, ["rev-parse", "HEAD"]).trim();
+    sh(w, 'printf "a\n" > "$1/solo/t111-a.txt" && printf "u\n" > "$1/mid/t111-u.txt"', [sup]);
+    g(h, `${sup}/solo`, ["add", "--", "t111-a.txt"]);
+    g(h, `${sup}/solo`, ["commit", "-q", "--no-verify", "-m", "t111 wsl"]);
+    const next = t(h, `${sup}/solo`, ["rev-parse", "HEAD"]).trim();
+    const crossing = crossingIn(w, sup);
+    await withWsl(w, "t111-wsl", async (s) => {
+      const r = await s.register(uncPath(w, sup));
+      const read = await readOk(s, r.repositoryId);
+      expect(read.location.kind).toBe("wsl");
+      const env = { repositoryId: r.repositoryId, repositoryGeneration: read.generation };
+      const entry = read.entries.find((e) => e.path === "solo" && e.category === "unstaged")!;
+      // The location of each recorded call (`-C` or `--git-dir=`) other than the parent. Commands.ts `inSubmodule` gives `-C <Git form of the root>/<path>`.
+      const locations = (from: number) => [...new Set(s.runner.calls.slice(from).map((c) => gitLocation(c.arguments)).filter((l): l is string => l !== null && l !== sup && l !== r.worktreeRoot))].sort();
+      const inDistro = (locs: string[]) => ({ distroForm: locs.every((l) => l.startsWith(`${sup}/`)), locs });
+      let from = s.runner.calls.length;
+      const { value: change, calls: changeCalls } = await withFsCalls(() => request<{ old: string; new: string }>(s, "readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.snapshotId, entryId: entry.entryId } }, env));
+      expect(outcome(change)).toEqual(SUCCEEDED);
+      expect({ old: change.result!.old, new: change.result!.new }).toEqual({ old, new: next });
+      expect(crossing(changeCalls)).toEqual([]);
+      expect(inDistro(locations(from))).toEqual({ distroForm: true, locs: [`${sup}/solo`] });
+      from = s.runner.calls.length;
+      const { value: work, calls: workCalls } = await withFsCalls(() => request<{ entries: WorkEntry[] }>(s, "readSubmoduleWork", { snapshotId: read.snapshotId }, env));
+      expect(outcome(work)).toEqual(SUCCEEDED);
+      expect(work.result!.entries.find((e) => e.path === "mid")).toMatchObject({ state: "checked", untracked: true });
+      expect(crossing(workCalls)).toEqual([]);
+      const locs = locations(from);
+      expect({ ...inDistro(locs), solo: locs.includes(`${sup}/solo`), mid: locs.includes(`${sup}/mid`) }).toEqual({ distroForm: true, locs, solo: true, mid: true });
     });
   });
 });

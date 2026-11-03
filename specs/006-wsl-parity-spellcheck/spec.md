@@ -150,7 +150,7 @@ The team runs the 004 workbench rows that have no WSL test yet, and Add worktree
 - A word holds only letters of a Script that no selected language has, such as a Greek word with English and Ukrainian selected. No language is responsible for it, so it gets no mark. No mark is no proof of correct spelling.
 - The personal word list or the Ignore list holds "kubectl". The words "Kubectl" and "KUBECTL" are then correct too. This is the Hunspell case rule (FR-006).
 - No selected dictionary can load, for example because all downloaded files changed. The editor shows no marks, and the chip states "Spelling: No language loaded". No mark is no proof of correct spelling.
-- One selected dictionary cannot load. The chip names only the loaded languages. The chip tooltip and the Spelling page row show "Arbareto cannot load the <Language> dictionary. Spell check uses the other languages."
+- One selected dictionary cannot load. The chip names only the loaded languages. The chip tooltip and the Spelling page row show "Arbareto cannot load the <Language> dictionary. Spell check uses the other languages." The row of a Changed language and of a language with the `catalog-changed` notice shows its FR-016 text instead.
 - Spell check is off. The editor shows no marks and no count, and the chip states "Spelling: Off".
 - The personal word list holds 10,000 words. Add to dictionary is unavailable with the limit stated.
 - A word for the personal list is longer than 100 code points. Add to dictionary is unavailable with the limit stated.
@@ -252,7 +252,7 @@ This feature changes these requirements for builds that include it. The earlier 
   - "Arbareto could not save the <Language> dictionary in <folder>."
   - "The <Language> dictionary files changed. Download the dictionary again."
   - "These files are not the <Language> files of the catalog. Arbareto did not import them."
-  - "Arbareto cannot load the <Language> dictionary. Spell check uses the other languages." The chip tooltip and the Spelling page row MUST show this text.
+  - "Arbareto cannot load the <Language> dictionary. Spell check uses the other languages." The chip tooltip MUST show this text. The Spelling page row MUST show it, except for a Changed language and a language with the `catalog-changed` notice. Their rows show the `changed` text or the `catalog-changed` text.
   - "This Arbareto release has new <Language> dictionary files. Download the dictionary again."
   - "This Arbareto release has no <Language> dictionary. Arbareto removed it."
   - "Another dictionary download or import runs. Wait for it to end."
@@ -287,7 +287,7 @@ This feature changes these requirements for builds that include it. The earlier 
 ### Key Entities *(include if feature involves data)*
 
 - **Catalog entry**: A language id, its name, its `package.json` licence value, the Unicode Script of its words, and the source commit. For each of `index.aff`, `index.dic`, and each licence document, it holds the URL, the byte count, and the SHA-256. The licence documents are `license` and `licence` where they exist (`oc` has both), or, for `eu` and `et`, `readme.md`.
-- **Installed dictionary**: A catalog entry whose files sit in the dictionary folder, with the catalog entry that it came from. Its state is Ready or Changed. Downloading and Failed are row states of a language with no installed files.
+- **Installed dictionary**: A catalog entry whose files sit in the dictionary folder, with the catalog entry that it came from. Its state is Ready or Changed. Downloading is a row state of a language with no installed files. Failed is the row state after a failed download run, or after a failed load of a Ready language (data-model §4).
 - **Language selection**: One Arbareto setting for all repositories, kept across restarts. It holds the on or off state and the ordered list of at most 3 selected languages, with English bundled.
 - **Personal word list**: At most 10,000 words, each at most 100 code points. Each word is in NFC and has its own record in the app profile storage.
 - **Ignore list**: The words that the user ignored in this window session. It is not stored.

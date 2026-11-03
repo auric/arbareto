@@ -16,8 +16,8 @@ import { readIgnoreFile, targetOf, type IgnoreTarget } from "./ignore";
 import { encodeIgnore } from "./ignore-text";
 import { contextOf, latin1 } from "./read-steps";
 import type { Workspace } from "./registration";
-import type { ReadInstallation } from "./snapshot";
-import { parseIndexListing } from "./status";
+import { indexFingerprint, type ChangeSnapshot, type IndexEntry, type ReadInstallation } from "./snapshot";
+import { parseIndexListing, readRawIndex } from "./status";
 import { parseMaybeBool, type ConfigEntry, type Trust } from "./trust";
 
 export type PreviewOutcome = { result: "succeeded" | "failed"; code?: ErrorCode; value?: unknown } | { result: "canceled" } | { result: "deadline" };
@@ -26,6 +26,7 @@ export interface PreviewTarget {
   signal: AbortSignal;
   workspace: Workspace;
   installation: ReadInstallation;
+  snapshot: Pick<ChangeSnapshot, "indexFingerprint" | "indexEntries">;
 }
 type Payload = { target: IgnoreTarget; text: string; snapshotId: string; lineEnding?: "lf" | "crlf" };
 type Reason = "paths" | "listing" | "name-case" | "shadow-copy" | "self-check" | "unreadable" | "deadline";
@@ -300,8 +301,8 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
     const pending = [listing(t, ignoredArgs()), listing(t, matchedArgs())] as const;
     for (const read of pending) read.catch(() => undefined);
     try {
-      const [stage, universe] = await steps([listing(t, indexEntryArgs()), listing(t, universeArgs())]);
-      const index = parseIndexListing(stage, w.objectFormat);
+      const stage = snapshotEntries(t).then(async (kept) => kept ?? parseIndexListing(await listing(t, indexEntryArgs()), w.objectFormat));
+      const [index, universe] = await steps([stage, listing(t, universeArgs())]);
       const untracked = records(universe);
       if (index === null || untracked === null) throw failed("MALFORMED_GIT_OUTPUT");
       // ls-files(1): the first record of each path counts, so unmerged stages count once.
@@ -369,6 +370,20 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
       if (error === CLOSED) await steps(pending);
       throw error;
     }
+  }
+
+  // 001 contract §11 "Change polling": SHA-256 equality of the raw index and of its shared index proves the same bytes.
+  // The snapshot entries then are the `ls-files` listing of this index. A WSL index has no native read, so its listing runs.
+  async function snapshotEntries(t: PreviewTarget): Promise<readonly IndexEntry[] | null> {
+    const w = t.workspace;
+    const kept = t.snapshot.indexFingerprint;
+    if (kept === null || kept.rawIndexDigest === null || w.wsl !== undefined) return null;
+    const raw = await readRawIndex(w.indexPath);
+    if (!(raw instanceof Uint8Array)) return null;
+    const now = await indexFingerprint({ rawIndex: raw, objectFormat: w.objectFormat, gitDirectory: w.gitDirectory, entries: [] });
+    if (!now.ok || now.value.rawIndexDigest !== kept.rawIndexDigest) return null;
+    const [a, b] = [now.value.sharedIndex, kept.sharedIndex];
+    return (a === null ? b === null : b !== null && a.hash === b.hash && a.digest === b.digest) ? t.snapshot.indexEntries : null;
   }
 
   // Plan.md D9 "Classification" and "Results".

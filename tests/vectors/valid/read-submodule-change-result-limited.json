@@ -1,0 +1,5 @@
+{
+  "schema": "read-submodule-change-result",
+  "expected": "valid",
+  "text": "{\"pathBytes\":\"bGliL2NvcmU=\",\"path\":\"lib/core\",\"kind\":\"submodule\",\"old\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"new\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"limited\":true,\"state\":{\"state\":\"commits\",\"added\":51,\"removed\":0,\"addedCommits\":[{\"oid\":\"cccccccccccccccccccccccccccccccccccccccc\",\"subject\":\"x\"},{\"oid\":\"cccccccccccccccccccccccccccccccccccccccc\",\"subject\":\"x\"},{\"oid\":\"cccccccccccccccccccccccccccccccccccccccc\",\"subject\":\"x\"}],\"removedCommits\":[]}}"
+}

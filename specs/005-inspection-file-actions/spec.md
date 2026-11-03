@@ -45,6 +45,27 @@ The user reported two ignore editor problems and asked to edit a file with mixed
 - Q: What does the editor do with a CR that no LF follows? → A: It refuses to open the file, as before, with its own reason (FR-037).
 - Q: What does the preview area show before the first edit? → A: "Change the text to see its effect on ignored files." (FR-041).
 
+### Session 2026-10-27
+
+The user set four performance budgets from the recorded packaged runs (research.md "Budget decisions of 2026-10-27").
+
+- Q: What memory may the 100,001-file commit use in v0.1.0? → A: The bound comes from the measurement: 624 MiB above the start, the highest recorded peak plus 64 MiB. A later task pages the list and restores 64 MiB (SC-002, T104).
+- Q: Does the 5 s preview bound hold with directory-only patterns? → A: 5 s holds without them. Each such pattern adds Git's measured cost of 3.55 s per 100,000 paths (SC-005). This replaces the 5 s answer of 2026-10-21 for such files.
+- Q: What is a normal open in SC-007? → A: Recent repositories (Ctrl+R), then Enter. Its time starts at the Enter keydown, as for Open submodule. Open submodule may take 150 ms more for the parent safety checks (SC-007).
+- Q: How many inputs does the SC-009 p95 of the permanent Delete count? → A: At least 20 probe inputs and the Enter that starts the Delete (SC-009).
+
+### Session 2026-10-31
+
+The user approved the mockup boards "Commit view: submodule selected" and "History: submodule change" (local scratch, sample data). Both ship in v0.1.0 (research.md R18).
+
+- Q: What does a selected submodule row show in the diff area? → A: The path, the label "Submodule", and Open submodule. Then the old and the new short ID, the count of new or removed commits, and one line per commit with its short ID and subject, at most 50, then "and <n> more". The limitation text "This entry is a submodule or a nested repository." goes (FR-069 to FR-073).
+- Q: Does the preview show the local edits of the submodule? → A: In the Commit view only, as the row "Working tree" with "modified content" and "untracked content". The facts come from the submodule's own status, behind a check of its own settings (FR-074).
+- Q: Does a submodule with local edits and an unchanged commit show in Changes? → A: Yes. It shows with the mark "modified content" and the tooltip "The submodule has local edits. Its commit is unchanged." This changes 001 FR-007 (FR-075).
+- Q: What shows when the submodule lacks a commit? → A: Only the two IDs and "Fetch the submodule first." The read fetches nothing (FR-072).
+- Q: How many submodules does the marks read check at the same time, and how fast must the marks show? → A: Orchestrator decision 2026-10-31, from the measurement (research.md R18 "Cost"). At most 8 at the same time (FR-075). On Windows, the last mark shows within 55 ms per submodule after the Changes list, at 100 and 256 clean submodules (SC-012). The next answer revised the first value of 45 ms.
+- Q: Do the SC-012 budgets hold in the packaged build? → A: Orchestrator decision 2026-10-31, from the packaged T108 and T111 measurements (research.md R18 "Packaged cost"). The marks budget is 55 ms per clean submodule on Windows: 5.5 s for 100 and 14.08 s for 256. The worst packaged median was 48.9 ms per submodule. The preview budget is 400 ms. The worst packaged preview median after the speed fix was 376.1 ms (rerun on 3a7b5395).
+- Q: Does the marks read get a WSL budget in v0.1.0? → A: Orchestrator decision 2026-10-31. No. The current route stays. A submodule that the 30 s deadline does not reach shows `failed` with `DEADLINE`. SC-012 records the measured WSL cost.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows the commit details of a selected history row, with the static line "Changed files are not shown in this version." Feature 004 adds the Commit view with file trees, Show in Explorer for a file, a one-line ignore action, and the Submodules group. This feature makes history inspectable and makes the Commit view a place to act on files. Git Extensions is the reference for the functions, and Arbareto must be faster and safer.
@@ -224,6 +245,25 @@ A developer sees an icon on each local branch whose upstream branch no longer ex
 
 ---
 
+### User Story 10 - See what a submodule change holds (Priority: P1, v0.1.0)
+
+A developer selects a submodule row in the Commit view or in the History diff. The diff area shows the old and the new commit, the commit counts, and the commit subjects. In the Commit view, it also shows whether the submodule has local edits. Changes also lists a submodule that has only local edits.
+
+**Why this priority**: Today the diff area shows only "This entry is a submodule or a nested repository." The user must open the submodule to see what a commit of the parent records. Git Extensions shows this summary.
+
+**Independent Test**: In submodule fixtures with new commits, removed commits, both, more than 50 commits, a missing commit, an uninitialized submodule, a nested repository without a `.gitmodules` entry, and a submodule with only local edits, compare each preview with Git's own `rev-list --left-right --count` and `log` inside the submodule. Check that no submodule program runs in any preview, and that no local-edit status runs for a submodule whose settings name a status program.
+
+**Acceptance Scenarios**:
+
+1. **Given** a parent whose working submodule vendor/libfmt is 3 commits ahead of the index. **When** I select its row in Changes. **Then** the diff area shows "vendor/libfmt", "Submodule", Open submodule, "a1b2c3d → 9f8e7d6", "3 new commits", and the three commits with their short IDs and subjects.
+2. **Given** that row and untracked files inside vendor/libfmt. **When** the row is selected. **Then** the row "Working tree" shows "untracked content".
+3. **Given** a submodule vendor/parser with an edited file and an unchanged commit. **When** the Commit view shows. **Then** Changes lists vendor/parser with the mark "modified content" and the tooltip "The submodule has local edits. Its commit is unchanged."
+4. **Given** a History commit that moves a submodule back by 2 commits. **When** I select the submodule row in Changed files. **Then** the diff area shows "2 removed commits" and the two commits, and no "Working tree" row.
+5. **Given** a submodule change whose new commit is not in the submodule. **When** I select the row. **Then** the diff area shows only the two short IDs and "Fetch the submodule first."
+6. **Given** an uninitialized submodule. **When** I select its row. **Then** the diff area shows "Initialize this submodule first. Select Update submodules."
+
+---
+
 ### Edge Cases
 
 - A merge commit has more than 63 parents. The picker offers the parents up to the 001 bound, as the history view does.
@@ -256,12 +296,17 @@ A developer sees an icon on each local branch whose upstream branch no longer ex
 - A blamed path is a submodule in that commit. Blame states "This path is a submodule. Open the submodule to blame its files."
 - Blame starts on a deleted row of the History diff. The blame runs at the chosen parent, where the file exists, and the heading names that parent.
 - An upstream is configured, but its remote no longer exists. Git then reports no upstream for the branch. The row shows no gone mark, and the card states "No upstream".
+- A submodule change holds more than 50 new commits. The preview lists the first 50 in Git's log order and states "and <n> more". The count is exact.
+- A submodule change holds new and removed commits, for example after a rebase inside the submodule. The preview shows both counts and both lists.
+- The settings of a submodule name a status program, such as a command-valued `core.fsmonitor` or a clean filter. No status runs inside it. The row "Working tree" states the reason. Changes does not list the submodule for local edits only.
+- A gitlink has no entry in `.gitmodules`. The preview shows "Nested repository" in place of "Submodule", and the reason line.
+- A repository has more than 256 initialized submodules. Arbareto checks the first 256 in index order for local edits. The others state the bound in the row "Working tree".
 
 ## Requirements *(mandatory)*
 
 ### Scope Boundaries
 
-Include the changed files and the diff of a selected History commit, with a parent picker for a merge commit. Include folders-first tree order in every file tree and in the References tree. Include Show in Explorer for a folder row. Include Delete and Delete permanently of Changes-list rows and folders. Include a docked ignore editor for the root `.gitignore` and for `info/exclude`, with an exact preview. Include Open submodule in the same window and a link back to the parent. Include a blame view of committed lines. Include a branch name card and an upstream-gone mark.
+Include the changed files and the diff of a selected History commit, with a parent picker for a merge commit. Include folders-first tree order in every file tree and in the References tree. Include Show in Explorer for a folder row. Include Delete and Delete permanently of Changes-list rows and folders. Include a docked ignore editor for the root `.gitignore` and for `info/exclude`, with an exact preview. Include Open submodule in the same window and a link back to the parent. Include a blame view of committed lines. Include a branch name card and an upstream-gone mark. Include the submodule change preview and the local-edit marks of submodules (2026-10-31).
 
 Exclude the Files tab of History, blame of uncommitted lines, Open with, File history, a combined diff of a merge commit, and editing of subfolder `.gitignore` files and of `core.excludesFile`. Exclude WSL ignore reads beyond the one ignore file that the editor loads. Exclude Delete of staged-list rows, submodules, and nested repositories. Exclude the commit message spell check and the other WSL parity items (feature 006). Exclude Bitbucket and Jira integration. Exclude the Git Extensions file-list actions that the user did not request: internal edit, difftool, Rename or Move, Reset file to a revision, Assume unchanged, Skip worktree, and Stop tracking.
 
@@ -288,6 +333,9 @@ This feature changes these requirements for builds that include it. The earlier 
 - **004 FR-006** (`specs/004-workbench-ux/spec.md:338`) and **001 contract §11** (`specs/001-desktop-qualification/contracts/operations.md:1599`, "No working-file content crosses."): The ignore editor works on a WSL repository. The bytes of one ignore file, at most 1 MiB, cross out of the distro. The unsaved text crosses into the distro for the preview and the save. The preview path lists cross into the distro on the preview input (FR-043).
 - **004 plan.md:483**: "A folder row gives Show in Explorer the reason "Show in Explorer takes one file. Select a file in the folder." (contract gap: `revealPath` takes one entry)." The sentence goes. A folder row offers Show in Explorer (FR-018, FR-019).
 - **003 FR-020 and the 004 sidebar text**: The visible ", not present" after an upstream name goes. The gone mark of FR-064 replaces it.
+- **001 FR-007** (`specs/001-desktop-qualification/spec.md:395`): "Changes inside a submodule MUST stay outside these categories. A submodule gitlink MUST appear only when its checked-out or staged commit differs from the recorded commit." A submodule with only local edits also appears in Changes, with its mark (FR-075). Its content still stays outside the categories. The parent status keeps `--ignore-submodules=dirty` (research.md R18).
+- **001 FR-011** (`specs/001-desktop-qualification/spec.md:399`) and **001 plan.md "Limitation text"**: A submodule entry shows the preview of FR-069 to FR-074, not the limitation text "This entry is a submodule or a nested repository.". Its hunk and file actions stay unsupported.
+- **001 contract §7** (`specs/001-desktop-qualification/contracts/operations.md:1048`): "Superproject reads never start Git inside a submodule." The new reads `readSubmoduleChange` and `readSubmoduleWork` start fixed commands inside a submodule, as `reviewSubmodules` does (contract Δ3).
 
 ### Functional Requirements
 
@@ -305,7 +353,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-007**: The list MUST show within 300 ms after the selection (SC-001). The first file in tree order MUST show its diff within 150 ms more. A move to another file by keyboard or pointer MUST show its diff within 150 ms. The move MUST show no motion.
 - **FR-008**: A merge commit MUST compare with parent 1 by default. The radio group "Compare with" MUST offer each parent as "Parent <i> <short ID>". The parents MUST come from the history read, not from the renderer.
 - **FR-009**: A root commit MUST compare with the empty tree. It MUST state "Compared with an empty tree. This is a root commit." A shallow clone can lack the parent of a commit. Then the list MUST show no file. It MUST state "Arbareto cannot show the changes. The parent of this commit is not in this shallow clone."
-- **FR-010**: The diff MUST state a rename with its similarity and a mode change with both modes. It MUST state a submodule entry with both commit IDs. A binary file MUST show "Binary file. Arbareto does not show its changes." The binary fact MUST come from Git's numstat output.
+- **FR-010**: The diff MUST state a rename with its similarity and a mode change with both modes. A submodule entry MUST show the preview of FR-069 to FR-073 (amended 2026-10-31). A binary file MUST show "Binary file. Arbareto does not show its changes." The binary fact MUST come from Git's numstat output.
 - **FR-011**: Missing objects MUST show the feature 001 missing-object remedy. The read MUST NOT fetch objects.
 - **FR-012**: The list MUST stop at the plan bound. It MUST then state "This commit changes more files than Arbareto shows. Arbareto shows the first <n>." Each diff MUST stop at the feature 001 diff bounds and state the limit.
 - **FR-013**: The file list MUST offer its own Filter files field, with the rules of 004 FR-101. F6 MUST reach the file list and the diff after the commit details. Each list MUST have one Tab stop with roving focus.
@@ -357,7 +405,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Open submodule
 
-- **FR-047**: In the Submodules group, Enter and a double-click on a row MUST open the submodule in the same window. The row menu MUST offer "Open submodule". The row menu of a submodule row in the Commit view Changes list MUST also offer "Open submodule". Both places MUST use the same checks (FR-048, FR-049) and the same reasons.
+- **FR-047**: In the Submodules group, Enter and a double-click on a row MUST open the submodule in the same window. The row menu MUST offer "Open submodule". The row menu of a submodule row in the Commit view Changes list MUST also offer "Open submodule". Both places MUST use the same checks (FR-048, FR-049) and the same reasons. Amended 2026-10-31: the submodule change preview of FR-069 also offers "Open submodule", in the Commit view and in History.
 - **FR-048**: Open submodule MUST be unavailable for a submodule that is not initialized or whose folder is missing. Its reason MUST be "Initialize this submodule first. Select Update submodules." A nested submodule MUST open one level at a time. Its reason MUST be "Open <parent> first."
 - **FR-049**: Before the open, the application MUST check three facts. The path MUST lie below the parent worktree. The index MUST hold exactly one gitlink entry at that path. The repository that Git discovers in that folder MUST be that folder. A failed check MUST refuse with a typed reason. A running operation in the parent MUST refuse the open as busy.
 - **FR-050**: The submodule MUST get its own trust state. No trust MUST come from the parent. No repository program of the parent MUST run for the open.
@@ -389,6 +437,17 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-067**: Every new control MUST follow 004 FR-085 and 004 FR-087. It MUST have an icon or a label, a tooltip with its shortcut, and an accessible name. It MUST show visible focus and a stated reason when unavailable. Single-key shortcuts MUST act only while their region has focus. Destructive items MUST stay apart from routine items.
 - **FR-068**: The History file list, the blame lines, and the preview lists MUST create elements only for rows near the visible area. This follows 002 FR-055.
 
+#### Submodule change preview (2026-10-31, v0.1.0)
+
+- **FR-069**: A selected submodule row MUST show the preview in the diff area. This applies to the Changes and Staged lists of the Commit view and to Changed files in History. The preview MUST show the path as the heading, the label "Submodule", and Open submodule (FR-047 to FR-050). The limitation text "This entry is a submodule or a nested repository." MUST NOT show for a submodule.
+- **FR-070**: The preview MUST show the old and the new short commit ID. The IDs MUST come from service facts: the index and the submodule HEAD for an unstaged row, HEAD and the index for a staged row, and the two trees for a History row. An added or a deleted gitlink MUST show its one ID and no commit list.
+- **FR-071**: The preview MUST show "<n> new commits" and "<n> removed commits" from `rev-list --left-right --count <old>...<new>` inside the submodule. Each nonzero side MUST list its commits with the short ID and the subject from `log -z --format=%H%x00%s --max-count=50`. More than 50 commits MUST end the list with "and <n> more". The application MUST NOT parse `diff --submodule=log` output or other Git message text.
+- **FR-072**: When `cat-file -e <oid>^{commit}` exits non-zero for the old or the new ID inside the submodule, the preview MUST show only the two IDs and "Fetch the submodule first.". The read MUST NOT fetch objects.
+- **FR-073**: An uninitialized submodule MUST show "Initialize this submodule first. Select Update submodules." (FR-048). A gitlink that the `.gitmodules` file does not name MUST show "Nested repository" in place of "Submodule", and "The .gitmodules file does not name this repository.". The commit facts of FR-070 to FR-072 still apply when the folder holds that repository.
+- **FR-074**: In the Commit view only, the preview MUST show the row "Working tree" with "modified content", "untracked content", both, or "No local edits.". The facts MUST come from the submodule's own porcelain v2 status, behind a check of the submodule's own settings. A submodule whose settings name a program that a status read can run MUST NOT run its status. Its row MUST state "Arbareto does not read the working tree of this submodule. Its settings name a program that a status read can run.". Above the FR-075 bound, the row MUST state the bound.
+- **FR-075**: Changes MUST list an initialized submodule whose commit is unchanged when its own status shows tracked or untracked changes. The row MUST show the mark "modified content" or "untracked content" with the tooltip "The submodule has local edits. Its commit is unchanged.". A submodule row with a changed commit MUST show the same marks. Arbareto MUST check at most 256 submodules for each status read, at most 8 at the same time. A submodule MUST NOT be read beyond its own status. Stage file, Stage selected, and Stage all changes MUST NOT cover a row with only local edits. Its stage button MUST be unavailable with "The submodule commit is unchanged. Commit the local edits inside the submodule first.".
+- **FR-076**: The preview and the marks MUST run inside a WSL distro through the distro's Git, under the feature 001 WSL rules. A new selection MUST cancel the preview read that runs.
+
 ### Key Entities *(include if feature involves data)*
 
 - **Commit changes**: One commit, the chosen parent, and the list of changed files with status, paths, modes, and object IDs. It belongs to one history view.
@@ -399,22 +458,25 @@ This feature changes these requirements for builds that include it. The earlier 
 - **Submodule chain**: The stack of parent repositories, at most 8 levels, each with its recent-repository entry.
 - **Blame result**: The file content at the commit, the runs of lines with their commits, and per commit the author, time, summary, previous commit and path, file name, and boundary state.
 - **Branch tracking facts**: The full name, the upstream, whether the upstream reference exists, the ahead and behind counts, and the worktree that holds the branch.
+- **Submodule change**: The path, the kind (submodule or nested repository), the old and the new commit, the new and the removed counts, at most 50 commits per side, and a state: commits, missing, not initialized, or single (an added or a deleted gitlink).
+- **Submodule work state**: Per initialized submodule of one status read: modified content, untracked content, or a typed reason why Arbareto did not check it.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
 - **SC-001**: On the 1,000-file commit fixture, the changed-file list equals Git's own two-tree comparison exactly. The list shows within 300 ms after the selection, and the first diff within 150 ms more. A move to the next file shows its diff within 150 ms (warm packaged build, median of 10 runs).
-- **SC-002**: On the 100,001-file commit fixture, the list shows exactly the first files up to the bound and the limit text. The process tree uses at most 64 MiB more memory than before the selection.
+- **SC-002**: On the 100,001-file commit fixture, the list shows exactly the first files up to the bound and the limit text. For v0.1.0, the peak process-tree memory is at most 624 MiB above the memory before the selection. The bound is the highest recorded peak growth, 559.8 MiB, plus a 64 MiB margin (research.md "SC-002 memory budget for v0.1.0"). T104 pages the list and restores the 64 MiB budget.
 - **SC-003**: In every Delete fixture, the listed paths are absent, all other working-file bytes and the index digest are unchanged, and each recycled item is in the Recycle Bin. In the stale fixture and in the fixtures that swap a folder on the path for a link or a junction, nothing outside the reviewed paths changes. No fixture claims to cover a change during a path-based step (known limit of FR-031). Each Recycle Bin test purges the items that it moved and changes no other Recycle Bin item.
 - **SC-004**: Every shown tree equals the reference sort of FR-015, in all fixtures, including names that are not valid UTF-8.
-- **SC-005**: In every ignore fixture, the preview equals the change of the ignored set that Git lists after a real save of the same text on a copy. No fixture shows an approximate preview. On Windows, a preview of 100,000 paths shows within 5 s (warm packaged build, median of 10 runs).
+- **SC-005**: In every ignore fixture, the preview equals the change of the ignored set that Git lists after a real save of the same text on a copy. No fixture shows an approximate preview. On Windows, a preview of 100,000 paths shows within 5 s plus 3.55 s for each directory-only pattern (a pattern with a last `/`) of the ignore files (warm packaged build, median of 10 runs). Without such a pattern, the bound is 5 s. The 3.55 s is Git's own measured cost per pattern (research.md "SC-005 directory-only patterns").
 - **SC-006**: Every blame attribution equals Git's own blame with the same options, for every line of every fixture. On a 10,000-line file with 5,000 commits and no ignore list, the first progress shows within 500 ms. Cancel ends Git within 1 second, with and without an ignore list.
-- **SC-007**: Open submodule and Open parent repository each take at most the time of a normal open of that repository. No repository program of the parent runs before its approval in any fixture.
+- **SC-007**: Open submodule and Open parent repository each take at most 150 ms more than a normal open of that repository. A normal open is Recent repositories (Ctrl+R), then Enter on the entry of that repository. Each time runs from the Enter keydown to the shown repository. The 150 ms is for the parent safety checks of FR-049, which run before the registration. No repository program of the parent runs before its approval in any fixture.
 - **SC-008**: The branch card shows for every cut name and for no name that fits. The gone mark shows exactly for the branches of the FR-064 rule.
-- **SC-009**: During every read and action of this feature, the window keeps the feature 001 SC-005 targets: 95% of inputs show a response within 100 ms, and every input within 500 ms.
+- **SC-009**: During every read and action of this feature, the window keeps the feature 001 SC-005 targets: 95% of inputs show a response within 100 ms, and every input within 500 ms. During the permanent Delete of 1,000 files, at least 20 probe inputs go to the window. The Enter that starts the Delete counts in the p95 and in the 500 ms maximum.
 - **SC-010**: Keyboard-only users complete each P1 story and the ignore editor story. Each new control has an accessible name, visible focus, and a contrast of at least 4.5:1.
 - **SC-011**: A review of the requirement-to-test map finds no outcome that Git message text, timing, or a name pattern decides.
+- **SC-012**: In every submodule fixture, each preview count and commit list equals Git's own `rev-list --left-right --count` and `log` inside the submodule. Each mark equals the submodule's own porcelain v2 status. No submodule program runs in a preview, and no status runs in a submodule whose settings name a status program. A preview shows within 400 ms after the selection (warm packaged build, median of 10). The 400 ms is the worst packaged median of 376.1 ms plus a margin (orchestrator decision 2026-10-31, research.md R18 "Packaged cost"). On Windows, on fixtures with 100 and 256 initialized clean submodules, the last mark shows within 55 ms per submodule after the Changes list (warm packaged build, median of 10). The 55 ms is the worst packaged median of 48.9 ms per submodule plus a margin (orchestrator decision 2026-10-31, research.md R18 "Packaged cost"). WSL has no budget in v0.1.0. T108 records the measured WSL cost at 20 and 100 submodules.
 
 ## Assumptions
 

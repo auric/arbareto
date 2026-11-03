@@ -10,7 +10,7 @@
 // Probe W9: a run that gives `failed` with `access-denied` and keeps the old bytes is a typed outcome. The case asserts it, prints an OBSERVATION line, and leaves the run out of the median (spec FR-037: no retry).
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { closeSync, cpSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, cpSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, writeSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { sizeDeadlineMs } from "../../src/git-service/git-runner";
 import { faGit } from "../git/file-actions-fixtures";
@@ -42,6 +42,8 @@ const SAMPLE_MS = 250;
 const IDLE_POLL_MS = 10;
 // The retained growth is read this long after the run end (T048 RCA request of 2026-11-02).
 const RETAIN_MS = 30_000;
+// The window of the raw memory baselines next to the single-sample ones (T048 limit case RCA).
+const WINDOW_MS = 5_000;
 const MIB = 1024 * 1024;
 
 // ---- Budgets (spec SC-007, SC-011; research.md R11) ----
@@ -333,14 +335,48 @@ async function sampleAfter(s: Sampler, timeMs: number): Promise<Sample> {
 }
 // The growth from the last sample before `from` to the peak sample up to the first sample after `to`.
 // `split` is the growth of each kind at that peak sample. `retained` is the growth at the first sample RETAIN_MS after `to`.
-async function growth(s: Sampler, from: number, to: number): Promise<{ before: number; beforeSplit: Record<Kind, number>; peak: number; growth: number; split: Record<Kind, number>; retained: number; retainedSplit: Record<Kind, number> }> {
+async function growth(s: Sampler, from: number, to: number) {
   const after = await sampleAfter(s, to);
   const before = s.samples.filter((x) => x.timeMs <= from).at(-1);
   if (before === undefined) throw new Error("no memory sample before the run");
   const peakSample = s.samples.filter((x) => x.timeMs > from && x.timeMs <= after.timeMs).reduce((a, b) => (b.totalPrivateBytes > a.totalPrivateBytes ? b : a));
   const later = await sampleAfter(s, to + RETAIN_MS);
   const split = (x: Sample) => Object.fromEntries(KINDS.map((k) => [k, x[k] - before[k]])) as Record<Kind, number>;
-  return { before: before.totalPrivateBytes, beforeSplit: Object.fromEntries(KINDS.map((k) => [k, before[k]])) as Record<Kind, number>, peak: peakSample.totalPrivateBytes, growth: peakSample.totalPrivateBytes - before.totalPrivateBytes, split: split(peakSample), retained: later.totalPrivateBytes - before.totalPrivateBytes, retainedSplit: split(later) };
+  const beforeWindow = windowTotals(s.samples, before.timeMs);
+  const before5sMedian = median(beforeWindow);
+  const before5sMin = Math.min(...beforeWindow);
+  const after5sMedian = median(windowTotals(s.samples, later.timeMs));
+  return {
+    before: before.totalPrivateBytes,
+    beforeSplit: Object.fromEntries(KINDS.map((k) => [k, before[k]])) as Record<Kind, number>,
+    peak: peakSample.totalPrivateBytes,
+    growth: peakSample.totalPrivateBytes - before.totalPrivateBytes,
+    split: split(peakSample),
+    retained: later.totalPrivateBytes - before.totalPrivateBytes,
+    retainedSplit: split(later),
+    afterMs: later.timeMs,
+    before5sMedian,
+    before5sMin,
+    after5sMedian,
+  };
+}
+// The totals of the samples in the WINDOW_MS window that ends at `endMs`, that sample included.
+const windowTotals = (samples: Sample[], endMs: number) => samples.filter((x) => x.timeMs > endMs - WINDOW_MS && x.timeMs <= endMs).map((x) => x.totalPrivateBytes);
+// With ARBARETO_PERF_SAMPLES_DIR set, writes each sample once to `<dir>/<name>-<start time>.jsonl`, tagged with the run whose after sample ends its range, plus one mark line per run for `from`, the end, and the after sample.
+function samplesWriter(name: string): (s: Sampler, run: number, fromMark: string, fromMs: number, toMs: number, g: Awaited<ReturnType<typeof growth>>) => void {
+  const dir = process.env.ARBARETO_PERF_SAMPLES_DIR;
+  if (dir === undefined || dir === "") return () => {};
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${name}-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
+  console.log(`OBSERVATION ${TASK}: memory samples of ${name} go to ${path}`);
+  let next = 0;
+  return (s, run, fromMark, fromMs, toMs, g) => {
+    const upTo = s.samples.findIndex((x) => x.timeMs > g.afterMs);
+    const rows = s.samples.slice(next, upTo < 0 ? s.samples.length : upTo).map((x) => ({ run, ...x }));
+    next += rows.length;
+    const marks = [[fromMark, fromMs], ["end", toMs], ["after", g.afterMs]].map(([mark, timeMs]) => ({ run, mark, timeMs }));
+    appendFileSync(path, [...rows, ...marks].map((x) => `${js(x)}\n`).join(""));
+  };
 }
 const mib = (n: number) => (n / MIB).toFixed(1);
 // 001 spec.md "warm-up" rule: a bound for every run includes the warm-up run 0. A median never includes it.
@@ -348,7 +384,8 @@ const runsText = (runs: number[]) => `runs ${js(runs)}`;
 const splitText = (x: Record<Kind, number>) => KINDS.map((k) => `${k} ${mib(x[k])}`).join(", ");
 // The memory line of one run: the counted peak growth, its split by process kind, and the retained growth.
 const memoryLine = (what: string, run: number, g: Awaited<ReturnType<typeof growth>>, peakBudget: number, retainedBudget?: number) =>
-  `OBSERVATION ${TASK}: ${what} run ${run}: private bytes before ${g.before} (MiB: ${splitText(g.beforeSplit)}), peak ${g.peak}, growth ${mib(g.growth)} MiB, budget ${mib(peakBudget)} MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.retained)} MiB${retainedBudget === undefined ? "" : `, budget ${mib(retainedBudget)} MiB`}: ${splitText(g.retainedSplit)}`;
+  `OBSERVATION ${TASK}: ${what} run ${run}: private bytes before ${g.before} (MiB: ${splitText(g.beforeSplit)}), peak ${g.peak}, growth ${mib(g.growth)} MiB, budget ${mib(peakBudget)} MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.retained)} MiB${retainedBudget === undefined ? "" : `, budget ${mib(retainedBudget)} MiB`}: ${splitText(g.retainedSplit)}` +
+  `\nOBSERVATION ${TASK}: ${what} run ${run}: ${WINDOW_MS / 1000} s windows: before5sMedian ${g.before5sMedian}, before5sMin ${g.before5sMin}, after5sMedian ${g.after5sMedian}; growth from the median ${mib(g.peak - g.before5sMedian)} MiB, from the min ${mib(g.peak - g.before5sMin)} MiB; retained from the median ${mib(g.after5sMedian - g.before5sMedian)} MiB, from the min ${mib(g.after5sMedian - g.before5sMin)} MiB`;
 
 // ---- Host facts ----
 
@@ -813,6 +850,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
       const n = fmt.format(LIMIT_FILES);
       const s = await windowsSession("limit", repo);
       const sampler = startSampler(s.app.pid);
+      const writeSamples = samplesWriter("t048-limit");
       // PowerShell starts in about a second. A run needs one sample before its start.
       await sampleAfter(sampler, 0);
       try {
@@ -826,6 +864,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           const r = await revertAll(s, probe, LIMIT_RUN_MS);
           const g = await growth(sampler, r.confirmAt, r.endAt);
           const first = run === 0;
+          writeSamples(sampler, run, "confirm", r.confirmAt, r.endAt, g);
           console.log(memoryLine("SC-007 limit, process tree", run, g, first ? LIMIT_FIRST_PEAK_BYTES : LIMIT_PEAK_BYTES, first ? LIMIT_FIRST_RETAINED_BYTES : LIMIT_RETAINED_BYTES));
           if (counted("10,000 unstaged files", r.reply, winRead(repo), targets) && !probe) {
             bounded.push({ run, peak: g.growth, retained: g.retained });
@@ -916,6 +955,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const services = descendants(s.app.pid).filter((r) => r.name.toLowerCase() === SERVICE_EXE);
         if (services.length !== 1) throw new Error(`the app has ${services.length} ${SERVICE_EXE} processes`);
         const sampler = startSampler(services[0]!.pid);
+        const writeSamples = samplesWriter("t048-gib");
         await sampleAfter(sampler, 0);
         try {
           // The 64 MiB bound covers every run, the warm-up run 0 included. The SC-011 probe run RUNS + 1 stays out, because its memory holds the probe typing.
@@ -926,7 +966,9 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             const probe = run === RUNS + 1;
             const from = Date.now();
             const r = await revertRun(s, row(path), `!${row(path)}`, probe);
-            const g = await growth(sampler, from, Date.now());
+            const to = Date.now();
+            const g = await growth(sampler, from, to);
+            writeSamples(sampler, run, "start", from, to, g);
             console.log(memoryLine("SC-007 1 GiB, service tree", run, g, MEMORY_BYTES));
             if (!probe) console.log(`OBSERVATION ${TASK}: SC-007 1 GiB run ${run}: ${(1024 / (r.shown / 1000)).toFixed(1)} MiB/s from the revert button to the end`);
             if (counted("1 GiB file", r.reply, winRead(repo), old) && !probe) {

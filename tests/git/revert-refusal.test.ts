@@ -7,7 +7,7 @@
 // `several-hunks` (the renderer only, contract Δ4), `encrypted` (needs an EFS key of the account), and `xattr` and `shared-repository` (WSL, `tests/wsl`).
 
 import { describe, expect } from "bun:test";
-import { chmodSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { RunWorkbenchResult } from "../../src/contracts/envelope";
@@ -622,7 +622,12 @@ describe("revert refusals: the file facts (plan.md D8, D9, data-model §7)", () 
     after: changeAB,
     paths: ALL_FIVE("a.txt", "b.txt"),
     arm: (r) => both(r, (p) => chmodSync(p, 0o444)),
-    disarm: (r) => both(r, (p) => chmodSync(p, 0o644)),
+    // Spec FR-034: the refusal keeps the attribute. libuv `fs__stat_assign_statbuf` clears the write bits only for FILE_ATTRIBUTE_READONLY.
+    disarm: (r) => {
+      const kept: boolean[] = [];
+      both(r, (p) => (kept.push((statSync(p).mode & 0o200) === 0), chmodSync(p, 0o644)));
+      expect(kept).toEqual([true, true]);
+    },
   });
 
   refusalCase({

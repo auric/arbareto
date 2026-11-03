@@ -44,10 +44,10 @@ interface FilesRun {
 }
 
 // `wsl.rs` `wrapped`: the Perl program through the wrapper in mode `probe`, with its arguments and stdin.
-function startWrapped(w: WslHost, perlArgs: readonly string[], input: Uint8Array): FilesRun {
+function startWrapped(w: WslHost, perlArgs: readonly string[], input: Uint8Array, perl = PERL): FilesRun {
   const operation = operationId();
   const p = w.probe.paths;
-  const argv = [WSL_EXE, "--distribution", w.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", `arbareto-${operation}-1.scope`, "probe", "", p["systemd-run"]!, p.systemctl!, p.setsid!, w.probe.noexpand === "0" ? "1" : "", PERL, ...perlArgs];
+  const argv = [WSL_EXE, "--distribution", w.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", `arbareto-${operation}-1.scope`, "probe", "", p["systemd-run"]!, p.systemctl!, p.setsid!, w.probe.noexpand === "0" ? "1" : "", perl, ...perlArgs];
   const proc = Bun.spawn(argv, { env: WSL_ENV, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   proc.stdin.write(input);
   proc.stdin.end();
@@ -55,9 +55,9 @@ function startWrapped(w: WslHost, perlArgs: readonly string[], input: Uint8Array
 }
 
 // `wsl.rs` `files_perl`: the three Linux roots, the Git and SHA-256 programs, and the stdin tokens.
-function startFiles(w: WslHost, mode: "replace" | "tempRemove", root: string, tokens: readonly string[], sha = w.probe.paths.sha256sum!, gitDir = `${root}/.git`): FilesRun {
+function startFiles(w: WslHost, mode: "replace" | "tempRemove", root: string, tokens: readonly string[], sha = w.probe.paths.sha256sum!, gitDir = `${root}/.git`, perl = PERL): FilesRun {
   const roots = [root, gitDir, gitDir];
-  return startWrapped(w, ["-e", WSL_FILES_TEXT, "--", mode, ...roots, w.probe.paths.git!, sha], Buffer.from(tokens.map((token) => `${token}${NUL}`).join("")));
+  return startWrapped(w, ["-e", WSL_FILES_TEXT, "--", mode, ...roots, w.probe.paths.git!, sha], Buffer.from(tokens.map((token) => `${token}${NUL}`).join("")), perl);
 }
 
 // `wsl.rs` `file_facts_command`: the first Perl argument holds `digest` (1), `detail` (2), and `stream` (4).
@@ -495,6 +495,54 @@ describe("T015 wslFiles replace working and tempRemove through the wrapper (cont
     expect([read(w, `${dir}/f.txt`)?.toString(), read(w, `${dir}/${from.name}`)]).toEqual(["other\n", null]);
     expect(temps(w, dir)).toEqual([]);
     await noneLeft(w, run.operation, hold.path);
+  });
+
+  W("a same-second write in place of the same size, with a new sub-second mtime, between the digest and the rename gives stale, and the other bytes stay", async (w) => {
+    const dir = worktree(w, "same-second");
+    const target = `${dir}/f.txt`;
+    write(w, target, "old\n", "644");
+    const before = stateOf(w, target);
+    const own = `${w.folder}/t015/seam-${++seams}`;
+    inDistro(w.distro, ["/usr/bin/mkdir", "-p", "--", own]);
+    // A seam in place of Perl: it writes the same bytes in place until the whole-second st_mtime changes, then runs Perl.
+    // So the target times start a second of the file clock. That clock lags the `Time::HiRes::time` clock.
+    const perl = `${own}/perl-touch`;
+    const touch = 'my $s; for (1 .. 5000) { open(my $h, "+<", $ARGV[0]) or exit 1; print $h "old\\n"; close($h) or exit 1; my $t = (stat $ARGV[0])[9]; exit 0 if defined $s && $t != $s; $s = $t; sleep 0.001 } exit 1';
+    write(w, perl, `#!/bin/sh\n${PERL} -MTime::HiRes=sleep -e '${touch}' '${target}' || exit 1\nstat -c '%y|%z' -- '${target}' > '${own}/t0' || exit 1\nexec ${PERL} "$@"\n`, "755");
+    // A seam in place of `sha256sum`: it reads all its input first, so the digest read of the target is complete. Then another program writes 4 bytes in place.
+    const sha = `${own}/sha256sum-write`;
+    write(w, sha, `#!/bin/sh\ncat > '${own}/input' || exit 1\nprintf 'oth\\n' 1<> '${target}' || exit 1\nstat -c '%y|%z' -- '${target}' > '${own}/t1' || exit 1\nexec '${w.probe.paths.sha256sum}' "$@" < '${own}/input'\n`, "755");
+    const run = startFiles(w, "replace", dir, workingTokens(["f.txt"], before, [], { bytes: Buffer.from("new\n") }), sha, undefined, perl);
+    const reply = workingReply(await finish(run));
+    // `stat` `%y` and `%z` give nanoseconds. The `%.9Y` form of uutils `stat` gives microseconds only.
+    const times = (name: string) => {
+      const m = /^([^.|]+)\.(\d{9})( [^|]+)\|([^.|]+)\.(\d{9})( [^|]+)\n$/.exec(read(w, `${own}/${name}`)?.toString() ?? "");
+      if (m === null) throw new Error(`stat output refused: ${name}`);
+      return { mtime: [m[1]! + m[3]!, m[2]!], ctime: [m[4]! + m[6]!, m[5]!] };
+    };
+    const [t0, t1] = [times("t0"), times("t1")];
+    // The case needs the same whole second and another sub-second part for st_mtime and st_ctime. Otherwise a whole-second compare also sees the write.
+    const same = (a: string[], b: string[]) => ({ second: a[0] === b[0], subSecond: a[1] === b[1] });
+    expect({ mtime: same(t0.mtime, t1.mtime), ctime: same(t0.ctime, t1.ctime) }).toEqual({ mtime: { second: true, subSecond: false }, ctime: { second: true, subSecond: false } });
+    expect({ reply, bytes: read(w, target)?.toString(), temps: temps(w, dir) }).toEqual({ reply: "stale", bytes: "oth\n", temps: [] });
+    await noneLeft(w, run.operation, sha);
+  });
+
+  W("without Time::HiRes, a working replace of a present target gives error other-error and keeps its bytes, and an absent target still gets its bytes", async (w) => {
+    const dir = worktree(w, "no-hires");
+    const own = `${w.folder}/t015/seam-${++seams}`;
+    inDistro(w.distro, ["/usr/bin/mkdir", "-p", "--", own]);
+    // A seam in place of Perl: a hook at the start of @INC makes `require Time::HiRes` fail, as with `perl-base` only (plan.md D9).
+    const perl = `${own}/perl-no-hires`;
+    write(w, perl, `#!/bin/sh\nexec ${PERL} -e 'BEGIN { unshift @INC, sub { die "hidden\\n" if $_[1] eq "Time/HiRes.pm"; return } }' "$@"\n`, "755");
+    write(w, `${dir}/p.txt`, "old\n", "644");
+    let run = startFiles(w, "replace", dir, workingTokens(["p.txt"], stateOf(w, `${dir}/p.txt`), [], { bytes: Buffer.from("new\n") }), undefined, undefined, perl);
+    expect(workingReply(await finish(run))).toBe("error other-error");
+    expect(read(w, `${dir}/p.txt`)?.toString()).toBe("old\n");
+    run = startFiles(w, "replace", dir, workingTokens(["n.txt"], null, [], { bytes: Buffer.from("new\n") }), undefined, undefined, perl);
+    expect(workingReply(await finish(run))).toBe("replaced");
+    expect([read(w, `${dir}/n.txt`)?.toString(), temps(w, dir)]).toEqual(["new\n", []]);
+    await noneLeft(w, run.operation);
   });
 
   W("a kill -9 during tempRemove gives the unknown outcome interrupted", async (w) => {

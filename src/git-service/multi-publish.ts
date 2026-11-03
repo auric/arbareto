@@ -7,7 +7,7 @@
 
 import type { ChangeEntry, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { decideFileAction, type FileActionDecision, type UnstagePath, type WorkingFacts } from "../contracts/file-action";
+import { decideFileAction, movedGitlink, stagedGitlink, type FileActionDecision, type GitlinkFact, type UnstagePath, type WorkingFacts } from "../contracts/file-action";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
   FILE_FACT_ENTRIES,
@@ -18,13 +18,14 @@ import {
   MULTI_FILE_PROOF_CONCURRENCY,
   MULTI_FILE_STEP_MS_PER_FILE,
   REGISTERED_DEADLINE_CAP_MS,
+  SUBMODULE_WORK_PARALLEL,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
 import { attributeArgs, objectCheckArgs, statusArgs, updateIndexAddArgs, updateIndexInfoArgs } from "./commands";
 import { localFacts, rawRecord, wholeFileRemedy, workingParts } from "./comparison";
 import { createTailCollector } from "./discovery";
 import { hunkEligibility } from "./eligibility";
-import { blobProof, changedSet, indexInfoInput } from "./file-publish";
+import { blobProof, changedSet, headMoved, indexInfoInput, sameHead } from "./file-publish";
 import { createCollector, firstEnd, isDeadlineStop, RunnerRefusal, stepUnits } from "./git-runner";
 import { ownedCandidate } from "./hunk-candidate";
 import {
@@ -57,6 +58,7 @@ import type { Workspace } from "./registration";
 import type { ChangeSnapshot, ReadInstallation, WorkingVersion } from "./snapshot";
 import type { StatusCut, WorkspaceReader } from "./status";
 import { createStatusParser, statusCollector, type StatusRecord } from "./status-parser";
+import { gitlinkFact } from "./submodule-change";
 import { parseAttributes } from "./support";
 import type { TrustListing } from "./trust";
 import type { WslWhole } from "./wsl-files";
@@ -115,9 +117,9 @@ function wholeOf(read: Fact<WorkingVersion | WslWhole> | { changed: true }): Fac
 // Plan.md O-17: the deadline of a step for `files` paths. Contract §6 `limits` caps every registered deadline.
 const stepDeadline = (files: number) => Math.min(GIT_PROCESS_DEADLINE_MS + files * MULTI_FILE_STEP_MS_PER_FILE, REGISTERED_DEADLINE_CAP_MS);
 
-// Plan.md O-17: `work` for each index, with at most MULTI_FILE_PROOF_CONCURRENCY calls at once. The first non-null result aborts `stop`, and no later index starts.
+// Plan.md O-17: `work` for each index, with at most `lanes` calls at once. The first non-null result aborts `stop`, and no later index starts.
 // It returns after every started call ends, so no process of the set outlives it. A throw ends the run the same way and then propagates.
-async function firstOf<T>(count: number, stop: AbortController, work: (i: number) => Promise<T | null>): Promise<T | null> {
+async function firstOf<T>(count: number, stop: AbortController, work: (i: number) => Promise<T | null>, lanes = MULTI_FILE_PROOF_CONCURRENCY): Promise<T | null> {
   let next = 0;
   let first = null as T | null;
   let failure = null as { error: unknown } | null;
@@ -138,7 +140,7 @@ async function firstOf<T>(count: number, stop: AbortController, work: (i: number
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(MULTI_FILE_PROOF_CONCURRENCY, count) }, lane));
+  await Promise.all(Array.from({ length: Math.min(lanes, count) }, lane));
   if (failure !== null) throw failure.error;
   return first;
 }
@@ -237,6 +239,9 @@ export async function prepareFiles(o: PrepareOptions, a: Admitted, { ctx, rec, r
     const pooled = pooledContext(ctx, stop);
     const digested = await firstOf(a.items.length, stop, async (i): Promise<Refusal | Stop | null> => {
       const item = a.items[i]!;
+      // Feature 005 plan.md D20 "Publication": a moved gitlink reads its submodule HEAD in place of the working file.
+      const head = stagedGitlink(item.action);
+      if (head !== null) return sameHead(pooled, item.path, head);
       const read = wholeOf(await settled(pooled.signal, wholeWorking(pooled, item.path)));
       if ("changed" in read) return STALE;
       if (!("value" in read)) return refusalOrStop(read);
@@ -265,8 +270,17 @@ export async function prepareFiles(o: PrepareOptions, a: Admitted, { ctx, rec, r
   const prepared = await owned.settle(async () => {
     const canonical = (await owned.copy()) ?? owned.parse((await owned.readCandidate()).bytes);
     // Contract Δ4 step 5: every path on one stdin, or the HEAD entry of every changed path.
-    const input = stage ? Buffer.concat(paths.flatMap((p) => [p, NUL])) : indexInfoInput(a.items.flatMap((item) => item.action.changedPaths as UnstagePath[]));
-    await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail, stepDeadline(a.items.length));
+    // Feature 005 contract Δ4: the moved gitlinks of a stage set write their lines in a second `--index-info` step on the same candidate.
+    const lines = (items: readonly FileItem[]) => indexInfoInput(items.flatMap((item) => item.action.changedPaths as UnstagePath[]));
+    const gitlinks = stage ? a.items.filter((item) => stagedGitlink(item.action) !== null) : [];
+    const files = stage ? a.items.filter((item) => stagedGitlink(item.action) === null) : [];
+    const updates = stage
+      ? [
+          { run: files.length > 0 || gitlinks.length === 0, args: updateIndexAddArgs(), input: Buffer.concat(files.flatMap((item) => [item.path, NUL])), count: files.length },
+          { run: gitlinks.length > 0, args: updateIndexInfoArgs(), input: lines(gitlinks), count: gitlinks.length },
+        ]
+      : [{ run: true, args: updateIndexInfoArgs(), input: lines(a.items), count: a.items.length }];
+    for (const u of updates) if (u.run) await owned.step("update-index", u.args, createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), u.input, true, tail, stepDeadline(u.count));
     await o.hunkCheckpoint?.({ step: 5, operationId });
     if (signal.aborted) return owned.fail({ reason: "canceled" });
     const read = await owned.readCandidate();
@@ -447,6 +461,24 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
     if (!("value" in attributes)) return refusalOrStop(attributes);
     const facts = await factsOf(ctx, s, entries, policy.listing);
     if (!Array.isArray(facts)) return facts;
+    // Feature 005 plan.md D20 rule 2: the submodule HEAD of each moved gitlink, with at most SUBMODULE_WORK_PARALLEL reads at once (the D19 bound).
+    const moved = entries.flatMap((e, i) => (movedGitlink(e.category, rawRecord(e, paths[i]!)) ? [i] : []));
+    const gitlinks = new Map<number, GitlinkFact>();
+    const stop = new AbortController();
+    const pooled = pooledContext(ctx, stop);
+    const unread = await firstOf(
+      moved.length,
+      stop,
+      async (k): Promise<Refusal | Stop | null> => {
+        const i = moved[k]!;
+        const read = await settled(pooled.signal, gitlinkFact(pooled.runner, pooled, s.indexEntries, paths[i]!));
+        if (!("value" in read)) return refusalOrStop(read);
+        gitlinks.set(i, read.value);
+        return null;
+      },
+      SUBMODULE_WORK_PARALLEL,
+    );
+    if (unread !== null) return unread;
     const headUnborn = s.head.state === "unborn";
     const items: FileItem[] = [];
     let bytes = 0;
@@ -454,7 +486,7 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
       // Contract §4 "Comparison limits": without index flags no decision is exact. A snapshot with a fingerprint keeps every flag.
       if (entry.category !== "conflicted" && entry.flags === undefined) return { code: "MALFORMED_GIT_OUTPUT" };
       const indexFlags = entry.flags ?? { intentToAdd: false, assumeUnchanged: false, skipWorktree: false };
-      const decision = decideFileAction({ category: entry.category, record: rawRecord(entry, paths[i]!), headUnborn, indexFlags, attributes: attributes.value[i]!, working: facts[i]! });
+      const decision = decideFileAction({ category: entry.category, record: rawRecord(entry, paths[i]!), headUnborn, indexFlags, attributes: attributes.value[i]!, working: facts[i]!, gitlink: gitlinks.get(i) ?? null });
       if (decision.direction === null) return { code: decision.code, ...(decision.code === "UNSUPPORTED_COMPARISON" ? { reason: decision.reason } : {}), entryId: entry.entryId };
       if (decision.direction !== direction) return { code: "INVALID_REQUEST", entryId: entry.entryId };
       const f = facts[i]!;
@@ -470,6 +502,12 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
   async function working(a: Admitted, ctx: PublishContext): Promise<Fact<boolean>> {
     if (a.direction === "unstage") return { value: false };
     for (const item of a.items) {
+      const head = stagedGitlink(item.action);
+      if (head !== null) {
+        const moved = await headMoved(ctx, item.path, head);
+        if (!("value" in moved) || moved.value) return moved;
+        continue;
+      }
       const read = wholeOf(await wholeWorking(ctx, item.path));
       if ("changed" in read) return { value: true };
       if (!("value" in read)) return read;

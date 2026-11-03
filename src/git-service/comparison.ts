@@ -6,7 +6,7 @@
 import { lstat, opendir } from "node:fs/promises";
 import type { ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { decideFileAction, decideResolve, type FileActionDecision, type ResolveDecision, type WorkingFacts } from "../contracts/file-action";
+import { decideFileAction, decideResolve, movedGitlink, stagedGitlink, type FileActionDecision, type GitlinkFact, type ResolveDecision, type WorkingFacts } from "../contracts/file-action";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
   CANONICAL_DIFF_BYTES,
@@ -43,6 +43,7 @@ import type { Workspace } from "./registration";
 import { readWorkingVersion, type ChangeSnapshot, type Checked, type Completeness, type LimitName, type ReadInstallation, type WorkingVersion } from "./snapshot";
 import { hasPromisor, OBJECT_MISSING_REMEDY } from "./status";
 import type { StatusRecord } from "./status-parser";
+import { gitlinkFact } from "./submodule-change";
 import { decideSupport, eolPaths, parseAttributes, parseEolListing, type SupportDecision } from "./support";
 import { parseMaybeBool, type ConfigEntry, type Trust } from "./trust";
 
@@ -393,6 +394,7 @@ export function createComparisonReader({ runner, trust, onDrop, spent }: Compari
     let tree = null as string | null;
     let failedStep = false as boolean;
     let firstVersion = null as Checked<WorkingVersion> | null;
+    let gitlink = null as GitlinkFact | null;
     try {
       if (readable) {
         const facts = async () => {
@@ -449,9 +451,18 @@ export function createComparisonReader({ runner, trust, onDrop, spent }: Compari
           if (exit.exitCode !== 0 || raw[raw.length - 1] !== NEWLINE || !isObjectId(oid, w.objectFormat)) throw fail("GIT_FAILED");
           tree = oid;
         };
-        await steps(conflicted ? [facts(), attrs()] : [facts(), attrs(), eol(), blobsRead(), emptyTree()]);
+        // Feature 005 plan.md D20 rule 2: the submodule HEAD of a moved gitlink.
+        const gitlinkRead = async () => {
+          if (conflicted || !movedGitlink(e.category, rawRecord(e, path))) return;
+          const read = await gitlinkFact(runner, t, t.snapshot.indexEntries, path);
+          if ("stop" in read) throw new Stop({ result: read.stop });
+          if ("code" in read) throw fail(read.code);
+          gitlink = read.value;
+        };
+        await steps(conflicted ? [facts(), attrs()] : [facts(), attrs(), eol(), blobsRead(), emptyTree(), gitlinkRead()]);
       }
-      const decide = () => (conflicted ? decideResolve({ record: rawRecord(e, path), attributes, working }) : decideFileAction({ category: e.category, record: rawRecord(e, path), headUnborn, indexFlags, attributes, working }));
+      const decide = () =>
+        conflicted ? decideResolve({ record: rawRecord(e, path), attributes, working }) : decideFileAction({ category: e.category, record: rawRecord(e, path), headUnborn, indexFlags, attributes, working, gitlink });
 
       const support = (numstat: NumstatResult, patch: PatchResult, eolListing: ReturnType<typeof parseEolListing>) =>
         decideSupport({
@@ -547,6 +558,7 @@ export function createComparisonReader({ runner, trust, onDrop, spent }: Compari
       const kept = patch.ok ? rawPatch : new Uint8Array();
       const completeness: Completeness = !patch.ok && patch.completeness.state === "limited" ? patch.completeness : eolLimit !== null ? { state: "limited", code: "OUTPUT_LIMIT", reason: eolLimit } : { state: "complete" };
       const remedy = remedyOf(t, path, fileAction);
+      const head = stagedGitlink(fileAction);
       const fresh: RetainedComparison = {
         comparisonId: crypto.randomUUID(),
         repositoryId: w.repositoryId,
@@ -581,6 +593,7 @@ export function createComparisonReader({ runner, trust, onDrop, spent }: Compari
         support: decision === null ? null : decision.supported ? "supported" : (decision as { reason: string }).reason,
         fileAction: actionValue(fileAction),
         remedy,
+        ...(head === null ? {} : { gitlink: { oid: head } }),
       };
       if (completeness.state === "limited") return { result: "limited", code: completeness.code, value };
       return { result: "succeeded", value };

@@ -6,24 +6,28 @@
 
 import type { FileFact } from "../contracts/channel";
 import type { ErrorCode } from "../contracts/errors";
+import type { GitlinkFact } from "../contracts/file-action";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_CHANGE_COMMITS, SUBMODULE_CHANGE_OUTPUT_BYTES, SUBMODULE_GITMODULES_BYTES, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS, TRUST_INPUT_BYTES } from "../contracts/limits";
 import { both, fail, Stop, CLOSED, type InspectionOutcome, type InspectionTarget } from "./commit-changes";
 import {
   isObjectId,
+  isOneLevelRefName,
   objectCheckArgs,
   submoduleCommitExistsArgs,
   submoduleConfigListArgs,
   submoduleCountArgs,
   submoduleHeadOidArgs,
+  submoduleHeadTargetArgs,
   submoduleLogArgs,
+  submoduleRefExistsArgs,
   submoduleStatusArgs,
   submoduleToplevelArgs,
   OID_HEX,
   type SubmoduleLocation,
 } from "./commands";
 import { createCollector, exitKind, type Collector, type GitExit, type GitRunner } from "./git-runner";
-import { latin1, runRead, strictUtf8 } from "./read-steps";
-import type { ChangeSnapshot, IndexEntry } from "./snapshot";
+import { latin1, runRead, strictUtf8, type ReadTarget } from "./read-steps";
+import type { ChangeSnapshot, IndexEntry, ReadInstallation } from "./snapshot";
 import { createStatusParser, displayPath } from "./status-parser";
 import { submoduleStageArgs } from "./submodule-open";
 import { gitmodulesSource, headGitmodulesOf, parseGitmodules, pathForms, type GitmodulesIndexEntry } from "./submodule-review";
@@ -450,3 +454,62 @@ export function workspaceIds(entry: { category: string; modes?: readonly string[
   if (entry.category === "unstaged") return { old: sideId(modes[1], oids[1]), new: modes[2] === GITLINK ? "head" : null };
   return null;
 }
+
+// ---- Feature 005 plan.md D20 rule 2: the facts of a moved gitlink (data-model §17) ----
+
+export type GitlinkRead = { value: GitlinkFact } | { code: ErrorCode } | { stop: "canceled" | "deadline" };
+const NOT_LOCATED: GitlinkRead = { value: { refused: "submodule" } };
+const HEAD_FAILED: { code: ErrorCode } = { code: "GIT_FAILED" };
+
+// Rule 2 step 1 (plan.md D11 check 3): exactly one stage-0 entry at the exact path, with mode 160000.
+export function gitlinkEntry(index: readonly IndexEntry[], path: Uint8Array): boolean {
+  const at = index.filter((e) => Buffer.compare(e.path, path) === 0);
+  return at.length === 1 && at[0]!.stage === 0 && at[0]!.mode === GITLINK;
+}
+
+// Rule 2 steps 2 to 5 inside the submodule, in the 001 §12 "Review reads" form. These commands load no index and run no filter, hook, or status program.
+// The caller runs step 1 first. A checkpoint covers it with the bound index digest.
+export async function submoduleHead(runner: GitRunner, t: ReadTarget & { installation: Pick<ReadInstallation, "selectedPath"> }, path: Uint8Array): Promise<GitlinkRead> {
+  const parts = componentsOf(path);
+  if (parts === null) return NOT_LOCATED;
+  const facts = await requestFacts(runner, t.operationId, t.workspace, false, [{ root: "worktreeRoot", path: parts }, { root: "worktreeRoot", path: [...parts, ".git"] }], t.signal);
+  if (t.signal.aborted) return { stop: "canceled" };
+  if (!Array.isArray(facts)) return facts;
+  const [folder, dotGit] = facts as [FileFact, FileFact];
+  if (folder.kind === "error" || dotGit.kind === "error") return { code: "REPOSITORY_UNAVAILABLE" };
+  // Plan.md D11 check 4: a folder and a `.git` file or folder. Neither fact follows a link.
+  if (folder.kind !== "directory" || (dotGit.kind !== "file" && dotGit.kind !== "directory")) return NOT_LOCATED;
+  const gitRoot = pathForms(t.workspace, t.installation).gitRoot;
+  const location = { worktree: (gitRoot.endsWith("/") ? gitRoot : `${gitRoot}/`) + parts.join("/") };
+  const run = async (args: string[]): Promise<{ exit: GitExit; line: string | null } | Exclude<GitlinkRead, { value: unknown }>> => {
+    const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+    const s = await runRead(runner, t, args, out);
+    if (t.signal.aborted) return { stop: "canceled" };
+    if ("refused" in s) return { code: s.refused };
+    if (s.exit.deadline !== undefined) return { stop: "deadline" };
+    if (s.exit.diagnosticLimit) return { code: "OUTPUT_LIMIT" };
+    if (exitKind(s.exit, "read", out) === "jobClosed") return HEAD_FAILED;
+    return { exit: s.exit, line: out.limited ? null : oneLine(out.take()) };
+  };
+  // Plan.md D11 check 5.
+  const top = await run(submoduleToplevelArgs(location));
+  if (!("exit" in top)) return top;
+  if (top.exit.exitCode !== 0 || top.line !== location.worktree) return NOT_LOCATED;
+  const head = await run(submoduleHeadOidArgs(location));
+  if (!("exit" in head)) return head;
+  if (head.exit.exitCode === 0) return head.line !== null && isObjectId(head.line, t.workspace.objectFormat) ? { value: { head: head.line } } : HEAD_FAILED;
+  // A process stopped at the output bound has no exit status.
+  if (head.exit.exitCode === null) return HEAD_FAILED;
+  // Rule 2 step 5, as the parent HEAD capture does: a symbolic HEAD whose reference is missing names no commit.
+  const symbolic = await run(submoduleHeadTargetArgs(location));
+  if (!("exit" in symbolic)) return symbolic;
+  if (symbolic.exit.exitCode !== 0 || symbolic.line === null || !isOneLevelRefName(symbolic.line)) return HEAD_FAILED;
+  const exists = await run(submoduleRefExistsArgs(location, symbolic.line));
+  if (!("exit" in exists)) return exists;
+  // git-show-ref(1) `--exists`: exit 2 means that the reference is missing.
+  return exists.exit.exitCode === 2 ? { value: { refused: "submodule-unborn" } } : HEAD_FAILED;
+}
+
+// Rule 2 steps 1 to 5 for a decision.
+export const gitlinkFact = (runner: GitRunner, t: Parameters<typeof submoduleHead>[1], index: readonly IndexEntry[], path: Uint8Array): Promise<GitlinkRead> =>
+  gitlinkEntry(index, path) ? submoduleHead(runner, t, path) : Promise.resolve(NOT_LOCATED);

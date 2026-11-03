@@ -9,8 +9,8 @@ import { WHOLE_FILE_STAGE_INPUT_BYTES } from "./limits";
 
 // Feature 004 contract Δ4 and Δ9: the refusals of a line selection. Data-model §6: no file decision gives them.
 export const LINE_ACTION_REASONS = ["context-only", "several-hunks", "deleted-file", "new-file", "eof-newline"] as const;
-// Feature 003 contract Δ4: only `resolve` gives `missing`.
-export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing", ...LINE_ACTION_REASONS] as const;
+// Feature 003 contract Δ4: only `resolve` gives `missing`. Feature 005 contract Δ4: only a moved gitlink gives `submodule-unborn`.
+export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "submodule-unborn", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing", ...LINE_ACTION_REASONS] as const;
 export type FileActionReason = (typeof FILE_ACTION_REASONS)[number];
 export type LineActionReason = (typeof LINE_ACTION_REASONS)[number];
 
@@ -35,13 +35,15 @@ export interface FileActionInput {
   working: WorkingFacts;
   // Hunk facts only. The decision needs no text support (contract §4), so it ignores them.
   content?: { binary?: boolean; validUtf8?: boolean; lineEndings?: "none" | "lf" | "crlf" | "mixed" };
+  // Feature 005 plan.md D20 rule 2: the submodule facts of a `movedGitlink` record. The service fills it only for such a record.
+  gitlink?: GitlinkFact | null;
 }
 
-export interface StagePath {
-  path: Uint8Array;
-  mode?: undefined;
-  objectId?: undefined;
-}
+// Feature 005 data-model §17: `head` is the full object ID of the submodule HEAD.
+export type GitlinkFact = { head: string } | { refused: "submodule" | "submodule-unborn" };
+
+// A moved gitlink stages as an `--index-info` line (feature 005 contract Δ4). Every other path goes to `update-index --add --remove --stdin`.
+export type StagePath = { path: Uint8Array; mode?: undefined; objectId?: undefined } | UnstagePath;
 
 // The `update-index -z --index-info` line of one path. Mode 0 removes the path.
 export interface UnstagePath {
@@ -85,6 +87,22 @@ const SCORE = /^[RC]\d{1,3}$/;
 
 const refuse = (reason: FileActionReason): FileActionDecision => ({ direction: null, code: "UNSUPPORTED_COMPARISON", reason });
 const MALFORMED = { direction: null, code: "MALFORMED_GIT_OUTPUT" } as const;
+const GITLINK_MODE = 0o160000;
+
+// Feature 005 plan.md D20 rule 2: `<sub>` `SC..` and `.M` with `mI` and `mW` 160000. The parent status runs with `--ignore-submodules=dirty`.
+const isMoved = (r: StatusRecord) => r.kind === "1" && r.sub[1] === "C" && r.y === "M" && r.mI === GITLINK && r.mW === GITLINK;
+
+// True for an Unstaged record that plan.md D20 rule 2 accepts. The service reads the `gitlink` facts only for such a record.
+export function movedGitlink(category: FileActionCategory, record: Uint8Array): boolean {
+  const r = category === "unstaged" ? parseRecord(record) : null;
+  return r !== null && isMoved(r);
+}
+
+// The bound submodule HEAD of a `stage` decision of a moved gitlink (data-model §17), or null.
+export function stagedGitlink(d: FileActionDecision | ResolveDecision): string | null {
+  const line = d.direction === "stage" ? d.changedPaths[0] : undefined;
+  return line?.mode === GITLINK_MODE && line.objectId !== undefined ? line.objectId : null;
+}
 
 // Splits off `count` space-separated fields. The rest is the path, which can hold spaces.
 function fields(record: Uint8Array, count: number): { fields: string[]; rest: Uint8Array } | null {
@@ -161,11 +179,23 @@ export function decideFileAction(input: FileActionInput): FileActionDecision {
   if (flags.intentToAdd || flags.assumeUnchanged || flags.skipWorktree) return refuse("index-flag");
   // With `--untracked-files=all`, Git lists a directory record only for a nested repository.
   const nested = record.kind === "?" && record.path[record.path.length - 1] === SLASH;
-  if (nested || record.sub[0] === "S" || [record.mH, record.mI, record.mW].includes(GITLINK)) return refuse("submodule");
+  const moved = input.category === "unstaged" && isMoved(record);
+  // Plan.md D20 rule 3: a staged gitlink change. `T` marks a type change (git-status(1)), so `M` and `A` keep mode 160000 in the index.
+  const stagedLink = staged && record.kind === "1" && record.mI === GITLINK && (record.x === "M" || record.x === "A");
+  if (nested || ((record.sub[0] === "S" || [record.mH, record.mI, record.mW].includes(GITLINK)) && !moved && !stagedLink)) return refuse("submodule");
   // Data-model §5 path rule: an unreadable entry, or an on-disk name that differs from the index path bytes.
   const working = input.working;
   if (working.type === "unreadable") return refuse("path");
   if (working.type !== "absent" && Buffer.compare(working.diskPath, record.path) !== 0) return refuse("path");
+
+  if (moved) {
+    const g = input.gitlink;
+    if (g === undefined || g === null) return MALFORMED;
+    if ("refused" in g) return refuse(g.refused);
+    if (!OBJECT_ID.test(g.head) || g.head.length !== record.hH.length) return MALFORMED;
+    // Git `add -- <path>` records the commit that the submodule HEAD names, at stage 0.
+    return { direction: "stage", changedPaths: [{ path: record.path, mode: GITLINK_MODE, objectId: g.head }] };
+  }
 
   if (staged) {
     if (record.x === "T") return refuse("type");
@@ -187,7 +217,7 @@ export function decideFileAction(input: FileActionInput): FileActionDecision {
 }
 
 // Contract Δ4 and data-model §9: Mark resolved.
-export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof" | LineActionReason>;
+export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof" | "submodule-unborn" | LineActionReason>;
 
 // `mode` is the `mW` of the `u` record: the `update-index --index-info` mode of the stage-0 entry (research R16 i).
 export interface ResolvePath {

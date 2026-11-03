@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { decideFileAction, decideResolve, FILE_ACTION_REASONS, type FileActionDecision, type FileActionInput, type ResolveDecision, type ResolveReason } from "../../src/contracts/file-action";
+import { decideFileAction, decideResolve, FILE_ACTION_REASONS, movedGitlink, stagedGitlink, type FileActionDecision, type FileActionInput, type ResolveDecision, type ResolveReason } from "../../src/contracts/file-action";
 import { WHOLE_FILE_STAGE_INPUT_BYTES } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 
@@ -87,7 +87,8 @@ describe("closed reason list (contract §4 'File staging')", () => {
   // Feature 003 contract Δ4 adds `missing`. Feature 004 contract Δ9 adds the five line refusals.
   test("FILE_ACTION_REASONS holds exactly the contract reasons", () => {
     const lines = ["context-only", "several-hunks", "deleted-file", "new-file", "eof-newline"];
-    expect<string[]>([...FILE_ACTION_REASONS].sort()).toEqual(["LFS", "blob-proof", "filter", "index-flag", "path", "rename", "size", "submodule", "symlink", "type", "missing", ...lines].sort());
+    // Feature 005 contract Δ4 adds `submodule-unborn`.
+    expect<string[]>([...FILE_ACTION_REASONS].sort()).toEqual(["LFS", "blob-proof", "filter", "index-flag", "path", "rename", "size", "submodule", "submodule-unborn", "symlink", "type", "missing", ...lines].sort());
   });
 });
 
@@ -228,13 +229,7 @@ describe("refusal reasons (contract §4 'File staging', data-model §5)", () => 
     expect(decide(input("untracked", untracked("ulink"), "ulink", { working: { type: "symlink", diskPath: bytes("ulink") } }))).toEqual(refused("symlink"));
   });
 
-  test("submodule: a gitlink on either side, or an untracked nested repository", () => {
-    const staged = ordinary("M.", "SC..", "160000", "160000", "160000", HEAD_OID, INDEX_OID, "sub");
-    expect(decide(input("staged", staged, "sub", { working: { type: "directory", diskPath: bytes("sub") } }))).toEqual(refused("submodule"));
-    const added = ordinary("A.", "S...", "000000", "160000", "160000", ZERO, INDEX_OID, "sub2");
-    expect(decide(input("staged", added, "sub2", { working: { type: "directory", diskPath: bytes("sub2") } }))).toEqual(refused("submodule"));
-    const unstaged = ordinary(".M", "SC..", "160000", "160000", "160000", HEAD_OID, HEAD_OID, "sub");
-    expect(decide(input("unstaged", unstaged, "sub", { working: { type: "directory", diskPath: bytes("sub") } }))).toEqual(refused("submodule"));
+  test("submodule: an untracked nested repository", () => {
     // With `--untracked-files=all`, Git lists a directory record only for a nested repository.
     expect(decide(input("untracked", untracked("nested/"), "nested/", { working: { type: "directory", diskPath: bytes("nested/") } }))).toEqual(refused("submodule"));
   });
@@ -313,6 +308,81 @@ describe("refusal reasons (contract §4 'File staging', data-model §5)", () => 
     ];
     for (const value of records) expect(decideFileAction(value)).not.toMatchObject({ reason: "blob-proof" });
     expect(records.map(decide)).toEqual([stageOf("a"), stageOf("b")]);
+  });
+});
+
+// Feature 005 plan.md D20 rules 2 to 4, contract Δ4, data-model §17 (T118). Spec FR-077 to FR-080.
+describe("gitlink rows (feature 005 contract Δ4, plan.md D20)", () => {
+  const SUB_HEAD = "4".repeat(40);
+  const folder = (path: string) => ({ working: { type: "directory" as const, diskPath: bytes(path) } });
+  // git-status(1) "Changed Tracked Entries": `SC..` with `--ignore-submodules=dirty` for a submodule whose commit moved.
+  const moved = ordinary(".M", "SC..", "160000", "160000", "160000", HEAD_OID, HEAD_OID, "vendor/lib");
+
+  test("an Unstaged SC.. record with gitlink {head} gives stage with the --index-info line 160000 <head> at the path", () => {
+    expect(movedGitlink("unstaged", moved)).toBe(true);
+    const raw = decideFileAction(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { head: SUB_HEAD } }));
+    expect(normalize(raw)).toEqual({ direction: "stage", changedPaths: [head("vendor/lib", 0o160000, SUB_HEAD)] });
+    if (raw.direction !== "stage") throw new Error("no stage");
+    expect(raw.changedPaths.map((p) => `${p.mode?.toString(8)} ${p.objectId}`)).toEqual([`160000 ${SUB_HEAD}`]);
+    expect(stagedGitlink(raw)).toBe(SUB_HEAD);
+    // A staged-and-moved `AM` record stages the moved commit too, as `git add -- <path>` does.
+    const added = ordinary("AM", "SC..", "000000", "160000", "160000", ZERO, INDEX_OID, "vendor/lib");
+    expect(decide(input("unstaged", added, "vendor/lib", { ...folder("vendor/lib"), gitlink: { head: SUB_HEAD } }))).toEqual({ direction: "stage", changedPaths: [head("vendor/lib", 0o160000, SUB_HEAD)] });
+  });
+
+  test("gitlink {refused} gives its reason, and a missing or malformed gitlink fact gives MALFORMED_GIT_OUTPUT", () => {
+    expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "submodule-unborn" } }))).toEqual(refused("submodule-unborn"));
+    expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "submodule" } }))).toEqual(refused("submodule"));
+    for (const gitlink of [null, undefined, { head: "4".repeat(64) }, { head: "X".repeat(40) }]) {
+      expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink }))).toEqual({ direction: null, code: "MALFORMED_GIT_OUTPUT" });
+    }
+  });
+
+  test("the path and index-flag rules decide before the gitlink facts", () => {
+    const fact = { gitlink: { head: SUB_HEAD } };
+    expect(decide(input("unstaged", moved, "vendor/lib", { ...fact, working: { type: "directory", diskPath: bytes("Vendor/lib") } }))).toEqual(refused("path"));
+    expect(decide(input("unstaged", moved, "vendor/lib", { ...fact, ...folder("vendor/lib"), indexFlags: { ...NO_FLAGS, skipWorktree: true } }))).toEqual(refused("index-flag"));
+    const bad = ordinary(".M", "SC..", "160000", "160000", "160000", HEAD_OID, HEAD_OID, BAD_PATH);
+    expect(decide(input("unstaged", bad, BAD_PATH, { ...fact, working: { type: "directory", diskPath: BAD_PATH } }))).toEqual(refused("path"));
+  });
+
+  test("a pure S.M. record and a .D gitlink deletion give submodule", () => {
+    const local = ordinary(".M", "S.M.", "160000", "160000", "160000", HEAD_OID, HEAD_OID, "vendor/lib");
+    const deleted = ordinary(".D", "S...", "160000", "160000", "000000", HEAD_OID, HEAD_OID, "vendor/lib");
+    expect(movedGitlink("unstaged", local)).toBe(false);
+    expect(movedGitlink("unstaged", deleted)).toBe(false);
+    expect(decide(input("unstaged", local, "vendor/lib", { ...folder("vendor/lib"), gitlink: { head: SUB_HEAD } }))).toEqual(refused("submodule"));
+    expect(decide(input("unstaged", deleted, "vendor/lib", { working: { type: "absent" }, gitlink: { head: SUB_HEAD } }))).toEqual(refused("submodule"));
+  });
+
+  test("the other gitlink records give submodule: a type change, a rename record, and a staged deletion", () => {
+    const typed = ordinary(".T", "S...", "160000", "160000", "100644", HEAD_OID, HEAD_OID, "vendor/lib");
+    expect(decide(input("unstaged", typed, "vendor/lib", { working: { type: "file", size: 1, diskPath: bytes("vendor/lib") } }))).toEqual(refused("submodule"));
+    const stagedType = ordinary("T.", "S...", "100644", "160000", "160000", HEAD_OID, INDEX_OID, "vendor/lib");
+    expect(decide(input("staged", stagedType, "vendor/lib", folder("vendor/lib")))).toEqual(refused("submodule"));
+    const rename = renamed("R.", "160000", "160000", "160000", HEAD_OID, HEAD_OID, "R100", "vendor/new", "vendor/lib");
+    expect(decide(input("staged", rename, "vendor/new", folder("vendor/new")))).toEqual(refused("submodule"));
+    const stagedDeletion = ordinary("D.", "S...", "160000", "000000", "000000", HEAD_OID, ZERO, "vendor/lib");
+    expect(decide(input("staged", stagedDeletion, "vendor/lib", { working: { type: "absent" } }))).toEqual(refused("submodule"));
+  });
+
+  test("a Staged M. gitlink gives unstage with mode 160000 and hH, and a Staged A. gitlink gives mode 0", () => {
+    const staged = ordinary("M.", "S...", "160000", "160000", "160000", HEAD_OID, INDEX_OID, "vendor/lib");
+    const raw = decideFileAction(input("staged", staged, "vendor/lib", folder("vendor/lib")));
+    expect(normalize(raw)).toEqual({ direction: "unstage", changedPaths: [head("vendor/lib", 0o160000, HEAD_OID)] });
+    expect(stagedGitlink(raw)).toBeNull();
+    const added = ordinary("A.", "S...", "000000", "160000", "160000", ZERO, INDEX_OID, "vendor/new");
+    const addedRaw = decideFileAction(input("staged", added, "vendor/new", folder("vendor/new")));
+    expect(normalize(addedRaw)).toEqual({ direction: "unstage", changedPaths: [removed("vendor/new")] });
+    expect(addedRaw.direction === "unstage" ? addedRaw.changedPaths.map((p) => p.mode) : null).toEqual([0]);
+    // An `MM` record also lists the Staged side, which unstages as `M.` does.
+    const both = ordinary("MM", "SC..", "160000", "160000", "160000", HEAD_OID, INDEX_OID, "vendor/lib");
+    expect(decide(input("staged", both, "vendor/lib", folder("vendor/lib")))).toEqual({ direction: "unstage", changedPaths: [head("vendor/lib", 0o160000, HEAD_OID)] });
+  });
+
+  test("an untracked nested repository still gives submodule, with or without a gitlink fact", () => {
+    expect(movedGitlink("untracked", untracked("nested/"))).toBe(false);
+    expect(decide(input("untracked", untracked("nested/"), "nested/", { ...folder("nested/"), gitlink: { head: SUB_HEAD } }))).toEqual(refused("submodule"));
   });
 });
 

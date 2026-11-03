@@ -215,6 +215,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 | Workbench review token lifetime | 60 s |
 | `integrate` and `mergetool` process limits | inactivity 300 s and none; ceiling 4 h for both |
 | Review reads | 30 s |
+| Submodules group folder rows (`SUBMODULE_TREE_FOLDERS`, renderer) | 1,024; above it the group shows no folder rows (spec FR-111, added 2026-11-03) |
 
 ## Δ6 Private native process requests (001 §6)
 
@@ -319,6 +320,12 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - FR-048 change: the review result no longer opens a dialog. The renderer starts the update with the token right after a review without refusal and without host lines. That click counts as the explicit start.
 - `confirmRun` text: main instruction "Run the programs of these submodules?". Content: "Update submodules runs <count> programs from <paths>. Run them only if you trust these submodules." With unchecked entries: "Arbareto cannot check <n> of them first." Buttons: Run and Cancel, Cancel as the default.
 - The `unchecked` entries of §12 "Trust" stay. They no longer come from digest bounds. They come only from the cases that §12 names: relative values in rows that the update writes, unknown nested submodules, and kept directories without a row.
+- Row order (spec FR-077, added 2026-11-03): the review lists the rows depth first. A nested row follows its parent row and the rows nested in the earlier siblings. Siblings keep the read order. The update result rows and the status-area row list follow this order, because the update plan builds its rows from the review rows. The read order, the 256-row bound, and the token binding stay unchanged.
+- Branch marks (spec FR-109, FR-110, added 2026-11-03, plan D20): the `reviewSubmodules` result adds `branches`, one `SubmoduleBranch` entry (data-model §15) for each row that the review reads as checked out. These rows are initialized, active, with a URL, and with a HEAD commit, also with update mode `none`. A scoped review and the update observer read no marks, so a scoped review gives an empty list.
+  - Command: `submoduleTrackingArgs(location, headRef)` checks the ref name, then runs the submodule read `for-each-ref --format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(HEAD) <headRef>`. The format equals the 003 `readTracking` format, so the 003 tracking parser reads it. The read runs beside the existing `for-each-ref --contains` read of the same row. It reads no index and runs no repository program. Ref names cannot hold `*`, `?`, `[`, or `\`, so the pattern is literal.
+  - No process: a detached HEAD gives `detached`. A HEAD ref outside `refs/heads/` gives `branch` with no upstream.
+  - Failures: abort ends the review `canceled`. A runner refusal gives `unread` with its code. Deadline `DEADLINE`, exit not 0 `GIT_FAILED`, output bound `OUTPUT_LIMIT`, parse failure `MALFORMED_GIT_OUTPUT`, and no current record with the HEAD ref `STATE_UNKNOWN`. A failed mark never fails the review.
+  - The review token does not bind the marks. They never enter the observed rows or the program inputs. No JSON Schema file changes: no schema exists for this result, and the shell only forwards it.
 - Every other §12 rule stays: the refusals, the update protocol, the progress, the deadlines, the reconciliation, and the remedies.
 
 ## Δ13 Changes to 002 deltas

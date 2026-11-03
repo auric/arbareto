@@ -135,6 +135,7 @@ tests/
 | P7 Trust shell | `src-tauri/src/{dialogs,settings,service}.rs`, `src/contracts/channel.ts` | The task dialog with main instruction, content, collapsed details, and Not now as default. The record version 2. The run confirmation text. | Cargo tests for the dialog model, the button IDs, the record round trip. N1 packaged check. | Local only. |
 | P8 Frontend P2 | new `worktrees/*`, `settings/git/*`, `resolve/*`, `trust/TrustChip.tsx`; `submodules/*`, `commit/*` (amend), `app/Workbench.tsx` (mount points only) | Worktree button and panels, Settings view, trust chip and inline reasons, Submodules group, resolve view, Amend last commit. | Component tests per FR. | The 003 settings dialog moves into the Settings view (O-7). |
 | P9 Qualification | `tests/windows/{workbench-packaged,workbench-perf}.test.ts`, `tests/wsl/workbench-wsl.test.ts` | None (tests). | SC-003, SC-007 (cold and warm, CPU, process-tree memory), SC-010 prompt counts, SC-014 keyboard and contrast, N1 to N6 in the package, WSL rows. | The open 001 measurement tools (001 T165, T180, T240, T242, T244). |
+| P11 Submodules tree and marks (2026-11-03, before v0.1.0) | `src/git-service/{submodule-review,commands}.ts`, `src/contracts/{submodules,operations,envelope,limits}.ts`, new `src/frontend/submodules/submodule-tree.ts`, `src/frontend/submodules/SubmodulesGroup.tsx`, `src/frontend/state/tracking.ts`, `src/frontend/app/Workbench.tsx` (one prop), new `tests/windows/submodule-tree-fixture.ts` and `tests/windows/submodule-tree-packaged.test.ts` | US12: depth-first rows, the folder tree, the branch marks (D20). | SC-018, SC-019; marks against `git status --porcelain=v2 --branch` headers; the ported order test. | A test that asserts the old breadth-first order. Fix the assertion and name it. |
 | P10 Spell check (moved to a later feature) | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, notices | US10. | SC-012 with the fixture message; no network request during the session (the 003 no-network harness). | Dictionary bundle size and license (D17). |
 
 Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run first.
@@ -328,7 +329,7 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
 - Host line gap (contract gap): remote.c rewrites each remote URL with `url.<base>.insteadOf` before the fetch. The host lines read each `remote.<name>.url` value as configured and do not apply that rewrite. Only user configuration sets `url.<base>.insteadOf`. So a user rule can send a fetch to another host without a host line.
 - Run confirmation (spec FR-080): the 001 `confirmRun` stays, with the new texts (contract Δ12). Cancel is the default.
 - Scope (spec FR-081): `reviewSubmodules {scope: {path}}` reviews that row and its nested rows. Refusals and host lines of rows outside the scope do not apply. The program list also keeps the programs of the rows above the scope row (contract Δ12). Kept Git directories apply only under `modules/<name>` of a row in the scope.
-- Rows (spec FR-077): the renderer maps the 001 progress events (`path`, `rowIndex`, `rowCount`, `percent`, phase) to the rows. A planned row without events is Waiting.
+- Rows (spec FR-077): the renderer maps the 001 progress events (`path`, `rowIndex`, `rowCount`, `percent`, phase) to the rows. A planned row without events is Waiting. Amended 2026-11-03 (user decision, D20): the renderer builds the folder tree from `depth` and `parentRowId`. The review lists the rows depth first (contract Δ12 "Row order").
 - Result (spec FR-082): the 001 row results show inline. The status bar states the totals. Registration changes show as one line.
 
 ### D14 Shell
@@ -454,7 +455,7 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
   - Lingering count (001 plan "Status area"): with a trust ID, the 001 sentence "Revoke trust also ends them." becomes "Stop trusting this repository also ends them.".
 - Submodules group texts (spec FR-076 to FR-082, D13, WP24). The group sits below the references in the sidebar and scrolls inside its own region.
   - Header: "Submodules" with the row count, and the icon button "Update submodules". During the own run: "Updating <i> of <n>" from the progress counters, and Cancel. After a run: "<n> updated, <n> failed". Each count has the en-US thousands separator, as the worktree button count has. The name "Submodules" is a button with a chevron and `aria-expanded`. It shows and hides the rows and the read lines. The host, refusal, and registration lines stay visible. The header keeps one line. Its status text shrinks first and ends with "…", and its tooltip gives the full text.
-  - Rows at rest (spec FR-077): a list-only `reviewSubmodules` lists the rows. It runs at the first read of a registration, and at the first read after a run or a Refresh. It never starts an update, and it shows no refusal or host line. Each row shows the Muted submodule icon before its path. While it waits: "Arbareto reads the submodules." A list that needs trust (`TRUST_REQUIRED`, `TRUST_CHANGED`) shows the D12 text "Arbareto reads no changes until you trust this repository." with the button "Trust…". Trust… asks with `read`, and the first read after it lists the rows again. Another failure: "Arbareto cannot read the submodules: <code>." A review without rows: "No submodules found." (001 text).
+  - Rows at rest (spec FR-077): a list-only `reviewSubmodules` lists the rows. It runs at the first read of a registration, and at the first read after a run or a Refresh. It never starts an update, and it shows no refusal or host line. Amended 2026-11-03 (user decision, spec FR-107 to FR-111, D20): the rows form the folder tree below. While it waits: "Arbareto reads the submodules." A list that needs trust (`TRUST_REQUIRED`, `TRUST_CHANGED`) shows the D12 text "Arbareto reads no changes until you trust this repository." with the button "Trust…". Trust… asks with `read`, and the first read after it lists the rows again. Another failure: "Arbareto cannot read the submodules: <code>." A review without rows: "No submodules found." (001 text).
   - A host line or a refusal never waits unseen. When it shows, the view switches to History, and the first line takes focus. In the constrained profile, the references section also expands.
   - Row states during the run: "Waiting", "Fetching" or "Updating" with " <n>%" when Git reports one, and "Waiting for the result" for a row whose steps ended. Only the row result gives "Done", "Failed", "Clone interrupted", "Changed elsewhere", or "Refused".
   - Observed results: "Checked out <short ID>", "Cloned, at <short ID>", "No change", and "At <short ID>" for a changed-elsewhere row. A refused or interrupted row shows its result text.
@@ -462,7 +463,15 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
   - Host line: "<path> will fetch from <host>. The repository settings name <host>." per entry, with "Update anyway" and Cancel. `local` reads "this computer", `unknown` reads "a host that Arbareto cannot name" (contract Δ12). Update anyway and Cancel remove the line and move the focus to "Update submodules".
   - Refusal line: the refusal text and "Show remedy", with the remedy text, the command, and "Copy command". A refusal without a remedy has no "Show remedy".
   - Registration line: "Git changed the repository settings of <n> submodules." ("1 submodule").
-  - Row menu: the accessible name "Actions for <path>"; items "Update", "Retry" (failed rows), "Show output" (failed rows with output), and "Copy path".
+  - Tree rows (spec FR-107 to FR-111, added 2026-11-03). `<n>` has the en-US thousands separator.
+    - Folder row: a chevron, the folder icon, `<folder name>`, and the count `<n>`. Tooltip: `<full folder path>`. Accessible name: "<folder name>, folder, <n>".
+    - Submodule row: a chevron or a 16 px spacer, the submodule icon, and `<last path part>`. Tooltip: `<full path>`.
+    - Branch mark, muted, after the name: `<branch>`, the short name under `refs/heads/`, else the full ref. Tooltip: `<branch>`, or "<branch> → <short upstream>". A detached HEAD: "no branch". The mark shrinks first and ends with "…".
+    - Counts: the 003 branch row texts "↑<a> ↓<b>" and "=", with the 003 tooltip "<a> ahead, <b> behind. Counts compare with the remote-tracking branch from the last fetch, not with the remote itself.". A gone upstream: the 005 FR-064 gone mark with the tooltip "The upstream <upstream> no longer exists.". No upstream and an unread mark: no visible count.
+    - Accessible name of a submodule row: "<full path>, <branch or no branch>, <count part>, <state>, <observed line>", without empty parts. The count part is "<a> ahead, <b> behind", "No upstream", "upstream gone", or "counts are unavailable: <code>". The count text reuses `countLabel(track)` of `state/tracking.ts`. The BranchMarks board texts "ahead 1, behind 0" and "up to date" give way to these app texts, because the user asked for the existing format.
+    - Bound line (spec FR-111): "The submodule paths have more than 1,024 folders, so the group shows no folder rows."
+    - Malformed tree (data-model §12 "Checks"): the D15 "Malformed result" state.
+  - Row menu: the accessible name "Actions for <path>"; items "Update", "Retry" (failed rows), "Show output" (failed rows with output), and "Copy path". Folder rows have no menu. A right-click on a folder row opens no menu (spec FR-108).
   - Status bar (spec FR-082): "Update submodules finished. <n> updated, <n> failed." for a succeeded, completed-with-effects, or failed-with-effects run with row results and no deadline reason.
 - Resolve view texts (spec FR-089 to FR-096, D7, WP25). The view sits in the Commit view diff area.
   - Region: the accessible name "Resolve <path>", the path as the heading, and the rows "Conflict" with the data-model §11 kind text, "Ours" and "Theirs" with the side names. A side without a commit fact shows "Not known". Before the review results: "Arbareto reads the Git facts."
@@ -523,6 +532,10 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
 | Ctrl+Enter | Commit, or the primary action of a docked panel | Message field, or the panel | 001 |
 | Ctrl+F | Focus the filter of the active view: the history filter in History, Filter files in Commit, Find a setting in Settings | Window, per view | 002 plan.md D6 keeps Ctrl+F in History. The Commit view has no history filter. |
 | Ctrl+S | Save the pending Git setting changes of the selected scope, with the Save review | Settings view | None in 001 to 003 |
+| Up, Down, Home, End | Previous, next, first, and last row | Submodules group tree (D20) | The ReferencesSidebar tree map |
+| Right, Left | Open a closed row or go to its first child; close an open row or go to the parent | Submodules group tree (D20) | The ReferencesSidebar tree map |
+| Enter | Open the submodule (005 FR-047) on a submodule row; open or close a folder row | Submodules group tree (D20) | The 004 row Enter |
+| Shift+F10, Menu key | Open the row menu of a submodule row; nothing on a folder row | Submodules group tree (D20) | The Windows context menu keys (D15 "Action menu") |
 
 - F6 order per view: History keeps the 001 order. Commit: header, notice band, Changes, Staged, diff, message, status region. Amended 2026-10-31: Conflicted comes before Changes while it shows. Settings: header, notice band, scope bar, page list, page content, status region. The notice band stays visible in every view.
 - F6 entry into a file list focuses its Tab-stop row. An empty list gives the first control of its section. Each `data-section` container has `tabIndex={-1}`, so a section without a control takes focus itself. When focus does not land inside the target section, F6 continues to the next section. A section box never counts as the last focus of its section. Enter, a double-click, the Commit icon, and Open Commit view open the Commit view. Focus then goes to the Changes Tab-stop row, else to Filter files (001 FR-005).
@@ -585,6 +598,22 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
 - Each new test file adds its line to `tests/groups.json`. Timing tests go into `serial`.
 - Mutation tests copy the 001 control rule: one control mutation turns each oracle red.
 
+### D20 Submodules group tree and branch marks
+
+Spec User Story 12, FR-077, FR-086, FR-107 to FR-111, SC-018, SC-019. User decisions of 2026-11-03 (approved boards Main, Collapsed, Dark, and BranchMarks; research R31). Feature 005 has its own D20; cite this one as "004 D20". No new operation, no new JSON Schema file, and no Rust change.
+
+- Row order (spec FR-077, contract Δ12 "Row order"): `top()` in `src/git-service/submodule-review.ts` returns `treeOrder(rows)`, a stable pre-order walk over `parentRowId`. Siblings keep the read order. The read order, the 256-row bound, the token `binding()`, and the level slices stay unchanged. The update plan needs parents before children, and pre-order keeps that.
+- Contract: `src/contracts/submodules.ts` adds `SubmoduleBranch` (data-model §15). The track union of the 003 `TrackingEntry` moves to a shared `TrackState` in `src/contracts/operations.ts`, and `src/contracts/envelope.ts` uses it. `submodules.ts` cannot import `envelope.ts`, because `envelope.ts` imports it. `src/contracts/limits.ts` adds `SUBMODULE_TREE_FOLDERS = 1_024`. `src/git-service/commands.ts` adds `submoduleTrackingArgs` (contract Δ12 "Branch marks"). `read-tracking-result.schema.json` stays byte-identical.
+- Marks read (spec FR-110): `observe` gets a `marks` flag. Only the unscoped `reviewSubmodules` sets it, so the update observer starts no mark process. `readRepo` runs the HEAD ref read and the mark read beside the `--contains` read, and waits for both to settle, so no process outlives the step. The marks go into their own map by `rowId`. They never enter `observed`, the program inputs, or `binding().review`.
+- Rejected candidates (research R31): `status --porcelain=v2 --branch` ran `core.fsmonitor` and could write the index. `rev-list --left-right --count` with `@{u}` gives exit 128 for two cases that only the message text tells apart. `%(ahead-behind:<upstream>)` needs the upstream first. A second read after the rows needs a new operation and about 4 times the code (main-session default of 2026-11-03).
+- Cost (research R31): +18 ms per row (+7%) unpackaged on Windows, with the mark read beside `--contains`. Two processes run at a time per row. Rows stay sequential.
+- Tree builder (spec FR-107, FR-111): new pure `src/frontend/submodules/submodule-tree.ts`. Input: plan rows, found rows, marks by `rowId`, and the closed keys. Siblings sort with `compareStringKeys(treeStringKey(local))` of `src/contracts/tree-order.ts` over the `atob` path bytes below the parent. Submodule rows are leaves, so folders come first. Folder labels split the display path on `/`. Data-model §12 "Tree node" gives the keys, the counts, the checks, and the bound.
+- Group (spec FR-108, FR-109): `src/frontend/submodules/SubmodulesGroup.tsx` keeps `branches` by `rowId` beside `rows`, and both change together in the list review and the unscoped review. `isReviewValue` also needs an array `branches`. A module-level map keeps the closed keys per `worktreeKey` for the window session; `src/frontend/app/Workbench.tsx` passes the `repository` prop. `role="tree"`, `treeitem` with `aria-level`, `aria-posinset`, `aria-setsize`, and `aria-expanded` on folders and parent rows. One Tab stop with roving focus. Indent `8 + 12 * (level - 1)` px. `src/frontend/state/tracking.ts` exports `countLabel(track)` from `trackLabel`, without the FR-021 index check.
+- Keys: the ReferencesSidebar tree map (D15 keyboard map, "Submodules group tree" rows).
+- Texts: D15 "Submodules group texts", "Tree rows".
+- Budgets: SC-018 30 ms per row (A/B of a branch fixture and an all-detached fixture), set before the packaged test. A miss stays a failure, unless the user approves a changed target (constitution VII). WSL records only. SC-019 keeps 001 SC-005 with 256 rows and 1,024 open folders, without virtualization.
+- Packaged fixtures: new `tests/windows/submodule-tree-fixture.ts`. `tests/windows/submodule-perf-fixture.ts` stays unchanged, because its builder digest hashes the whole file, and an edit rebuilds the 005 caches.
+
 ### Invariants
 
 | Invariant | Evidence |
@@ -644,8 +673,9 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
 | 5 | P8 | A: WP21. B: WP22. C: WP23. D: WP24. E: WP25. F: WP29. | P2 frontend. |
 | 6 | P10 | None. WP26 moves to a later feature (spec Clarifications, 2026-10-19). | P3 spell check, postponed by the user. |
 | 7 | P9 | WP27 (WSL, alone). WP28 (packaged). | Qualification. |
+| 8 | P11 | WP30, then WP31, then WP32, then WP33. One implementer at a time. | US12 (D20), before v0.1.0. |
 
-User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 and US11 (batches 4 and 5). P3 is US10 (batch 6), which moves to a later feature.
+User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 and US11 (batches 4 and 5), and US12 (batch 8). P3 is US10 (batch 6), which moves to a later feature.
 
 ### Work packages, in run order
 
@@ -681,6 +711,10 @@ User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 a
 | WP26 | frontend-implementer | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, the notices inventory, tests | P10: US10. Moved to a later feature (2026-10-19). |
 | WP27 | implementer; runs by scout, alone | `tests/wsl/workbench-wsl.test.ts` | P9 WSL |
 | WP28 | implementer; runs by scout | `tests/windows/{workbench-packaged,workbench-perf}.test.ts` | P9 packaged |
+| WP30 | implementer-xhigh | `src/git-service/{submodule-review,commands}.ts`, `src/contracts/{submodules,operations,envelope,limits}.ts`, `tests/git/submodule-review.test.ts` and any submodule test that asserted the old order, `tests/git/fixtures.ts` or `tests/git/submodule-harness.ts`, `tests/contracts/{submodules,git-commands}.test.ts`, `tests/wsl/submodules.test.ts` | P11 service, contract, and WSL (T136 to T141). The WSL case runs alone. |
+| WP31 | frontend-implementer (loads arbareto-ux, vercel-react-best-practices, web-design-guidelines) | new `src/frontend/submodules/submodule-tree.ts`, `src/frontend/submodules/SubmodulesGroup.tsx`, `src/frontend/state/tracking.ts`, `src/frontend/app/Workbench.tsx` (one prop), `tests/contracts/workbench-submodules.test.tsx`, the review fakes of other `tests/contracts` files that feed the group | P11 tree and group (T142, T143). After WP30. |
+| WP32 | implementer | new `tests/windows/submodule-tree-fixture.ts`, new `tests/windows/submodule-tree-packaged.test.ts` | P11 packaged case (T144). After WP31. |
+| WP33 | scout | none (runs only) | P11 packaged run and the R31 record (T145). After WP32. |
 
 Parallel tracks use disjoint files. These packages are not file-disjoint:
 - `src/git-service/session.ts` and `trust.ts`: only WP10 and WP20 edit them in 004 batches 2 and 4. WP17 edits `trust.ts` for the binding before WP20. In batch 1, WP5 added the `undefined` handlers of the new operations to `session.ts` and the `globalConfig` refusal to `tests/git/bun-runner.ts`.

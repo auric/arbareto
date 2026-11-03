@@ -123,6 +123,15 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 - `path`, `depth`, `state` (`waiting`, `fetching`, `updating`, `done`, `failed`, `refused`), `percent` (from the 001 progress counter, or null), `observed` (the 001 row result), `exitCode` and `outputTail` for a failure.
 - Host line: the review `hosts` list, with one `{path, fetch, settings}` entry for each row (contract Î”12), and Update anyway. `fetch` and `settings` each have the contract Î”12 form: `{kind: "host", name}`, `{kind: "local"}`, or `{kind: "unknown"}`.
+- Tree node (spec FR-107 to FR-111, plan D20; added 2026-11-03). The renderer builds the nodes from `parentRowId`, `depth`, and `pathBytes`. It never depends on the service row order.
+  - `kind`: `folder` or `submodule`.
+  - `key`: `f:` and the latin1 full folder path for a folder. `s:` and `pathBytes` for a submodule row. Full paths are unique, because an index cannot hold a gitlink at a path and entries below it.
+  - `level`: the tree level, 1 at the root. It gives `aria-level`.
+  - `label`: the folder segment, or the last part of the submodule path. Found rows without a plan row show their full path at the end of the root level.
+  - `count`: for a folder, the submodule rows in its subtree, nested ones included.
+  - `open`: true at first. The group keeps the closed keys per repository for the window session (`worktreeKey`). It does not store them.
+  - Checks: a nested row needs `depth` = parent `depth` + 1 and `pathBytes` = parent bytes + 0x2F + local bytes. The display path and the bytes need the same count of `/`. A failed check gives the plan D15 "Malformed result" state.
+  - Bound: above `SUBMODULE_TREE_FOLDERS` (1,024) folder nodes, the tree has no folder nodes. Each nested row stays below its parent row, with its path below the parent as label (spec FR-111).
 
 ## 13. Shell settings additions
 
@@ -134,3 +143,14 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 - Per worktree for the window session: `view` (`history`, `commit`, `settings`), `settingsScope`, `settingsPage`, `commitLayout` (`tree` or `flat` per list), `untrackedExpanded` (false at open), the multi-selection per list, the line selection of the shown diff, and `amend` (null at open). While the box is checked, `amend` is `{headOid, message, text}`: the HEAD commit, the HEAD message from the review, and the editor text. The draft that the HEAD message replaced stays in the drafts store, and clearing the box restores it (spec FR-098).
 - A new snapshot keeps the selection of entries whose list, category, and path bytes still exist, and drops the others. This also applies to the multi-selection and its Shift anchor. Each status read gives new entry IDs, so the entry ID does not identify an entry across snapshots.
+
+## 15. Submodule branch mark (`reviewSubmodules` result `branches`)
+
+- Added 2026-11-03 (spec FR-109, FR-110, plan D20, contract Î”12). One entry for each row that the list review reads as checked out. A scoped review gives an empty list.
+- `SubmoduleBranch`, strict, by `state`:
+  - `{rowId, state: "detached"}`: `symbolic-ref -q HEAD` exits 1.
+  - `{rowId, state: "branch", ref, upstream, track}`: `ref` is the full HEAD ref. `upstream` is the full upstream ref, or null. `track` is the shared `TrackState` of the 003 `TrackingEntry`. `upstream` is null exactly when `track.state` is `none`.
+  - `{rowId, state: "unread", ref, code}`: the track read failed. `code` is `DEADLINE`, `GIT_FAILED`, `OUTPUT_LIMIT`, `MALFORMED_GIT_OUTPUT`, `STATE_UNKNOWN`, or the runner refusal code.
+- A HEAD ref outside `refs/heads/` gives `branch` with `upstream` null and track `none`, with no process. Git sets `%(upstream)` only for `refs/heads/` refs (research R31).
+- `STATE_UNKNOWN`: no record has `refname` equal to the HEAD ref with `%(HEAD)` set. HEAD moved between the two reads.
+- The marks never enter the observed rows, the program inputs, or the review token binding.

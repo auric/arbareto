@@ -349,7 +349,7 @@ describe("mounted controls", () => {
 // T235 and T148: the submodule row, the feature 004 one-click update (T073, no review dialog), and the T138 status region across the update.
 describe("submodule update mount", () => {
   const NOTICE = { submoduleNotice: { count: 2, paths: ["a", "b"], filter: "applied" as const } };
-  const REVIEW = () => ({ generation: 1, rows: [], programs: [], refusals: [], hosts: [], submoduleReviewToken: crypto.randomUUID() });
+  const REVIEW = () => ({ generation: 1, rows: [], branches: [], programs: [], refusals: [], hosts: [], submoduleReviewToken: crypto.randomUUID() });
   const bandButton = () => document.querySelector<HTMLElement>('[data-slot="notice-band"] button');
   const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
   const footerButton = (label: string) => [...document.querySelectorAll<HTMLElement>("footer button")].find((b) => b.textContent === label);

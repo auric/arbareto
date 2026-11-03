@@ -433,15 +433,16 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
     expect(await waitExit(s.app)).not.toBeNull();
   }
 
-  // The Commit view button, then the Changes row `path` by keyboard. The view switch focuses the Changes Tab-stop row (Workbench.tsx `focusCommitEntry`).
-  async function rowByKeyboard(s: Session, path: string, ms = ACTION_WAIT_MS): Promise<void> {
+  // The Commit view button, then the row `path` of `list` by keyboard. The view switch focuses the Changes Tab-stop row (Workbench.tsx `focusCommitEntry`).
+  async function rowByKeyboard(s: Session, path: string, ms = ACTION_WAIT_MS, list: "changes" | "staged" = "changes"): Promise<void> {
     await uia(s.app.pid, COMMIT_VIEW, ControlType.Button, invoke);
-    await until<boolean>(s.c, `the Changes row ${path}`, `[...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].some((e) => e.getAttribute('aria-label') === ${js(path)})`, (v) => v, ms);
+    await until<boolean>(s.c, `the ${list} row ${path}`, `[...document.querySelectorAll('[data-file-tree=${list}] [role=treeitem]')].some((e) => e.getAttribute('aria-label') === ${js(path)})`, (v) => v, ms);
     // `COMMIT_VIEW` is the History/Commit segmented control. It only switches the view and keeps the focus. Only Enter, a double-click, the Commit icon, and Open Commit view move it to the Changes row (004 plan.md "Keyboard and focus", F6 entry rule), so F6 moves it to the Changes Tab-stop row (Workbench.tsx `moveSection`).
     console.log(`OBSERVATION ${TASK}: the focus after the Commit view Invoke: ${js(await active(s.c))}`);
-    await keyTo(s.c, "F6", "the Changes list", (a) => a.tree === "changes");
+    // The Staged list is the next F6 stop after the Changes list (Workbench.tsx `moveSection` order).
+    await keyTo(s.c, "F6", `the ${list} list`, (a) => a.tree === list);
     await press(s.c, "Home");
-    await keyTo(s.c, "ArrowDown", `the row ${path}`, (a) => a.tree === "changes" && a.label === path);
+    await keyTo(s.c, "ArrowDown", `the row ${path}`, (a) => a.tree === list && a.label === path);
     // Enter on a file row selects it (ChangesPane.tsx row keys).
     await press(s.c, "Enter");
   }
@@ -579,6 +580,58 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
       }
     },
     caseTimeout(60),
+  );
+
+  // ---- SC-009: US2 to US4 by keyboard ----
+
+  // src/frontend/changes/revert-text.ts `revertUnstagedTexts` title, `REVERT_UNSTAGED_LABEL`, and `MORE_ACTIONS`.
+  const UNSTAGED_TITLE = "Revert all unstaged changes?";
+  const REVERT_UNSTAGED_ITEM = "Revert all unstaged changes…";
+  const MORE_ACTIONS = "More actions";
+  // action-menu.tsx: the accessible name of an item is its `menu-label` text.
+  const FOCUSED_ITEM = `document.activeElement?.closest('[role=menuitem]')?.querySelector('[data-slot=menu-label]')?.textContent ?? null`;
+
+  test.skipIf(reason !== null)(
+    "SC-009, US2 to US4 by keyboard: R on a Staged row, and Revert all unstaged changes… of the Changes header menu, open the modal with Cancel focused for CDP and UI Automation; Escape changes nothing",
+    async () => {
+      const repo = build("t079-keys");
+      // `login.txt` gets a staged change and a further unstaged change, so it has a row in both lists.
+      g(repo, ["add", "--", PATH]);
+      writeFileSync(join(repo, PATH), `${CHANGED}l21\n`);
+      const before = { digest: fileDigest(repo, PATH), index: indexOf(repo) };
+      const state = () => ({ digest: fileDigest(repo, PATH), index: indexOf(repo) });
+      const s = await windowsSession("t079-keys", repo);
+      const cancelFocused = async (title: string) => {
+        await until<string | null>(s.c, `the confirmation ${title}`, dialogTitle, (v) => v === title, ACTION_WAIT_MS);
+        await until<Active>(s.c, "the first focus on Cancel", ACTIVE, (a) => a.dialog && a.text === "Cancel");
+        // UI Automation reports the focus of the foreground window only.
+        const foreground = foregroundSkip(s.app.pid);
+        if (foreground === null) await waitFocus(s.app.pid, "Cancel", MAX_WAIT_MS);
+        else console.log(`SKIP ${TASK} UIA focus on Cancel: ${foreground} (unverified; the CDP focus is on Cancel)`);
+      };
+      try {
+        await rowByKeyboard(s, PATH, ACTION_WAIT_MS, "staged");
+        await press(s.c, "r");
+        await cancelFocused(FILE_TITLE);
+        await press(s.c, "Escape");
+        await closedWithoutRun(s, "Escape on Revert file", state, before);
+        await until<Active>(s.c, "the focus back on the Staged row", ACTIVE, (a) => a.tree === "staged" && a.label === PATH);
+
+        // The header button comes before the Tab stop row of the Changes list in the Tab order.
+        await keyTo(s.c, "F6", "the Changes list", (a) => a.tree === "changes");
+        await keyTo(s.c, "Tab", "the More actions button", (a) => a.section === "workingChanges" && a.label === MORE_ACTIONS, MOD.Shift);
+        await press(s.c, "Enter");
+        // action-menu.tsx `focusFirst`: a menu that a key opens focuses its first enabled item.
+        await until<string | null>(s.c, `the focus on ${REVERT_UNSTAGED_ITEM}`, FOCUSED_ITEM, (v) => v === REVERT_UNSTAGED_ITEM);
+        await press(s.c, "Enter");
+        await cancelFocused(UNSTAGED_TITLE);
+        await press(s.c, "Escape");
+        await closedWithoutRun(s, "Escape on Revert all unstaged changes", state, before);
+      } finally {
+        await end(s);
+      }
+    },
+    caseTimeout(30),
   );
 
   // ---- SC-009: the row menu, the themes, forced colors, and the text sizes ----

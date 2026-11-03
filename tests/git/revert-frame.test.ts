@@ -7,7 +7,7 @@
 // Spec FR-031, FR-003, and FR-049 hold across every run of this file (the last case).
 
 import { describe, expect } from "bun:test";
-import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RunWorkbenchResult } from "../../src/contracts/envelope";
 import { GIT_PROCESS_DEADLINE_MS, REGISTERED_DEADLINE_CAP_MS } from "../../src/contracts/limits";
@@ -108,7 +108,13 @@ describe("revert frame: registration and common refusals (plan.md D2, contract Î
   caseTest(TASK, "revert-unstaged reviews and runs without trust approval, writes Git's restore bytes, keeps the index, and leaves no Git temporary file", SHELL, () =>
     serviced("t020-run", async (service) => {
       // A registered hook makes the trust listing ask for workbench approval. The revert actions take no class (contract Î”7).
-      const repo = build(undefined, (r) => write(r, ".git/hooks/post-checkout", "#!/bin/sh\nexit 0\n"));
+      // Spec FR-004: the revert runs no hook. Git runs a hook in the top of the worktree.
+      const repo = build(undefined, (r) => write(r, ".git/hooks/post-checkout", "#!/bin/sh\necho ran > .git/hook-ran\n"));
+      const marker = join(repo, ".git", "hook-ran");
+      // Control: Git runs this hook, so the marker check below can fail.
+      g(repo, ["hook", "run", "post-checkout"]);
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
       const { r, read } = await open(service, repo);
       expect((await service.readTrust(r.repositoryId)).result?.approvalRequired.workbench).toBe(true);
       const oracle = restored(repo);
@@ -124,6 +130,7 @@ describe("revert frame: registration and common refusals (plan.md D2, contract Î
       expect(workingFileDigests(repo)).toEqual(oracle);
       expect({ index: indexOf(repo), raw: rawIndex(repo) }).toEqual({ index: before.index, raw: before.raw });
       expect(gitTemps(repo)).toEqual([]);
+      expect(existsSync(marker)).toBe(false);
       const started = service.runner.frames.filter((f) => f.type === "started" && f.kind === "workbench").map((f) => f.action);
       expect(started).toEqual(["revert-unstaged"]);
       // Contract Î”2: the phase `revert-files` carries `fileIndex` and `fileCount`.

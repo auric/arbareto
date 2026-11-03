@@ -27,6 +27,7 @@ import {
   sameSubmoduleHost,
   submoduleUrlHost,
   type SubmoduleAction,
+  type SubmoduleBranch,
   type SubmoduleHost,
   type SubmoduleHostLine,
   type SubmodulePlanRow,
@@ -58,6 +59,7 @@ import {
   submoduleReachArgs,
   submoduleRefExistsArgs,
   submoduleRefFormatArgs,
+  submoduleTrackingArgs,
   submoduleTreeArgs,
   type ObjectFormat,
   type SubmoduleLocation,
@@ -70,6 +72,7 @@ import type { Workspace } from "./registration";
 import type { ChangeSnapshot, Completeness, Head, IndexEntry, ReadInstallation } from "./snapshot";
 import { displayPath } from "./status-parser";
 import { defaultRemote, resolveGitmodulesUrl, SubmoduleUrlError, type GitPlatform } from "./submodule-remote";
+import { parseTracking } from "./sync-parsers";
 import {
   isComponent,
   keyParts,
@@ -221,6 +224,8 @@ export interface SubmoduleReviewValue {
   refusals: SubmoduleRefusal[];
   // Feature 004 contract Δ12: `updateSubmodules` needs `confirmHosts` when this list is not empty.
   hosts: SubmoduleHostLine[];
+  // Feature 004 contract Δ12 "Branch marks", in row order. A scoped review gives none. The token does not bind them.
+  branches: SubmoduleBranch[];
   submoduleReviewToken: string;
 }
 
@@ -539,7 +544,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     }
     const scope = t.scope === undefined ? null : new TextEncoder().encode(t.scope.path);
     // Feature 004 contract Δ12: the review takes the trust listing own or shared. The update preflight always runs its own listing.
-    const o = observe(t, undefined, scope, () => sharedListing({ trust, listingTuple }, t));
+    // Only the list review reads the branch marks ("Branch marks").
+    const o = observe(t, undefined, scope, () => sharedListing({ trust, listingTuple }, t), scope === null);
     const read = await o.top({ head: s.head, indexEntries: s.indexEntries });
     if ("stop" in read) return { result: read.stop };
     if (!("value" in read)) return { result: "failed", code: read.code, ...(read.path === undefined ? {} : { value: { path: read.path } }) };
@@ -555,6 +561,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       programs: read.value.programs.map((e) => e.program),
       refusals: read.value.refusals,
       hosts: read.value.hosts,
+      branches: read.value.rows.flatMap((p) => o.marks.get(p.row.rowId) ?? []),
       submoduleReviewToken,
     };
     retained.set(submoduleReviewToken, { repositoryId: w.repositoryId, issuedAt: now(), value, fingerprint, review, programs, scope });
@@ -564,11 +571,13 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
   // One run of the review reads. `rowIds` maps base64 path bytes to retained row IDs. A row without one gets a new ID and `found`.
   // `scope`: the UTF-8 path bytes of the contract Δ12 scope row, or null for every row.
   // `list`: the source of the superproject trust listing.
+  // `readMarks`: the reads add the feature 004 contract Δ12 branch marks of the checked-out rows.
   function observe(
     t: ObserveTarget,
     rowIds?: ReadonlyMap<string, string>,
     scope: Uint8Array | null = null,
     list: () => Promise<ListingOutcome> = () => trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: t.workspace }),
+    readMarks = false,
   ) {
     const { workspace: w, installation } = t;
     const objectFormat = w.objectFormat;
@@ -577,6 +586,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     // The values that the token binds besides the plan, in read order.
     const observed: unknown[] = [];
     const programInputs: unknown[] = [];
+    // The branch marks by row ID. They stay out of `observed`, `programInputs`, and the binding.
+    const marks = new Map<string, SubmoduleBranch>();
     let cachedListing: TrustListing | null = null;
 
     // Contract §3: trust gating follows the read rule of §7, before any Git process inside a submodule.
@@ -669,14 +680,47 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       return { head: null, headRef };
     };
 
-    const readRepo = async (location: SubmoduleLocation): Promise<Repo> => {
+    // Feature 004 contract Δ12 "Branch marks". A failed read gives `unread` and never fails the review. Only an abort ends it.
+    // `closed`: the deadline or the stderr bound of the read closed the operation Job (contract §5 "Deadline outcomes", §6).
+    const markOf = async (location: { worktree: string }, rowId: string, headRef: string | null): Promise<{ mark: SubmoduleBranch; closed: boolean }> => {
+      const done = (mark: SubmoduleBranch, closed = false) => ({ mark, closed });
+      if (headRef === null) return done({ rowId, state: "detached" });
+      // Research.md R31: Git gives a HEAD outside `refs/heads/` no upstream.
+      if (!headRef.startsWith("refs/heads/")) return done({ rowId, state: "branch", ref: headRef, upstream: null, track: { state: "none" } });
+      const unread = (code: ErrorCode): SubmoduleBranch => ({ rowId, state: "unread", ref: headRef, code });
+      const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+      const step = await runRead(runner, t, submoduleTrackingArgs(location, headRef), out);
+      if (t.signal.aborted) throw new Halt({ stop: "canceled" });
+      if ("refused" in step) return done(unread(step.refused));
+      if (step.exit.deadline !== undefined) return done(unread("DEADLINE"), true);
+      if (step.exit.diagnosticLimit) return done(unread("OUTPUT_LIMIT"), true);
+      if (out.limited) return done(unread("OUTPUT_LIMIT"));
+      if (step.exit.exitCode !== 0) return done(unread("GIT_FAILED"));
+      const entries = parseTracking(out.take(), objectFormat);
+      if (entries === null) return done(unread("MALFORMED_GIT_OUTPUT"));
+      // `%(HEAD)` marks the record of the current HEAD. Without it, HEAD moved after the `symbolic-ref` read.
+      const entry = entries.find((e) => e.current && !e.invalidUtf8 && `refs/heads/${e.name}` === headRef);
+      if (entry === undefined) return done(unread("STATE_UNKNOWN"));
+      return done({ rowId, state: "branch", ref: headRef, upstream: entry.upstream, track: entry.track });
+    };
+
+    // `markRow`: the row ID of a checked-out row whose branch mark this read adds (contract Δ12 "Branch marks").
+    const readRepo = async (location: SubmoduleLocation, markRow: string | null = null): Promise<Repo> => {
       const { head, headRef } = await readHead(location);
       const { gitDir, hooks, entries } = await readConfig(location);
       let refHeld: boolean | null = null;
       if (head !== null) {
-        const refs = await git(submoduleHeadRefArgs(location));
-        if (refs.code !== 0) throw failed("GIT_FAILED");
-        refHeld = refs.out.length > 0;
+        const marking = readMarks && markRow !== null && "worktree" in location;
+        // Both reads settle before the step ends, so no process outlives it.
+        const [refs, mark] = await Promise.allSettled([git(submoduleHeadRefArgs(location)), marking ? markOf(location, markRow, headRef) : null]);
+        if (refs.status === "rejected") throw refs.reason;
+        if (mark.status === "rejected") throw mark.reason;
+        let held = refs.value;
+        // The Job close of the mark read ends the `--contains` read without an exit code, so that read gives no answer.
+        if (held.code === null && mark.value?.closed === true) held = await git(submoduleHeadRefArgs(location));
+        if (held.code !== 0) throw failed("GIT_FAILED");
+        refHeld = held.out.length > 0;
+        if (mark.value !== null) marks.set(markRow!, mark.value.mark);
       }
       const repo = { location, head, headRef, gitDir, hooks, entries, refHeld };
       observed.push({ repo: { ...repo, entries: entries.map((e) => Buffer.from(e.keyValueBytes).toString("base64")) } });
@@ -1031,7 +1075,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           continue;
         }
 
-        const repo = await readRepo({ worktree });
+        const repo = await readRepo({ worktree }, row.rowId);
         pending.repo = repo;
         if (repo.head === null) {
           refuse("clone-interrupted", display, REFUSAL_TEXTS.cloneInterrupted(display), null, row);
@@ -1372,6 +1416,27 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       }
     };
 
+    // Feature 004 contract Δ12 "Row order": a stable pre-order walk over `parentRowId`. Siblings keep the read order.
+    const treeOrder = (list: readonly ObservedRow[]): ObservedRow[] => {
+      const children = new Map<string | null, ObservedRow[]>();
+      for (const p of list) {
+        const siblings = children.get(p.row.parentRowId);
+        if (siblings === undefined) children.set(p.row.parentRowId, [p]);
+        else siblings.push(p);
+      }
+      const out: ObservedRow[] = [];
+      const add = (parentRowId: string | null) => {
+        for (const p of children.get(parentRowId) ?? []) {
+          out.push(p);
+          add(p.row.rowId);
+        }
+      };
+      add(null);
+      // Each nested row comes from the level read of a row in `list`, so the walk reaches every row.
+      if (out.length !== list.length) throw new Error("submodule row without its parent row");
+      return out;
+    };
+
     // Contract §12 "Review reads" from the superproject: the rows at every depth, the kept Git directories, and the programs.
     function top(input: SuperprojectInput): Promise<SubmoduleFact<Observed>> {
       return attempt(async () => {
@@ -1434,7 +1499,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         const rowless = await rowlessOf(kept, knownOf(rows));
         const programs = await programsOfAll(superListing, rows, rowless, true);
         hosts = hostsOf(rows);
-        return { rows: [...rows], refusals: ordered(0), rowless, programs, config: superListing.entries, activeRefused: false, ...attachment(0), hosts };
+        return { rows: treeOrder(rows), refusals: ordered(0), rowless, programs, config: superListing.entries, activeRefused: false, ...attachment(0), hosts };
       });
     }
 
@@ -1545,7 +1610,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const head = (location: SubmoduleLocation) => attempt(() => readHead(location));
     const config = (location: SubmoduleLocation) => attempt(() => readConfig(location));
 
-    return { top, level, programsOf, binding, head, config };
+    return { top, level, programsOf, binding, head, config, marks: marks as ReadonlyMap<string, SubmoduleBranch> };
   }
 
   return {

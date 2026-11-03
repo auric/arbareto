@@ -559,6 +559,12 @@ export function submoduleHeadRefArgs(location: SubmoduleLocation): string[] {
   return submoduleRead(location, "for-each-ref", "--contains=HEAD", "--count=1", "--format=%(refname)");
 }
 
+// Feature 004 contract Δ12 "Branch marks": the 003 `readTracking` format for one ref. A ref name holds no `*`, `?`, `[`, or `\`, so the pattern is literal.
+export function submoduleTrackingArgs(location: SubmoduleLocation, headRef: string): string[] {
+  if (!isRefName(headRef)) throw new TypeError("ref name refused");
+  return submoduleRead(location, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(HEAD)", headRef);
+}
+
 // Object IDs go only on stdin.
 export function submoduleObjectCheckArgs(location: SubmoduleLocation): string[] {
   return submoduleRead(location, "cat-file", "--batch-check");

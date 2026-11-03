@@ -84,6 +84,7 @@ import {
   ProgressEvent,
   SHELL_ONLY,
   Text,
+  TrackState,
   type OperationName,
 } from "./operations";
 import { ATTRIBUTION_REASONS, OPERATION_STATES } from "./outcome";
@@ -1245,11 +1246,7 @@ export const TrackingEntry = z
     objectId: ObjectId,
     upstream: z.string().nullable(),
     upstreamObjectId: ObjectId.nullable(),
-    track: z.discriminatedUnion("state", [
-      z.strictObject({ state: z.literal("none") }).meta({ title: "TrackNone" }),
-      z.strictObject({ state: z.literal("gone") }).meta({ title: "TrackGone" }),
-      z.strictObject({ state: z.literal("counts"), ahead: Count, behind: Count }).meta({ title: "TrackCounts" }),
-    ]),
+    track: TrackState,
     current: z.boolean(),
   })
   .refine((e) => (e.upstream === null) === (e.track?.state === "none") && (e.upstream !== null || e.upstreamObjectId === null))

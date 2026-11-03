@@ -85,6 +85,8 @@ export const SUBMODULE_CHANGE_COMMITS = 50;
 export const SUBMODULE_CHANGE_OUTPUT_BYTES = 256 * KIB;
 export const SUBMODULE_WORK_TARGETS = SUBMODULE_REVIEW_SUBMODULES;
 export const SUBMODULE_WORK_PARALLEL = 8;
+// Feature 004 contract Δ5: the folder rows of the Submodules group (renderer, spec FR-111).
+export const SUBMODULE_TREE_FOLDERS = 1_024;
 export const WSL_DISTRO_START_MS = 60 * SECOND_MS;
 export const WSL_POLL_GAP_MS = 1 * SECOND_MS;
 export const WSL_ANCHOR_LINE_INTERVAL_MS = 1 * SECOND_MS;

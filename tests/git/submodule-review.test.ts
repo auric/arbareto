@@ -8,14 +8,14 @@ import { describe, expect, spyOn } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
-import { redactUrlUserInfo, type SubmoduleAction } from "../../src/contracts/submodules";
+import { redactUrlUserInfo, type SubmoduleAction, type SubmodulePlanRow } from "../../src/contracts/submodules";
 import * as approvalsModule from "../../src/git-service/approvals";
 import { printOrigin } from "../origin";
-import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
+import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
-import { gitPath, readOk, TIMEOUT_MS, valuesOf } from "./hunk-harness";
-import { caseTest, NO_TOTAL_DEADLINE_WAIT_MS, RESPONSE_WAIT_MS, withFsCalls, type Capability, type Service } from "./service-harness";
+import { gitPath, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService } from "./hunk-harness";
+import { caseTest, NO_TOTAL_DEADLINE_WAIT_MS, once, RESPONSE_WAIT_MS, withFsCalls, type Capability, type Service } from "./service-harness";
 import {
   actionsOf,
   callsSince,
@@ -27,16 +27,23 @@ import {
   insideSubmodule,
   invalidGitFolder,
   isReviewRead,
+  isTrackCall,
   moduleDirOf,
   NOTES,
+  objectsWith,
   oracleOf,
   ranCanaries,
+  resultsOf,
   reviewSubmodules,
   rowOf,
   saveCommand,
+  shortUpstream,
+  statusBranchMark,
   submoduleCalls,
   superOf,
   TEXTS,
+  treeGit,
+  treeWorld,
   underTestSubmodule,
   UPDATE_TEXT,
   updateCommand,
@@ -45,6 +52,7 @@ import {
   withFixture,
   type SubmoduleRefusal,
   type SubmoduleReview,
+  type TreeWorld,
 } from "./submodule-harness";
 
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
@@ -954,5 +962,244 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
       },
       { approvalClock },
     );
+  });
+});
+
+// ---- Feature 004 User Story 12: row order (T136) and branch marks (T139) ----
+
+// Registers the superproject of a tree world and reviews it.
+async function reviewedTree(service: Service, w: TreeWorld): Promise<{ repositoryId: string; r: SubmoduleReview }> {
+  await review();
+  const { repositoryId } = await service.register(w.sup);
+  return { repositoryId, r: await reviewSubmodules(service, repositoryId) };
+}
+const withTree = (w: TreeWorld, name: string, body: (service: Service) => Promise<void>) => withService({ name, environment: serviceEnv(w.env) }, body);
+
+describe("row order (004 FR-077, contract Δ12 \"Row order\")", () => {
+  caseTest("T136", "a(a/x) b c(c/y(c/y/z)): the review and the update list each nested row directly after its parent row, with its depth and its parent row", SHELL, () => {
+    const w = treeWorld("t136-order", { a: { x: {} }, b: {}, c: { y: { z: {} } } });
+    return withTree(w, "t136-order", async (service) => {
+      const { repositoryId, r } = await reviewedTree(service, w);
+      const pathOf = new Map(r.rows.map((row) => [row.rowId, row.path]));
+      const rows = r.rows.map((row) => [row.path, row.depth, row.parentRowId === null ? null : (pathOf.get(row.parentRowId) ?? "unknown")]);
+      console.log(`OBSERVATION T136: review rows ${JSON.stringify(rows)}`);
+      expect({ outcome: outcome(r.response), rows }).toEqual({ outcome: SUCCEEDED, rows: [["a", 0, null], ["a/x", 1, "a"], ["b", 0, null], ["c", 0, null], ["c/y", 1, "c"], ["c/y/z", 2, "c/y"]] });
+      await underTestSubmodule("submodule-update");
+      const updated = await updateSubmodules(service, repositoryId, r);
+      expect({ outcome: outcome(updated), rows: resultsOf(updated).map((row) => row.path) }).toEqual({ outcome: SUCCEEDED, rows: ["a", "a/x", "b", "c", "c/y", "c/y/z"] });
+    });
+  }, TIMEOUT_MS);
+});
+
+describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data-model §15)", () => {
+  type Mark = { rowId: string; state: string; ref?: string; upstream?: string | null; track?: object; code?: string };
+  type Call = { arguments: readonly string[] };
+  type Spec = { setup: string[][]; want: object };
+  const markCase = (name: string, fn: () => Promise<void>) => caseTest("T139", name, SHELL, fn, TIMEOUT_MS);
+  // Git's own update leaves each submodule detached at `second`, the tip of `origin/main`. `first` is `second~1`.
+  const TRACK_MAIN = ["checkout", "-q", "-B", "main", "--track", "origin/main"];
+  const BEHIND = [["checkout", "-q", "-B", "main", "origin/main~1"], ["branch", "-q", "--set-upstream-to=origin/main"]];
+  const NONE = { state: "none" };
+  const counts = (ahead: number, behind: number) => ({ state: "counts", ahead, behind });
+  const onMain = (track: object) => ({ state: "branch", ref: "refs/heads/main", upstream: "refs/remotes/origin/main", track });
+  // The setup commands of each submodule worktree, and the mark that the setup gives.
+  const SPECS = {
+    equal: { setup: [TRACK_MAIN], want: onMain(counts(0, 0)) },
+    ahead: { setup: [TRACK_MAIN, ["commit", "-q", "--allow-empty", "-m", "ahead"]], want: onMain(counts(1, 0)) },
+    behind: { setup: BEHIND, want: onMain(counts(0, 1)) },
+    diverged: { setup: [...BEHIND, ["commit", "-q", "--allow-empty", "-m", "diverged"]], want: onMain(counts(1, 1)) },
+    gone: {
+      setup: [["checkout", "-q", "-b", "topic", "--track", "origin/main"], ["config", "branch.topic.merge", "refs/heads/missing"]],
+      want: { state: "branch", ref: "refs/heads/topic", upstream: "refs/remotes/origin/missing", track: { state: "gone" } },
+    },
+    "no-upstream": { setup: [["checkout", "-q", "-b", "own"]], want: { state: "branch", ref: "refs/heads/own", upstream: null, track: NONE } },
+    "no-remote": {
+      setup: [["checkout", "-q", "-b", "nowhere"], ["config", "branch.nowhere.remote", "nowhere"], ["config", "branch.nowhere.merge", "refs/heads/main"]],
+      want: { state: "branch", ref: "refs/heads/nowhere", upstream: null, track: NONE },
+    },
+    "local-upstream": {
+      setup: [["branch", "-q", "other", "HEAD~1"], ["checkout", "-q", "-b", "mine"], ["config", "branch.mine.remote", "."], ["config", "branch.mine.merge", "refs/heads/other"]],
+      want: { state: "branch", ref: "refs/heads/mine", upstream: "refs/heads/other", track: counts(1, 0) },
+    },
+    detached: { setup: [], want: { state: "detached" } },
+    "update-none": { setup: [TRACK_MAIN], want: onMain(counts(0, 0)) },
+  } satisfies Record<string, Spec>;
+  // Research.md R31: Git sets `%(upstream)` only for `refs/heads/` refs, also with `branch.v1.*` set.
+  const TAG: Spec = {
+    setup: [["tag", "v1"], ["symbolic-ref", "HEAD", "refs/tags/v1"], ["config", "branch.v1.remote", "origin"], ["config", "branch.v1.merge", "refs/heads/main"]],
+    want: { state: "branch", ref: "refs/tags/v1", upstream: null, track: NONE },
+  };
+
+  function markWorld(name: string, specs: Record<string, Spec>): TreeWorld {
+    const w = treeWorld(name, Object.fromEntries(Object.keys(specs).map((path) => [path, {}])));
+    for (const [path, spec] of Object.entries(specs)) for (const args of spec.setup) treeGit(w, join(w.sup, path), args);
+    return w;
+  }
+  const marksOf = (result: unknown) => valuesOf(result, "branches")[0] as Mark[] | undefined;
+  // The mark of each row path, without its row ID. Each row has one mark at most.
+  function markByPath(r: SubmoduleReview): Record<string, object> {
+    const marks = marksOf(r.response.result) ?? [];
+    expect(new Set(marks.map((m) => m.rowId)).size).toBe(marks.length);
+    const pathOf = new Map(r.rows.map((row) => [row.rowId, row.path]));
+    return Object.fromEntries(marks.map((m) => [pathOf.get(m.rowId) ?? `unknown row ${m.rowId}`, { ...m, rowId: undefined }]));
+  }
+  const inDir = (dir: string) => (c: Call) => {
+    const at = gitLocation(c.arguments);
+    return at !== null && relative(dir, resolve(dir, at)) === "";
+  };
+  const trackCallsIn = (service: Service, dir: string, from = 0) => callsSince(service, from).filter((c) => isTrackCall(c.arguments) && inDir(dir)(c));
+  const allTrackCalls = (service: Service, from = 0) => callsSince(service, from).filter((c) => isTrackCall(c.arguments));
+
+  const statusOf = (w: TreeWorld, dir: string) => treeGit(w, dir, ["-c", "core.fsmonitor=false", "--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=no"]);
+
+  markCase("each mark equals the git status --porcelain=v2 --branch headers of its submodule, and a detached HEAD or a HEAD on a tag starts no mark read", async () => {
+    const specs: Record<string, Spec> = { ...SPECS, tag: TAG };
+    const w = markWorld("t139-marks", specs);
+    treeGit(w, w.sup, ["config", "submodule.update-none.update", "none"]);
+    await withTree(w, "t139-marks", async (service) => {
+      const { r } = await reviewedTree(service, w);
+      const marks = markByPath(r);
+      const tracks = Object.fromEntries(Object.keys(specs).map((path) => [path, trackCallsIn(service, join(w.sup, path)).length]));
+      const oracle: Record<string, object> = Object.fromEntries(Object.keys(SPECS).map((path) => [path, statusBranchMark(statusOf(w, join(w.sup, path)))]));
+      const tag = join(w.sup, "tag");
+      const tagStatus = statusOf(w, tag).split("\n").filter((l) => l.startsWith("# branch."));
+      console.log(`OBSERVATION T139: a HEAD on refs/tags/v1 gives the status headers ${JSON.stringify(tagStatus)}`);
+      // Research.md R31 is the oracle of the tag row: the HEAD target, and the `%(upstream)` of that ref.
+      const upstream = treeGit(w, tag, ["for-each-ref", "--format=%(upstream)", "refs/tags/v1"]).trim() || null;
+      oracle.tag = { state: "branch", ref: treeGit(w, tag, ["symbolic-ref", "HEAD"]).trim(), upstream, track: upstream === null ? NONE : { state: "unknown" } };
+      expect({ outcome: outcome(r.response), mode: rowOf(r, "update-none").action }).toEqual({ outcome: SUCCEEDED, mode: "skip" });
+      expect(marks).toEqual(Object.fromEntries(Object.entries(specs).map(([path, spec]) => [path, spec.want])));
+      expect(Object.fromEntries(Object.entries(marks).map(([path, m]) => [path, shortUpstream(m)]))).toEqual(oracle);
+      expect(tracks).toEqual(Object.fromEntries(Object.keys(specs).map((path) => [path, path === "detached" || path === "tag" ? 0 : 1])));
+    });
+  });
+
+  markCase("a scoped review gives no mark and starts no mark read, and an initialized inactive row gives no mark", async () => {
+    const w = markWorld("t139-scope", { equal: SPECS.equal, inactive: SPECS.equal });
+    // Git's own `submodule update --init` sets `submodule.<name>.active = true`, which takes precedence over `submodule.active` (contract §12 "Plan", active set).
+    treeGit(w, w.sup, ["config", "submodule.active", "equal"]);
+    treeGit(w, w.sup, ["config", "submodule.inactive.active", "false"]);
+    await withTree(w, "t139-scope", async (service) => {
+      const { repositoryId, r } = await reviewedTree(service, w);
+      expect({ outcome: outcome(r.response), inactive: rowOf(r, "inactive").action, marks: markByPath(r) }).toEqual({ outcome: SUCCEEDED, inactive: "skip", marks: { equal: SPECS.equal.want } });
+      const read = await readOk(service, repositoryId);
+      const from = service.runner.calls.length;
+      const scoped = await service.request("reviewSubmodules", { snapshotId: read.snapshotId, scope: { path: "equal" } }, { repositoryId, repositoryGeneration: read.generation });
+      expect({ outcome: outcome(scoped), branches: marksOf(scoped.result), tracks: allTrackCalls(service, from).length }).toEqual({ outcome: SUCCEEDED, branches: [], tracks: 0 });
+    });
+  });
+
+  for (const [label, build, kinds] of [
+    ["F27 base", (name: string) => buildF27(gitPath(), name, "base"), ["clone", "clone"]],
+    ["F27 deinit-kept", (name: string) => buildF27(gitPath(), name, "deinit-kept"), ["clone", "reuse"]],
+    ["F28 no-url", (name: string) => buildF28(gitPath(), name, "no-url"), ["clone", "clone", "no-url"]],
+    ["F28 interrupted", (name: string) => buildF28(gitPath(), name, "interrupted"), ["clone", "clone-interrupted"]],
+  ] as const) {
+    markCase(`${label}: clone, reuse, no-URL, and clone-interrupted rows give no mark and start no mark read`, () => {
+      const name = `t139-none-${label.replace(" ", "-").toLowerCase()}`;
+      const b = build(name);
+      return withFixture(b, name, async (service) => {
+        const { r } = await reviewed(service, b);
+        expect({ kinds: r.rows.map((row) => row.refusal ?? row.action).sort(), branches: marksOf(r.response.result), tracks: allTrackCalls(service).length }).toEqual({ kinds: [...kinds], branches: [], tracks: 0 });
+      });
+    });
+  }
+
+  markCase("a core.fsmonitor program of a submodule never runs during the review, and the submodule index keeps its bytes", async () => {
+    const w = markWorld("t139-fsmonitor", { equal: SPECS.equal });
+    const dir = join(w.sup, "equal");
+    const marker = join(w.root, "fsmonitor.log");
+    const script = put(w.root, "fsmonitor.sh", `#!/bin/sh\necho "fsmonitor $*" >> '${marker.replaceAll("\\", "/")}'\nexit 1\n`);
+    treeGit(w, dir, ["config", "core.fsmonitor", `'${script.replaceAll("\\", "/")}'`]);
+    const index = rawIndexDigest(gitPath(), dir);
+    await withTree(w, "t139-fsmonitor", async (service) => {
+      const { r } = await reviewedTree(service, w);
+      expect({ outcome: outcome(r.response), ran: existsSync(marker), index: rawIndexDigest(gitPath(), dir), tracks: trackCallsIn(service, dir).length, marks: markByPath(r) }).toEqual({
+        outcome: SUCCEEDED,
+        ran: false,
+        index,
+        tracks: 1,
+        marks: { equal: SPECS.equal.want },
+      });
+    });
+  });
+
+  const FAILURES: [label: string, code: string, arm: (service: Service, hit: (c: Call) => boolean) => void][] = [
+    ["exit 128", "GIT_FAILED", (service, hit) => void (service.runner.inject.exit = (c) => (hit(c) ? 128 : undefined))],
+    // `spawn` reads the injected deadline synchronously after the start check of each call.
+    ["a 1 ms deadline", "DEADLINE", (service, hit) => void service.runner.holdStart((c) => ((service.runner.inject.deadlineMs = hit(c) ? 1 : null), false))],
+    ["a runner refusal", "PROCESS_OWNERSHIP_FAILED", (service, hit) => void (service.runner.inject.refuse = (c) => (hit(c) ? "PROCESS_OWNERSHIP_FAILED" : undefined))],
+  ];
+  for (const [label, code, arm] of FAILURES) {
+    markCase(`${label} on the mark read of one row gives that row unread ${code}, and the review succeeds with every row and the other mark`, async () => {
+      const name = `t139-${code.toLowerCase().replaceAll("_", "-")}`;
+      const w = markWorld(name, { ahead: SPECS.ahead, equal: SPECS.equal });
+      await withTree(w, name, async (service) => {
+        const dir = join(w.sup, "equal");
+        arm(service, (c) => isTrackCall(c.arguments) && inDir(dir)(c));
+        const { r } = await reviewedTree(service, w);
+        // Contract §5 "Deadline outcomes": a deadline closes the operation Job, which also ends the `--contains` read beside the mark read.
+        const contains = callsSince(service).filter((c) => inDir(dir)(c) && commandOf(c.arguments)[1] === "--contains=HEAD").map((c) => c.exit?.exitCode ?? null);
+        console.log(`OBSERVATION T139: ${label}: the --contains reads of the row exit with ${JSON.stringify(contains)}`);
+        expect({ outcome: outcome(r.response), rows: r.rows.map((row) => row.path), marks: markByPath(r) }).toEqual({
+          outcome: SUCCEEDED,
+          rows: ["ahead", "equal"],
+          marks: { ahead: SPECS.ahead.want, equal: { state: "unread", ref: "refs/heads/main", code } },
+        });
+      });
+    });
+  }
+
+  // A held start, then a reply to an aborted or changed state.
+  async function heldReview(service: Service, w: TreeWorld, dir: string, meanwhile: (requestId: string) => Promise<void>) {
+    const { repositoryId } = await service.register(w.sup);
+    await review();
+    const read = await readOk(service, repositoryId);
+    const isHeld = (c: Call) => isTrackCall(c.arguments) && inDir(dir)(c);
+    const release = service.runner.holdStart(once(isHeld));
+    const requestId = service.send("reviewSubmodules", { snapshotId: read.snapshotId }, { repositoryId, repositoryGeneration: read.generation });
+    try {
+      await until(() => service.runner.calls.some(isHeld) || service.responseAt.has(requestId), "held mark read", 30_000);
+      expect(service.responseAt.has(requestId)).toBe(false);
+      await meanwhile(requestId);
+    } finally {
+      release();
+    }
+    return service.response(requestId);
+  }
+
+  markCase("a branch switch while the mark read waits to start gives unread STATE_UNKNOWN, and the review succeeds", async () => {
+    const w = markWorld("t139-held", { equal: SPECS.equal });
+    const dir = join(w.sup, "equal");
+    treeGit(w, dir, ["branch", "-q", "other"]);
+    await withTree(w, "t139-held", async (service) => {
+      const response = await heldReview(service, w, dir, async () => void treeGit(w, dir, ["symbolic-ref", "HEAD", "refs/heads/other"]));
+      const rowId = objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"])[0]?.rowId;
+      expect({ outcome: outcome(response), branches: marksOf(response.result) }).toEqual({ outcome: SUCCEEDED, branches: [{ rowId, state: "unread", ref: "refs/heads/main", code: "STATE_UNKNOWN" }] });
+    });
+  });
+
+  markCase("Cancel while a mark read waits to start ends the review canceled", async () => {
+    const w = markWorld("t139-cancel", { equal: SPECS.equal });
+    await withTree(w, "t139-cancel", async (service) => {
+      const response = await heldReview(service, w, join(w.sup, "equal"), async (requestId) => void (await service.cancel(await service.operationId(requestId))));
+      expect({ state: response.state, branches: marksOf(response.result) }).toEqual({ state: "canceled", branches: undefined });
+    });
+  });
+
+  markCase("a list review with marks, then Update, gives no changed-after-review, and the update starts no mark read", async () => {
+    const w = markWorld("t139-update", { ahead: SPECS.ahead, detached: SPECS.detached, equal: SPECS.equal });
+    await withTree(w, "t139-update", async (service) => {
+      const { repositoryId, r } = await reviewedTree(service, w);
+      expect({ outcome: outcome(r.response), marks: Object.keys(markByPath(r)).sort() }).toEqual({ outcome: SUCCEEDED, marks: ["ahead", "detached", "equal"] });
+      await underTestSubmodule("submodule-update");
+      const from = service.runner.calls.length;
+      const updated = await updateSubmodules(service, repositoryId, r);
+      expect({ outcome: outcome(updated), rows: resultsOf(updated).map((row) => [row.path, row.state, row.reason ?? null]), tracks: allTrackCalls(service, from).length }).toEqual({
+        outcome: SUCCEEDED,
+        rows: [["ahead", "moved", null], ["detached", "unchanged", null], ["equal", "unchanged", null]],
+        tracks: 0,
+      });
+    });
   });
 });

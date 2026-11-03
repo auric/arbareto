@@ -13,9 +13,9 @@ import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { psQuote, valuesOf } from "../git/hunk-harness";
 import { withFsCalls, type FsCall } from "../git/service-harness";
-import { commandOf, objectsWith, oracleExcept } from "../git/submodule-harness";
-import type { SubmoduleRowResult } from "../../src/contracts/submodules";
-import { buildF31, distroGit, distroSubmoduleOracle, distroSubmoduleState, globalConfig, startSession, type F31, type WslSession } from "./fixtures";
+import { commandOf, isTrackCall, objectsWith, oracleExcept, shortUpstream, statusBranchMark } from "../git/submodule-harness";
+import type { SubmodulePlanRow, SubmoduleRowResult } from "../../src/contracts/submodules";
+import { buildF31, distroGit, distroSubmoduleOracle, distroSubmoduleState, globalConfig, startSession, writeLinux, type F31, type WslRepo, type WslSession } from "./fixtures";
 import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_EXE, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -119,6 +119,54 @@ async function until(condition: () => boolean, what: string, timeoutMs: number):
     if (Date.now() > deadline) throw new Error(`${what}: not within ${timeoutMs} ms`);
     await Bun.sleep(100);
   }
+}
+
+// T141: the rows and the runs of the WSL list-time record. Spec SC-018 sets no WSL budget.
+const SC018_ROWS = 8;
+const SC018_RUNS = 3;
+
+// T141: `<root>/super` with one submodule of `<root>/leaf.git` at each path. The distro Git's own update leaves each one detached at the tip of `origin/main`.
+function markWorld(host: WslHost, name: string, paths: readonly string[]): { root: string; sup: WslRepo } {
+  const root = `${host.folder}/${name}-${crypto.randomUUID().slice(0, 8)}`;
+  writeLinux(host, globalConfig(host), '[user]\n\tname = Arbareto Fixture\n\temail = fixture@arbareto.invalid\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n[protocol "file"]\n\tallow = always\n');
+  inDistro(host.distro, ["/usr/bin/mkdir", "-p", "--", `${root}/src/leaf`, `${root}/src/super`]);
+  const top = { host, dir: root };
+  const leaf = { host, dir: `${root}/src/leaf` };
+  const work = { host, dir: `${root}/src/super` };
+  for (const bare of ["leaf.git", "super.git"]) distroGit(top, ["init", "-q", "--bare", "-b", "main", bare]);
+  distroGit(leaf, ["init", "-q", "-b", "main"]);
+  for (const n of [1, 2]) distroGit(leaf, ["commit", "-q", "--allow-empty", "-m", `leaf ${n}`]);
+  distroGit(leaf, ["push", "-q", `${root}/leaf.git`, "HEAD:refs/heads/main"]);
+  const tip = distroGit(leaf, ["rev-parse", "HEAD"]).trim();
+  distroGit(work, ["init", "-q", "-b", "main"]);
+  writeLinux(host, `${work.dir}/.gitmodules`, paths.map((p) => `[submodule "${p}"]\n\tpath = ${p}\n\turl = ../leaf.git\n`).join(""));
+  distroGit(work, ["add", "--", ".gitmodules"]);
+  distroGit(work, ["update-index", "-z", "--index-info"], { input: Buffer.from(paths.map((p) => `160000 ${tip} 0\t${p}\0`).join("")) });
+  distroGit(work, ["commit", "-q", "-m", "super"]);
+  distroGit(work, ["push", "-q", `${root}/super.git`, "HEAD:refs/heads/main"]);
+  distroGit(top, ["clone", "-q", `${root}/super.git`, "super"]);
+  const sup = { host, dir: `${root}/super` };
+  distroGit(sup, ["submodule", "update", "--init", "-q"], { timeoutMs: 300_000 });
+  return { root, sup };
+}
+
+// Registration and trust approval, as `prepare` does.
+async function registerTrusted(s: WslSession, sup: WslRepo): Promise<string> {
+  const registered = await s.response(s.chooseRepository(uncPath(sup.host, sup.dir)));
+  expect(registered).toMatchObject({ state: "succeeded" });
+  const { repositoryId } = registered.result as { repositoryId: string };
+  expect(await s.response(s.request("readTrust", {}, { repositoryId }))).toMatchObject({ state: "succeeded" });
+  expect(await s.response(s.request("approveTrust", { action: "submodules" }, { repositoryId }))).toMatchObject({ state: "succeeded" });
+  return repositoryId;
+}
+
+// A fresh snapshot, then the timed list review.
+async function listReview(s: WslSession, repositoryId: string): Promise<{ review: Awaited<ReturnType<WslSession["response"]>>; ms: number }> {
+  const read = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }));
+  const snapshot = read.result as { snapshotId: string; generation: number };
+  const at = performance.now();
+  const review = await s.response(s.request("reviewSubmodules", { snapshotId: snapshot.snapshotId }, { repositoryId, repositoryGeneration: snapshot.generation }));
+  return { review, ms: performance.now() - at };
 }
 
 describe("WSL submodule update with Git 2.55.0 (T232)", () => {
@@ -332,6 +380,55 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
         { reason: "path", path: `${f.sup.dir}/.git/modules/${listed[0]}` },
       ],
     });
+  });
+
+  // T141: feature 004 contract Δ12 "Branch marks" and spec SC-018 (WSL record without a budget).
+  wslCase("branch marks: ahead 1, detached, and gone equal the distro status headers, and the list time per row is recorded for branch and detached HEADs", async (host) => {
+    await underTest();
+    const named = ["ahead", "detached", "gone"];
+    const m = markWorld(host, "t141-marks", named);
+    const sub = (path: string) => ({ host, dir: `${m.sup.dir}/${path}` });
+    distroGit(sub("ahead"), ["checkout", "-q", "-B", "main", "--track", "origin/main"]);
+    distroGit(sub("ahead"), ["commit", "-q", "--allow-empty", "-m", "ahead"]);
+    distroGit(sub("gone"), ["checkout", "-q", "-b", "topic", "--track", "origin/main"]);
+    distroGit(sub("gone"), ["config", "branch.topic.merge", "refs/heads/missing"]);
+    const { runner, s } = setup(host);
+    const repositoryId = await registerTrusted(s, m.sup);
+    const { review } = await listReview(s, repositoryId);
+    const rows = objectsWith<SubmodulePlanRow>(review.result, ["rowId", "action"]);
+    const pathOf = new Map(rows.map((row) => [row.rowId, row.path]));
+    const marks = Object.fromEntries((valuesOf(review.result, "branches")[0] as { rowId: string; upstream?: string | null }[]).map((mark) => [pathOf.get(mark.rowId), shortUpstream({ ...mark, rowId: undefined })]));
+    const oracle = Object.fromEntries(named.map((path) => [path, statusBranchMark(distroGit(sub(path), ["--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=no"]))]));
+    expect({ state: review.state, marks, tracks: runner.calls.filter((c) => isTrackCall(c.arguments)).length }).toEqual({ state: "succeeded", marks: oracle, tracks: 2 });
+    expect(marks).toEqual({
+      ahead: { state: "branch", ref: "refs/heads/main", upstream: "origin/main", track: { state: "counts", ahead: 1, behind: 0 } },
+      detached: { state: "detached" },
+      gone: { state: "branch", ref: "refs/heads/topic", upstream: "origin/missing", track: { state: "gone" } },
+    });
+
+    // The SC-018 difference in the distro: a branch with an upstream in every row, then every HEAD detached at the same commit.
+    const paths = Array.from({ length: SC018_ROWS }, (_, i) => `m${i}`);
+    const t = markWorld(host, "t141-time", paths);
+    const each = (args: string[]) => {
+      for (const path of paths) distroGit({ host, dir: `${t.sup.dir}/${path}` }, args);
+    };
+    each(["checkout", "-q", "-B", "main", "--track", "origin/main"]);
+    const timed = await registerTrusted(s, t.sup);
+    await listReview(s, timed);
+    const times: Record<"branch" | "detached", number[]> = { branch: [], detached: [] };
+    for (let run = 0; run < SC018_RUNS; run++) {
+      for (const mode of ["branch", "detached"] as const) {
+        each(mode === "branch" ? ["checkout", "-q", "main"] : ["checkout", "-q", "--detach"]);
+        const { review: r, ms } = await listReview(s, timed);
+        expect({ mode, state: r.state, marks: (valuesOf(r.result, "branches")[0] as unknown[]).length }).toEqual({ mode, state: "succeeded", marks: SC018_ROWS });
+        times[mode].push(ms);
+      }
+    }
+    const median = (list: number[]) => [...list].sort((a, b) => a - b)[Math.floor(list.length / 2)]!;
+    const perRow = (mode: "branch" | "detached") => median(times[mode]) / SC018_ROWS;
+    console.log(
+      `OBSERVATION T141: WSL ${host.distro} list review of ${SC018_ROWS} rows, median of ${SC018_RUNS}: branch ${perRow("branch").toFixed(1)} ms per row, detached ${perRow("detached").toFixed(1)} ms per row, difference ${(perRow("branch") - perRow("detached")).toFixed(1)} ms per row (runs: ${JSON.stringify(times)})`,
+    );
   });
 
   for (const ending of ["cancel", "close"] as const) {

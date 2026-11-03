@@ -22,3 +22,7 @@ export const LIMITATION_TEXT: Record<LimitationReason, string> = {
   "index-flag": "This entry is intent-to-add, assume-unchanged, or skip-worktree.",
   path: "Arbareto cannot match this path to exactly one file.",
 };
+
+// Feature 005 plan.md D20 "Refusal texts". A row with a gitlink never shows `LIMITATION_TEXT.submodule`.
+export const GITLINK_TEXT = "Arbareto stages and unstages only a moved submodule commit. Use Git in a terminal for this change.";
+export const UNBORN_TEXT = "The submodule branch has no commit yet. Commit inside the submodule first.";

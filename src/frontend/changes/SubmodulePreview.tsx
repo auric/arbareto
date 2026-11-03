@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { ChangeEntry, RequestOf, SubmoduleChange, SubmoduleWork } from "../../contracts/envelope";
 import type { BridgeResponse, OnProgress } from "../bridge";
 import { TextTooltip } from "../components/text-tooltip";
@@ -136,7 +136,12 @@ export function useSubmoduleWork(read: (target: WorkTarget) => Promise<BridgeRes
  * `row` names the selected row across snapshots. The earlier result of the same row stays shown until the new one arrives.
  */
 export function useSubmoduleChange(reader: SubmoduleReader | undefined, source: SubmoduleSource | null, row: string | null): ChangeRead | null {
-  const key = source === null ? null : JSON.stringify(source);
+  return useSubmoduleChangeRead(reader, source, row).read;
+}
+
+/** `useSubmoduleChange` with `fresh`: false while the earlier result of the same row stands in. A new `attempt` sends the read again. */
+export function useSubmoduleChangeRead(reader: SubmoduleReader | undefined, source: SubmoduleSource | null, row: string | null, attempt = 0): { read: ChangeRead | null; fresh: boolean } {
+  const key = source === null ? null : JSON.stringify([source, attempt]);
   const [read, setRead] = useState<{ key: string; row: string | null; response: BridgeResponse } | null>(null);
   useEffect(() => {
     if (reader === undefined || key === null) return;
@@ -144,7 +149,7 @@ export function useSubmoduleChange(reader: SubmoduleReader | undefined, source: 
     let ended = false;
     let operationId: string | null = null;
     void reader
-      .read(JSON.parse(key) as SubmoduleSource, (event) => {
+      .read((JSON.parse(key) as [SubmoduleSource, number])[0], (event) => {
         if (operationId !== null) return;
         operationId = event.operationId;
         if (!current && !ended) reader.cancel(operationId);
@@ -158,9 +163,9 @@ export function useSubmoduleChange(reader: SubmoduleReader | undefined, source: 
       if (!ended && operationId !== null) reader.cancel(operationId);
     };
   }, [reader, key]);
-  if (key === null) return null;
-  if (read?.key === key || (row !== null && read?.row === row)) return read!.response;
-  return "pending";
+  if (key === null) return { read: null, fresh: true };
+  if (read?.key === key) return { read: read.response, fresh: true };
+  return { read: row !== null && read?.row === row ? read.response : "pending", fresh: false };
 }
 
 export type SubmodulePreviewProps = {
@@ -171,10 +176,12 @@ export type SubmodulePreviewProps = {
   /** The Commit view work state. Undefined in History, which shows no Working tree row (spec FR-074). */
   work?: { read: WorkRead | null; snapshotId: string | undefined };
   reader: SubmoduleReader | undefined;
+  /** The Commit view reason line of the stage controls (feature 005 plan.md D20 "Refusal texts"). */
+  reasonLine?: ReactNode;
 };
 
 /** Plan D19 "Layout": the diff area of a selected submodule row. The region scrolls by itself. Open submodule is its one Tab stop. */
-export function SubmodulePreview({ path, pathBytes, change, work, reader }: SubmodulePreviewProps) {
+export function SubmodulePreview({ path, pathBytes, change, work, reader, reasonLine }: SubmodulePreviewProps) {
   const reasonId = useId();
   const result = changeOf(change);
   const reason = reader === undefined ? null : reader.reason(pathBytes);
@@ -213,6 +220,7 @@ export function SubmodulePreview({ path, pathBytes, change, work, reader }: Subm
           {`Open submodule is unavailable: ${reason}`}
         </p>
       )}
+      {reasonLine === undefined ? null : <div className="flex shrink-0 px-2 pt-1">{reasonLine}</div>}
       <dl className="grid shrink-0 gap-x-4 gap-y-1 p-2" style={{ gridTemplateColumns: "96px minmax(0, 1fr)" }}>
         {change === null ? null : (
           <>

@@ -625,3 +625,50 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - Map gap SC-009: User Stories 2 to 4 have keyboard tests only in the DOM tests. Smallest test: one `revert-packaged.test.ts` case presses R through CDP on a focused Staged row and on the Changes header item, and asserts that the modal opens with Cancel focused. It must land before v0.1.0. Until then, T049 records SC-009 as partial. T079 holds the case.
 - Delivery Gates: the plans are met. The independent review is met with this record. The evidence is open (T049, T050). The update authenticity of a production release is not met and is not part of 008: v0.1.0 is a preview with manual updates.
 - Not verified: the WSL `walk_parent` and `xattrs` helpers in full; `FileNormalizedNameInformation` on SMB or ReFS volumes; the T047 and T048 test logic beyond the safe process handling.
+
+### Full run (T049), 2026-11-03
+
+- Code under test: build `1f4e1dfd` (T073 and T074 merged). Every log begins with `ORIGIN` lines that name the checkout under test. Each run ran alone behind the test gate. The logs are in local scratch.
+- `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`: 0 fail (about 182 minutes). `cargo test --locked --manifest-path src-tauri/Cargo.toml`: 656 pass, 0 fail. `bun run build:service`: exit 0.
+- `bun run test:windows`: 4 fail.
+- Fail 1, the T048 10,000-file limit case: in runs 1 to 10, the peak growth was 338.7 MiB (bound 320), and the retained growth was 45.5 MiB (bound 32). Run 0 passed with a peak growth of 265.3 MiB. The end median of 290.6 s passed. Cancel took 49 ms.
+- Cause of fail 1: the "before" value of each growth is one 250 ms sample. After the app frees memory, that sample can move by up to about 60 MiB. No product change. The T050 rerun passed with the same method and the same budgets.
+- Fails 2 to 4, 005 inspection cases: T060 SC-007 Open submodule 457 ms, T061 Q6 growth 441.7 MiB, and Q21 first preview 6.8 s. Cause: the 008 branch did not have the main budgets `4cd73b4c` and the speed fix `3a3c1131` (005 T112). The merge `2b0af4be` brought main into 008. The T050 rerun gives these cases green.
+- T075 to T079 came after this full run. The targeted rerun covers them: cargo, the WSL revert suites alone, and T047 on a new package (block "Package run (T050)"). `tests/git/revert-refusal.test.ts` and `tests/git/revert-frame.test.ts` gave 68 pass, 0 fail on `7878565b`.
+- Open: the other `tests/git/revert-*.test.ts` suites (`revert-bytes`, `revert-facts`, `revert-files`, `revert-lines`, `revert-races`, `revert-staged`, `revert-unstaged`) did not run after T075 and the main merge `2b0af4be`.
+- Control mutation: the block "Package run (T050)" records it. It ran on a control package of `623876bf`.
+- The T048 limit case runs again in the combined 007 T028 full run before the v0.1.0 tag. A miss there stays a failure, unless the user approves a trade-off (constitution VII).
+
+### Package run (T050), 2026-11-03
+
+- Build: `623876bf` (main merged, T073 to T079). The installed `arbareto.exe` has SHA-256 `06AFF8E0985512CBF02B5E1AE2A7C0ED1A5142539A2FC095C07C7E348CB43F4A`. The built exe has SHA-256 `98BFED53BC939FA8D97C99E6AB6CD8068E82D4A9DEBF169601995CF8EFBE8155`. The Tauri NSIS installer changes a 3-byte bundle-type marker at install, so the two hashes differ by design.
+- Host: Windows 11 Pro 10.0.26300, x64. Windows Defender real-time protection on. Text size 100%. One display.
+- Prerequisites: current-user NSIS install; Git 2.56.0.windows.2; Bun 1.4.4; WebView2 Runtime 156.0.4314.58 (read after the run); WSL `Ubuntu-26.04` with Git 2.55.0.
+- Every log begins with `ORIGIN` lines that name the checkout under test and the installed exe. Each run ran alone behind the test gate. The logs are in local scratch.
+- `bun run typecheck` and `bun run export:schemas --check`: exit 0. `tests/contracts` with `portable-imports`: 6,296 pass, 37 skip, 0 fail. `cargo test --locked --manifest-path src-tauri/Cargo.toml`: 658 pass, 16 ignored, 0 fail.
+- WSL, alone, `Ubuntu-26.04`: `tests/wsl/revert-wsl-files.test.ts` and `tests/wsl/revert-wsl.test.ts` 31 pass, 0 fail.
+- `tests/windows/revert-packaged.test.ts`: 7 pass, 4 skip, 0 fail. The skips are `text-scale-150`, `text-scale-225`, `full-volume`, and `read-only-volume`. So the 150% and 225% text scale cases are unverified. T029 covers the full-volume and read-only-volume texts through the double replies.
+- `tests/windows/inspection-packaged.test.ts` and `tests/windows/inspection-perf.test.ts`: 18 pass, 2 skip, 1 fail. The fail was the 005 T108 run 0 order check. Cause: a test race. `watchIpc` starts after the open, so the test did not record the marks read of the open.
+- T108 fix (`7694610a`, test only): a warm-up run, and a check per run that a recorded marks read ended. Rerun on the same installed exe: 100 submodules median 3,175.4 ms (budget 5,500), 256 submodules median 7,779.8 ms (budget 14,080). Control: without the warm-up, run 0 turns red.
+- 005 values of the same run: SC-007 medians normal parent 491 ms, submodule 445 ms, parent button 497 ms, normal submodule 420 ms. SC-002 growth 368.7 MiB at the peak and 315.6 MiB settled (bound 624). SC-005 first preview 5,309.4 ms (budget 8,550), flat preview 2,880.8 ms (budget 5,000).
+- `tests/windows/revert-perf.test.ts`: 6 pass, 0 fail. Warm, median of 10 unless noted. Values in ms (budget):
+
+| Case | Busy state | Confirmation | Refreshed diff or end |
+| --- | --- | --- | --- |
+| Text file | 25.1 (100) | 330.7 (500) | 1,110.1 (1,500) |
+| Hunk | 31.9 (100) | 314.4 (500) | 971.4 (1,500) |
+| Binary file | 20.4 (100) | 304.2 (500) | 1,109.7 (1,500) |
+| Lines | 35.3 (100) | 365.8 (500) | 1,331.1 (1,500) |
+| Revert file, 100 files | | | 3,165.8 (4,800) |
+| Revert all unstaged, 1,000 files | 27.5 (100) | 1,177.4 (3,000) | 19,282.5 (30,000) |
+| 10,000 files | | | 293,306.9 (330,000); Cancel 56.1 (1,000) |
+| 1 GiB binary file | | | 11,865.2 (30,000) |
+| WSL, 1,000 files | | | 262,070.9 (322,000) |
+
+- Memory: the 1 GiB binary file raised the service by at most 31.8 MiB (bound 64). The 10,000-file limit: run 0 peak growth 273.1 MiB (bound 400) and retained growth at most 35.1 MiB (bound 80). Runs 1 to 10: peak growth at most 166.1 MiB (bound 320) and retained growth at most 5.1 MiB (bound 32).
+- The T048 limit case missed in the T049 full run and passed here, with the same method and the same budgets. The block "Full run (T049)" records the cause.
+- The test printed the 5 s window values (median and minimum baseline) as observations only. No verdict uses them.
+- Control mutation, on a control package of the same commit: `RevertConfirm.tsx` focuses the revert button first. Then T079 and 5 T047 packaged cases turn red ("the first focus on Cancel did not happen"). 3 T027 DOM cases of `tests/contracts/revert-confirm.test.tsx` also turn red.
+- SC-009 focus: the CDP DOM focus is on Cancel. UI Automation `HasKeyboardFocus` (the provider focus, from the same DOM focus) is true on Cancel and false on the other button. This holds for T047 (Revert lines) and for T079 (Revert file and Revert unstaged changes). Control: with the expected values swapped, the T047 and the T079 cases turn red.
+- Unverified: the OS system focus (`GetFocusedElement`). The test session never owns the foreground window, because the terminal owns it. Verify the system focus later in Windows Sandbox or a VM.
+- SC-009 status: the CDP focus and the UI Automation provider focus are verified for User Stories 1 to 4. The OS system focus and the 150% and 225% text scale cases are unverified.

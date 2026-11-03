@@ -8,18 +8,20 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
 import { basename, join } from "node:path";
 import { COMPARED_RAW_VERSION_BYTES, NATIVE_CHUNK_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { createApprovals } from "../../src/git-service/approvals";
-import { attributeArgs, lineEndingArgs, unstagedNumstatArgs, unstagedPatchArgs } from "../../src/git-service/commands";
+import { attributeArgs, lineEndingArgs, lineEndingPathArgs, unstagedNumstatArgs, unstagedPatchArgs } from "../../src/git-service/commands";
 import { createComparisonReader, type ComparisonTarget } from "../../src/git-service/comparison";
 import { probeGit } from "../../src/git-service/git-installation";
 import { hunkApprovals } from "../../src/git-service/hunk-publish";
 import { createRegistrations } from "../../src/git-service/registration";
 import { readWorkingVersion } from "../../src/git-service/snapshot";
 import { createWorkspaceReader } from "../../src/git-service/status";
+import { parseEolListing } from "../../src/git-service/support";
 import { createTrust } from "../../src/git-service/trust";
 import { fixtureDir, fixtureEnv, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF02, buildF03, buildF04, buildF04Stage, buildF05, buildF10, buildF16Comparison, buildF17, buildFileAccepted, put, run, type F04Variant, type Repo } from "./fixtures";
 import { indexEntries } from "./git-oracle";
 import {
+  applyHunk,
   approve,
   blobBytes,
   blobOf,
@@ -28,6 +30,7 @@ import {
   entryOf,
   git,
   gitPath,
+  gitPathOf,
   gitText,
   hunksOf,
   newSide,
@@ -39,6 +42,7 @@ import {
   repoOf,
   repoState,
   resultOf,
+  selectHunks,
   SUCCEEDED,
   TIMEOUT_MS,
   underTest,
@@ -202,7 +206,7 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
 describe("parallel comparison steps (T399)", () => {
   const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
   const cases = [
-    { tag: "eol", name: "the line-ending listing expires and the Job close ends the attribute step first", target: lineEndingArgs(), sibling: attributeArgs() },
+    { tag: "eol", name: "the line-ending listing expires and the Job close ends the attribute step first", target: lineEndingPathArgs(["multi.txt"]), sibling: attributeArgs() },
     // A guard: the patch step gives no code of its own for a null exit, so the deadline already wins.
     { tag: "numstat", name: "the numstat step expires and the Job close ends the patch step first", target: unstagedNumstatArgs("multi.txt"), sibling: unstagedPatchArgs("multi.txt") },
   ];
@@ -222,6 +226,97 @@ describe("parallel comparison steps (T399)", () => {
       }),
       SIBLING_TIMEOUT_MS,
     );
+});
+
+// T073: the comparison lists the line endings only of the keys that `decideSupport` reads.
+describe("line-ending listing paths (T073)", () => {
+  // The `.gitattributes` key of each folder of `path`, from the deepest folder to the worktree root.
+  const attributeKeys = (path: string) => {
+    const parts = path.split("/").slice(0, -1);
+    return [...parts.map((_, i) => `${parts.slice(0, parts.length - i).join("/")}/`), ""].map((folder) => `${folder}.gitattributes`);
+  };
+  const eolCalls = (service: Service, from: number) => service.runner.calls.slice(from).filter((call) => call.arguments.includes("--eol")).map((call) => [...call.arguments]);
+  // The records of each key in the whole-index listing and in the listing of the keys alone.
+  const listings = (repo: string, keys: string[]) => ({ whole: parseEolListing(git(repo, lineEndingArgs()))!, part: parseEolListing(git(repo, lineEndingPathArgs(keys)))! });
+  const sameRecords = (repo: string, keys: string[]) => {
+    const { whole, part } = listings(repo, keys);
+    expect(keys.map((key) => [key, part.get(key) ?? null])).toEqual(keys.map((key) => [key, whole.get(key) ?? null]));
+    return { whole, part };
+  };
+  const eolRepo = (name: string): Repo => {
+    const dir = fixtureDir(name);
+    mkdirSync(dir, { recursive: true });
+    const r: Repo = { git: gitPath(), dir, pre: [] };
+    run(r, ["init", "-q", "-b", "main"]);
+    for (const [key, value] of [["core.autocrlf", "false"], ["core.eol", "lf"], ["core.safecrlf", "false"], ["core.filemode", "false"], ["core.ignorecase", "true"]]) run(r, ["config", key!, value!]);
+    return r;
+  };
+
+  caseTest("T073", `the ls-files --eol call names only the tracked path, or the .gitattributes key of each folder of an untracked path, after --`, SHELL, () =>
+    withService({ name: "t073-spy" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t073-spy"));
+      put(repo, "a/b/new.txt", "new\n");
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      let before = service.runner.calls.length;
+      expect(outcome((await compare(service, repositoryId, "multi.txt", "unstaged", read)).response)).toEqual(SUCCEEDED);
+      expect(eolCalls(service, before)).toEqual([[...lineEndingArgs(), "--", "multi.txt"]]);
+      before = service.runner.calls.length;
+      expect(outcome((await compare(service, repositoryId, "a/b/new.txt", "untracked", read)).response)).toEqual(SUCCEEDED);
+      expect(eolCalls(service, before)).toEqual([[...lineEndingArgs(), "--", "a/b/.gitattributes", "a/.gitattributes", ".gitattributes"]]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T073", `each key gives the records of the whole-index listing, and the support reason equals the whole-index decision`, [...SHELL, "windows-path-rules"], () =>
+    withService({ name: "t073-equal" }, async (service) => {
+      const r = eolRepo("t073-equal");
+      const repo = r.dir;
+      // c: committed and on disk. s: staged and on disk. i and Q: committed, then removed from disk. n: none. w1: a glob match of `w[1]`.
+      for (const file of ["t.txt", "c/.gitattributes", "i/.gitattributes", "Q/.gitattributes", "w1/.gitattributes"]) put(repo, file, file === "t.txt" ? "one\n" : "*.txt text\n");
+      run(r, ["--literal-pathspecs", "add", "--", "t.txt", "c/.gitattributes", "i/.gitattributes", "Q/.gitattributes", "w1/.gitattributes"]);
+      run(r, ["commit", "-q", "--no-verify", "-m", "base"]);
+      put(repo, "s/d/.gitattributes", "*.txt text\n");
+      run(r, ["--literal-pathspecs", "add", "--", "s/d/.gitattributes"]);
+      for (const folder of ["i", "Q", "w1"]) rmSync(join(repo, folder), { recursive: true });
+      put(repo, "t.txt", "two\n");
+      const untracked = ["c/d/u.txt", "s/d/u.txt", "i/d/u.txt", "n/d/u.txt", "w[1]/u.txt", "q/u.txt"];
+      for (const path of untracked) put(repo, path, "new\n");
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const listed = read.entries.filter((e) => e.category === "untracked").map((e) => e.path);
+      console.log(`OBSERVATION T073: status lists the untracked paths ${JSON.stringify(listed)} under core.ignorecase=true`);
+      const cases = [{ path: "t.txt", category: "unstaged" as const, keys: ["t.txt"] }, ...listed.map((path) => ({ path, category: "untracked" as const, keys: attributeKeys(path) }))];
+      const reasons: Record<string, string> = {};
+      for (const { path, category, keys } of cases) {
+        const { whole, part } = sameRecords(repo, keys);
+        if (path.toLowerCase() === "q/u.txt") console.log(`OBSERVATION T073: ls-files --eol -- ${keys[0]} gives the keys ${JSON.stringify([...part.keys()])}`);
+        // `decideSupport`: a tracked record with `mixed`, or an index-only `.gitattributes` key of an untracked path, refuses.
+        const refused = category === "untracked" ? keys.some((key) => whole.get(key)?.some((x) => x.working === "")) : whole.get(path)!.some((x) => x.index === "mixed" || x.working === "mixed");
+        const before = service.runner.calls.length;
+        const c = await compare(service, repositoryId, path, category, read);
+        expect({ path, ...outcome(c.response), reason: support(c) }).toEqual({ path, ...SUCCEEDED, reason: refused ? "line-endings" : "supported" });
+        expect({ path, calls: eolCalls(service, before) }).toEqual({ path, calls: [lineEndingPathArgs(keys)] });
+        reasons[path] = support(c);
+      }
+      expect(reasons).toMatchObject({ "t.txt": "supported", "c/d/u.txt": "supported", "s/d/u.txt": "supported", "i/d/u.txt": "line-endings", "n/d/u.txt": "supported", "w[1]/u.txt": "supported", "q/u.txt": "supported" });
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T073", `a key with pathspec magic characters lists only its own records`, [...SHELL, "windows-path-rules"], () => {
+    const r = eolRepo("t073-magic");
+    const oid = gitText(r.dir, ["hash-object", "-w", "--stdin"], { input: Buffer.from("*.txt text\n") }).trim();
+    const keys = ["m*/.gitattributes", "m?/.gitattributes", "m[a]/.gitattributes", ":/.gitattributes", ":(top)m/.gitattributes"];
+    // Each decoy matches a key read as a glob or as magic.
+    const decoys = [".gitattributes", "ma/.gitattributes", "mx/.gitattributes", "m/.gitattributes"];
+    // Git for Windows refuses `*`, `?`, and `:` in index paths unless core.protectNTFS is false.
+    run(r, ["-c", "core.protectNTFS=false", "update-index", "-z", "--index-info"], { input: Buffer.from([...keys, ...decoys].map((p) => `100644 ${oid} 0\t${p}\0`).join("")) });
+    const { part } = sameRecords(r.dir, keys);
+    expect([...part.keys()].toSorted()).toEqual(keys.toSorted());
+  });
 });
 
 describe("support decisions (data-model §5)", () => {
@@ -700,7 +795,7 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
 
 // T110 (WP1 step 6): the retained data that hunk publication binds.
 describe("retained comparison binding (T110)", () => {
-  const ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding"];
+  const ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident"];
 
   caseTest("T110", "a retained comparison keeps the attributes and the working version, a working change between the two reads gives REPOSITORY_CHANGED, and onDrop reports each dropped comparison", SHELL, () =>
     withService({ name: "t110-retained" }, async (service) => {
@@ -779,4 +874,94 @@ describe("retained comparison binding (T110)", () => {
       expect(dropped.toSorted()).toEqual([idOf(unstaged), idOf(staged)].toSorted());
       expect(issued.map((a) => approvals.accept(a))).toEqual(issued.map(() => ({ ok: false, code: "UNKNOWN_TARGET" })));
     }), TIMEOUT_MS);
+});
+
+// 008 contract Δ5, which amends 001 contract §5 "Retained comparison data": a read with the same facts keeps the retained comparison and its IDs.
+describe("comparison identity (008 contract Δ5)", () => {
+  const ids = (c: Comparison) => ({ comparisonId: c.comparisonId, hunkIds: c.hunkIds });
+
+  caseTest(TASK, `two reads of an unchanged file give the same comparisonId and hunkId values, also after an equal full read`, SHELL, () =>
+    withService({ name: "t093-same-id" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-same-id"));
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const first = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      const second = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      // 001 contract §8 "Equal full read": the snapshot stays, as on each WSL poll.
+      const again = await readOk(service, repositoryId);
+      expect(again.snapshotId).toBe(read.snapshotId);
+      const third = await selectHunks(service, repositoryId, "multi.txt", "unstaged", again);
+      expect([ids(second), ids(third)]).toEqual([ids(first), ids(first)]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, `after 5 equal reads the first comparison still resolves: an equal read takes the newest age slot, and its hunk stages`, SHELL, () =>
+    withService({ name: "t093-same-id-age" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-same-id-age"));
+      put(repo, "new.txt", "new\n");
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const first = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      for (let i = 0; i < 5; i++) expect(ids(await selectHunks(service, repositoryId, "multi.txt", "unstaged", read))).toEqual(ids(first));
+      // 001 contract §5 keeps 4 comparisons. After the equal read, the next comparison drops "multi.txt" staged, the oldest.
+      for (const [path, category] of [["multi.txt", "staged"], ["other-a.txt", "staged"], ["other-b.txt", "staged"]] as const) {
+        expect(outcome((await compare(service, repositoryId, path, category, read)).response)).toEqual(SUCCEEDED);
+      }
+      expect(ids(await selectHunks(service, repositoryId, "multi.txt", "unstaged", read))).toEqual(ids(first));
+      expect(outcome((await compare(service, repositoryId, "new.txt", "untracked", read)).response)).toEqual(SUCCEEDED);
+      expect(outcome(await applyHunk(service, repositoryId, first, first.hunkIds[0]!, "stage"))).toEqual(SUCCEEDED);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, `a changed working file, a new snapshot, or another scope gives a new comparisonId and new hunkId values`, SHELL, () =>
+    withService({ name: "t093-new-id" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-new-id"));
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const first = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      const staged = await selectHunks(service, repositoryId, "multi.txt", "staged", read);
+      const file = join(repo, "multi.txt");
+      const bytes = readFileSync(file);
+      writeFileSync(file, Buffer.concat([bytes, Buffer.from("added line\n")]));
+      const changed = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      writeFileSync(file, bytes);
+      put(repo, "new.txt", "new\n");
+      const next = await readOk(service, repositoryId);
+      expect(next.snapshotId).not.toBe(read.snapshotId);
+      const renewed = await selectHunks(service, repositoryId, "multi.txt", "unstaged", next);
+      // Only the snapshot differs from the first read.
+      expect(patchOf(renewed.response.result)).toEqual(patchOf(first.response.result));
+      const all = [first, staged, changed, renewed];
+      expect(new Set(all.map((c) => c.comparisonId)).size).toBe(all.length);
+      expect(new Set(all.flatMap((c) => c.hunkIds)).size).toBe(all.flatMap((c) => c.hunkIds).length);
+    }),
+    TIMEOUT_MS,
+  );
+
+  // 001 contract §2: a consumed approval answers a repeat with its operation. So a read after a consumed approval gives new IDs.
+  caseTest(TASK, `after a LOCKED refusal consumed the hunk approval, an equal read gives a new comparisonId, and its hunk stages`, SHELL, () =>
+    withService({ name: "t093-consumed-id" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-consumed-id"));
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const first = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      const lock = gitPathOf(repo, "index.lock");
+      writeFileSync(lock, "foreign lock\n");
+      const locked = await applyHunk(service, repositoryId, first, first.hunkIds[0]!, "stage");
+      rmSync(lock);
+      expect(outcome(locked)).toEqual({ state: "failed", code: "LOCKED" });
+      const again = await readOk(service, repositoryId);
+      expect(again.snapshotId).toBe(read.snapshotId);
+      const fresh = await selectHunks(service, repositoryId, "multi.txt", "unstaged", again);
+      expect(fresh.comparisonId).not.toBe(first.comparisonId);
+      expect(outcome(await applyHunk(service, repositoryId, fresh, fresh.hunkIds[0]!, "stage"))).toEqual(SUCCEEDED);
+    }),
+    TIMEOUT_MS,
+  );
 });

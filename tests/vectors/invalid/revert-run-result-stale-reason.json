@@ -1,0 +1,8 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"revert-files\",\"reason\":\"files-changed\"}",
+  "repair": {
+    "reason": "revert-changed"
+  }
+}

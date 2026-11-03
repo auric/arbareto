@@ -48,8 +48,8 @@ export function menuItem(label: string): HTMLElement {
 export const statusBar = () => text(document.querySelector("footer")!);
 
 /** Mounts the Workbench of `world` and opens the Commit view with the Untracked section open. */
-export async function openCommitView(module: WorkbenchModule, world: World) {
-  const double = await mountWorkbench(module, world);
+export async function openCommitView(module: WorkbenchModule, world: World, props: Parameters<typeof mountWorkbench>[3] = {}) {
+  const double = await mountWorkbench(module, world, undefined, props);
   await click(button("Commit", views()));
   const untracked = tree("Changes").querySelector<HTMLElement>('[data-section-row="untracked"]');
   if (untracked !== null && untracked.getAttribute("aria-expanded") === "false") await click(untracked);

@@ -7,6 +7,7 @@
 import type { ErrorCode } from "../contracts/errors";
 import { STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../contracts/limits";
 import { isObjectId, type ObjectFormat } from "./commands";
+import type { Collector } from "./git-runner";
 
 export type { ObjectFormat };
 
@@ -185,6 +186,24 @@ const KINDS: ReadonlySet<number> = new Set([0x31, 0x32, 0x75, 0x3f, 0x21]);
 class Malformed extends Error {}
 
 type Phase = "start" | "header" | "fixed" | "path" | "original";
+
+// A step collector that feeds `parser`. The parser bound is the collector bound.
+export function statusCollector(parser: StatusParser): Collector {
+  let size = 0;
+  return {
+    push(chunk) {
+      size += chunk.length;
+      parser.push(chunk);
+    },
+    get bytes() {
+      return size;
+    },
+    records: 0,
+    get limited() {
+      return parser.limited;
+    },
+  };
+}
 
 // `branchHeaders`: the arguments pass `--branch`, so a complete output holds both headers.
 // `onRecord`: each complete record goes to it, in output order, and the parser keeps no record.

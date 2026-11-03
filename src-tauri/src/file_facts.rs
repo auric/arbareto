@@ -4,6 +4,7 @@
 //! Contract §6 "File facts": the facts of files below the three Git-resolved roots.
 //! The walk opens each component relative to its parent handle. It never follows a reparse point below a root.
 
+use std::num::NonZeroU64;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,26 +13,42 @@ use serde_json::Value;
 
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
-    FILE_BASIC_INFORMATION, FILE_INFORMATION_CLASS, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileAttributeTagInformation, FileBasicInformation,
-    FileStandardInformation, NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS,
-    NtCreateFile, NtFsControlFile, NtQueryInformationFile, NtReadFile, SYMLINK_FLAG_RELATIVE,
+    FILE_BASIC_INFORMATION, FILE_ID_FULL_DIR_INFORMATION, FILE_INFORMATION_CLASS,
+    FILE_INTERNAL_INFORMATION, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    FileAttributeTagInformation, FileBasicInformation, FileIdFullDirectoryInformation,
+    FileInternalInformation, FileNormalizedNameInformation, FileStandardInformation,
+    NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile, NtFsControlFile,
+    NtQueryDirectoryFile, NtQueryInformationFile, NtReadFile, SYMLINK_FLAG_RELATIVE,
 };
 use windows::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_IO_DEVICE, ERROR_PATH_NOT_FOUND,
-    ERROR_SHARING_VIOLATION, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE,
-    STATUS_ACCESS_DENIED, STATUS_CANCELLED, STATUS_END_OF_FILE, STATUS_IO_DEVICE_ERROR,
-    STATUS_IO_REPARSE_TAG_NOT_HANDLED, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
-    STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION, STATUS_UNSUCCESSFUL,
-    UNICODE_STRING, WIN32_ERROR,
+    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_DATA, ERROR_IO_DEVICE,
+    ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION, ERROR_WRITE_FAULT, HANDLE, HLOCAL, LocalFree,
+    NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, STATUS_ACCESS_DENIED, STATUS_CANCELLED,
+    STATUS_END_OF_FILE, STATUS_INVALID_DEVICE_REQUEST, STATUS_INVALID_INFO_CLASS,
+    STATUS_INVALID_PARAMETER, STATUS_IO_DEVICE_ERROR, STATUS_IO_REPARSE_TAG_NOT_HANDLED,
+    STATUS_NO_MORE_FILES, STATUS_NO_SUCH_FILE, STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_NOT_FOUND,
+    STATUS_OBJECT_PATH_NOT_FOUND, STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION,
+    STATUS_UNSUCCESSFUL, UNICODE_STRING, WIN32_ERROR,
+};
+use windows::Win32::Security::Authorization::{
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows::Win32::Security::Cryptography::{
+    BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALG_HANDLE, BCryptCreateHash, BCryptDestroyHash,
+    BCryptFinishHash, BCryptHashData,
+};
+use windows::Win32::Security::{
+    DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, GetKernelObjectSecurity,
+    OBJECT_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
 };
 use windows::Win32::Storage::FileSystem::{
     FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
-    FILE_DISPOSITION_INFO_EX_FLAGS, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE,
-    FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx,
-    MAXIMUM_REPARSE_DATA_BUFFER_SIZE, SYNCHRONIZE, SetFileInformationByHandle,
+    FILE_DISPOSITION_INFO_EX_FLAGS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+    FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx,
+    MAXIMUM_REPARSE_DATA_BUFFER_SIZE, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle,
+    WriteFile,
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 use windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
@@ -41,7 +58,8 @@ use windows::core::PWSTR;
 use crate::bootstrap::open as open_for_identity;
 use crate::process_requests::Code;
 use crate::schema::process_reply::{
-    FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
+    FileFactErrorCode, FileFactFileBound, FileFactFileCreationTime, FileFactFileDacl,
+    FileFactFileGroup, FileFactFileOwner, FileFactLinkTag, FileFactLinkTarget,
     FileFactsReplyFactsItem as Fact,
 };
 use crate::schema::process_request::{
@@ -69,6 +87,15 @@ pub(crate) struct Request<'a> {
     pub(crate) files: Vec<(usize, Vec<String>)>,
     /// WSL only: `Some` with the shared index hash of `index` (contract §6 "Index digest in a read").
     pub(crate) index: Option<Option<&'a str>>,
+    pub(crate) read: Read,
+}
+
+/// Feature 008 contract Δ6: the `detail` and `stream` fields of a `fileFacts` request. Feature 005 contract Δ6: `content`, WSL only.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Read {
+    pub(crate) detail: bool,
+    pub(crate) stream: bool,
+    pub(crate) content: bool,
 }
 
 /// The fields of a `fileFacts` frame. It reads no file.
@@ -79,6 +106,8 @@ pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
         || (request.index.is_some() && request.digest)
         // Feature 005 contract Δ6: `content` takes `digest: true` and exactly one entry.
         || (request.content == Some(true) && !(request.digest && request.files.len() == 1))
+        // Feature 008 contract Δ6: `stream` takes `digest: true` and no `content`.
+        || (request.stream == Some(true) && !(request.digest && request.content != Some(true)))
     {
         return Err(INVALID);
     }
@@ -90,6 +119,11 @@ pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
             .index
             .as_ref()
             .map(|index| index.shared_index.as_deref().map(String::as_str)),
+        read: Read {
+            detail: request.detail == Some(true),
+            stream: request.stream == Some(true),
+            content: request.content == Some(true),
+        },
     })
 }
 
@@ -407,44 +441,284 @@ pub(crate) fn walk(
     files: &[(usize, Vec<String>)],
     stop: &AtomicBool,
 ) -> Vec<Fact> {
+    walk_read(roots, digest, Read::default(), files, stop, &|_| {})
+}
+
+/// `walk` with the feature 008 `detail` and `stream` reads. `extend` gets the total size of the streamed files before each read.
+pub(crate) fn walk_read(
+    roots: [&Path; 3],
+    digest: bool,
+    read: Read,
+    files: &[(usize, Vec<String>)],
+    stop: &AtomicBool,
+    extend: &dyn Fn(u64),
+) -> Vec<Fact> {
     // The digested bytes that the request can still take. `None` after the first file that passed the total.
     let mut budget = Some(TOTAL_BYTES);
+    let mut streamed = 0u64;
+    let mut on_size = |size: u64| {
+        streamed = streamed.saturating_add(size);
+        extend(streamed);
+    };
+    let mut reads = Reads {
+        digest,
+        read,
+        budget: &mut budget,
+        on_size: &mut on_size,
+    };
     files
         .iter()
-        .map(|(root, path)| fact(roots[*root], path, digest, &mut budget, stop))
+        .map(|(root, path)| fact(roots[*root], path, &mut reads, stop))
         .collect()
 }
 
-/// `component` counts the components of `path` from 1. Component 0 is the root.
-fn fact(
-    root: &Path,
-    path: &[String],
+/// The read options of one walk and its shared budgets.
+struct Reads<'a> {
     digest: bool,
-    budget: &mut Option<u64>,
-    stop: &AtomicBool,
-) -> Fact {
+    read: Read,
+    budget: &'a mut Option<u64>,
+    on_size: &'a mut dyn FnMut(u64),
+}
+
+/// `component` counts the components of `path` from 1. Component 0 is the root.
+fn fact(root: &Path, path: &[String], reads: &mut Reads, stop: &AtomicBool) -> Fact {
+    let digest = reads.digest;
     let (last, middle) = path.split_last().expect("parse gives 1 or more components");
-    let mut parent = match open_root(root, stop) {
+    // The root and each opened component, for the on-disk name check of plan.md D8.
+    let mut held = vec![match open_root(root, stop) {
         Ok(handle) => handle,
         Err(status) => return not_opened(status, 0),
-    };
+    }];
     for (component, name) in (1..).zip(middle) {
-        parent = match open(&parent, name, false, false, stop) {
+        let parent = held.last().expect("the root");
+        let next = match open(parent, name, false, false, stop) {
             Ok(handle) => handle,
             Err(status) if is_reparse_point(status) => {
-                return reparse_point(&parent, name, component, None, stop);
+                return reparse_point(parent, name, component, None, stop);
             }
             Err(status) => return not_opened(status, component),
         };
+        held.push(next);
     }
     let component = path.len();
-    match open(&parent, last, false, false, stop) {
-        Ok(handle) => file_fact(&handle, component, digest, budget, stop),
+    let parent = held.last().expect("the root");
+    match open(parent, last, false, false, stop) {
+        Ok(handle) => {
+            let mut fact = file_fact(&handle, component, reads, stop);
+            if let (true, Fact::File { exact_name, .. }) = (reads.read.detail, &mut fact) {
+                held.push(handle);
+                match exact(&held, path, stop) {
+                    Ok(exact) => *exact_name = Some(exact),
+                    Err(status) => return error(component, status),
+                }
+            }
+            fact
+        }
         Err(status) if is_reparse_point(status) => {
-            reparse_point(&parent, last, component, Some(digest), stop)
+            reparse_point(parent, last, component, Some(digest), stop)
         }
         Err(status) => not_opened(status, component),
     }
+}
+
+/// The status of a file system that does not implement `FileNormalizedNameInformation`.
+/// MS-FSA 2.1.5.12: `STATUS_INVALID_INFO_CLASS` for a class that the object store does not define.
+/// MS-FSCC 2.4: `STATUS_INVALID_PARAMETER` for a class that the file system does not support.
+/// MS-FSCC 2.4.35 and note 97: `STATUS_NOT_SUPPORTED`. MS-FSCC note 139: `STATUS_INVALID_DEVICE_REQUEST`.
+const NO_NORMALIZED_NAME: [NTSTATUS; 4] = [
+    STATUS_INVALID_INFO_CLASS,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NOT_SUPPORTED,
+    STATUS_INVALID_DEVICE_REQUEST,
+];
+
+/// Plan.md D8: true when an OS fact proves that each component of `path` has its requested name on disk, unit for unit.
+/// `held` holds the root and the handle of each component. False when no route proves it.
+/// A failed query or open, a file ID that names no file, or a malformed entry gives an error status.
+/// The fact is then an unknown and not a letter-case fact (spec FR-038).
+fn exact(held: &[OwnedHandle], path: &[String], stop: &AtomicBool) -> Result<bool, NTSTATUS> {
+    let first = normalized_name(held.last().expect("the target"), stop);
+    #[cfg(test)]
+    let first = tests::FIRST_ROUTE.get().map_or(first, Err);
+    exact_from(first, held, path, stop)
+}
+
+/// `first` is the result of the first route. Tests give it a status to reach the second route.
+fn exact_from(
+    first: Result<Vec<u16>, NTSTATUS>,
+    held: &[OwnedHandle],
+    path: &[String],
+    stop: &AtomicBool,
+) -> Result<bool, NTSTATUS> {
+    match first {
+        Ok(units) => Ok(same_tail(&units, path)),
+        Err(status) if NO_NORMALIZED_NAME.contains(&status) => {
+            for (at, name) in path.iter().enumerate() {
+                if !entry_name(&held[at], name, &held[at + 1], stop)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        Err(status) => Err(status),
+    }
+}
+
+/// The first route: MS-FSCC 2.4.35 gives each component of the open as its long name, in the letter case stored on disk.
+/// MS-FSA 2.1.5.12.30 builds the name from the link chain of the open, so its last components are the entries that the walk opened.
+fn normalized_name(handle: &OwnedHandle, stop: &AtomicBool) -> Result<Vec<u16>, NTSTATUS> {
+    check(stop)?;
+    // `FILE_NAME_INFORMATION`: the name length in bytes, then the name. A path holds at most 32,767 UTF-16 units.
+    let mut buffer = vec![0u32; 1 + 32_767usize.div_ceil(2)];
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: `handle` is open, and `buffer` is live with the passed size.
+    let status = unsafe {
+        NtQueryInformationFile(
+            raw(handle),
+            &raw mut io,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * 4) as u32,
+            FileNormalizedNameInformation,
+        )
+    };
+    if status.is_err() {
+        return Err(status);
+    }
+    let length = buffer[0] as usize;
+    if !length.is_multiple_of(2) || length > (buffer.len() - 1) * 4 {
+        return Err(STATUS_UNSUCCESSFUL);
+    }
+    // SAFETY: the check above keeps `length / 2` units inside `buffer`, after its first 4 bytes.
+    let units =
+        unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(1).cast::<u16>(), length / 2) };
+    Ok(units.to_vec())
+}
+
+/// True when the last components of the absolute name `units` equal `path`, unit for unit.
+fn same_tail(units: &[u16], path: &[String]) -> bool {
+    let disk: Vec<&[u16]> = units.split(|&unit| unit == u16::from(b'\\')).collect();
+    // The name starts with `\`, so the part before it is empty and never a requested component.
+    disk.len()
+        .checked_sub(path.len())
+        .filter(|&start| start > 0)
+        .is_some_and(|start| {
+            disk[start..]
+                .iter()
+                .zip(path)
+                .all(|(disk, name)| disk.iter().copied().eq(name.encode_utf16()))
+        })
+}
+
+/// The second route: the directory entries of `parent` that match `name`, bound to `child` by its 64-bit file ID.
+/// True only for exactly one entry, with the file ID of `child` and the stored name `name`, unit for unit.
+/// The component rule allows no wildcard, so the pattern matches by name (Microsoft Learn `NtQueryDirectoryFile`).
+/// Microsoft Learn `FILE_INTERNAL_INFORMATION`: `IndexNumber` equals `FileId` of `FILE_ID_FULL_DIR_INFORMATION`.
+/// MS-FSCC 2.1.9: a 64-bit file ID of 0 or all ones names no file.
+fn entry_name(
+    parent: &OwnedHandle,
+    name: &str,
+    child: &OwnedHandle,
+    stop: &AtomicBool,
+) -> Result<bool, NTSTATUS> {
+    let id = query::<FILE_INTERNAL_INFORMATION>(child, FileInternalInformation, stop)?.IndexNumber;
+    if id == 0 || id == -1 {
+        return Err(STATUS_UNSUCCESSFUL);
+    }
+    // A new handle: the query keeps the pattern of its first call for the handle (Microsoft Learn `NtQueryDirectoryFile`).
+    let list = create_relative(
+        raw(parent),
+        "",
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    )?;
+    let mut pattern_units: Vec<u16> = name.encode_utf16().collect();
+    // `is_component` keeps the name within 255 units, so the byte length fits a `u16`.
+    let length = (pattern_units.len() * 2) as u16;
+    let pattern = UNICODE_STRING {
+        Length: length,
+        MaximumLength: length,
+        Buffer: PWSTR(pattern_units.as_mut_ptr()),
+    };
+    let name_at = std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileName);
+    let mut entries: Vec<(i64, Vec<u16>)> = Vec::new();
+    for restart in std::iter::once(true).chain(std::iter::repeat(false)) {
+        check(stop)?;
+        // 4 KiB holds at least one entry of a name with 255 units.
+        let mut buffer = [0u64; 512];
+        let mut io = IO_STATUS_BLOCK::default();
+        // SAFETY: `list` is open for synchronous I/O, and `buffer`, `io`, and `pattern` are live locals.
+        let status = unsafe {
+            NtQueryDirectoryFile(
+                raw(&list),
+                None,
+                None,
+                None,
+                &raw mut io,
+                buffer.as_mut_ptr().cast(),
+                size_of_val(&buffer) as u32,
+                FileIdFullDirectoryInformation,
+                false,
+                Some(&raw const pattern),
+                restart,
+            )
+        };
+        // MS-FSA 2.1.5.6.3: no match gives `STATUS_NO_SUCH_FILE` on the first call and `STATUS_NO_MORE_FILES` after it.
+        if status == STATUS_NO_SUCH_FILE || status == STATUS_NO_MORE_FILES {
+            break;
+        }
+        if status.is_err() {
+            return Err(status);
+        }
+        // SAFETY: `buffer` is live, and the length stays within it.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                buffer.as_ptr().cast::<u8>(),
+                io.Information.min(size_of_val(&buffer)),
+            )
+        };
+        let mut at = 0usize;
+        loop {
+            let field = |offset: usize, size: usize| bytes.get(at + offset..at + offset + size);
+            let (Some(next), Some(size), Some(file_id)) = (
+                field(0, 4),
+                field(
+                    std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileNameLength),
+                    4,
+                ),
+                field(
+                    std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileId),
+                    8,
+                ),
+            ) else {
+                return Err(STATUS_UNSUCCESSFUL);
+            };
+            let next = u32::from_le_bytes(next.try_into().expect("4 bytes")) as usize;
+            let size = u32::from_le_bytes(size.try_into().expect("4 bytes")) as usize;
+            let Some(stored) = field(name_at, size).filter(|_| size.is_multiple_of(2)) else {
+                return Err(STATUS_UNSUCCESSFUL);
+            };
+            entries.push((
+                i64::from_le_bytes(file_id.try_into().expect("8 bytes")),
+                stored
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|unit| u16::from_le_bytes(*unit))
+                    .collect(),
+            ));
+            if entries.len() > 1 {
+                return Ok(false);
+            }
+            if next == 0 {
+                break;
+            }
+            at += next;
+        }
+    }
+    Ok(matches!(entries.as_slice(), [(file_id, stored)]
+        if *file_id == id && stored.iter().copied().eq(name.encode_utf16())))
 }
 
 /// Contract §6 "Walks": a stopped walk opens, queries, and reads nothing more.
@@ -650,13 +924,8 @@ fn error(component: usize, status: NTSTATUS) -> Fact {
 
 /// The fact of a final component that the walk opened with attribute access only.
 /// With `digest`, a file within the per-file bound is opened again for its data, and the read takes at most the bound plus one byte.
-fn file_fact(
-    handle: &OwnedHandle,
-    component: usize,
-    digest: bool,
-    budget: &mut Option<u64>,
-    stop: &AtomicBool,
-) -> Fact {
+/// With `stream`, the digest reads the whole file in chunks and has no bound.
+fn file_fact(handle: &OwnedHandle, component: usize, reads: &mut Reads, stop: &AtomicBool) -> Fact {
     let standard = match query::<StandardInformation>(handle, FileStandardInformation, stop) {
         Ok(standard) => standard,
         Err(status) => return error(component, status),
@@ -668,7 +937,34 @@ fn file_fact(
         Ok(basic) => basic,
         Err(status) => return error(component, status),
     };
-    let file = |digest, bound| Fact::File {
+    let (attributes, creation_time, dacl, group, links, owner) = if reads.read.detail {
+        match detail(handle, &standard, &basic) {
+            Ok(d) => (
+                Some(d.attributes),
+                Some(d.creation_time),
+                Some(d.dacl),
+                Some(d.group),
+                Some(d.links),
+                Some(d.owner),
+            ),
+            Err(code) => return error_fact(component, code),
+        }
+    } else {
+        Default::default()
+    };
+    let file = move |digest, bound| Fact::File {
+        attributes,
+        creation_time,
+        dacl,
+        exact_name: None,
+        gid: None,
+        group,
+        links,
+        mode: None,
+        owner,
+        uid: None,
+        xattr: None,
+        own: None,
         bound,
         bytes: None,
         digest,
@@ -677,14 +973,24 @@ fn file_fact(
         owner_execute: None,
         size: standard.end_of_file,
     };
-    if !digest {
+    if !reads.digest {
         return file(None, None);
     }
     // An empty name relative to the handle opens the same file again, as `ReOpenFile` does.
+    if reads.read.stream {
+        (reads.on_size)(u64::try_from(standard.end_of_file).unwrap_or(0));
+        return match open(handle, "", true, false, stop)
+            .and_then(|data| pour(raw(&data), None, stop).map_err(Pour::status))
+        {
+            Ok((_, sha)) => file(Some(digest_text(&sha)), None),
+            Err(status) => error(component, status),
+        };
+    }
     let data = || {
         open(handle, "", true, false, stop)
             .and_then(|data| read(raw(&data), FILE_BYTES as usize + 1, stop))
     };
+    let budget = &mut *reads.budget;
     let bound = match *budget {
         _ if standard.end_of_file as u64 > FILE_BYTES => FileFactFileBound::FileBytes,
         None => FileFactFileBound::TotalBytes,
@@ -702,6 +1008,209 @@ fn file_fact(
         },
     };
     file(None, Some(bound))
+}
+
+/// Feature 008 contract Δ6 `detail`: the replace facts of one file.
+struct Detail {
+    attributes: u32,
+    creation_time: FileFactFileCreationTime,
+    dacl: FileFactFileDacl,
+    group: FileFactFileGroup,
+    links: NonZeroU64,
+    owner: FileFactFileOwner,
+}
+
+/// The `detail` facts of a file under its attribute handle. A second open adds `READ_CONTROL` for the descriptor.
+fn detail(
+    handle: &OwnedHandle,
+    standard: &StandardInformation,
+    basic: &FILE_BASIC_INFORMATION,
+) -> Result<Detail, FileFactErrorCode> {
+    let control = create_relative(
+        raw(handle),
+        "",
+        READ_CONTROL | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    )
+    .map_err(error_code)?;
+    let sddl = security(&control)
+        .and_then(|descriptor| sddl(&descriptor))
+        .map_err(|error| win32_code(&error))?;
+    let [owner, group, dacl] = sddl;
+    Ok(Detail {
+        attributes: basic.FileAttributes,
+        creation_time: field_text(&basic.CreationTime.to_string())?,
+        dacl: field_text(&dacl)?,
+        group: field_text(&group)?,
+        links: NonZeroU64::new(u64::from(standard.number_of_links))
+            .ok_or(FileFactErrorCode::OtherError)?,
+        owner: field_text(&owner)?,
+    })
+}
+
+/// The schema needs 1 or more units, and a descriptor without a part gives an empty text.
+fn field_text<T: std::str::FromStr>(text: &str) -> Result<T, FileFactErrorCode> {
+    text.parse().map_err(|_| FileFactErrorCode::OtherError)
+}
+
+/// The owner, group, and DACL of a handle with `READ_CONTROL`, as one self-relative descriptor.
+pub(crate) fn security(handle: &OwnedHandle) -> windows::core::Result<Vec<u8>> {
+    let info =
+        (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION).0;
+    let mut needed = 0u32;
+    // SAFETY: a null buffer of length 0 asks for the needed length only. That call fails with ERROR_INSUFFICIENT_BUFFER.
+    let _ = unsafe { GetKernelObjectSecurity(raw(handle), info, None, 0, &raw mut needed) };
+    let mut buffer = vec![0u8; needed as usize];
+    // SAFETY: `buffer` is live with the passed length.
+    unsafe {
+        GetKernelObjectSecurity(
+            raw(handle),
+            info,
+            Some(PSECURITY_DESCRIPTOR(buffer.as_mut_ptr().cast())),
+            needed,
+            &raw mut needed,
+        )
+    }?;
+    buffer.truncate(needed as usize);
+    Ok(buffer)
+}
+
+/// The SDDL texts of the owner, the group, and the DACL of a self-relative descriptor, in this order.
+pub(crate) fn sddl(descriptor: &[u8]) -> windows::core::Result<[String; 3]> {
+    let part = |info: OBJECT_SECURITY_INFORMATION| {
+        let mut text = PWSTR::null();
+        let mut descriptor = descriptor.to_vec();
+        // SAFETY: `descriptor` is a live self-relative descriptor, and `text` receives a LocalAlloc buffer.
+        unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast()),
+                SDDL_REVISION_1,
+                info,
+                &raw mut text,
+                None,
+            )
+        }?;
+        // SAFETY: the call returned a NUL-terminated wide string.
+        let read = unsafe { text.to_string() };
+        // SAFETY: the buffer came from LocalAlloc, and nothing reads it after this call.
+        let _ = unsafe { LocalFree(Some(HLOCAL(text.0.cast()))) };
+        read.map_err(|_| windows::core::Error::from(ERROR_INVALID_DATA.to_hresult()))
+    };
+    Ok([
+        part(OWNER_SECURITY_INFORMATION)?,
+        part(GROUP_SECURITY_INFORMATION)?,
+        part(DACL_SECURITY_INFORMATION)?,
+    ])
+}
+
+/// A SHA-256 over several inputs through Windows CNG.
+pub(crate) struct Sha256(BCRYPT_HASH_HANDLE);
+
+impl Sha256 {
+    pub(crate) fn new() -> Sha256 {
+        let mut hash = BCRYPT_HASH_HANDLE::default();
+        // SAFETY: the pseudo handle needs no open, and CNG allocates the hash object.
+        let status =
+            unsafe { BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, &raw mut hash, None, None, 0) };
+        // The SHA-256 pseudo handle exists from Windows 10, so only a memory failure applies.
+        assert!(status.is_ok(), "BCryptCreateHash SHA-256: {status:?}");
+        Sha256(hash)
+    }
+
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
+        // SAFETY: `self.0` is a live hash, and `bytes` is a live slice.
+        let status = unsafe { BCryptHashData(self.0, bytes, 0) };
+        assert!(status.is_ok(), "BCryptHashData: {status:?}");
+    }
+
+    /// The digest as 64 lowercase hex digits.
+    pub(crate) fn finish(self) -> String {
+        let mut digest = [0u8; 32];
+        // SAFETY: `self.0` is a live hash, and the output has the SHA-256 size.
+        let status = unsafe { BCryptFinishHash(self.0, &mut digest, 0) };
+        assert!(status.is_ok(), "BCryptFinishHash: {status:?}");
+        hex(&digest)
+    }
+}
+
+impl Drop for Sha256 {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is a live hash, and nothing uses it after this call.
+        let _ = unsafe { BCryptDestroyHash(self.0) };
+    }
+}
+
+/// The failure of `pour`: a read status, or a write error of the copy.
+#[derive(Debug)]
+pub(crate) enum Pour {
+    Read(NTSTATUS),
+    Write(windows::core::Error),
+}
+
+impl Pour {
+    /// The read status. A copy without `out` has no write error.
+    pub(crate) fn status(self) -> NTSTATUS {
+        match self {
+            Pour::Read(status) => status,
+            Pour::Write(_) => STATUS_UNSUCCESSFUL,
+        }
+    }
+}
+
+/// The chunk of one read of `pour`.
+const POUR_CHUNK: usize = 1 << 20;
+
+/// Reads a synchronous handle from its position to the end in chunks, and gives the byte count and the SHA-256.
+/// With `out`, each chunk is also written to `out`. A stop ends the read with `STATUS_CANCELLED`.
+pub(crate) fn pour(
+    source: HANDLE,
+    out: Option<HANDLE>,
+    stop: &AtomicBool,
+) -> Result<(u64, String), Pour> {
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; POUR_CHUNK];
+    let mut total = 0u64;
+    loop {
+        check(stop).map_err(Pour::Read)?;
+        let mut io = IO_STATUS_BLOCK::default();
+        // SAFETY: the caller keeps the synchronous handle open, and `buffer` has the passed length.
+        let status = unsafe {
+            NtReadFile(
+                source,
+                None,
+                None,
+                None,
+                &raw mut io,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                None,
+                None,
+            )
+        };
+        if status == STATUS_END_OF_FILE || (status.is_ok() && io.Information == 0) {
+            break;
+        }
+        if status.is_err() {
+            return Err(Pour::Read(status));
+        }
+        let chunk = &buffer[..io.Information];
+        hash.update(chunk);
+        total += chunk.len() as u64;
+        if let Some(out) = out {
+            let mut written = 0u32;
+            // SAFETY: the caller keeps `out` open, and `chunk` and `written` are live.
+            unsafe { WriteFile(out, Some(chunk), Some(&raw mut written), None) }
+                .map_err(Pour::Write)?;
+            if written as usize != chunk.len() {
+                return Err(Pour::Write(windows::core::Error::from(
+                    ERROR_WRITE_FAULT.to_hresult(),
+                )));
+            }
+        }
+    }
+    Ok((total, hash.finish()))
 }
 
 /// Reads at most `limit` bytes from the current position of a synchronous handle.
@@ -761,7 +1270,13 @@ fn reparse_point(
     match last {
         None => Fact::Other,
         Some(digest) => {
-            let fact = file_fact(&handle, component, false, &mut None, stop);
+            let mut reads = Reads {
+                digest: false,
+                read: Read::default(),
+                budget: &mut None,
+                on_size: &mut |_| {},
+            };
+            let fact = file_fact(&handle, component, &mut reads, stop);
             // Logical bytes need an open that follows the reparse point, so a digest is not possible.
             if digest && matches!(fact, Fact::File { .. }) {
                 error(component, STATUS_REPARSE_POINT_ENCOUNTERED)
@@ -916,6 +1431,11 @@ pub(crate) mod tests {
     /// A stop flag that no test sets.
     static RUN: AtomicBool = AtomicBool::new(false);
 
+    thread_local! {
+        /// A status in place of the first route of `exact` on this thread.
+        pub(super) static FIRST_ROUTE: std::cell::Cell<Option<NTSTATUS>> = const { std::cell::Cell::new(None) };
+    }
+
     /// A worktree with `.git/hooks/pre-commit` ("abc"), and a folder outside the roots with its own `pre-commit`.
     struct Repo {
         worktree: PathBuf,
@@ -1021,6 +1541,251 @@ pub(crate) mod tests {
             vec![json!({ "kind": "error", "component": 0, "code": "other-error" })],
             "component 0 is the root"
         );
+    }
+
+    /// Feature 008 T012 (contract Δ6 `detail`): a `file` fact adds `links`, the `FileBasicInformation` attributes, the creation time,
+    /// and the SDDL texts of the owner, group, and DACL. A second link shows in `links`. A folder and a missing file get no detail.
+    #[test]
+    fn a_detail_read_adds_the_replace_facts_of_a_file() {
+        let repo = Repo::new();
+        let hook = repo.hook("pre-commit");
+        let read = Read {
+            detail: true,
+            stream: false,
+            content: false,
+        };
+        let facts = |files: &[(usize, &[&str])]| {
+            let files: Vec<(usize, Vec<String>)> = files
+                .iter()
+                .map(|(root, path)| (*root, path.iter().map(|name| name.to_string()).collect()))
+                .collect();
+            let roots = [
+                repo.worktree.as_path(),
+                repo.git.as_path(),
+                repo.git.as_path(),
+            ];
+            super::walk_read(roots, true, read, &files, &RUN, &|_| {})
+                .iter()
+                .map(|fact| json!(fact))
+                .collect::<Vec<Value>>()
+        };
+        let fact = facts(&[(GIT, &["hooks", "pre-commit"])]).remove(0);
+        let metadata = std::fs::metadata(&hook).expect("metadata");
+        assert_eq!(fact["digest"], ABC);
+        assert_eq!(fact["links"], 1);
+        assert_eq!(fact["attributes"], metadata.file_attributes());
+        assert_eq!(fact["creationTime"], metadata.creation_time().to_string());
+        for (key, prefix) in [("owner", "O:"), ("group", "G:"), ("dacl", "D:")] {
+            assert!(
+                fact[key]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with(prefix) && text.len() > 2),
+                "{key}: {fact}"
+            );
+        }
+        std::fs::hard_link(&hook, repo.outside.join("linked")).expect("hard link");
+        assert_eq!(facts(&[(GIT, &["hooks", "pre-commit"])])[0]["links"], 2);
+        assert_eq!(
+            facts(&[(GIT, &["hooks"]), (GIT, &["hooks", "missing"])]),
+            vec![json!({ "kind": "directory" }), json!({ "kind": "absent" })]
+        );
+    }
+
+    /// Feature 008 T066 (plan.md D8): `exactName` is true only when each component below the root has its requested name on disk.
+    /// The open ignores letter case, so a name in another case still gives a `file` fact. A read without `detail` has no `exactName`.
+    #[test]
+    fn a_detail_read_compares_the_on_disk_name_of_each_component() {
+        let repo = Repo::new();
+        let roots = [
+            repo.worktree.as_path(),
+            repo.git.as_path(),
+            repo.git.as_path(),
+        ];
+        let fact = |detail: bool, path: &[&str]| {
+            let read = Read {
+                detail,
+                stream: false,
+                content: false,
+            };
+            let files = vec![(GIT, path.iter().map(|name| name.to_string()).collect())];
+            let fact = json!(super::walk_read(roots, true, read, &files, &RUN, &|_| {})[0]);
+            (fact["kind"].clone(), fact.get("exactName").cloned())
+        };
+        let file = json!("file");
+        assert_eq!(
+            fact(true, &["hooks", "pre-commit"]),
+            (file.clone(), Some(json!(true)))
+        );
+        assert_eq!(
+            fact(true, &["hooks", "Pre-commit"]),
+            (file.clone(), Some(json!(false))),
+            "the last component"
+        );
+        assert_eq!(
+            fact(true, &["Hooks", "pre-commit"]),
+            (file.clone(), Some(json!(false))),
+            "a folder on the path"
+        );
+        assert_eq!(fact(false, &["hooks", "Pre-commit"]), (file, None));
+    }
+
+    /// The root handle and the handle of each component of `names` below the Git directory.
+    fn held(repo: &Repo, names: &[&str]) -> Vec<OwnedHandle> {
+        let mut held = vec![open_root(&repo.git, &RUN).expect("root")];
+        for name in names {
+            let next = open(held.last().expect("root"), name, false, false, &RUN).expect(name);
+            held.push(next);
+        }
+        held
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// Feature 008 T066 (plan.md D8): each status of `NO_NORMALIZED_NAME` takes the second route, the directory entry under the held parent.
+    /// Another status of the first route is an unknown. A rename after the open leaves no entry or an entry of another file.
+    #[test]
+    fn the_directory_entry_decides_when_the_volume_has_no_normalized_name() {
+        let repo = Repo::new();
+        for status in NO_NORMALIZED_NAME {
+            for (path, expected) in [
+                (&["hooks", "pre-commit"], true),
+                (&["hooks", "Pre-commit"], false),
+                (&["Hooks", "pre-commit"], false),
+            ] {
+                assert_eq!(
+                    exact_from(Err(status), &held(&repo, path), &names(path), &RUN),
+                    Ok(expected),
+                    "{status:?} {path:?}"
+                );
+            }
+        }
+        let path = ["hooks", "pre-commit"];
+        assert_eq!(
+            exact_from(
+                Err(STATUS_ACCESS_DENIED),
+                &held(&repo, &path),
+                &names(&path),
+                &RUN
+            ),
+            Err(STATUS_ACCESS_DENIED),
+            "another status of the first route"
+        );
+        let opened = held(&repo, &path);
+        assert_eq!(
+            exact(&opened, &names(&path), &RUN),
+            Ok(true),
+            "the first route"
+        );
+        // The walk shares delete access, so a rename succeeds while the handles stay open.
+        std::fs::rename(repo.hook("pre-commit"), repo.hook("moved")).expect("rename");
+        assert_eq!(
+            exact_from(Err(STATUS_NOT_SUPPORTED), &opened, &names(&path), &RUN),
+            Ok(false),
+            "no entry has the name"
+        );
+        std::fs::write(repo.hook("pre-commit"), "other").expect("other file");
+        assert_eq!(
+            exact_from(Err(STATUS_NOT_SUPPORTED), &opened, &names(&path), &RUN),
+            Ok(false),
+            "the entry of the name is another file"
+        );
+    }
+
+    /// Feature 008 T075 (spec FR-038 `unreadable`, FR-001): a failed name check gives an `error` fact, not `exactName: false`.
+    /// The deny entry for Everyone fails the list open of the second route on the folder `hooks`.
+    #[test]
+    fn a_failed_name_check_gives_an_error_fact() {
+        let repo = Repo::new();
+        let roots = [
+            repo.worktree.as_path(),
+            repo.git.as_path(),
+            repo.git.as_path(),
+        ];
+        let read = Read {
+            detail: true,
+            stream: false,
+            content: false,
+        };
+        let files = vec![(GIT, names(&["hooks", "pre-commit"]))];
+        let fact = || json!(super::walk_read(roots, true, read, &files, &RUN, &|_| {})[0]);
+        let denied = json!({ "kind": "error", "component": 2, "code": "access-denied" });
+        FIRST_ROUTE.set(Some(STATUS_ACCESS_DENIED));
+        assert_eq!(fact(), denied, "the first route fails");
+        FIRST_ROUTE.set(Some(STATUS_NOT_SUPPORTED));
+        assert_eq!(fact()["exactName"], json!(true), "the second route");
+        let _hooks = Denied::new(repo.git.join("hooks"), "RD");
+        for status in NO_NORMALIZED_NAME {
+            FIRST_ROUTE.set(Some(status));
+            assert_eq!(fact(), denied, "{status:?}: the list open fails");
+        }
+    }
+
+    /// Feature 008 T066 on a real FAT or exFAT volume. `ARBARETO_TEST_FAT_DIR` names an empty folder on that volume.
+    #[test]
+    fn a_fat_volume_gives_the_on_disk_name_of_a_file() {
+        let Some(dir) = std::env::var_os("ARBARETO_TEST_FAT_DIR").map(PathBuf::from) else {
+            println!("SKIP FAT on-disk name: missing capability fat-volume (unverified)");
+            return;
+        };
+        let file = dir.join("Login.ts");
+        std::fs::write(&file, "abc").expect("FAT file");
+        let read = Read {
+            detail: true,
+            stream: false,
+            content: false,
+        };
+        let exact = |name: &str| {
+            let fact = json!(
+                super::walk_read(
+                    [dir.as_path(), dir.as_path(), dir.as_path()],
+                    true,
+                    read,
+                    &[(WORKTREE, vec![name.to_string()])],
+                    &RUN,
+                    &|_| {}
+                )[0]
+            );
+            fact.get("exactName").cloned()
+        };
+        let facts = (exact("Login.ts"), exact("login.ts"));
+        std::fs::remove_file(&file).expect("remove FAT file");
+        assert_eq!(facts, (Some(json!(true)), Some(json!(false))));
+    }
+
+    /// Feature 008 T012 (contract Δ6 `stream`): the digest of a file above `FILE_BYTES` streams in chunks without a bound,
+    /// and `extend` gets the total of the streamed sizes before each read.
+    #[test]
+    fn a_stream_read_digests_a_file_above_the_bound_and_reports_each_size() {
+        let repo = Repo::new();
+        let data: Vec<u8> = (0..40 * MIB).map(|i| (i % 249) as u8).collect();
+        std::fs::write(repo.hook("big"), &data).expect("big");
+        let read = Read {
+            detail: false,
+            stream: true,
+            content: false,
+        };
+        let sizes = std::cell::RefCell::new(Vec::new());
+        let files = vec![
+            (GIT, vec!["hooks".to_string(), "big".to_string()]),
+            (GIT, vec!["hooks".to_string(), "pre-commit".to_string()]),
+        ];
+        let roots = [
+            repo.worktree.as_path(),
+            repo.git.as_path(),
+            repo.git.as_path(),
+        ];
+        let facts: Vec<Value> = super::walk_read(roots, true, read, &files, &RUN, &|total| {
+            sizes.borrow_mut().push(total)
+        })
+        .iter()
+        .map(|fact| json!(fact))
+        .collect();
+        assert_eq!(facts[0]["digest"], hex(&sha256(&data)));
+        assert!(facts[0].get("bound").is_none(), "{}", facts[0]);
+        assert_eq!(facts[1]["digest"], ABC);
+        assert_eq!(*sizes.borrow(), vec![40 * MIB as u64, 40 * MIB as u64 + 3]);
     }
 
     #[test]

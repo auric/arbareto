@@ -336,6 +336,37 @@ describe("WSL poll cancel", () => {
   });
 });
 
+// Feature 008 contract Δ8: Git's `checkout-index --temp` files of a running revert are no working change, so no change poll runs during the run.
+describe("polls during a workbench run", () => {
+  const ended = { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded" } as BridgeResponse;
+  test("WSL: no poll starts during the run; the reconcile read goes out at once, and the due poll starts after it ends", async () => {
+    const o = await opened();
+    const resume = o.requests.pausePolls();
+    await o.advance(5000);
+    expect(o.reads()).toHaveLength(1);
+    o.requests.mutationEnded("runWorkbench", ended);
+    resume();
+    await flush();
+    expect(o.reads()).toHaveLength(2);
+    expect(o.last("readWorkspace").payload).toEqual({ refresh: false, check: "full" });
+    await o.answerRead();
+    expect(o.reads()).toHaveLength(3);
+    o.requests.dispose();
+  });
+
+  test("Windows: no interval poll runs during the run, and the next interval poll runs after it", async () => {
+    const o = await opened(WINDOWS_ROOT);
+    const resume = o.requests.pausePolls();
+    await o.advance(5000);
+    expect(o.reads()).toHaveLength(1);
+    resume();
+    await o.advance(1000);
+    expect(o.reads()).toHaveLength(2);
+    expect(o.last("readWorkspace").payload).toEqual({ refresh: false, check: "changes" });
+    o.requests.dispose();
+  });
+});
+
 describe("Windows workspace", () => {
   test("a Windows workspace keeps its check: changes poll on the 1 second interval", async () => {
     const o = await opened(WINDOWS_ROOT);

@@ -1,0 +1,132 @@
+# Operation Contract Deltas: Discard (Revert) Changes
+
+This file lists only the changes to the feature 001 contract (`specs/001-desktop-qualification/contracts/operations.md`) and to the 002 to 006 deltas. "001 §n" and "00n Δn" name those sections. Every rule that no delta replaces stays in force.
+
+## Δ1 Transport (001 §1)
+
+- `reviewWorkbench` gains the actions `revert-lines`, `revert-files`, and `revert-unstaged`. `runWorkbench` runs them. No new operation name.
+- The private request `fileReplace` gains the target `working`. The private request `fileFacts` gains `detail`.
+- Keep explicit range checks in Rust (001 §1).
+
+## Δ2 Envelope (001 §2)
+
+- `MUTATIONS` keeps `runWorkbench`. No new mutation operation.
+- New phases: `revert-index` (no counters) and `revert-files` (counters `fileIndex` and `fileCount`). Events carry no path and no Git text.
+- New marker actions of kind `workbench`: `revert-lines`, `revert-files`, and `revert-unstaged`.
+
+## Δ3 Public operations (001 §3)
+
+Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs`. `<oid>` matches the object format. `<path>` is the literal path bytes.
+
+### `reviewWorkbench` (004 Δ3)
+
+- New payload forms (data-model §1):
+  - `{action: "revert-lines", snapshotId, comparisonId, hunkId, lines?}`.
+  - `{action: "revert-files", snapshotId, entryIds}` with 1 to 10,000 unique IDs.
+  - `{action: "revert-unstaged", snapshotId}`.
+- Common refusals (004 Δ3) apply: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED`. A running mutation gives `BUSY`. No trust class (Δ7).
+- Reads of every action: the snapshot entries (no Git process); `ls-files --stage -z` and `ls-files --eol -z` for the paths, as literal pathspecs after `--`; `check-attr -z --stdin` and `check-attr --cached -z --stdin` for `text`, `eol`, `crlf`, `ident`, `filter`, `working-tree-encoding`, and `diff`; `fileFacts` with `digest: true` and `detail: true`, 64 entries per frame, with `stream: true` for the targets of `revert-files` and `revert-unstaged`.
+- `revert-lines` reads: the retained comparison; `cat-file blob <index oid>` for the index side, bounded at 1 MiB (`COMPARED_RAW_VERSION_BYTES`), to build the expected working side (a larger blob refuses with `size`); the working bytes (Windows: the service read of at most 1 MiB; WSL: `fileFacts` with `content: true`); for a staged comparison, `status --porcelain=v2 -z` of the path with the snapshot flags (a record other than the shown entry gives `STALE_SELECTION`); then `hash-object --path=<path> --stdin` with the new bytes on stdin. `hash-object` runs without `-w` and writes no object.
+- `revert-files` and `revert-unstaged` reads: no content read. `cat-file --batch-check` gives the blob size of each source entry (for the batches and the deadlines of plan D5a).
+- Refusals before a token: `LOCKED` with the path and the 001 remedy when `index.lock` exists (plan D2); `WORKBENCH_UNAVAILABLE` with a reason of data-model §7; `UNSUPPORTED_COMPARISON` with the 001 support reason; `UNSUPPORTED_HUNK_PROFILE` with the eligibility reason; `INVALID_REQUEST` for an entry of another snapshot, a duplicate ID, or a comparison of another snapshot; `UNKNOWN_TARGET` for an unknown comparison or hunk; `OBJECT_MISSING` with the 001 remedy when `cat-file --batch-check` names a source blob of `revert-files` missing.
+- Refusal value (data-model §7): `{reason}`; `{reason, remedy: {text}}` for an eligibility reason; `{path, remedy: {text}}` for `LOCKED`, and the same shape for the `OBJECT_MISSING` refusal of `revert-files` (`path` names the file); `{reason, files: [{path, reason}], more}` for file reasons. `files` holds 1 to 20 refused files in tree order with base64 path bytes. `reason` equals the reason of the first file, and the response code is the code of that file. `more` counts the other refused files. The service gives no `several-hunks`, because only the renderer finds it.
+- Plans: data-model §5.
+
+### `runWorkbench` (004 Δ3)
+
+- Every revert action: the marker of its action; the frame's full observation again (a difference gives `STALE_REVIEW` with reason `revert-changed`); then the parts below; then the reconcile reads (`ls-files --stage -z` of the paths, `fileFacts` with `digest: true`). The run starts no `readWorkspace`. The renderer's full read after the run (contract §3) gives the status.
+- An `index.lock` at the run start gives `LOCKED` with the result `{path, remedy: {text}}`, as the review gives it (001 FR-016). Nothing runs.
+- Index part (`revert-lines` staged, `revert-files` with an index change): phase `revert-index`; the owned lock and the checked candidate of 001 §4 through `publishIndex` (plan D7). A lock or candidate refusal ends the run before any working write.
+- Working part: phase `revert-files`, in tree order. A file without a working change (`keep`) sends none. A line revert sends one `fileReplace` `working` with `bytes`. Whole files follow plan D5a in batches of at most 64 paths: `ls-files --stage -z` and the raw index digest; `git --no-lazy-fetch checkout-index --temp --stdin -z` with the batch paths on stdin, in the worktree root; the entries and the digest again (a difference gives `STALE_REVIEW` `revert-changed`); `fileFacts` with `stream: true` for each temporary file; one `fileReplace` `working` with `source` per path; `tempRemove` for each unused temporary file.
+- `checkout-index` deadline: `GIT_PROCESS_DEADLINE_MS` plus 1 s for each started 64 MiB of the batch blob sizes (research R11). This size rule replaces `REGISTERED_DEADLINE_CAP_MS` for `checkout-index --temp`, for `fileReplace` with `source`, and for `fileFacts` with `stream`, so a large file gets a finite deadline and no size limit. Cancel stops each of them.
+- Run frame `limits` (001 §6): a `registeredOperation` `run` takes a `deadlineMs` above `REGISTERED_DEADLINE_CAP_MS` only with the exact array `--no-lazy-fetch checkout-index --temp --stdin -z`. The frame bound of that deadline is the safe integer range. Every other `run` keeps the cap.
+- Cancel stops the run before the next request. A started `fileReplace` runs to its end.
+- Response state and per-file outcomes: plan D10 and data-model §8. An `unstaged-only` outcome carries `code` and `reason` under the same rules as `not-changed`.
+- File result fields `reason` and `remedy` (data-model §9):
+  - `reason: "revert-changed"`: a `STALE_REVIEW` result in which no file changed. `index` is `none` or `refused`.
+  - An eligibility reason: the index part refused with `UNSUPPORTED_HUNK_PROFILE`. `index` is `refused`, and `remedy: {text}` holds the text of the review refusal.
+  - `remedy` comes exactly with an eligibility reason.
+  - The lock-time `file-id` refusal sends no `reason`. It is no eligibility reason, and `PROFILE_TEXTS` has no entry for it.
+- Deadline per `fileReplace`: the 001 walk deadline (30 s), plus the size rule above for `source` (Δ6).
+
+## Δ5 Finite bounds (001 §5)
+
+- `REVERT_FILE_BYTES` = 2,117,152 = 2 × `COMPARED_RAW_VERSION_BYTES` + `CANONICAL_DIFF_LINES`: the bytes of one `fileReplace` `working` frame of a line revert. The new bytes are at most the working bytes (1 MiB), plus the restored lines of the other side (1 MiB), plus one CR for each restored diff line (research R11). So the 001 comparison bounds are the visible limit, and this bound is never the reason of a refusal. The `bytes` field uses the shared `Base64` pattern, and the shell computes the byte count from the base64 text length.
+- `revert-files` and `revert-unstaged` have no byte bound per file or per action (spec FR-025).
+- `revert-lines` keeps `COMPARED_RAW_VERSION_BYTES`, `COMPARED_NORMALIZED_VERSION_BYTES`, and `CANONICAL_DIFF_LINES`.
+- `revert-files` and `revert-unstaged` keep `MULTI_FILE_ACTION_FILES` (10,000).
+- The token lifetime stays `APPROVAL_LIFETIME_MS` (60 s).
+- "Retained comparison data": a `readComparison` with the same facts as a retained comparison returns that comparison. It keeps its `comparisonId` and each `hunkId`, and it moves to the newest age slot. The facts are all retained values except the IDs: `repositoryId`, `snapshotId`, `generation`, the entry, `scope`, the raw patch bytes, the hunks, `support`, `fileAction`, the `working` binding, `attributes`, `workingVersion`, `sharedRepository`, the file `remedy`, and the completeness. The service compares each value exactly, with raw bytes byte for byte. The service never returns a comparison with a hunk or file approval that an accepted operation consumed. The 001 §2 repeat rule would answer each new attempt with that operation. Every other read gives a new comparison with new IDs. So the equal full read of each WSL poll keeps the shown comparison and its revert review (001 §8 "Equal full read").
+
+## Δ6 Private native process requests (001 §6)
+
+- `fileReplace {repositoryId, target: "working", path, expected, facts, bytes | source, folders, gitMode}`.
+  - `path`: an absolute path below the worktree root by `file_facts::below`. A first component equal to `.git` (ASCII case folded) or a path inside the Git directory or the common directory by identity gives `INVALID_REQUEST`.
+  - `expected`: `absent` or `{size, sha256}`. `facts`: the bound facts of data-model §3 `working`. `bytes`: 0 to `REVERT_FILE_BYTES`. `source`: `{name, size, sha256}` of Git's temporary file; `name` is one path component in the worktree root and never `.git` (ASCII case folded). Exactly one of `bytes` and `source`. `folders`: 0 to 64 folder names below the deepest existing folder, only with `expected: absent`. `gitMode`: the Git mode of the index entry, `100644` or `100755`, exactly when `expected` is `absent`. The ignore targets take no `gitMode`. Windows checks it and ignores it. WSL creates the file with `0666` or `0777` minus the umask, as Git's checkout does (`entry.c` `create_file`).
+  - Rules: the operation holds a `started` marker of kind `workbench` with action `revert-lines`, `revert-files`, or `revert-unstaged`. Another operation gets `INVALID_REQUEST`.
+  - Windows: plan D8. WSL: `wslFiles` mode `replace` with root `worktree` (Δ11).
+  - `source`: the shell opens the file relative to the held worktree root without following a link. It needs a regular file with one link and the requested size. It copies it beside the target with a streamed SHA-256, which must equal `sha256`, else `stale`. It deletes the source through its handle only after its streamed SHA-256 matched `sha256`: after the rename, or after a later failure. A size or digest mismatch, `not-regular`, `hard-link`, and each failure before the digest match keep the source, and the service removes it with `tempRemove` (plan D5a step 6). Just before the rename, the target name must still name the held file (Windows: the same `FileIdInfo`; WSL: the same `lstat` device, inode, size, modification time, and change time). Another file gives `stale`, and no rename runs.
+  - Deadline: the 001 walk deadline plus 1 s for each started 64 MiB of the target and the source sizes (the size rule of Δ3).
+  - Reply: `replaced {folders}`, `stale`, `stopped` (a Windows stop or deadline before the write), `interrupted` (a WSL stop, deadline, or broken output), `refused {reason}` with `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, or `xattr`, or `error {code}` with `sharing-violation`, `access-denied`, `disk-full`, `read-only-volume`, or another code.
+  - `folders` in a `stale`, `refused`, or `error` reply names the folders that the write created before the failure. They stay.
+  - `source: "kept"` in a `replaced` reply: the rename succeeded, but the delete of Git's temporary file failed, so the file stays at its name. The service sends `tempRemove` for it.
+- New request `tempRemove {repositoryId, name, expected: {size, sha256}}` under a revert marker: one file in the worktree root, never named `.git` (ASCII case folded), deleted through its handle only when its facts equal `expected`. Reply `removed`; not removed: `stale`, `absent`, `stopped` (a Windows stop or deadline before the delete), or `error {code}`; unknown: `interrupted` (a WSL stop, deadline, or broken output). WSL: `wslFiles` mode `tempRemove` (Δ11). After `interrupted`, the run waits for the process-end fact and never reports `succeeded` (plan D10).
+- `fileFacts` gains `stream: boolean`: a digest without the 1 MiB bound, read in chunks. A `detail` request may ask for `stream`, also without a marker, such as the review of `revert-files` and `revert-unstaged`. A request under a revert marker may also ask for it. `stream` keeps the size-rule deadline of Δ3.
+- WSL `stream` (batch 3 review S2): a size pass without a digest runs first, and its sizes set the size-rule deadline of the digest pass. When the size pass exits with a code other than 0, or its output does not parse to one fact per entry, the read ends with the items of a failed probe, and no digest pass starts. A full size pass with an `error` fact for some entries keeps the digest pass, and each entry gets its own fact.
+- `fileFacts` gains `detail: boolean`. With `detail`, a `file` fact adds `links`, and on Windows `attributes` (the `FileBasicInformation` attribute bits), `owner`, `group`, and `dacl` (SDDL), `creationTime`, and `exactName` (a boolean: true when an OS fact proves that each component below the root has the requested name on disk, plan D8); on WSL `mode`, `uid`, `gid`, `xattr` (a boolean), and `own` (a boolean, `st_uid == $>`, the same rule as the owner check of the WSL `replace` mode in `wsl-process.json`). The review refuses with `owner` when `own` is false, before the `xattr` check.
+- Close prompt names: "Revert lines", "Revert files", "Revert unstaged changes".
+
+## Δ7 Startup, trust, and environment (001 §7)
+
+- The three revert actions have no trust class. No step runs a repository program: `checkout-index --temp` and `hash-object --path` run only the built-in conversions, because the review refuses `filter` and `LFS` first. `checkout-index` runs no hook and, with `--temp`, writes no index (research R10).
+- The reads that load the index wait behind the 001 read gate. A `core.fsmonitor` command refuses through the eligibility first.
+
+## Δ8 Freshness, cancellation, and outcome (001 §8)
+
+- A refresh read and a workspace release end every unused revert token (004 Δ3 "Token invalidation").
+- The reconcile reads of Δ3 decide every outcome. A failed reconcile read leaves the outcome unknown, and the marker stays (001 FR-023).
+- 001 §8 "A pending read cannot preserve an old mutation capability" changes for the comparison read. A pending read with the `snapshotId` and the `entryId` of the shown comparison keeps the renderer capability. An entry ID names one entry of one snapshot, so the scope is also the same. A read of another snapshot or entry drops the capability. The reply gives the capability of its own comparison. The service still refuses a run with a stale target.
+- The renderer sends no change poll during a revert run: no WSL poll (001 §11 "Change polling") and no Windows interval poll. Git's `checkout-index --temp` files of the run are no working change. A poll that falls due starts after the reconcile read of the run. The reconcile read stays as it is.
+
+## Δ9 Error codes (001 §9)
+
+- New `WORKBENCH_UNAVAILABLE` reasons: `untracked`, `in-the-way`, `attributes`, `ident`, `unstaged-changes`, `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr`, `nothing-to-revert`. `limit` exists (004). Probe G9 gave Git's restore bytes in every fixture (research R15), so no reason covers `checkout-index --temp` output.
+- New `STALE_REVIEW` reason: `revert-changed`.
+- The per-file outcomes of data-model §8 are result fields, not codes.
+
+## Δ10 Required contract checks (001 §10)
+
+- Schema tests and golden vectors for the three payloads, the three plans, the result, the two phases, the new reasons, and the widened `fileReplace` and `fileFacts` frames, in Bun and Rust.
+- The Rust side checks the path rules, the byte bound, the `folders` count, and the marker action explicitly.
+
+## Δ11 WSL repositories (001 §11)
+
+- §11 "No working-file content crosses" changes for the revert. These crossings are allowed:
+  - Out of the distro: the working bytes of one file of `revert-lines`, at most 1 MiB, through `fileFacts` `content`.
+  - Into the distro: the new bytes of one file of `revert-lines` on the stdin of `hash-object --stdin` and in the `wslFiles` `replace` input, at most `REVERT_FILE_BYTES` (2,117,152 bytes, 4,234,304 bytes of hex).
+  - `revert-files` and `revert-unstaged` cross no file content: `checkout-index --temp` writes inside the distro, and the `replace` mode copies inside the distro.
+- `wslFiles` mode `replace` gains the root `worktree` with any path below it, and plan D9 steps: the owner check, the gid copy, the `xattr` check, the `O_TMPFILE` create with a `linkat` name before the rename (probes L1 and L2), the order gid copy, write, fsync, mode copy, `fstat` compare of the mode bits, then `linkat` (probe L4, plan D9), `mkdir` of `folders`, and the `source` copy from Git's temporary file with an `fstat` identity check. A target bound as absent gets `0777 & ~umask` for `mode` 100755 and `0666 & ~umask` for 100644 (Δ6 `gitMode`). The `facts` `mode` is the whole `st_mode`: the compare takes all of it, and the copy takes `mode & 07777`. A folder of the path, the root included, with the device and inode of the Git directory or the common directory gives the reply `invalid`, which the shell answers with `INVALID_REQUEST`. The mode reads the extended attributes with `flistxattr` on the open target. New `wslFiles` mode `tempRemove` with the same identity check.
+- The `fileFacts` `detail` read gives `own` with the owner rule of the `replace` mode (`st_uid == $>`). So the review and the write refuse the same file with `owner`. The review checks `own` before `xattr` (Δ6).
+- Without `syscall.ph` (a distro with only `perl-base`), the `replace` mode has no `linkat` and no `llistxattr` (research R15 "Probe L8 (T057)"). A present target then gets `error`, and its bytes stay. The `detail` read of a present file then gives an `error` fact, so the review refuses with `unreadable`. An absent target takes the 005 named temporary file `.arbareto-<pid>-replace.tmp` with `O_CREAT|O_EXCL|O_NOFOLLOW`, as research R9 and plan P0.3 allow. Then `link` gives it the target name, and `unlink` removes the temporary name. `link` fails on an existing name, so this write never replaces a file. A stop between `link` and `unlink` leaves the temporary name as a second link of the target. Each next revert of that file then refuses with `hard-link` (T045).
+- A staged part refuses with `shared-repository` when any scope sets `core.sharedRepository` (001 §4 "WSL index publication").
+
+## Δ15 Changes to 004 deltas
+
+- 004 Δ3 `reviewWorkbench` gains the revert actions. Its common refusals apply to them.
+- 004 Δ9 `WORKBENCH_UNAVAILABLE` gains the Δ9 reasons above.
+
+## Δ16 Changes to 005 deltas
+
+- 005 Δ6 `fileReplace` gains the target `working`. The targets `gitignore` and `exclude` keep their rules and their 1 MiB bound.
+- 005 Δ11 `wslFiles` `replace` keeps its ignore-file rules for the roots of `gitignore` and `exclude`.
+
+## Contract gaps
+
+- Closed by T059 (2026-11-01): `RevertRun` (data-model §9) carries `reason` and, with an eligibility reason, `remedy: {text}` (Δ3 `runWorkbench`). From `revert-changed`, the renderer shows the plan D11 multi-file stale text. For an eligibility reason, it shows the service remedy text.
+
+- The `fileReplace` target handle shares `DELETE`, so the rename can replace the target. Another program can rename a file over the target name between the check and the rename (005 gap). The fresh digest then names the outcome `changed-outside`.
+- WSL: the `replace` mode acts on the last name after its check. A write by another program inside that window gets replaced, because Linux offers no mandatory lock (spec FR-043). The `working` replace of a present target compares `st_mtime` and `st_ctime` below the second with `Time::HiRes` (plan D9). The times are `double` values, so two times at most about 0.24 µs apart can still compare equal (plan D9). The `delete` compare keeps whole seconds until `fileFacts` gives nanoseconds (plan D9). Without Time::HiRes, that replace gives `error` `other-error`, and the target keeps its bytes (plan D9).
+- A crash in the window between the clear of the delete disposition (Windows) or the `linkat` name (WSL) and the rename leaves `.arbareto-<hex>.tmp` beside the target (probes W6, L3). The next status read shows it as an untracked file. Arbareto never deletes it by its name.
+- The SACL and the mandatory label of a Windows file are not checked (research R8). Alternate data streams are dropped (probe W7).
+- No review fact predicts a Windows `security` difference or a WSL `EPERM` of the gid copy. The write refuses them with `refused {security}` or `refused {owner}`. After a published index part, the run then ends `failed-with-effects` (plan D8, D10). No W2 fixture gives `security` (research R15).
+- A crash or a stop between `checkout-index --temp` and the `fileReplace` or `tempRemove` of a file leaves Git's temporary file `.merge_file_<random>` in the worktree root. The next status read shows it as untracked. Arbareto never deletes it by its name pattern.

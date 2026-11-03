@@ -29,6 +29,10 @@ export type StatusOperation = {
   /** Feature 005 plan.md D15: the outcome line of a `runWorkbench` that states its own result, and the detail lines of the area. */
   outcome?: string;
   lines?: readonly string[];
+  /** Feature 008 plan.md D12: the running line, such as "Checking 1 file…". */
+  running?: string;
+  /** Feature 008 plan.md D12: the outcome opens the area. */
+  opens?: boolean;
   /** Feature 003 FR-052: `resolve` is Mark resolved. */
   direction?: "stage" | "unstage" | "resolve";
   /** Feature 003: the action of a `sync` and the remotes of its review plan, in `git remote` order (contract Δ3). */
@@ -309,6 +313,7 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
   if (response === null) {
     const progress = op.progress;
     if (progress?.state === "cancel-requested") return { lead: "Cancel requested", tail: "" };
+    if (op.running !== undefined) return { lead: op.running, tail: "" };
     const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
     const { rowIndex, rowCount } = progress?.counters ?? {};
     if (step !== undefined && progress?.path !== undefined && rowIndex !== undefined && rowCount !== undefined) return { lead: `${step} ${progress.path} (${rowIndex} of ${rowCount})…`, tail: "" };
@@ -520,7 +525,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
     const target = commit ? outcomeFocus(panel, modalOpen, focusFrom.current) : op.kind === "updateSubmodules" ? submoduleFocus() : "stay";
     const count = outcome.lingeringDescendants ?? 0;
     // plan.md "Status area", Opening: every commit outcome opens the area while the commit details are docked.
-    const opens = (commit && (panel === "details" || OPENING_COMMIT_STATES.includes(response.state))) || count > 0 || op.kind === "updateSubmodules" || op.sync?.action === "fetch-all";
+    const opens = (commit && (panel === "details" || OPENING_COMMIT_STATES.includes(response.state))) || count > 0 || op.kind === "updateSubmodules" || op.sync?.action === "fetch-all" || op.opens === true;
     if (heading !== undefined && opens) openArea(false);
     if (target === "message-field") onFocusMessageField();
     else if (target === "area-heading" && heading !== undefined) focusHeading.current = true;

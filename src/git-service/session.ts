@@ -45,13 +45,14 @@ import { createTrackingReader } from "./tracking";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
-import { createWorkbench } from "./workbench-review";
+import { createWorkbench, type WorkbenchOptions } from "./workbench-review";
 import type { Fact } from "./hunk-publish";
 import { readIgnoreFile } from "./ignore";
 import { createIgnorePreview } from "./ignore-preview";
 import { checkSubmodule, submoduleOutcome, type SubmoduleRefusal } from "./submodule-open";
 import { createSubmoduleReads, sideId, workspaceIds } from "./submodule-change";
 import "./file-delete";
+import "./revert";
 import "./switch";
 import "./branch-ops";
 import "./merge-rebase";
@@ -91,6 +92,8 @@ export interface SessionOptions {
   // Test seam only. Production never sets it. The service awaits it before each folder check and clone check of an update row,
   // and before the program re-check of a nested active-set read.
   submoduleCheckpoint?: SubmoduleUpdaterOptions["submoduleCheckpoint"];
+  // Test seam only. Production never sets it. Feature 008 plan.md D13: the service awaits it before each working-file write of a revert run.
+  revertCheckpoint?: WorkbenchOptions["revertCheckpoint"];
   // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`. Tests set a lower value.
   historyViewCommits?: number;
   // Feature 002 contract Δ3 "Matching probe": the probe commits that each run must list. Only tests set other sets.
@@ -125,7 +128,7 @@ function revealTarget(w: Workspace, bytes: Uint8Array): string | null {
   return NATIVE.path.join(w.worktreeRoot, ...(text.endsWith("/") ? text.slice(0, -1) : text).split("/"));
 }
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, revertCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -216,8 +219,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     onRelease: (viewId) => commitChanges.dropView(viewId),
   });
   const approvals = createApprovals(approvalClock);
-  // Contract §5: comparison eviction invalidates its approvals.
-  const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
+  // Contract §5: comparison eviction invalidates its approvals. 008 contract Δ5: a comparison with a consumed approval is never kept.
+  const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId), spent: (comparisonId) => approvals.spent(comparisonId) });
   const reviews = createCommitReviewer({ runner, trust, approvals, now: approvalClock });
   const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
@@ -235,7 +238,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
   const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
   const syncs = createSyncer({ runner, trust, reader, approvals, registry, exclusion, respond });
-  const workbench = createWorkbench({ runner, trust, reader, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
+  const workbench = createWorkbench({ runner, trust, reader, comparisons, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }), ...(revertCheckpoint === undefined ? {} : { revertCheckpoint }) });
   // Feature 005 data-model §7: one preview base per workspace and target, dropped at the workspace release.
   const previews = createIgnorePreview({ runner, trust });
   const submoduleReads = createSubmoduleReads({ runner, trust, environment, readDeadlineMs: readDeadlineMs ?? READ_DEADLINE_MS });
@@ -434,6 +437,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const endRead = (operationId: string, end: ReadEnd<ReadResult, ReadResult | null>) => {
     if (end.kind === "canceled") return void registry.apply(operationId, { type: "processes-stopped" });
     if (end.kind === "deadline") return void registry.apply(operationId, { type: "read-deadline" });
+    if (end.kind === "failed") return void registry.apply(operationId, { type: "read-complete", result: "failed", code: "GIT_FAILED" });
     const outcome = end.outcome.result === "failed" && end.reread !== null ? end.reread : end.outcome;
     if (outcome.result === "deadline") return void registry.apply(operationId, { type: "read-deadline" });
     if (outcome.result === "canceled") {
@@ -1163,7 +1167,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       // Contract Δ3: a name such as `@` refuses before any Git process, so the refusal takes no read slot and no re-read.
       const refused = workbench.precheck(request.payload, workspace);
       if (refused !== null) {
-        if (refused.refused === "INVALID_REQUEST") return reject(request.requestId, "INVALID_REQUEST");
+        // Contract §9: SERVICE_UNAVAILABLE is always a `rejected` result.
+        if (refused.refused === "INVALID_REQUEST" || refused.refused === "SERVICE_UNAVAILABLE") return reject(request.requestId, refused.refused);
         const { operationId } = registry.start("reviewWorkbench", request.requestId);
         registry.apply(operationId, { type: "valid-read" });
         return void registry.apply(operationId, { type: "read-complete", result: "failed", code: refused.refused }, refused.result);

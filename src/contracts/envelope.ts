@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { BRANCH_NAME_BYTES } from "./branch-name";
-import { DamagedMarker, decodedBytes, FILE_FACT_ERRORS, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_ACTIONS, TrustDetails, UtcTime } from "./channel";
+import { DamagedMarker, decodedBytes, FILE_FACT_ERRORS, LinuxPath, REPLACE_ERRORS, REPLACE_REFUSALS, SYNC_ACTIONS, SyncAction, TRUST_ACTIONS, TrustDetails, UtcTime } from "./channel";
 import { DictionaryFileName, LANGUAGE_NOTICES, LANGUAGE_STATES, LanguageId } from "./dictionaries";
 import {
   BLAME_UNAVAILABLE_REASONS,
@@ -15,6 +15,7 @@ import {
   PUSH_REJECTED_REASONS,
   PUTTY_PROGRAMS,
   PUTTY_UNAVAILABLE_REASONS,
+  REVERT_FILE_REASONS,
   SEARCH_UNSUPPORTED_REASONS,
   STALE_REVIEW_REASONS,
   STASH_KEPT_REASONS,
@@ -28,6 +29,7 @@ import {
   WORKBENCH_UNAVAILABLE_REASONS,
   WSL_UNAVAILABLE_REASONS,
   type ErrorCode,
+  type WorkbenchUnavailableReason,
 } from "./errors";
 import { FILE_ACTION_REASONS, LINE_ACTION_REASONS, type FileActionReason, type LineActionReason } from "./file-action";
 import * as limits from "./limits";
@@ -40,6 +42,7 @@ import {
   DICTIONARY_CATALOG_ENTRIES,
   DICTIONARY_CHUNK_BYTES,
   DICTIONARY_LANGUAGE_BYTES,
+  FILE_FACT_ENTRIES,
   GRAPH_LANES,
   HISTORY_PAGE_BYTES,
   HISTORY_PARENTS_PER_COMMIT,
@@ -341,6 +344,13 @@ const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
       .refine((p) => uniqueIds(p.entryIds))
       .meta({ title: "ReviewDelete" }),
     z.strictObject({ action: z.literal("ignore-save"), target: IgnoreTarget, text: SaveText, expected: IgnoreExpected, lineEnding: SaveLineEnding.optional() }).meta({ title: "ReviewIgnoreSave" }),
+    // Feature 008 data-model §1. Without `lines`, the whole hunk. The renderer sends no path, no byte, and no count.
+    z.strictObject({ action: z.literal("revert-lines"), snapshotId: Identifier, comparisonId: Identifier, hunkId: Identifier, lines: LineOrdinals.optional() }).meta({ title: "ReviewRevertLines" }),
+    z
+      .strictObject({ action: z.literal("revert-files"), snapshotId: Identifier, entryIds: z.array(Identifier).min(1).max(MULTI_FILE_ACTION_FILES) })
+      .refine((p) => uniqueIds(p.entryIds))
+      .meta({ title: "ReviewRevertFiles" }),
+    z.strictObject({ action: z.literal("revert-unstaged"), snapshotId: Identifier }).meta({ title: "ReviewRevertUnstaged" }),
   ]);
 // Data-model §6 and plan D8: Stage all untracked and Stage all changes stage, and Unstage all unstages. `folder` holds the folder path bytes in base64.
 const STAGE_KINDS: readonly string[] = ["all-untracked", "all-changes"];
@@ -845,11 +855,12 @@ export const ChangeEntry = z
   .meta({ title: "ChangeEntry" });
 
 // Contract §4 "Hunk eligibility and publication", in the order of its list. Null: the read holds no raw index bytes to decide from.
+const INELIGIBLE_REASONS = ["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"] as const;
 export const HunkEligibility = z
   .union([
     z.strictObject({ eligible: z.literal(true) }).meta({ title: "Eligible" }),
     z
-      .strictObject({ eligible: z.literal(false), reason: z.enum(["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"]) })
+      .strictObject({ eligible: z.literal(false), reason: z.enum(INELIGIBLE_REASONS) })
       .meta({ title: "Ineligible" }),
   ])
   .nullable();
@@ -1654,7 +1665,38 @@ const DeletePlan = z
   .meta({ title: "DeletePlan" });
 // Contract Δ3 `ignore-save` plan: the target file in Git's form, and the size and SHA-256 of the new bytes.
 const IgnoreSavePlan = z.strictObject({ target: IgnoreTarget, file: Text.min(1), size: Count.max(IGNORE_TARGET_BYTES), sha256: Fingerprint }).meta({ title: "IgnoreSavePlan" });
+// Feature 008 data-model §5. `paths` holds the first confirmation paths in tree order, as base64 bytes. `lines` is null for a whole hunk.
+const firstPaths = (p: { count?: unknown; paths?: unknown }) => typeof p.count === "number" && Array.isArray(p.paths) && p.paths.length === Math.min(p.count, DELETE_CONFIRMATION_PATHS);
+const confirmationPaths = { count: Count.min(1).max(MULTI_FILE_ACTION_FILES), paths: z.array(z.base64().min(1)).max(DELETE_CONFIRMATION_PATHS) };
+const RevertLinesPlan = z
+  .strictObject({ scope: z.enum(["unstaged", "staged"]), fileBytes: z.base64().min(1), lines: z.int().min(1).max(CANONICAL_DIFF_LINES).nullable() })
+  .meta({ title: "RevertLinesPlan" });
+export type RevertLinesPlan = z.infer<typeof RevertLinesPlan>;
+// `newFiles`: staged new files that keep their working file, so each one also counts in `staged`.
+const RevertFilesPlan = z
+  .strictObject({ ...confirmationPaths, newFiles: Count, staged: Count, unstaged: Count })
+  .refine((p) => firstPaths(p) && p.staged <= p.count && p.unstaged <= p.count && p.newFiles <= p.staged)
+  .meta({ title: "RevertFilesPlan" });
+export type RevertFilesPlan = z.infer<typeof RevertFilesPlan>;
+// `submodules`: the covered entries that stay unchanged. The renderer computes the hidden count.
+const RevertUnstagedPlan = z
+  .strictObject({ ...confirmationPaths, submodules: Count })
+  .refine(firstPaths)
+  .meta({ title: "RevertUnstagedPlan" });
+// Feature 008 data-model §7: a revert review refuses with UNSUPPORTED_COMPARISON and a support or line reason, or with UNSUPPORTED_HUNK_PROFILE
+// and an eligibility reason and its remedy. The service never gives `several-hunks` (`line-patch.ts`).
+const UNAVAILABLE: readonly string[] = WORKBENCH_UNAVAILABLE_REASONS;
+const SUPPORT_REFUSALS = SupportValue.options.filter((r): r is Exclude<z.infer<typeof SupportValue>, "supported"> => r !== "supported");
+const LINE_REFUSALS = LINE_ACTION_REASONS.filter((r): r is Exclude<LineActionReason, "several-hunks"> => r !== "several-hunks");
+const REVERT_REFUSALS = [...SUPPORT_REFUSALS.filter((r): r is Exclude<(typeof SUPPORT_REFUSALS)[number], WorkbenchUnavailableReason> => !UNAVAILABLE.includes(r)), ...LINE_REFUSALS, ...INELIGIBLE_REASONS];
+const INELIGIBLE: readonly string[] = INELIGIBLE_REASONS;
+// Spec FR-022 and FR-029: the first refused files in tree order with their reasons. `more` counts the rest.
+const RevertRefusedFile = z
+  .strictObject({ path: z.base64().min(1), reason: z.enum([...SUPPORT_REFUSALS, ...LINE_REFUSALS, ...REVERT_FILE_REASONS]) })
+  .meta({ title: "RevertRefusedFile" });
 const reviewed = <A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
+// Feature 008: the remedy of an eligibility reason, or of a LOCKED refusal with the lock `path` (001 FR-016).
+const WorkbenchRemedy = z.strictObject({ text: Text.min(1) }).meta({ title: "WorkbenchRemedy" });
 // Contract Δ3 "Result": `{action, plan, workbenchToken}`, or a refusal value: the Δ9 reason with its facts, the in-the-way paths, or the CONFLICTED count.
 // A `merge` or `rebase` refusal after the counts carries the plan (contract Δ3).
 export const ReviewWorkbenchResult = z
@@ -1674,11 +1716,14 @@ export const ReviewWorkbenchResult = z
       reviewed("config-save", ConfigSavePlan, "ConfigSaveReviewed"),
       reviewed("delete", DeletePlan, "DeleteReviewed"),
       reviewed("ignore-save", IgnoreSavePlan, "IgnoreSaveReviewed"),
+      reviewed("revert-lines", RevertLinesPlan, "RevertLinesReviewed"),
+      reviewed("revert-files", RevertFilesPlan, "RevertFilesReviewed"),
+      reviewed("revert-unstaged", RevertUnstagedPlan, "RevertUnstagedReviewed"),
     ]),
     z
       .strictObject({
         // Feature 005 contract Δ3: an `ignore-save` review gives STALE_REVIEW with reason `ignore-changed`.
-        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS, ...DESTINATION_NOT_EMPTY_REASONS, ...STALE_REVIEW_REASONS]).optional(),
+        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS, ...DESTINATION_NOT_EMPTY_REASONS, ...STALE_REVIEW_REASONS, ...REVERT_REFUSALS]).optional(),
         worktree: Text.min(1).optional(),
         ref: FullRef.optional(),
         remotes: z.array(RemoteName).min(2).max(SYNC_REMOTES).optional(),
@@ -1692,6 +1737,8 @@ export const ReviewWorkbenchResult = z
         // Plan.md O-20: the gate of a TRUST_REQUIRED or TRUST_CHANGED refusal. `target` is the listing of the worktree that `worktree-remove` names.
         trustGate: z.enum(["repository", "target"]).optional(),
         names: SideNames.optional(),
+        remedy: WorkbenchRemedy.optional(),
+        files: z.array(RevertRefusedFile).min(1).max(DELETE_CONFIRMATION_PATHS).optional(),
       })
       .refine(
         (r) =>
@@ -1699,7 +1746,10 @@ export const ReviewWorkbenchResult = z
           (r.ref === undefined || r.reason === "name-exists") &&
           (r.remotes === undefined || r.reason === "several-tracking-remotes") &&
           (r.paths !== undefined) === (r.reason === "untracked-in-way") &&
-          (r.paths !== undefined) === (r.more !== undefined) &&
+          (r.paths === undefined || r.files === undefined) &&
+          (r.paths !== undefined || r.files !== undefined) === (r.more !== undefined) &&
+          (r.files === undefined || r.files[0]?.reason === r.reason) &&
+          (r.remedy === undefined || (r.reason === undefined ? r.path !== undefined : INELIGIBLE.includes(r.reason))) &&
           (r.unmerged === undefined || r.reason === undefined) &&
           (r.path === undefined || r.reason === undefined) &&
           (r.trustGate === undefined || Object.keys(r).length === 1) &&
@@ -1843,7 +1893,8 @@ const STASH_STATES = ["dropped", ...STASH_KEPT_REASONS.map((reason) => `kept-${r
 const BRANCH_ACTIONS = ["create-branch", "rename-branch", "delete-branch"] as const;
 const WORKTREE_ACTIONS = ["worktree-add", "worktree-remove", "worktree-prune"] as const;
 const RESOLVE_ACTIONS = ["choose-side", "mergetool"] as const;
-const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS, "config-save", "delete", "ignore-save"] as const;
+const REVERT_ACTIONS = ["revert-lines", "revert-files", "revert-unstaged"] as const;
+const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS, "config-save", "delete", "ignore-save", ...REVERT_ACTIONS] as const;
 // Data-model §5: the outcome of each path and each candidate folder. Only `error` carries `code`, and only `recycled` carries `recycledPath`.
 const DeleteFileOutcome = z
   .strictObject({
@@ -1860,7 +1911,42 @@ const DeleteFolderOutcome = z
   .meta({ title: "DeleteFolderOutcome" });
 // Data-model §8 result. `stale`, `not-regular`, `stopped`, `interrupted`, and `error` are the `fileReplace` replies.
 const IGNORE_SAVE_OUTCOMES = ["replaced", "stale", "not-regular", "stopped", "interrupted", "error"] as const;
-const STALE_ACTIONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed" };
+const STALE_ACTIONS: Readonly<Record<string, string>> = {
+  delete: "files-changed",
+  "ignore-save": "ignore-changed",
+  ...Object.fromEntries(REVERT_ACTIONS.map((action) => [action, "revert-changed"])),
+};
+// Feature 008 data-model §8 and §9. Only `not-changed` and `unstaged-only` carry the reply `code` (spec FR-017). `refused` names the reply reason, and `error` the reply code, as `reason`.
+const REVERT_REASONS: Readonly<Record<string, readonly string[]>> = { refused: REPLACE_REFUSALS, error: REPLACE_ERRORS };
+const RevertFileOutcome = z
+  .strictObject({
+    entryId: Identifier,
+    outcome: z.enum(["reverted", "unstaged-only", "not-changed", "changed-outside", "not-started"]),
+    code: z.enum(["stale", "refused", "error"]).optional(),
+    reason: z.enum([...REPLACE_REFUSALS, ...REPLACE_ERRORS]).optional(),
+  })
+  .refine((o) => (o.code === undefined || o.outcome === "not-changed" || o.outcome === "unstaged-only") && (o.reason === undefined ? o.code === undefined || !Object.hasOwn(REVERT_REASONS, o.code) : o.code !== undefined && Object.hasOwn(REVERT_REASONS, o.code) && REVERT_REASONS[o.code]!.includes(o.reason)))
+  .meta({ title: "RevertFileOutcome" });
+export type RevertFileOutcome = z.infer<typeof RevertFileOutcome>;
+// Contract Δ6: each `fileReplace` creates at most FILE_FACT_ENTRIES folders.
+// T059 (contract "Contract gaps"): `reason` is `revert-changed` of a STALE_REVIEW result before any index change, or the eligibility reason of a refused index part.
+// An eligibility reason carries its remedy, as the review refusal does (plan.md D11: the renderer holds no text for these reasons).
+const RevertRun = z
+  .strictObject({
+    action: z.enum(REVERT_ACTIONS),
+    files: z.array(RevertFileOutcome).min(1).max(MULTI_FILE_ACTION_FILES),
+    foldersCreated: z.array(z.base64().min(1)).max(MULTI_FILE_ACTION_FILES * FILE_FACT_ENTRIES),
+    index: z.enum(["published", "none", "refused"]),
+    reason: z.enum(["revert-changed", ...INELIGIBLE_REASONS]).optional(),
+    remedy: WorkbenchRemedy.optional(),
+  })
+  .refine(
+    (r) =>
+      (r.action !== "revert-lines" || (Array.isArray(r.files) && r.files.length === 1)) &&
+      (r.reason === undefined || (r.reason === "revert-changed" ? r.index !== "published" : r.index === "refused")) &&
+      (r.remedy !== undefined) === (r.reason !== undefined && r.reason !== "revert-changed"),
+  )
+  .meta({ title: "RevertRun" });
 // Contract Δ3 `runWorkbench` "Results": the observed effects. A failed step adds its `outputTail`. An unknown outcome names the action only.
 // A refusal before any step can carry the CONFLICTED count. A repeated request gets the `getOperation` result of its operation (contract §2).
 export const RunWorkbenchResult = z
@@ -1913,13 +1999,16 @@ export const RunWorkbenchResult = z
       .strictObject({ action: z.literal("ignore-save"), outcome: z.enum(IGNORE_SAVE_OUTCOMES), code: z.enum(FILE_FACT_ERRORS).optional() })
       .refine((r) => (r.code !== undefined) === (r.outcome === "error"))
       .meta({ title: "IgnoreSaveRun" }),
+    RevertRun,
     // Feature 005 contract Δ3: a fact that changed after the review gives STALE_REVIEW with the reason of its action.
     z
-      .strictObject({ action: z.enum(["delete", "ignore-save"]), reason: z.enum(STALE_REVIEW_REASONS) })
+      .strictObject({ action: z.enum(["delete", "ignore-save", ...REVERT_ACTIONS]), reason: z.enum(STALE_REVIEW_REASONS) })
       .refine((r) => STALE_ACTIONS[r.action] === r.reason)
       .meta({ title: "WorkbenchStale" }),
     z.strictObject({ action: z.enum(RUN_ACTIONS) }).meta({ title: "WorkbenchUnread" }),
     z.strictObject({ unmerged: Count }).meta({ title: "WorkbenchConflicted" }),
+    // Feature 008 contract Δ3: an `index.lock` at the run start gives LOCKED with the lock path and the 001 remedy, as the review does.
+    z.strictObject({ path: Text.min(1), remedy: WorkbenchRemedy }).meta({ title: "WorkbenchLocked" }),
     // Plan.md O-20: a TRUST_REQUIRED or TRUST_CHANGED run refusal names its gate, as the review refusal does.
     z.strictObject({ trustGate: z.enum(["repository", "target"]) }).meta({ title: "WorkbenchTrustRefused" }),
     OperationResult.meta({ title: "WorkbenchRepeat" }),

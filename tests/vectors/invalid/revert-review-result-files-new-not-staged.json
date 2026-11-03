@@ -1,0 +1,8 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"revert-files\",\"plan\":{\"count\":2,\"paths\":[\"c3JjL2YwLnR4dA==\",\"c3JjL2YxLnR4dA==\"],\"newFiles\":2,\"staged\":1,\"unstaged\":1},\"workbenchToken\":\"0f0f0f0f-0000-4000-8000-00000000000e\"}",
+  "repair": {
+    "plan.staged": 2
+  }
+}

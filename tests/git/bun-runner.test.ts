@@ -2,12 +2,14 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { printOrigin } from "../origin";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../../src/contracts/limits";
-import { createCollector, PROCESS_LIMITS, type GitCall, type ProcessContext } from "../../src/git-service/git-runner";
-import { createBunRunner, createTrustStore, gitForm, HOST_SCRIPT, type BunRunner } from "./bun-runner";
+import { FileFact as FileFactSchema, ProcessReply } from "../../src/contracts/channel";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, REGISTERED_DEADLINE_CAP_MS, TRUST_DIGEST_FILE_BYTES } from "../../src/contracts/limits";
+import { createCollector, PROCESS_LIMITS, type FileFact, type GitCall, type ProcessContext, type WorkingReplaceRequest } from "../../src/git-service/git-runner";
+import { createBunRunner, createTrustStore, gitForm, HOST_SCRIPT, mapFacts, type BunRunner } from "./bun-runner";
+import { parseFactRecords } from "../wsl/wsl-host";
 import { fixtureDir, fixtureGit, fixturePath, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 
@@ -39,6 +41,52 @@ test("gitForm folds . and .. and refuses a segment with a character in U+F000 to
   expect(gitForm("\\\\wsl.localhost\\Other\\home", wsl)).toBeNull();
   expect(gitForm("C:\\work\\..\\repo", undefined)).toBe("C:\\work\\..\\repo");
   expect(gitForm("\\\\wsl.localhost\\Ubuntu-26.04\\home", undefined)).toBeNull();
+});
+
+// Feature 008 contract Δ6 and feature 005 contract Δ6: the double maps the WSL `fileFacts` records of `detail`, `stream`, and `content`
+// as `wsl::file_facts_reply` does, with the records of the `src-tauri/src/wsl.rs` cargo tests. No process starts.
+test("the double maps the WSL detail, stream, and content records as the shell", () => {
+  type Read = { detail?: boolean; stream?: boolean; content?: boolean };
+  const one = [{ root: 0 as const, path: ["a"] }];
+  const bin = (text: string) => Buffer.from(text, "latin1");
+  const map = (bytes: Uint8Array, digest: boolean, read: Read) => mapFacts(parseFactRecords(bytes, read), one, digest, read);
+  const sha = (data: Uint8Array) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
+  const file = { kind: "file" as const, size: 6, lastWrite: "1000000000", executable: false, ownerExecute: false };
+  const ids = { mode: 33188, uid: 1000, gid: 1000, links: 2, xattr: true, own: true };
+  const DETAIL = "33188\x001000\x001000\x002\x001\x001\x00";
+  const hex = "ab".repeat(32);
+  expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}none\0`), false, { detail: true })).toEqual([{ ...file, ...ids }]);
+  // `own` is 0 when `st_uid` differs from the effective uid of the probe.
+  expect(map(bin("file\x006\x001\x000\x000\x0033188\x000\x001000\x002\x001\x000\x00none\0"), false, { detail: true })).toEqual([{ ...file, ...ids, uid: 0, own: false }]);
+  expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}data\x006\0plain\n`), true, { detail: true })).toEqual([{ ...file, ...ids, digest: sha(bin("plain\n")) }]);
+  expect(map(bin(`file\x006\x001\x000\x000\x00sha256\x00${hex}\0`), true, { stream: true })).toEqual([{ ...file, digest: hex }]);
+  expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}sha256\x00${hex}\0`), true, { detail: true, stream: true })).toEqual([{ ...file, ...ids, digest: hex }]);
+  // `content` carries the base64 of the data bytes, also for an empty file and a file at the 1 MiB bound.
+  for (const data of [bin("plain\n"), Buffer.alloc(0), Buffer.from(Array.from({ length: MIB }, (_, i) => i % 251))]) {
+    const record = Buffer.concat([bin(`file\x00${data.length}\x001\x000\x000\x00data\x00${data.length}\0`), data]);
+    expect(map(record, true, { content: true })).toEqual([{ ...file, size: data.length, digest: sha(data), bytes: data.toString("base64") }]);
+  }
+  expect(map(bin("file\x001048577\x001\x000\x000\x00file-bytes\0"), true, { content: true })).toEqual([{ ...file, size: 1048577, bound: "file-bytes" as const }]);
+  expect(map(bin("file\x006\x001\x000\x000\x00data\x006\0plain\n"), true, {})).toEqual([{ ...file, digest: sha(bin("plain\n")) }]);
+  const failed = [{ kind: "error" as const, component: 0, code: "other-error" as const }];
+  for (const [text, digest, read] of [
+    ["file\x006\x001\x000\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x000\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x00-1\x001000\x001\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x004294967296\x001000\x001000\x001\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x001\x00none\0", false, { detail: true }],
+    // The `own` token is missing, or it is no flag.
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x002\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x001\x00none\0", false, {}],
+    ["file\x006\x001\x000\x000\x00data\x006\0plain\n", true, { stream: true }],
+    [`file\x006\x001\x000\x000\x00sha256\x00${hex}\0`, true, {}],
+    [`file\x006\x001\x000\x000\x00sha256\x00${hex.toUpperCase()}\0`, true, { stream: true }],
+    [`file\x006\x001\x000\x000\x00sha256\x00${hex.slice(1)}\0`, true, { stream: true }],
+    ["file\x006\x001\x000\x000\x00file-bytes\0", true, { stream: true }],
+  ] as [string, boolean, Read][]) {
+    expect([text, map(bin(text), digest, read)]).toEqual([text, failed]);
+  }
 });
 
 describeGit("bun runner", (git) => {
@@ -600,5 +648,398 @@ describeGit("bun runner", (git) => {
     expect(await held).toMatchObject({ code: "UNKNOWN_TARGET" });
     expect(runner.spawned).toBe(before);
     for (const [pid, created] of records) expect(processCreationTime(Number(pid)) === created).toBe(false);
+  });
+});
+
+// Feature 008 T019: the double of contract Δ6 `fileReplace` `working`, `tempRemove`, and `fileFacts` `detail` and `stream` on the host file system
+// (plan.md D8). Each reply must fit the `ProcessReply` frame. The double records each request and stops or ends a write at a named step.
+describeGit("bun runner revert requests (T019)", (git) => {
+  const WINDOWS = process.platform === "win32";
+  let repo: string;
+  let runner: BunRunner;
+  let repositoryId: string;
+  let gitInstallationId: string;
+  let commonDirectory: string;
+  const signal = () => new AbortController().signal;
+  const sha = (bytes: Uint8Array | string) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  const temps = (dir: string) => readdirSync(dir).filter((name) => /^\.arbareto-.+\.tmp$/.test(name));
+  const until = async (check: () => boolean, what: string, timeoutMs = 10_000) => {
+    for (const end = performance.now() + timeoutMs; !check(); await Bun.sleep(10)) if (performance.now() > end) throw new Error(`${what}: not within ${timeoutMs} ms`);
+  };
+
+  beforeAll(async () => {
+    repo = fixtureDir("revert-repo");
+    fixtureGit(git, repo, ["init", "-q"]);
+    writeFileSync(join(repo, "seed.txt"), "seed\n");
+    fixtureGit(git, repo, ["add", "seed.txt"]);
+    fixtureGit(git, repo, ["commit", "-q", "-m", "fixture"]);
+    commonDirectory = join(repo, ".git");
+    runner = createBunRunner({ git, directory: fixtureDir("revert-runner"), environment: serviceEnv() });
+    gitInstallationId = id();
+    expect(await runner.register({ operationId: id(), bootstrapId: runner.addContext("gitProbe", git), gitInstallationId, version: "2.55.0", digest: "c".repeat(64), confirm: false })).toEqual({ result: "approved" });
+    repositoryId = id();
+    const registration = { operationId: id(), bootstrapId: runner.addContext("repositoryDiscovery", repo), gitInstallationId, repositoryId, worktreeRoot: repo, gitDirectory: commonDirectory, commonDirectory };
+    expect(await runner.register(registration)).toEqual({ result: "approved" });
+  });
+
+  afterAll(async () => {
+    await runner.dispose();
+  });
+
+  // An operation with a `started` marker of kind `workbench` and `action`.
+  async function marked(action: "revert-lines" | "revert-files" | "revert-unstaged" | "delete-files" = "revert-files"): Promise<string> {
+    const operationId = id();
+    expect(await runner.started({ operationId, repositoryId, kind: "workbench", action, worktreeRoot: repo, commonDirectory })).toMatchObject({ markerId: expect.any(String) });
+    return operationId;
+  }
+
+  const factsOf = async (operationId: string, names: string[], extra: { stream?: boolean; detail?: boolean } = { detail: true }) =>
+    (await runner.fileFacts({ operationId, contextKind: "registeredOperation", gitInstallationId, repositoryId, digest: true, files: [{ root: "worktreeRoot", path: names }], ...extra }, signal())) as FileFact[];
+
+  // Data-model §3 `working`: the bound facts of a `detail` and `stream` fact.
+  async function bound(operationId: string, names: string[]): Promise<Exclude<WorkingReplaceRequest["facts"], "absent">> {
+    const [f] = await factsOf(operationId, names, { detail: true, stream: true });
+    if (f?.kind !== "file" || f.digest === undefined) throw new Error(`no file fact: ${JSON.stringify(f)}`);
+    return WINDOWS
+      ? { size: f.size, sha256: f.digest, attributes: f.attributes!, links: f.links!, owner: f.owner!, group: f.group!, dacl: f.dacl!, creationTime: f.creationTime! }
+      : { size: f.size, sha256: f.digest, mode: f.mode!, uid: f.uid!, gid: f.gid!, links: f.links!, xattr: false };
+  }
+
+  type Fields = Partial<Omit<WorkingReplaceRequest, "operationId" | "repositoryId" | "target" | "path">>;
+  async function replace(operationId: string, names: string[], fields: Fields) {
+    const reply = await runner.fileReplaceWorking({ operationId, repositoryId, target: "working", path: join(repo, ...names), expected: "absent", facts: "absent", ...fields } as WorkingReplaceRequest, signal());
+    // Every reply fits the contract Δ6 frame.
+    if (!("stop" in reply)) expect(ProcessReply.safeParse({ type: "fileReplace", callId: id(), ...reply }).success).toBe(true);
+    return reply;
+  }
+  const present = (bytes: string) => ({ size: Buffer.byteLength(bytes), sha256: sha(bytes) });
+  const base64 = (bytes: string) => Buffer.from(bytes).toString("base64");
+
+  test("fileFacts detail gives the data-model §3 fields, and stream digests a file above the 1 MiB bound", async () => {
+    const operationId = await marked();
+    const big = new Uint8Array(3 * 1024 * 1024).map((_, i) => (i * 7) & 0xff);
+    writeFileSync(join(repo, "big.bin"), big);
+    const [streamed] = await factsOf(operationId, ["big.bin"], { detail: true, stream: true });
+    expect(FileFactSchema.safeParse(streamed).success).toBe(true);
+    expect(streamed).toMatchObject({ kind: "file", size: big.length, digest: sha(big), links: 1 });
+    if (WINDOWS) expect(streamed).toMatchObject({ attributes: expect.any(Number), owner: expect.stringMatching(/^\S+$/), group: expect.stringMatching(/^\S+$/), dacl: expect.stringMatching(/^D:/), creationTime: expect.stringMatching(/^\d+$/) });
+    else expect(streamed).toMatchObject({ mode: expect.any(Number), uid: expect.any(Number), gid: expect.any(Number), xattr: false, own: true });
+    // Without `stream`, the 001 per-file bound still applies, and without `detail` no detail field comes.
+    const [plain] = await factsOf(operationId, ["big.bin"], {});
+    expect(big.length).toBeGreaterThan(TRUST_DIGEST_FILE_BYTES);
+    expect(plain).toMatchObject({ kind: "file", bound: "file-bytes" });
+    expect(Object.keys(plain!).filter((key) => ["links", "attributes", "owner", "group", "dacl", "creationTime", "mode", "uid", "gid", "xattr", "own"].includes(key))).toEqual([]);
+    linkSync(join(repo, "big.bin"), join(repo, "big-link.bin"));
+    const [linked] = await factsOf(operationId, ["big.bin"]);
+    expect(linked).toMatchObject({ kind: "file", links: 2 });
+    rmSync(join(repo, "big-link.bin"));
+    rmSync(join(repo, "big.bin"));
+  });
+
+  test("a working replace needs a revert marker, a path below the worktree root, and no .git first name; each refusal changes nothing", async () => {
+    writeFileSync(join(repo, "a.txt"), "old\n");
+    const fields: Fields = { expected: present("old\n"), bytes: base64("new\n") };
+    fields.facts = await bound(await marked(), ["a.txt"]);
+    await expect(replace(id(), ["a.txt"], fields)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(replace(await marked("delete-files"), ["a.txt"], fields)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    const operationId = await marked("revert-unstaged");
+    await expect(replace(operationId, [".GIT", "config"], fields)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(replace(operationId, ["..", "outside.txt"], fields)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    // Contract Δ6: exactly one of `bytes` and `source`, and `folders` only with `expected: absent`.
+    await expect(replace(operationId, ["a.txt"], { ...fields, source: { name: ".merge_file_x", size: 4, sha256: sha("new\n") } })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(replace(operationId, ["a.txt"], { ...fields, folders: ["x"] })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("old\n");
+    expect(temps(repo)).toEqual([]);
+  });
+
+  test("bytes: the exact expected and facts check passes, one rename replaces the file, the request is recorded, and no temporary file stays", async () => {
+    const operationId = await marked("revert-lines");
+    writeFileSync(join(repo, "a.txt"), "old\n");
+    const facts = await bound(operationId, ["a.txt"]);
+    const from = runner.frames.length;
+    expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts, bytes: base64("new\n") })).toEqual({ result: "replaced" });
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("new\n");
+    expect(temps(repo)).toEqual([]);
+    expect(runner.frames.slice(from).map((f) => [f.type, f.target, f.path])).toEqual([["fileReplace", "working", join(repo, "a.txt")]]);
+  });
+
+  test("a changed size, digest, or bound fact gives stale, and the old bytes stay", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "a.txt"), "old\n");
+    const facts = await bound(operationId, ["a.txt"]);
+    const changed = WINDOWS ? { ...facts, creationTime: "1" } : { ...facts, mode: (facts as { mode: number }).mode ^ 0o1 };
+    // The frame rule ties `expected` to the size and SHA-256 of `facts` (contract Δ6), so a review of other bytes binds both.
+    expect(await replace(operationId, ["a.txt"], { expected: present("other\n"), facts: { ...facts, ...present("other\n") }, bytes: base64("new\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts: changed as WorkingReplaceRequest["facts"], bytes: base64("new\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["a.txt"], { expected: "absent", facts: "absent", gitMode: "100644", bytes: base64("new\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["gone.txt"], { expected: present("old\n"), facts, bytes: base64("new\n") })).toEqual({ result: "stale" });
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("old\n");
+    expect(temps(repo)).toEqual([]);
+  });
+
+  test("a second hard link, the read-only attribute, and a link at the target refuse with their reasons and change nothing", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "h.txt"), "old\n");
+    const facts = await bound(operationId, ["h.txt"]);
+    linkSync(join(repo, "h.txt"), join(repo, "h2.txt"));
+    expect(await replace(operationId, ["h.txt"], { expected: present("old\n"), facts: { ...facts, links: 2 }, bytes: base64("new\n") })).toEqual({ result: "refused", reason: "hard-link" });
+    rmSync(join(repo, "h2.txt"));
+    if (WINDOWS) {
+      // Node sets FILE_ATTRIBUTE_READONLY on Windows when the write bits go.
+      chmodSync(join(repo, "h.txt"), 0o444);
+      const readOnly = await bound(operationId, ["h.txt"]);
+      expect(await replace(operationId, ["h.txt"], { expected: present("old\n"), facts: readOnly, bytes: base64("new\n") })).toEqual({ result: "refused", reason: "read-only" });
+      chmodSync(join(repo, "h.txt"), 0o666);
+    }
+    let linked = true;
+    try {
+      symlinkSync(join(repo, "h.txt"), join(repo, "l.txt"));
+    } catch {
+      linked = false;
+    }
+    if (linked) expect(await replace(operationId, ["l.txt"], { expected: present("old\n"), facts, bytes: base64("new\n") })).toEqual({ result: "refused", reason: "not-regular" });
+    expect(readFileSync(join(repo, "h.txt"), "utf8")).toBe("old\n");
+    expect(temps(repo)).toEqual([]);
+  });
+
+  test("an absent target with folders creates each missing folder and names them; a later name or folder gives stale", async () => {
+    const operationId = await marked();
+    expect(await replace(operationId, ["new", "deep", "a.txt"], { folders: ["new", "deep"], gitMode: "100644", bytes: base64("made\n") })).toEqual({ result: "replaced", folders: ["new", "deep"] });
+    expect(readFileSync(join(repo, "new", "deep", "a.txt"), "utf8")).toBe("made\n");
+    // The folders exist now, and so does the name.
+    expect(await replace(operationId, ["new", "deep", "b.txt"], { folders: ["new", "deep"], gitMode: "100644", bytes: base64("x\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["new", "deep", "a.txt"], { gitMode: "100644", bytes: base64("again\n") })).toEqual({ result: "stale" });
+    expect(readFileSync(join(repo, "new", "deep", "a.txt"), "utf8")).toBe("made\n");
+    expect(existsSync(join(repo, "new", "deep", "b.txt"))).toBe(false);
+    rmSync(join(repo, "new"), { recursive: true });
+  });
+
+  // Contract Δ6 `gitMode`: exactly an absent target carries the mode of its index entry. A Linux host creates the file with 0666 or 0777 minus the umask,
+  // as Git's checkout does (`entry.c` `create_file`). Windows checks the value and ignores it.
+  test("gitMode is required exactly for an absent target and sets the mode of the new file", async () => {
+    const operationId = await marked();
+    await expect(replace(operationId, ["g1.txt"], { bytes: base64("x\n") })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    writeFileSync(join(repo, "g0.txt"), "old\n");
+    const facts = await bound(operationId, ["g0.txt"]);
+    await expect(replace(operationId, ["g0.txt"], { expected: present("old\n"), facts, gitMode: "100644", bytes: base64("x\n") })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(await replace(operationId, ["g1.txt"], { gitMode: "100644", bytes: base64("x\n") })).toEqual({ result: "replaced" });
+    expect(await replace(operationId, ["g2.txt"], { gitMode: "100755", bytes: base64("x\n") })).toEqual({ result: "replaced" });
+    if (!WINDOWS) {
+      const umask = process.umask();
+      expect([lstatSync(join(repo, "g1.txt")).mode & 0o7777, lstatSync(join(repo, "g2.txt")).mode & 0o7777]).toEqual([0o666 & ~umask, 0o777 & ~umask]);
+    }
+    for (const name of ["g0.txt", "g1.txt", "g2.txt"]) rmSync(join(repo, name));
+  });
+
+  // Contract Δ6: a `.git` name in any ASCII case is never Git's temporary file.
+  test("a source or a tempRemove name .git in any ASCII case gives INVALID_REQUEST", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "a.txt"), "old\n");
+    const facts = await bound(operationId, ["a.txt"]);
+    await expect(replace(operationId, ["a.txt"], { expected: present("old\n"), facts, source: { name: ".GiT", ...present("x") } })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(runner.tempRemove({ operationId, repositoryId, name: ".Git", expected: present("x") }, signal())).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(existsSync(join(repo, ".git"))).toBe(true);
+  });
+
+  // Contract Δ6 `folders` of a failure reply: the folders that the write created before the failure stay, and the reply names them.
+  test("a write that fails after its folders names them, and a source with another digest stays for tempRemove", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, ".merge_file_f1"), "other\n");
+    expect(await replace(operationId, ["made", "here", "a.txt"], { folders: ["made", "here"], gitMode: "100644", source: { name: ".merge_file_f1", size: 6, sha256: sha("wanted") } })).toEqual({ result: "stale", folders: ["made", "here"] });
+    expect({ folder: existsSync(join(repo, "made", "here")), target: existsSync(join(repo, "made", "here", "a.txt")), source: readFileSync(join(repo, ".merge_file_f1"), "utf8") }).toEqual({ folder: true, target: false, source: "other\n" });
+    rmSync(join(repo, "made"), { recursive: true });
+    rmSync(join(repo, ".merge_file_f1"));
+    expect(temps(repo)).toEqual([]);
+  });
+
+  test("source: Git's temporary file copies beside the target with a streamed digest and goes after the rename; another digest, size, or a second link keeps it", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "a.txt"), "old\n");
+    const facts = await bound(operationId, ["a.txt"]);
+    const restored = "restored line\r\n";
+    writeFileSync(join(repo, ".merge_file_t19a"), restored);
+    expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts, source: { name: ".merge_file_t19a", ...present(restored) } })).toEqual({ result: "replaced" });
+    expect({ target: readFileSync(join(repo, "a.txt"), "utf8"), source: existsSync(join(repo, ".merge_file_t19a")) }).toEqual({ target: restored, source: false });
+    const again = await bound(operationId, ["a.txt"]);
+    writeFileSync(join(repo, ".merge_file_t19b"), "other\n");
+    // Contract Δ6: only a matched streamed SHA-256 proves Git's temporary file, so every earlier failure keeps the source for `tempRemove`.
+    expect(await replace(operationId, ["a.txt"], { expected: present(restored), facts: again, source: { name: ".merge_file_t19b", size: 6, sha256: sha("expected\n") } })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["a.txt"], { expected: present(restored), facts: again, source: { name: ".merge_file_t19b", size: 7, sha256: sha("other\n") } })).toEqual({ result: "stale" });
+    linkSync(join(repo, ".merge_file_t19b"), join(fixtureDir("revert-outside"), "second-link"));
+    expect(await replace(operationId, ["a.txt"], { expected: present(restored), facts: again, source: { name: ".merge_file_t19b", ...present("other\n") } })).toEqual({ result: "refused", reason: "hard-link" });
+    rmSync(join(fixtureDir("revert-outside"), "second-link"));
+    expect({ target: readFileSync(join(repo, "a.txt"), "utf8"), source: readFileSync(join(repo, ".merge_file_t19b"), "utf8") }).toEqual({ target: restored, source: "other\n" });
+    rmSync(join(repo, ".merge_file_t19b"));
+    // A missing source fails before the open.
+    expect(await replace(operationId, ["a.txt"], { expected: present(restored), facts: again, source: { name: ".merge_file_t19c", size: 1, sha256: sha("x") } })).toEqual({ result: "stale" });
+    expect(temps(repo)).toEqual([]);
+  });
+
+  // Contract Δ6 `source: "kept"`: the rename landed, but the delete of Git's temporary file failed, so the reply says so.
+  test("a replace whose source delete fails replies replaced with source kept", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "k.txt"), "old\n");
+    const facts = await bound(operationId, ["k.txt"]);
+    writeFileSync(join(repo, ".merge_file_k"), "new\n");
+    runner.inject.replaceStep = (step) => (step === "renamed" ? "keep-source" : undefined);
+    try {
+      expect(await replace(operationId, ["k.txt"], { expected: present("old\n"), facts, source: { name: ".merge_file_k", ...present("new\n") } })).toEqual({ result: "replaced", source: "kept" });
+    } finally {
+      runner.inject.replaceStep = null;
+    }
+    expect({ target: readFileSync(join(repo, "k.txt"), "utf8"), source: existsSync(join(repo, ".merge_file_k")) }).toEqual({ target: "new\n", source: true });
+    rmSync(join(repo, ".merge_file_k"));
+  });
+
+  test("the write seam: a stop at the check changes nothing; an end after the write leaves no temporary file; an end after the clear leaves its name; an end after the rename keeps the new bytes", async () => {
+    const operationId = await marked();
+    const at = async (step: string, how: "stop" | "crash") => {
+      writeFileSync(join(repo, "s.txt"), "old\n");
+      const facts = await bound(operationId, ["s.txt"]);
+      runner.inject.replaceStep = (seen) => (seen === step ? how : undefined);
+      try {
+        return await replace(operationId, ["s.txt"], { expected: present("old\n"), facts, bytes: base64("new\n") }).catch((error: unknown) => ({ thrown: (error as Error).message.length > 0 }));
+      } finally {
+        runner.inject.replaceStep = null;
+      }
+    };
+    expect(await at("checked", "stop")).toEqual({ result: "stopped" });
+    expect({ bytes: readFileSync(join(repo, "s.txt"), "utf8"), temps: temps(repo) }).toEqual({ bytes: "old\n", temps: [] });
+    // A stop after the write starts is no stop: the started write runs to its end.
+    expect(await at("written", "stop")).toEqual({ result: "replaced" });
+    expect(await at("written", "crash")).toEqual({ thrown: true });
+    expect({ bytes: readFileSync(join(repo, "s.txt"), "utf8"), temps: temps(repo) }).toEqual({ bytes: "old\n", temps: [] });
+    expect(await at("cleared", "crash")).toEqual({ thrown: true });
+    expect({ bytes: readFileSync(join(repo, "s.txt"), "utf8"), temps: temps(repo).length }).toEqual({ bytes: "old\n", temps: 1 });
+    for (const name of temps(repo)) rmSync(join(repo, name));
+    expect(await at("renamed", "crash")).toEqual({ thrown: true });
+    expect({ bytes: readFileSync(join(repo, "s.txt"), "utf8"), temps: temps(repo) }).toEqual({ bytes: "new\n", temps: [] });
+  });
+
+  // Contract Δ3 "checkout-index deadline": the size rule replaces REGISTERED_DEADLINE_CAP_MS only for `checkout-index --temp`.
+  test("only the checkout-index --temp array takes a deadline above the registered cap", async () => {
+    const call = (args: string[]) => ({
+      operationId: id(),
+      context: { contextKind: "registeredOperation" as const, gitInstallationId, repositoryId },
+      arguments: args,
+      input: new TextEncoder().encode("absent.txt\0"),
+      environmentPolicy: "read" as const,
+      limits: { deadlineMs: REGISTERED_DEADLINE_CAP_MS + 1 },
+      stdout: createCollector({ maxBytes: 64 * 1024 }),
+      stderr: createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }),
+      signal: signal(),
+    });
+    // The path is not in the index, so Git writes no temporary file and exits with a failure status.
+    expect(await runner.run(call(["--no-lazy-fetch", "checkout-index", "--temp", "--stdin", "-z"]))).toMatchObject({ exitCode: expect.any(Number) });
+    await expect(runner.run(call(["--no-lazy-fetch", "checkout-index", "--stdin", "-z"]))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(readdirSync(repo).filter((name) => name.startsWith(".merge_file_"))).toEqual([]);
+  });
+
+  // Contract Δ6 (decision of 2026-10-31): a `detail` request or a request under a revert marker may ask for `stream`.
+  test("stream needs detail or a revert marker", async () => {
+    writeFileSync(join(repo, "s5.txt"), "s5\n");
+    const facts = (operationId: string, extra: { detail?: boolean }) =>
+      runner.fileFacts({ operationId, contextKind: "registeredOperation", gitInstallationId, repositoryId, digest: true, stream: true, files: [{ root: "worktreeRoot", path: ["s5.txt"] }], ...extra }, signal());
+    await expect(facts(id(), {})).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(await facts(id(), { detail: true })).toMatchObject([{ kind: "file", digest: sha("s5\n") }]);
+    expect(await facts(await marked("revert-unstaged"), {})).toMatchObject([{ kind: "file", digest: sha("s5\n") }]);
+  });
+
+  // src-tauri/src/file_facts.rs `parse`: `stream` takes `digest: true` and no `content`, and `content` takes `digest: true` and exactly one entry.
+  // `checkFileFacts` refuses both before the walk, as the shell does. Its detail `fileFacts` names that check.
+  test("stream without digest and content with two entries refuse with INVALID_REQUEST before the walk", async () => {
+    writeFileSync(join(repo, "s6.txt"), "s6\n");
+    const operationId = await marked("revert-unstaged");
+    const entry = (name: string) => ({ root: "worktreeRoot" as const, path: [name] });
+    const facts = (fields: { digest: boolean; stream?: boolean; content?: boolean }, names: string[]) => runner.fileFacts({ operationId, contextKind: "registeredOperation", gitInstallationId, repositoryId, ...fields, files: names.map(entry) }, signal());
+    const refused = { code: "INVALID_REQUEST", message: "INVALID_REQUEST: fileFacts" };
+    await expect(facts({ digest: false, stream: true }, ["s6.txt"])).rejects.toMatchObject(refused);
+    await expect(facts({ digest: true, content: true }, ["s5.txt", "s6.txt"])).rejects.toMatchObject(refused);
+    // The same frame with `digest: true` passes the request rules.
+    expect(await facts({ digest: true, stream: true }, ["s6.txt"])).toMatchObject([{ kind: "file", digest: sha("s6\n") }]);
+  });
+
+  // Contract Δ6 `source`: `not-regular` keeps the source, because no digest matched (src-tauri/src/file_replace.rs `check_source`, WSL `replace_one`).
+  test("a source that is a link or a folder refuses with not-regular and stays", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "a.txt"), "old\n");
+    const facts = await bound(operationId, ["a.txt"]);
+    mkdirSync(join(repo, ".merge_file_dir"), { recursive: true });
+    expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts, source: { name: ".merge_file_dir", size: 0, sha256: sha("") } })).toEqual({ result: "refused", reason: "not-regular" });
+    expect(existsSync(join(repo, ".merge_file_dir"))).toBe(true);
+    rmSync(join(repo, ".merge_file_dir"), { recursive: true });
+    writeFileSync(join(fixtureDir("revert-outside"), "real.txt"), "new\n");
+    let linked = true;
+    try {
+      symlinkSync(join(fixtureDir("revert-outside"), "real.txt"), join(repo, ".merge_file_link"));
+    } catch {
+      linked = false;
+    }
+    if (linked) {
+      expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts, source: { name: ".merge_file_link", ...present("new\n") } })).toEqual({ result: "refused", reason: "not-regular" });
+      expect({ link: lstatSync(join(repo, ".merge_file_link"), { throwIfNoEntry: false }) !== undefined, real: readFileSync(join(fixtureDir("revert-outside"), "real.txt"), "utf8") }).toEqual({ link: true, real: "new\n" });
+      rmSync(join(repo, ".merge_file_link"), { force: true });
+    } else console.log("SKIP T019 a link source: missing capability symlink (unverified)");
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("old\n");
+  });
+
+  // Contract Δ6 `detail` on WSL (decision of 2026-10-31): `mode` is the full `st_mode`, so a regular file with mode 0640 gives 0o100640 (POSIX.1 S_IFREG 0o100000).
+  // The write compares the full value and copies `mode & 07777` to the new file.
+  test("the WSL detail mode is the full st_mode, and a replace keeps the permission bits", async () => {
+    if (WINDOWS) return void console.log("SKIP T019 the WSL detail mode: a Windows host gives the Windows facts (unverified here)");
+    const operationId = await marked();
+    writeFileSync(join(repo, "m.txt"), "old\n");
+    chmodSync(join(repo, "m.txt"), 0o640);
+    const facts = await bound(operationId, ["m.txt"]);
+    expect((facts as { mode: number }).mode).toBe(0o100640);
+    expect(await replace(operationId, ["m.txt"], { expected: present("old\n"), facts: { ...facts, mode: 0o640 } as WorkingReplaceRequest["facts"], bytes: base64("new\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["m.txt"], { expected: present("old\n"), facts, bytes: base64("new\n") })).toEqual({ result: "replaced" });
+    expect(lstatSync(join(repo, "m.txt")).mode).toBe(0o100640);
+  });
+
+  // Contract §6 "Walks": after `cancel`, the service waits for the reply only up to its wait (`native-runner.ts`). A later write still lands.
+  test("with a reply wait after cancel, a held write resolves canceled first and lands later", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "w.txt"), "old\n");
+    const facts = await bound(operationId, ["w.txt"]);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    runner.inject.cancelWaitMs = 0;
+    runner.inject.replaceStep = async (step) => {
+      if (step === "written") await gate;
+      return undefined;
+    };
+    const abort = new AbortController();
+    try {
+      const reply = runner.fileReplaceWorking({ operationId, repositoryId, target: "working", path: join(repo, "w.txt"), expected: present("old\n"), facts, bytes: base64("new\n") }, abort.signal);
+      await until(() => readdirSync(repo).some((name) => /^\.arbareto-.+\.tmp$/.test(name)), "the held write");
+      abort.abort();
+      expect(await reply).toEqual({ stop: "canceled" });
+      expect(readFileSync(join(repo, "w.txt"), "utf8")).toBe("old\n");
+      release();
+      await until(() => readFileSync(join(repo, "w.txt"), "utf8") === "new\n", "the late write");
+    } finally {
+      release();
+      runner.inject.cancelWaitMs = null;
+      runner.inject.replaceStep = null;
+    }
+  });
+
+  test("tempRemove removes a matching file in the worktree root, keeps one with other facts, gives absent, and needs a revert marker", async () => {
+    const operationId = await marked("revert-unstaged");
+    const remove = async (who: string, name: string, bytes: string) => {
+      const reply = await runner.tempRemove({ operationId: who, repositoryId, name, expected: present(bytes) }, signal());
+      if (!("stop" in reply)) expect(ProcessReply.safeParse({ type: "tempRemove", callId: id(), ...reply }).success).toBe(true);
+      return reply;
+    };
+    writeFileSync(join(repo, ".merge_file_r1"), "temp\n");
+    await expect(remove(id(), ".merge_file_r1", "temp\n")).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(remove(operationId, "sub/.merge_file_r1", "temp\n")).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(await remove(operationId, ".merge_file_r1", "other\n")).toEqual({ result: "stale" });
+    expect(existsSync(join(repo, ".merge_file_r1"))).toBe(true);
+    expect(await remove(operationId, ".merge_file_r1", "temp\n")).toEqual({ result: "removed" });
+    expect(existsSync(join(repo, ".merge_file_r1"))).toBe(false);
+    expect(await remove(operationId, ".merge_file_r1", "temp\n")).toEqual({ result: "absent" });
+    expect(runner.frames.filter((f) => f.type === "tempRemove").length).toBe(4);
   });
 });

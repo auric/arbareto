@@ -1,0 +1,5 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "valid",
+  "text": "{\"path\":\"//host/repo/.git/index.lock\",\"remedy\":{\"text\":\"Another Git process or a crash left this lock. Remove it only after all Git tools stop, including other Arbareto windows.\"}}"
+}

@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"revert-lines\",\"plan\":{\"scope\":\"unstaged\",\"fileBytes\":\"c3JjL2EudHh0\",\"lines\":3},\"workbenchToken\":\"0f0f0f0f-0000-4000-8000-00000000000e\"}"
+}

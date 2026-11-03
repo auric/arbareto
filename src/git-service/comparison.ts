@@ -16,6 +16,7 @@ import {
   STATUS_LISTING_BYTES,
   STATUS_LISTING_RECORDS,
   WHOLE_FILE_STAGE_INPUT_BYTES,
+  WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
 import { NATIVE, PATH_RULES } from "../contracts/native-path";
 import { buildRemedyCommand, type RemedyCommand, type RemedyValue } from "../contracts/remedy-command";
@@ -24,7 +25,7 @@ import {
   attributeArgs,
   emptyTreeArgs,
   isObjectId,
-  lineEndingArgs,
+  lineEndingPathArgs,
   objectCheckArgs,
   stagedNumstatArgs,
   stagedPatchArgs,
@@ -35,14 +36,14 @@ import {
 } from "./commands";
 import { parseNumstat, parsePatch, type NumstatResult, type PatchHunk, type PatchResult } from "./diff-parser";
 import { holdsSharedRepository } from "./eligibility";
-import { createCollector, exitKind, RunnerRefusal, settleSteps, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
+import { createCollector, exitKind, RunnerRefusal, settleSteps, stepUnits, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
 import { noFileId } from "./index-lock";
 import { contextOf, isMissing, objectCheckInput, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
 import { readWorkingVersion, type ChangeSnapshot, type Checked, type Completeness, type LimitName, type ReadInstallation, type WorkingVersion } from "./snapshot";
 import { hasPromisor, OBJECT_MISSING_REMEDY } from "./status";
 import type { StatusRecord } from "./status-parser";
-import { decideSupport, parseAttributes, parseEolListing, type SupportDecision } from "./support";
+import { decideSupport, eolPaths, parseAttributes, parseEolListing, type SupportDecision } from "./support";
 import { parseMaybeBool, type ConfigEntry, type Trust } from "./trust";
 
 export type ComparisonScope = "head-to-index" | "index-to-worktree" | "empty-to-untracked";
@@ -75,6 +76,8 @@ export interface RetainedComparison {
   sharedRepository: boolean;
   // The contract §4 remedy of a refused file action, which `applyFile` returns with the refusal.
   remedy: WholeFileRemedy | null;
+  // The completeness of the result value.
+  completeness: Completeness;
 }
 
 export interface ComparisonTarget {
@@ -231,7 +234,12 @@ export interface ComparisonReaderOptions {
   trust: Trust;
   // Gets the ID of each retained comparison that eviction or a release drops.
   onDrop?: (comparisonId: string) => void;
+  // True when an accepted operation consumed an approval of the comparison. Contract §2 then answers each repeat with that operation.
+  spent?: (comparisonId: string) => boolean;
 }
+
+// 008 contract Δ5: the facts of a comparison are all its retained values except the IDs.
+const factsOf = ({ comparisonId: _, hunks, ...rest }: RetainedComparison) => ({ ...rest, hunks: hunks.map(({ hunkId: _id, ...h }) => h) });
 
 // The contract §4 whole-file remedy of an entry. Null for a WSL root without a route, or without a selected Git path.
 export type WholeFileRemedy = { text: string; command: string | null };
@@ -276,8 +284,9 @@ export function wholeFileRemedy(t: Pick<ComparisonTarget, "entry" | "workspace" 
   return { text: `PowerShell cannot pass this value safely, so Arbareto offers no command: ${shown === undefined ? "" : text(shown)}`, command: null };
 }
 
-export function createComparisonReader({ runner, trust, onDrop }: ComparisonReaderOptions) {
+export function createComparisonReader({ runner, trust, onDrop, spent }: ComparisonReaderOptions) {
   // Contract §5 "Retained comparison data": insertion order is age order. An evicted comparison gives UNKNOWN_TARGET to every later request that names it.
+  // 008 contract Δ5: a read with the same facts keeps a retained comparison with its IDs, and the comparison moves to the newest age slot.
   const retained = new Map<string, RetainedComparison>();
   let retainedBytes = 0;
   const drop = (id: string) => {
@@ -288,6 +297,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
     onDrop?.(id);
   };
   const retain = (c: RetainedComparison) => {
+    if (retained.delete(c.comparisonId)) retainedBytes -= c.patch.length;
     retained.set(c.comparisonId, c);
     retainedBytes += c.patch.length;
     for (const id of retained.keys()) {
@@ -403,14 +413,25 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
           if (parsed === null) throw fail(exit.exitCode === 0 ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED");
           attributes = parsed[0]!;
         };
-        // `lineEndingArgs` has no pathspec, so it lists the whole index once per comparison.
+        // T073: only the keys that `decideSupport` reads, in batches within the command-line bound of contract §6. The batches share one collector, so they run in series.
         const eol = async () => {
+          const batches: string[][] = [];
+          for (const key of eolPaths(path, scope === "empty-to-untracked").map((k) => decode(k)!)) {
+            const last = batches.at(-1);
+            if (last !== undefined && stepUnits(t, "read", lineEndingPathArgs([...last, key])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(key);
+            else batches.push([key]);
+          }
           const out = createCollector({ maxBytes: STATUS_LISTING_BYTES, maxRecords: STATUS_LISTING_RECORDS, separator: NUL });
-          const exit = await step(t, lineEndingArgs(), out);
-          // `out.records` also counts the separators after the cut.
-          if (out.limited) eolLimit = out.take().reduce((n, b) => n + (b === NUL ? 1 : 0), 0) >= STATUS_LISTING_RECORDS ? "STATUS_LISTING_RECORDS" : "STATUS_LISTING_BYTES";
-          else if (exit.exitCode !== 0) failedStep = true;
-          else eolOut = out.take();
+          for (const batch of batches) {
+            const exit = await step(t, lineEndingPathArgs(batch), out);
+            if (out.limited || exit.exitCode !== 0) {
+              // `out.records` also counts the separators after the cut.
+              if (out.limited) eolLimit = out.take().reduce((n, b) => n + (b === NUL ? 1 : 0), 0) >= STATUS_LISTING_RECORDS ? "STATUS_LISTING_RECORDS" : "STATUS_LISTING_BYTES";
+              else failedStep = true;
+              return;
+            }
+          }
+          eolOut = out.take();
         };
         const blobsRead = async () => {
           if (oids.length === 0) return;
@@ -526,7 +547,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
       const kept = patch.ok ? rawPatch : new Uint8Array();
       const completeness: Completeness = !patch.ok && patch.completeness.state === "limited" ? patch.completeness : eolLimit !== null ? { state: "limited", code: "OUTPUT_LIMIT", reason: eolLimit } : { state: "complete" };
       const remedy = remedyOf(t, path, fileAction);
-      const comparison: RetainedComparison = {
+      const fresh: RetainedComparison = {
         comparisonId: crypto.randomUUID(),
         repositoryId: w.repositoryId,
         snapshotId: t.snapshot.snapshotId,
@@ -542,8 +563,11 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         workingVersion,
         sharedRepository: w.wsl !== undefined && holdsSharedRepository(lst.entries),
         remedy,
+        completeness,
       };
       if (t.signal.aborted) return { result: "canceled" };
+      const facts = factsOf(fresh);
+      const comparison = [...retained.values()].find((c) => spent?.(c.comparisonId) !== true && Bun.deepEquals(factsOf(c), facts, true)) ?? fresh;
       retain(comparison);
       const value = {
         comparisonId: comparison.comparisonId,
@@ -553,7 +577,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         completeness,
         // Contract §5: the canonical patch travels as base64 of its raw bytes.
         patch: b64(kept),
-        hunks: hunks.map(({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest }) => ({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest })),
+        hunks: comparison.hunks.map(({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest }) => ({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest })),
         support: decision === null ? null : decision.supported ? "supported" : (decision as { reason: string }).reason,
         fileAction: actionValue(fileAction),
         remedy,

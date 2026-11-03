@@ -100,6 +100,9 @@ export const SYNC_OUTPUT_LIMIT_REASONS = ["SYNC_REMOTES"] as const;
 // Contract Δ9: `PUTTY_UNAVAILABLE` names the program. O-7: Pageant and PuTTYgen sit in the plink folder.
 export const PUTTY_PROGRAMS = ["plink", "pageant", "puttygen"] as const;
 
+// Feature 008 contract Δ9: the `WORKBENCH_UNAVAILABLE` reasons of one file of a revert review.
+export const REVERT_FILE_REASONS = ["untracked", "in-the-way", "attributes", "ident", "unstaged-changes", "not-regular", "hard-link", "read-only", "encrypted", "owner", "security", "file-attributes", "xattr"] as const;
+
 // Feature 004 contract Δ9: the reasons of the new codes.
 export const WORKBENCH_UNAVAILABLE_REASONS = [
   "detached",
@@ -154,6 +157,9 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "ignore-not-utf8",
   "ignore-nul",
   "ignore-lone-cr",
+  // Feature 008 contract Δ9. `limit` exists (004).
+  ...REVERT_FILE_REASONS,
+  "nothing-to-revert",
 ] as const;
 export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];
 export const UNTRACKED_IN_WAY_REASONS = ["untracked-in-way"] as const;
@@ -165,7 +171,8 @@ export const BLAME_UNAVAILABLE_REASONS = ["no-history", "binary", "submodule", "
 export type BlameUnavailableReason = (typeof BLAME_UNAVAILABLE_REASONS)[number];
 export const SUBMODULE_UNAVAILABLE_REASONS = ["not-submodule", "submodule-not-initialized", "path"] as const;
 export type SubmoduleUnavailableReason = (typeof SUBMODULE_UNAVAILABLE_REASONS)[number];
-export const STALE_REVIEW_REASONS = ["files-changed", "ignore-changed"] as const;
+// Feature 008 contract Δ9 adds `revert-changed`.
+export const STALE_REVIEW_REASONS = ["files-changed", "ignore-changed", "revert-changed"] as const;
 export const UNKNOWN_TARGET_REASONS = ["absent"] as const;
 
 // Feature 006 contract Δ9: the reasons of `DICTIONARY_UNAVAILABLE`.

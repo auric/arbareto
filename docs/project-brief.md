@@ -98,7 +98,7 @@ Operation progress / errors / command details (collapsible)
 
 History mode replaces the changes workspace with a commit graph and a selected-revision inspector; preserve repository, filter, scroll and selection state. Offer a bottom-inspector option for narrow windows rather than forcing tiny three-column panes.
 
-Use explicit labels: Stage selected lines, Unstage, Discard changes, Continue rebase. Keep destructive commands out of the primary toolbar. Provide keyboard and context-menu equivalents. Preserve Windows caption behavior, snapping, accessibility, DPI scaling, and IME input. Review screenshots of populated, empty, loading, error and conflict states, not just the attractive happy path.
+Use explicit labels: Stage selected lines, Unstage, Revert file, Continue rebase. Keep destructive commands out of the primary toolbar. Provide keyboard and context-menu equivalents. Preserve Windows caption behavior, snapping, accessibility, DPI scaling, and IME input. Review screenshots of populated, empty, loading, error and conflict states, not just the attractive happy path.
 
 ## Implementation boundaries
 

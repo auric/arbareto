@@ -31,6 +31,7 @@ These features work on the `main` branch today.
 - Git GUI history of the whole repository, with a commit graph in branch lanes and the details of the selected commit.
 - Commit message search, with steps through the matches in the full graph.
 - Working changes and a diff view. Stage and unstage files, folders, hunks, or selected lines.
+- Revert selected lines, hunks, files, or all unstaged changes, after a confirmation.
 - Commit, amend the last commit, and commit and push in one step.
 - Fetch, pull, and push with the upstream branch. You choose the default pull mode. Ahead and behind counts show on each branch.
 - Recovery from a rejected push, with force push with lease after a confirmation.

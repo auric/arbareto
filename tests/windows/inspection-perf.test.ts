@@ -832,6 +832,12 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
           const marked = changesItem(`${MARKED}, submodule, modified, untracked content`);
           const untracked = join(repo, MARKED, "t108.txt");
           const runs: number[] = [];
+          // `watchIpc` misses the marks read of the open. At most one marks read runs, so the end of a recorded read proves that read ended.
+          writeFileSync(untracked, "u\n");
+          writeFileSync(join(repo, PARENT_FILE), "p warm-up\n");
+          await press(s.c, "F5");
+          await until<boolean>(s.c, "the warm-up mark", marked, (v) => v);
+          await s.ipc.wait("read_submodule_work", 1, STEP_LIMIT_MS);
           for (let run = 0; run <= RUNS; run++) {
             // The start state: no parent record and no mark. The marks read of the clean snapshot removes the mark (plan.md D19 "Rows across snapshots").
             rmSync(untracked, { force: true });
@@ -846,8 +852,9 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
               writeFileSync(join(repo, PARENT_FILE), `p ${run}\n`);
               await press(s.c, "F5");
             });
+            // No marks read was pending at `reads`, so the mark comes from a read of this run.
+            expect({ run, ended: s.ipc.finished("read_submodule_work").length - reads > 0 }).toEqual({ run, ended: true });
             if (mark! < list!) throw new Error(`run ${run}: the mark showed ${list! - mark!} ms before the Changes list`);
-            console.log(`OBSERVATION ${TASK}: T108 ${count} submodules run ${run}: ${s.ipc.finished("read_submodule_work").length - reads} marks reads ended`);
             if (run > 0) runs.push(mark! - list!);
           }
           const bound = MARK_MS_PER_SUBMODULE * count;

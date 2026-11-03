@@ -717,6 +717,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     workingReply: null as ((request: WorkingReplaceRequest) => WorkingReplaceReply | undefined) | null,
     // Feature 008: the wait for a `working` replace reply after `cancel`, as the native runner has it. Null: the reply always arrives.
     cancelWaitMs: null as number | null,
+    // Feature 008 T075: a failure NTSTATUS in place of the on-disk name query of each Windows `fileFacts` request with `detail`.
+    exactNameStatus: null as number | null,
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -1952,7 +1954,7 @@ export function createBunRunner(options: BunRunnerOptions) {
             fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead: facts.map(() => 0) });
             return facts;
           }
-          const { facts, bytesRead, statuses } = readFileFacts(roots, request.digest, request.files, { detail: request.detail === true, stream: request.stream === true });
+          const { facts, bytesRead, statuses } = readFileFacts(roots, request.digest, request.files, { detail: request.detail === true, stream: request.stream === true, nameStatus: inject.exactNameStatus ?? undefined });
           fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead, statuses });
           return facts;
         },

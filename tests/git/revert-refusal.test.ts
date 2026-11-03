@@ -118,8 +118,8 @@ interface RefusalCase {
   // A function takes the shown read, for a value that depends on the rows of that read.
   expect?: Partial<Record<Act, Expected | ((read: WorkspaceResult) => Expected)>>;
   // Runs after the payload and the state read, right before the review. `disarm` runs after it.
-  arm?: (repo: string) => void;
-  disarm?: (repo: string) => void;
+  arm?: (repo: string, service: Service) => void;
+  disarm?: (repo: string, service: Service) => void;
   trust?: boolean;
   // One status read before the matrix, for a host program that changes the repository at its first run.
   warm?: boolean;
@@ -142,12 +142,12 @@ async function expectRefusal(service: Service, r: RegistrationResult, repo: stri
   const before = state(repo);
   const frames = writeFrames(service);
   const calls = service.runner.calls.length;
-  k.arm?.(repo);
+  k.arm?.(repo, service);
   let response: ServiceResponse<unknown>;
   try {
     response = await review(service, r, read, payload);
   } finally {
-    k.disarm?.(repo);
+    k.disarm?.(repo, service);
   }
   const label = { reason: k.reason, act };
   const expected = expectedOf(k, act, read);
@@ -697,6 +697,20 @@ describe("revert refusals: the file facts (plan.md D8, D9, data-model §7)", () 
     value: { reason: "unreadable" },
     arm: (r) => denyRead(join(r, "a.txt"), true),
     disarm: (r) => denyRead(join(r, "a.txt"), false),
+  });
+
+  // T075 (spec FR-038, FR-001): a failed on-disk name read is an unknown, not the letter-case reason `path`. MS-ERREF 2.3.1: STATUS_ACCESS_DENIED.
+  refusalCase({
+    name: "unreadable-exact-name",
+    reason: "unreadable",
+    code: "WORKBENCH_UNAVAILABLE",
+    needs: ["windows-path-rules"],
+    files: AB,
+    after: changeAB,
+    paths: ALL_FIVE("a.txt", "b.txt"),
+    value: { reason: "unreadable" },
+    arm: (_, service) => void (service.runner.inject.exactNameStatus = 0xc000_0022),
+    disarm: (_, service) => void (service.runner.inject.exactNameStatus = null),
   });
 });
 

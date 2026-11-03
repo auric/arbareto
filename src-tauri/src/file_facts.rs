@@ -533,14 +533,14 @@ const NO_NORMALIZED_NAME: [NTSTATUS; 4] = [
 ];
 
 /// Plan.md D8: true when an OS fact proves that each component of `path` has its requested name on disk, unit for unit.
-/// `held` holds the root and the handle of each component. False when no route proves it. Only a stop gives an error.
+/// `held` holds the root and the handle of each component. False when no route proves it.
+/// A failed query or open, a file ID that names no file, or a malformed entry gives an error status.
+/// The fact is then an unknown and not a letter-case fact (spec FR-038).
 fn exact(held: &[OwnedHandle], path: &[String], stop: &AtomicBool) -> Result<bool, NTSTATUS> {
-    exact_from(
-        normalized_name(held.last().expect("the target"), stop),
-        held,
-        path,
-        stop,
-    )
+    let first = normalized_name(held.last().expect("the target"), stop);
+    #[cfg(test)]
+    let first = tests::FIRST_ROUTE.get().map_or(first, Err);
+    exact_from(first, held, path, stop)
 }
 
 /// `first` is the result of the first route. Tests give it a status to reach the second route.
@@ -552,7 +552,6 @@ fn exact_from(
 ) -> Result<bool, NTSTATUS> {
     match first {
         Ok(units) => Ok(same_tail(&units, path)),
-        Err(STATUS_CANCELLED) => Err(STATUS_CANCELLED),
         Err(status) if NO_NORMALIZED_NAME.contains(&status) => {
             for (at, name) in path.iter().enumerate() {
                 if !entry_name(&held[at], name, &held[at + 1], stop)? {
@@ -561,7 +560,7 @@ fn exact_from(
             }
             Ok(true)
         }
-        Err(_) => Ok(false),
+        Err(status) => Err(status),
     }
 }
 
@@ -621,25 +620,19 @@ fn entry_name(
     child: &OwnedHandle,
     stop: &AtomicBool,
 ) -> Result<bool, NTSTATUS> {
-    let id = match query::<FILE_INTERNAL_INFORMATION>(child, FileInternalInformation, stop) {
-        Ok(info) => info.IndexNumber,
-        Err(STATUS_CANCELLED) => return Err(STATUS_CANCELLED),
-        Err(_) => return Ok(false),
-    };
+    let id = query::<FILE_INTERNAL_INFORMATION>(child, FileInternalInformation, stop)?.IndexNumber;
     if id == 0 || id == -1 {
-        return Ok(false);
+        return Err(STATUS_UNSUCCESSFUL);
     }
     // A new handle: the query keeps the pattern of its first call for the handle (Microsoft Learn `NtQueryDirectoryFile`).
-    let Ok(list) = create_relative(
+    let list = create_relative(
         raw(parent),
         "",
         FILE_LIST_DIRECTORY | SYNCHRONIZE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         FILE_OPEN,
         FILE_SYNCHRONOUS_IO_NONALERT,
-    ) else {
-        return Ok(false);
-    };
+    )?;
     let mut pattern_units: Vec<u16> = name.encode_utf16().collect();
     // `is_component` keeps the name within 255 units, so the byte length fits a `u16`.
     let length = (pattern_units.len() * 2) as u16;
@@ -676,7 +669,7 @@ fn entry_name(
             break;
         }
         if status.is_err() {
-            return Ok(false);
+            return Err(status);
         }
         // SAFETY: `buffer` is live, and the length stays within it.
         let bytes = unsafe {
@@ -699,12 +692,12 @@ fn entry_name(
                     8,
                 ),
             ) else {
-                return Ok(false);
+                return Err(STATUS_UNSUCCESSFUL);
             };
             let next = u32::from_le_bytes(next.try_into().expect("4 bytes")) as usize;
             let size = u32::from_le_bytes(size.try_into().expect("4 bytes")) as usize;
             let Some(stored) = field(name_at, size).filter(|_| size.is_multiple_of(2)) else {
-                return Ok(false);
+                return Err(STATUS_UNSUCCESSFUL);
             };
             entries.push((
                 i64::from_le_bytes(file_id.try_into().expect("8 bytes")),
@@ -1438,6 +1431,11 @@ pub(crate) mod tests {
     /// A stop flag that no test sets.
     static RUN: AtomicBool = AtomicBool::new(false);
 
+    thread_local! {
+        /// A status in place of the first route of `exact` on this thread.
+        pub(super) static FIRST_ROUTE: std::cell::Cell<Option<NTSTATUS>> = const { std::cell::Cell::new(None) };
+    }
+
     /// A worktree with `.git/hooks/pre-commit` ("abc"), and a folder outside the roots with its own `pre-commit`.
     struct Repo {
         worktree: PathBuf,
@@ -1646,7 +1644,7 @@ pub(crate) mod tests {
     }
 
     /// Feature 008 T066 (plan.md D8): each status of `NO_NORMALIZED_NAME` takes the second route, the directory entry under the held parent.
-    /// Another status of the first route proves nothing. A rename after the open leaves no entry or an entry of another file.
+    /// Another status of the first route is an unknown. A rename after the open leaves no entry or an entry of another file.
     #[test]
     fn the_directory_entry_decides_when_the_volume_has_no_normalized_name() {
         let repo = Repo::new();
@@ -1671,7 +1669,7 @@ pub(crate) mod tests {
                 &names(&path),
                 &RUN
             ),
-            Ok(false),
+            Err(STATUS_ACCESS_DENIED),
             "another status of the first route"
         );
         let opened = held(&repo, &path);
@@ -1693,6 +1691,35 @@ pub(crate) mod tests {
             Ok(false),
             "the entry of the name is another file"
         );
+    }
+
+    /// Feature 008 T075 (spec FR-038 `unreadable`, FR-001): a failed name check gives an `error` fact, not `exactName: false`.
+    /// The deny entry for Everyone fails the list open of the second route on the folder `hooks`.
+    #[test]
+    fn a_failed_name_check_gives_an_error_fact() {
+        let repo = Repo::new();
+        let roots = [
+            repo.worktree.as_path(),
+            repo.git.as_path(),
+            repo.git.as_path(),
+        ];
+        let read = Read {
+            detail: true,
+            stream: false,
+            content: false,
+        };
+        let files = vec![(GIT, names(&["hooks", "pre-commit"]))];
+        let fact = || json!(super::walk_read(roots, true, read, &files, &RUN, &|_| {})[0]);
+        let denied = json!({ "kind": "error", "component": 2, "code": "access-denied" });
+        FIRST_ROUTE.set(Some(STATUS_ACCESS_DENIED));
+        assert_eq!(fact(), denied, "the first route fails");
+        FIRST_ROUTE.set(Some(STATUS_NOT_SUPPORTED));
+        assert_eq!(fact()["exactName"], json!(true), "the second route");
+        let _hooks = Denied::new(repo.git.join("hooks"), "RD");
+        for status in NO_NORMALIZED_NAME {
+            FIRST_ROUTE.set(Some(status));
+            assert_eq!(fact(), denied, "{status:?}: the list open fails");
+        }
     }
 
     /// Feature 008 T066 on a real FAT or exFAT volume. `ARBARETO_TEST_FAT_DIR` names an empty folder on that volume.

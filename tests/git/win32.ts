@@ -638,7 +638,7 @@ export function readFileFacts(
   roots: Record<FactRoot, string>,
   digest: boolean,
   files: FileFactsRequest["files"],
-  options: { detail?: boolean; stream?: boolean } = {},
+  options: { detail?: boolean; stream?: boolean; nameStatus?: number } = {},
 ): { facts: FileFact[]; bytesRead: number[]; statuses: (number | null)[] } {
   // The digested bytes that the request can still take. Null after the first file that passed the total.
   let budget: number | null = TRUST_DIGEST_TOTAL_BYTES;
@@ -677,7 +677,8 @@ export function readFileFacts(
       if (last) {
         const fact = fileFact(result.handle, component, digest, opened, read);
         if (options.detail !== true || fact.kind !== "file") return fact;
-        return { ...fact, exactName: exactName(result.handle, path) };
+        const exact = exactName(result.handle, path);
+        return typeof exact === "number" ? errorFact(component, exact) : { ...fact, exactName: exact };
       }
       parent = result.handle;
     }
@@ -685,13 +686,15 @@ export function readFileFacts(
   }
 
   // The first route of src-tauri/src/file_facts.rs `exact`: MS-FSCC 2.4.35 gives each component of the open in the letter case stored on disk.
-  // shortcut: the double has no second route, so a failed query proves nothing and gives false. The fixture volumes are NTFS. Add the route for a test on another file system.
-  function exactName(handle: Pointer, path: readonly string[]): boolean {
+  // A failed query gives its status, which the caller turns into an `error` fact (feature 008 T075).
+  // shortcut: the double has no second route, so each failed query is an unknown. The fixture volumes are NTFS. Add the route for a test on another file system.
+  function exactName(handle: Pointer, path: readonly string[]): boolean | number {
     const info = new Uint8Array(NAME_INFORMATION_BYTES);
-    if (failed(query(handle, info, FILE_NORMALIZED_NAME_INFORMATION))) return false;
+    const status = options.nameStatus ?? query(handle, info, FILE_NORMALIZED_NAME_INFORMATION);
+    if (failed(status)) return status;
     const view = new DataView(info.buffer);
     const length = view.getUint32(0, true);
-    if (length % 2 !== 0 || length > info.length - 4) return false;
+    if (length % 2 !== 0 || length > info.length - 4) return STATUS_UNSUCCESSFUL;
     let text = "";
     for (let at = 4; at < 4 + length; at += 2) text += String.fromCharCode(view.getUint16(at, true));
     const disk = text.split("\\");

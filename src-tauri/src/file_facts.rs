@@ -534,7 +534,8 @@ const NO_NORMALIZED_NAME: [NTSTATUS; 4] = [
 
 /// Plan.md D8: true when an OS fact proves that each component of `path` has its requested name on disk, unit for unit.
 /// `held` holds the root and the handle of each component. False when no route proves it.
-/// A failed query or open gives its status, so the fact is an unknown and not a letter-case fact (spec FR-038).
+/// A failed query or open, a file ID that names no file, or a malformed entry gives an error status.
+/// The fact is then an unknown and not a letter-case fact (spec FR-038).
 fn exact(held: &[OwnedHandle], path: &[String], stop: &AtomicBool) -> Result<bool, NTSTATUS> {
     let first = normalized_name(held.last().expect("the target"), stop);
     #[cfg(test)]
@@ -621,7 +622,7 @@ fn entry_name(
 ) -> Result<bool, NTSTATUS> {
     let id = query::<FILE_INTERNAL_INFORMATION>(child, FileInternalInformation, stop)?.IndexNumber;
     if id == 0 || id == -1 {
-        return Ok(false);
+        return Err(STATUS_UNSUCCESSFUL);
     }
     // A new handle: the query keeps the pattern of its first call for the handle (Microsoft Learn `NtQueryDirectoryFile`).
     let list = create_relative(
@@ -691,12 +692,12 @@ fn entry_name(
                     8,
                 ),
             ) else {
-                return Ok(false);
+                return Err(STATUS_UNSUCCESSFUL);
             };
             let next = u32::from_le_bytes(next.try_into().expect("4 bytes")) as usize;
             let size = u32::from_le_bytes(size.try_into().expect("4 bytes")) as usize;
             let Some(stored) = field(name_at, size).filter(|_| size.is_multiple_of(2)) else {
-                return Ok(false);
+                return Err(STATUS_UNSUCCESSFUL);
             };
             entries.push((
                 i64::from_le_bytes(file_id.try_into().expect("8 bytes")),

@@ -124,14 +124,17 @@ async function mount(initial: Selection) {
   let respond: (action: FileAction) => Promise<FileActionResult> = never;
   let setSelection!: Dispatch<SetStateAction<Selection>>;
   let setFlags!: Dispatch<SetStateAction<Flags>>;
+  let setList!: Dispatch<SetStateAction<ChangeEntry[]>>;
   function Harness() {
     const [selection, select] = useState<Selection>(initial);
+    const [list, listed] = useState([conflicted, ...entries]);
+    setList = listed;
     const [flags, flag] = useState<Flags>({ fileActionRunning: false, operationRunning: false, modalOpen: false, menuOpen: false, toolbarSuccess: null });
     setSelection = select;
     setFlags = flag;
     return (
       <ChangesPane
-        entries={[conflicted, ...entries]}
+        entries={list}
         selection={selection}
         onSelect={(entryId: string) => {
           reads.push(entryId);
@@ -164,6 +167,15 @@ async function mount(initial: Selection) {
     arrive: (entryId: string, comparisonId: string) => act(async () => setSelection((s) => (s?.entryId === entryId ? { entryId, comparisonId } : s))),
     select: (selection: Selection) => act(async () => setSelection(selection)),
     flag: (fields: Partial<Flags>) => act(async () => setFlags((f) => ({ ...f, ...fields }))),
+    // A reconcile read: a new snapshot gives `e` a new entryId, and the selection follows its category and path with a pending comparison (requests.ts `commit`).
+    remap: async (e: ChangeEntry) => {
+      const next = { ...e, entryId: id() };
+      await act(async () => {
+        setList((l) => l.map((x) => (x === e ? next : x)));
+        setSelection((s) => (s?.entryId === e.entryId ? { entryId: next.entryId, comparisonId: null } : s));
+      });
+      return next;
+    },
   };
 }
 
@@ -240,6 +252,17 @@ describe("Stage key", () => {
     await pane.arrive(unstagedB.entryId, comparisonId);
     expect(pane.actions).toHaveLength(1);
     expect(pane.actions[0]).toMatchObject({ direction: "stage", comparisonId });
+  });
+
+  test("a pending Space survives a reconcile read that gives the same category and path a new entryId, and runs with the new entryId and comparison ID (004 T135)", async () => {
+    const pane = await mount({ entryId: unstagedA.entryId, comparisonId: id() });
+    await focus(option(unstagedB));
+    await space(option(unstagedB));
+    expect(pane.actions).toEqual([]);
+    const remapped = await pane.remap(unstagedB);
+    const comparisonId = id();
+    await pane.arrive(remapped.entryId, comparisonId);
+    expect(pane.actions).toEqual([{ direction: "stage", comparisonId, entryId: remapped.entryId } as FileAction]);
   });
 
   test("a focus or selection change before the comparison arrives cancels the pending action", async () => {

@@ -505,6 +505,8 @@ export function workspaceIds(entry: { category: string; modes?: readonly string[
 
 export type GitlinkRead = { value: GitlinkFact } | ReadFailure;
 const NOT_LOCATED: GitlinkRead = { value: { refused: "submodule-not-located" } };
+// Contract §6 "File facts": a path that is no valid UTF-8 has no components. `workingParts` lets it reach rule 2.
+const PATH_REFUSED: GitlinkRead = { value: { refused: "path" } };
 const HEAD_FAILED: { code: ErrorCode } = { code: "GIT_FAILED" };
 
 // Rule 2 step 1 (plan.md D11 check 3) on the snapshot index entries.
@@ -514,7 +516,7 @@ const gitlinkEntry = (index: readonly IndexEntry[], path: Uint8Array): boolean =
 // The caller runs step 1 first. A checkpoint covers it with the bound index digest.
 export async function submoduleHead(runner: GitRunner, t: ReadTarget & { installation: Pick<ReadInstallation, "selectedPath"> }, path: Uint8Array): Promise<GitlinkRead> {
   const parts = componentsOf(path);
-  if (parts === null) return NOT_LOCATED;
+  if (parts === null) return PATH_REFUSED;
   const facts = await requestFacts(runner, t.operationId, t.workspace, false, [{ root: "worktreeRoot", path: parts }, { root: "worktreeRoot", path: [...parts, ".git"] }], t.signal);
   if (t.signal.aborted) return { stop: "canceled" };
   if (!Array.isArray(facts)) return facts;

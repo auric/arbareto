@@ -333,6 +333,7 @@ describe("gitlink rows (feature 005 contract Δ4, plan.md D20)", () => {
   test("gitlink {refused} gives its reason, and a missing or malformed gitlink fact gives MALFORMED_GIT_OUTPUT", () => {
     expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "submodule-unborn" } }))).toEqual(refused("submodule-unborn"));
     expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "submodule-not-located" } }))).toEqual(refused("submodule-not-located"));
+    expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "path" } }))).toEqual(refused("path"));
     for (const gitlink of [null, undefined, { head: "4".repeat(64) }, { head: "X".repeat(40) }]) {
       expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink }))).toEqual({ direction: null, code: "MALFORMED_GIT_OUTPUT" });
     }

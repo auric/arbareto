@@ -2250,7 +2250,8 @@ export const ReadSubmoduleChangeResult = z.union([SubmoduleChange, z.strictObjec
 export type SubmoduleChange = z.infer<typeof SubmoduleChange>;
 
 // Data-model §16 `readSubmoduleWork`, contract Δ9 "Submodule work reasons". `failed` carries the error code.
-// Each of the first SUBMODULE_WORK_TARGETS gitlinks in index order has one entry, then each moved gitlink without a stage-0 gitlink entry. `limited` counts the rest, which have none.
+// Each of the first SUBMODULE_WORK_TARGETS gitlinks in index order has one entry. Each unlisted moved gitlink follows with one entry.
+// The list holds at most SUBMODULE_WORK_TARGETS entries. `limited` counts the rest, which have none.
 const SubmodulePathFields = { pathBytes: PathBytes, path: z.string() };
 const SubmoduleWorkEntry = z
   .union([

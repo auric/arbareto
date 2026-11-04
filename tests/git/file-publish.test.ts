@@ -548,6 +548,42 @@ describe("T121 Stage file of a moved gitlink that the D11 checks do not locate (
   );
 });
 
+// T121 analyze finding T1: one not-located gitlink refuses the whole set (spec FR-081, 004 FR-038).
+describe("T121 Stage all changes with a moved gitlink that the D11 checks do not locate (spec FR-081, contract Δ4)", () => {
+  caseTest("T121", `check 5 in Stage all changes refuses the whole set with ${NOT_LOCATED}, names the gitlink, and keeps the index SHA-256; without it the set stages`, SHELL, () =>
+    withService({ name: "t121-all" }, async (service) => {
+      const sup = world();
+      writeFileSync(join(sup, "s.txt"), "changed\n");
+      const sub = join(sup, "sub");
+      const inner = join(sub, "inner");
+      mkdirSync(inner);
+      git(sub, ["config", "core.worktree", inner.replaceAll("\\", "/")]);
+      expect(parentRecord(sup, "sub")).toBe(MOVED_RECORD);
+      const index = rawIndexDigest(gitPath(), sup);
+      const subs = submoduleFacts(sup);
+      const { repositoryId } = await service.register(sup);
+      let read = await readOk(service, repositoryId);
+      let changes = changesOf(read);
+      expect(changes.map((e) => `${e.category} ${e.path}`).sort()).toEqual(["unstaged s.txt", "unstaged sub"]);
+      const refused = await applyFiles(service, repositoryId, read, changes.map((e) => e.entryId));
+      expect({ ...refusal(refused), entryId: (refused.result as { entryId?: string } | undefined)?.entryId }).toEqual({ code: "UNSUPPORTED_COMPARISON", reason: NOT_LOCATED, entryId: changes.find((e) => e.path === "sub")!.entryId });
+      expect(updatesOf(service, refused.operationId!)).toEqual([]);
+      expect({ index: rawIndexDigest(gitPath(), sup), subs: submoduleFacts(sup) }).toEqual({ index, subs });
+      // Control: without the setting, the same set stages the file and the submodule HEAD.
+      git(sub, ["config", "--unset", "core.worktree"]);
+      read = await readOk(service, repositoryId);
+      changes = changesOf(read);
+      const staged = await applyFiles(service, repositoryId, read, changes.map((e) => e.entryId));
+      expect(outcome(staged)).toEqual(SUCCEEDED);
+      expect(updatesOf(service, staged.operationId!)).toEqual([
+        { args: ADD_STDIN, input: "s.txt\0" },
+        { args: INDEX_INFO, input: `160000 ${headOf(sub)}\tsub\0` },
+      ]);
+    }),
+    T118_MS,
+  );
+});
+
 // Contract §5: a status bound that cuts the index listing leaves `indexEntries` empty. Finding 1 of the T118 review.
 describe("T118 a cut index listing (contract §5)", () => {
   // The real `ls-files -z --stage -v` records, then records past STATUS_LISTING_RECORDS. The gitlink record comes before the cut, so its entry keeps its flags.

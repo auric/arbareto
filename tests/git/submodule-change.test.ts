@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { ReadSubmoduleChangeResult, ReadSubmoduleWorkResult } from "../../src/contracts/envelope";
 import { FILE_FACT_COMPONENT_UNITS, STATUS_LISTING_RECORDS, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
 import { statusArgs } from "../../src/git-service/commands";
+import { submoduleHead } from "../../src/git-service/submodule-change";
 import { printOrigin } from "../origin";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { git, gitPath, gitText, readOk, withService } from "./hunk-harness";
@@ -597,7 +598,7 @@ const indexListing = (sup: string, path: string, drop: boolean) =>
   );
 
 // Both reads of the unstaged `lib` row of one snapshot. `listing` replaces the snapshot index listing.
-async function bothReads(service: Service, sup: string, listing?: Buffer): Promise<{ change: Change; lib: WorkEntry | undefined }> {
+async function bothReads(service: Service, sup: string, listing?: Buffer): Promise<{ change: Change; lib: WorkEntry | undefined; work: Work }> {
   const { repositoryId } = await service.register(sup);
   if (listing !== undefined) service.runner.inject.stdout = (call) => (call.arguments.includes("ls-files") && call.arguments.includes("-v") ? listing : undefined);
   const read = await readOk(service, repositoryId).finally(() => (service.runner.inject.stdout = undefined));
@@ -606,10 +607,10 @@ async function bothReads(service: Service, sup: string, listing?: Buffer): Promi
   const change = changed(await service.request<Change>("readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.snapshotId, entryId: entry!.entryId } }, envelope(read, repositoryId)));
   const work = await service.request<Work>("readSubmoduleWork", { snapshotId: read.snapshotId }, envelope(read, repositoryId));
   expect({ state: work.state, code: work.code, parsed: ReadSubmoduleWorkResult.safeParse(work.result).success }).toEqual({ state: "succeeded", code: undefined, parsed: true });
-  return { change, lib: work.result!.entries.find((e) => e.path === "lib") };
+  return { change, lib: work.result!.entries.find((e) => e.path === "lib"), work: work.result! };
 }
 const NOT_LOCATED = { change: { state: "not-located" }, kind: "submodule", lib: "not-located" };
-const shape = (r: Awaited<ReturnType<typeof bothReads>>): unknown => ({ change: r.change.state.state === "commits" ? { state: "commits" } : r.change.state, kind: r.change.kind, lib: r.lib?.state });
+const shape = (r: Pick<Awaited<ReturnType<typeof bothReads>>, "change" | "lib">): unknown => ({ change: r.change.state.state === "commits" ? { state: "commits" } : r.change.state, kind: r.change.kind, lib: r.lib?.state });
 
 describe("a moved gitlink that the D11 checks do not locate (spec FR-078, contract Δ3)", () => {
   caseTest("T121", "check 4: a junction at the submodule path gives not-located for both reads; the real folder gives commits and checked", ["shell-double", "ntfs-junction"], () =>
@@ -656,6 +657,53 @@ describe("a moved gitlink that the D11 checks do not locate (spec FR-078, contra
     }),
     TIMEOUT_MS,
   );
+});
+
+// T121 analyze finding T1: the place and the bound of the entries of unlisted moved gitlinks (contract Δ3, data-model §16).
+describe("readSubmoduleWork entries of unlisted moved gitlinks (contract Δ3 step 1, data-model §16)", () => {
+  // `<path>` as a copy of the library and a stage-0 gitlink at its first commit, without a `.gitmodules` entry.
+  const addGitlinks = (w: { sup: string; lib: string; c: string[] }, paths: readonly string[]) => {
+    for (const path of paths) cpSync(w.lib, join(w.sup, ...path.split("/")), { recursive: true });
+    git(w.sup, ["update-index", "--add", "--index-info"], { input: Buffer.from(paths.map((p) => `160000 ${w.c[0]!}\t${p}\n`).join("")) });
+  };
+
+  caseTest("T121", "an unlisted moved gitlink comes after the index entries; with its index entry it keeps its index place", SHELL, () =>
+    withService({ name: "t121-order" }, async (service) => {
+      const w = world("order");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      addGitlinks(w, ["z"]);
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      const dropped = await bothReads(service, w.sup, indexListing(w.sup, "lib", true));
+      expect(dropped.work.entries.map((e) => `${e.path} ${e.state}`)).toEqual(["z checked", "lib not-located"]);
+      const kept = await bothReads(service, w.sup, indexListing(w.sup, "lib", false));
+      expect(kept.work.entries.map((e) => `${e.path} ${e.state}`)).toEqual(["lib checked", "z checked"]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T121", "256 targets and one unlisted moved gitlink give limited 1 and no entry for it; with its index entry it is the first target", SHELL, () =>
+    withService({ name: "t121-bound" }, async (service) => {
+      const w = world("bound");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      addGitlinks(w, Array.from({ length: SUBMODULE_WORK_TARGETS }, (_, i) => `m/${String(i).padStart(3, "0")}`));
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      const dropped = await bothReads(service, w.sup, indexListing(w.sup, "lib", true));
+      expect({ entries: dropped.work.entries.length, limited: dropped.work.limited, lib: dropped.lib }).toEqual({ entries: SUBMODULE_WORK_TARGETS, limited: 1, lib: undefined });
+      // Control: `lib` sorts before `m/`, so it is a target, and the last `m/` gitlink is past the bound.
+      const kept = await bothReads(service, w.sup, indexListing(w.sup, "lib", false));
+      expect({ entries: kept.work.entries.length, limited: kept.work.limited, lib: kept.lib?.state }).toEqual({ entries: SUBMODULE_WORK_TARGETS, limited: 1, lib: "checked" });
+    }),
+    TIMEOUT_MS,
+  );
+});
+
+// T121 analyze finding U1: `workingParts` passes a path that is no valid UTF-8 (WSL), so rule 2 refuses it with reason `path`.
+describe("submoduleHead of a path without components (contract §6 \"File facts\", plan.md D20 rule 2)", () => {
+  caseTest("T121", "a path that is no valid UTF-8 gives {refused: path} before any Git process", [], async () => {
+    const runner = { run: () => { throw new Error("no Git process may start"); } };
+    const t = { operationId: "o", signal: new AbortController().signal, workspace: {}, installation: { selectedPath: "git" } };
+    expect(await submoduleHead(runner as never, t as never, Uint8Array.of(0x6c, 0xff))).toEqual({ value: { refused: "path" } });
+  });
 });
 
 // ---- T108: SC-012 cost on the service ----

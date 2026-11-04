@@ -40,7 +40,7 @@ export interface FileActionInput {
 }
 
 // Feature 005 data-model §17: `head` is the full object ID of the submodule HEAD.
-export type GitlinkFact = { head: string } | { refused: "submodule-not-located" | "submodule-unborn" };
+export type GitlinkFact = { head: string } | { refused: "path" | "submodule-not-located" | "submodule-unborn" };
 
 // A moved gitlink stages as an `--index-info` line (feature 005 contract Δ4). Every other path goes to `update-index --add --remove --stdin`.
 export type StagePath = { path: Uint8Array; mode?: undefined; objectId?: undefined } | UnstagePath;

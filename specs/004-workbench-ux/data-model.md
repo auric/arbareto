@@ -121,7 +121,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 12. Submodule row state (renderer)
 
-- `path`, `depth`, `state` (`waiting`, `fetching`, `updating`, `done`, `failed`, `refused`), `percent` (from the 001 progress counter, or null), `observed` (the 001 row result), `exitCode` and `outputTail` for a failure.
+- `path`, `depth`, `state` (`waiting`, `fetching`, `updating`, `done`, `failed`, `refused`), `percent` (from the 001 progress counter, or null), `observed` (the 001 row result), `exitCode` and `outputTail` for a failure. Amended by feature 004 (2026-11-04): a failed row past the 4 MiB tail total has an empty `outputTail` (001 contract §12 "Output tail").
 - Host line: the review `hosts` list, with one `{path, fetch, settings}` entry for each row (contract Δ12), and Update anyway. `fetch` and `settings` each have the contract Δ12 form: `{kind: "host", name}`, `{kind: "local"}`, or `{kind: "unknown"}`.
 - Tree node (spec FR-107 to FR-111, plan D20; added 2026-11-03). The renderer builds the nodes from `parentRowId`, `depth`, and `pathBytes`. It never depends on the service row order.
   - `kind`: `folder` or `submodule`.

@@ -42,7 +42,7 @@ See [research.md](research.md) for the resolved design decisions, source citatio
 
 **Constraints**: One shell; no arbitrary renderer commands; minimum-version manifests with committed lockfiles and frozen installs; exact Bun runtime; bounded output; cancellation; external-change reconciliation. Supported hunk actions must preserve working bytes. Updater implementation remains excluded. Each later manifest or lockfile change needs a review record. Each package build records its tool versions (Tool and runtime boundaries).
 
-**Scale/Scope**: One main workspace, a read-only graph of at most 100 checkout-reachable commits, and one selected comparison. A submodule review holds at most 256 submodules and 8 nesting levels (contract §5). A reference list holds at most 10,000 references, and the recent list 20 entries (contract §5). Comparison sides remain at most 1 MiB, with at most 20,000 diff lines. No history search, pagination, line staging, or worktree management. Build the workbench from the selected component family; add no graph package.
+**Scale/Scope**: One main workspace, a read-only graph of at most 100 checkout-reachable commits, and one selected comparison. A submodule review holds at most 1,024 submodules and 8 nesting levels (contract §5, amended by feature 004 on 2026-11-04). A reference list holds at most 10,000 references, and the recent list 20 entries (contract §5). Comparison sides remain at most 1 MiB, with at most 20,000 diff lines. No history search, pagination, line staging, or worktree management. Build the workbench from the selected component family; add no graph package.
 
 ### Provisional prerequisite admission
 

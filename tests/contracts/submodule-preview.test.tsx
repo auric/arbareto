@@ -137,6 +137,11 @@ describe("Commit view preview states (T109 case 2, FR-072 to FR-074)", () => {
       expect(value(r, "Commit")).toBe(`${OLD.slice(0, 12)} → to ${NEW.slice(0, 12)}`);
     }],
     ["not-initialized", { change: () => succeeded(change("lib", { state: "not-initialized" })) }, (r) => expect(text(r)).toContain("Initialize this submodule first. Select Update submodules.")],
+    // T121: a moved gitlink that the D11 checks 3 to 5 do not locate.
+    ["not-located", { change: () => succeeded(change("lib", { state: "not-located" })) }, (r) => {
+      expect([...r.querySelectorAll("p")].map((p) => text(p))).toContain("Arbareto cannot find the Git repository of this submodule at its path. Use Git in a terminal for this change.");
+      expect(text(r)).not.toContain("Initialize this submodule first.");
+    }],
     ["nested", { change: () => succeeded(change("lib", commitState(1, 0), { kind: "nested" })) }, (r) => {
       expect(text(r)).toContain("Nested repository");
       expect(text(r)).toContain("The .gitmodules file does not name this repository.");
@@ -151,6 +156,8 @@ describe("Commit view preview states (T109 case 2, FR-072 to FR-074)", () => {
       expect(value(r, "Working tree")).toBe("Arbareto does not read the working tree of this submodule. Its settings name a program that a status read can run.")],
     ["a work entry that is not initialized", { work: work({ entries: [{ pathBytes: b64("lib"), path: "lib", state: "not-initialized" }] }) }, (r) =>
       expect(value(r, "Working tree")).toBe("Initialize this submodule first. Select Update submodules.")],
+    ["a work entry that is not located", { work: work({ entries: [{ pathBytes: b64("lib"), path: "lib", state: "not-located" }] }) }, (r) =>
+      expect(value(r, "Working tree")).toBe("Arbareto cannot find the Git repository of this submodule at its path. Use Git in a terminal for this change.")],
     ["a gitlink past the 256 bound", { work: work({ entries: [], limited: 1 }) }, (r) => expect(value(r, "Working tree")).toBe("Arbareto checks at most 256 submodules for local edits.")],
     ["a failed work entry", { work: work({ entries: [{ pathBytes: b64("lib"), path: "lib", state: "unchecked", reason: "failed", code: "DEADLINE" }] }) }, (r) => expect(value(r, "Working tree")).toBe("Working tree is unavailable: DEADLINE")],
     ["a failed work read", { work: () => rejected("OUTPUT_LIMIT") }, (r) => expect(value(r, "Working tree")).toBe("Working tree is unavailable: OUTPUT_LIMIT")],

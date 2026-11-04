@@ -416,6 +416,14 @@ describe("runFileAction", () => {
     expect(await runFileAction(s.props)).toEqual({ state: "refused", text: "Stage file is unavailable: The submodule branch has no commit yet. Commit inside the submodule first." });
   });
 
+  // T121: plan.md D20 "Refusal texts" for a moved gitlink that the D11 checks 3 to 5 do not locate.
+  test(`reason submodule-not-located refuses with the D20 text`, async () => {
+    const { runFileAction } = await fileControls();
+    const s = setup({ entry: { submodule: "SC..", modes: ["160000", "160000", "160000"] }, comparison: comparison("submodule-not-located") });
+    expect(await runFileAction(s.props)).toEqual({ state: "refused", text: "Stage file is unavailable: Arbareto cannot find the Git repository of this submodule at its path. Use Git in a terminal for this change." });
+    expect(s.calls).toEqual([]);
+  });
+
   // Plan D20 "Preview equality": the comparison `gitlink.oid` must equal the preview `new`.
   const HEAD = "c".repeat(40);
   const previewOf = (newId: string) => ({ requestId: crypto.randomUUID(), state: "succeeded", result: { pathBytes: "bGli", path: "lib", kind: "submodule", old: "a".repeat(40), new: newId, state: { state: "single" }, limited: false } });

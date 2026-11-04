@@ -113,7 +113,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Target: a workspace source needs a current snapshot and an entry with a gitlink mode (160000) in `mH`, `mI`, or `mW`. A commit source needs the retained listing of that view, `oid`, and `parent` (Δ3 `readCommitChanges`) and a record with mode 160000 on either side. Otherwise `UNKNOWN_TARGET` or `INVALID_REQUEST`.
 - Read gate: the parent 001 §7 `reads` gate, before the first Git process.
 - IDs (plan D19): unstaged `hI` and the submodule HEAD; staged `hH` and `hI`; commit the two raw record IDs. An all-zero ID gives null.
-- Location: plan D11 checks 3 to 5 at the record path. A failed check 4 or 5 gives the state `not-initialized`. A failed check 3 for a commit source also gives `not-initialized`.
+- Location: plan D11 checks 3 to 5 at the record path. A failed check 4 or 5 gives the state `not-initialized`. A failed check 3 for a commit source also gives `not-initialized`. For a moved gitlink of a workspace source (plan D20 rule 2), a failed check 3, 4, or 5 gives `not-located`.
 - Kind: the first `.gitmodules` source of 001 §12 "Review reads", with `--null --list`. No `submodule.<name>.path` equal to the path gives `nested`.
 - Commands inside the submodule, each as `--no-lazy-fetch --no-optional-locks -C <worktree> --git-dir=.git <args>`:
   - `rev-parse --verify -q HEAD` (unstaged only). Exit 0 with one object ID gives `new`. Another result gives `GIT_FAILED`.
@@ -133,7 +133,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Payload: `{snapshotId}`. The renderer sends it after each complete `readWorkspace` result, in History and in the Commit view. One read slot. A newer snapshot cancels the running read.
 - Targets: the gitlinks (mode 160000, stage 0) of `ls-files -z --stage` of that snapshot, in index order, at most 256 (`SUBMODULE_WORK_TARGETS`). The result field `limited` counts the later gitlinks in index order. The read gives them no entry. A snapshot whose index listing reached a §5 status bound gives `OUTPUT_LIMIT`, because it names no gitlink. At most 8 targets run at the same time (`SUBMODULE_WORK_PARALLEL`, orchestrator decision 2026-10-31 from the research.md R18 "Cost" measurement).
 - Per target, inside the submodule, in the form of `readSubmoduleChange`:
-  1. Plan D11 checks 4 and 5. A failure gives the state `not-initialized`, and no later step runs. So each of the first 256 gitlinks has one entry, and only a gitlink past the bound has none.
+  1. Plan D11 checks 4 and 5. A failure gives the state `not-initialized`, or `not-located` for a moved gitlink of the snapshot (plan D20 rule 2), and no later step runs. So each of the first 256 gitlinks has one entry, and only a gitlink past the bound has none. A moved gitlink without a stage-0 gitlink entry fails check 3. It gets a `not-located` entry after the targets, and `limited` counts it when no entry is free.
   2. `config list --show-scope --show-origin -z`. The 001 §7 resolution rule applies, and every local and worktree entry counts as repository-controlled (001 §12 "Submodule programs"). A repository-controlled command-valued `core.fsmonitor`, `filter.<driver>.clean`, or `filter.<driver>.process` gives `unchecked` reason `programs`, and no status runs.
   3. `status --porcelain=v2 -z --untracked-files=normal --ignore-submodules=dirty`. The 001 status parser reads the records. A `1`, `2`, or `u` record sets `modified`. A `?` record sets `untracked`. The service ends the process when both are set. A non-zero exit gives `unchecked` reason `failed` with `GIT_FAILED`.
 - Programs: step 3 loads the submodule index. Protected programs from system, global, and command scope can run, as in the parent read (001 §7). No repository-controlled program of the submodule runs, because step 2 refuses it.
@@ -187,6 +187,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - Step 6: exactly one stage-0 entry at the path with mode `160000`, the bound commit, and clean flags. No parent object check and no blob proof run for a `160000` line.
   - `readComparison` adds `gitlink: {oid}` to a succeeded or limited result of such an entry.
 - `unstage` accepts a Staged `1` record with `mI` `160000` and `X` `M` or `A`. The `--index-info` line restores `mH` and `hH`, or mode 0 removes an added gitlink.
+- New reason `submodule-not-located`: plan D20 rule 2 step 1, 2, or 3 failed for a moved gitlink. It gets no remedy.
 - New reason `submodule-unborn`: the HEAD of the submodule names a branch without a commit. It gets no remedy.
 - `submodule` still covers a conflicted gitlink, a `2` record with a gitlink, a deleted gitlink, a type change with a gitlink, a staged gitlink deletion, and an untracked nested repository. It gets no remedy.
 - `applyFiles` (004 Δ3): a stage set runs the `--add --remove --stdin` step for its regular paths and one `--index-info` step for its gitlinks on the same candidate index. One refused entry still refuses the whole set. The renderer leaves the plan D19 rows with only local edits out of the set.
@@ -275,6 +276,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 | `BLAME_UNAVAILABLE` | `no-history`, `binary`, `submodule`, `size`, `lines`, `ignore-revs-file-missing`, `no-previous`, `path` | Blame cannot run for this file. No blame process starts. |
 | `UNSUPPORTED_COMPARISON` (001) | `readCommitFile` uses the 001 reason `path` | The path is no valid UTF-8, so no argv item can carry it. |
 | `UNSUPPORTED_COMPARISON` (001) | adds `submodule-unborn` (2026-11-03, Δ4) | The submodule HEAD names a branch without a commit, so Stage file has no commit to record. |
+| `UNSUPPORTED_COMPARISON` (001) | adds `submodule-not-located` (2026-11-04, Δ4) | Arbareto cannot find the Git repository of a moved submodule at its path, so Stage file has no commit to record. |
 | `SUBMODULE_UNAVAILABLE` | `not-submodule`, `submodule-not-initialized`, `path` | The open cannot start. The parent stays open. `readSubmoduleChange` uses only `path`: the preview cannot pass the path to Git. |
 | `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `long-path`, `nothing-to-delete`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `ignore-lone-cr`; keeps the 004 reasons `ignore-not-regular`, `ignore-size`, `limit`, `path`, and `unreadable`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
 | `STALE_REVIEW` (001) | adds `files-changed`, `ignore-changed` | A bound fact changed after the review. Nothing changes. |

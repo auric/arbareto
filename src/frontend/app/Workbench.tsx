@@ -2087,6 +2087,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       <div className="flex max-h-[40%] min-h-0 shrink-0 flex-col border-t border-divider" onFocusCapture={() => void (reviewOpener.current = "group")}>
         <SubmodulesGroup
           update={submoduleUpdate}
+          repository={state.repository?.worktreeKey ?? ""}
           runningReason={running ? RUNNING_REASON : null}
           blockedReason={stateBlocked === null ? null : BLOCKED_TEXT[stateBlocked]}
           onCancel={() => statusRegion.current?.requestCancel()}

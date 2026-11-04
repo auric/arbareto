@@ -147,8 +147,15 @@ export function commandOf(args: readonly string[]): string[] {
   return args.slice(i);
 }
 
-// Contract §12 "Review reads": the only commands inside a submodule. `<oid>` is a full object ID.
+// Contract §12 "Review reads": the only commands inside a submodule. `<oid>` is a full object ID. `<branch>` is a ref under `refs/heads/`.
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+// Feature 003 contract Δ3 `readTracking`: the for-each-ref format.
+export const TRACKING_FORMAT = "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(HEAD)";
+// Feature 004 contract Δ12 "Branch marks": the mark read of a submodule.
+export const isTrackCall = (args: readonly string[]) => {
+  const c = commandOf(args);
+  return c.length === 3 && c[0] === "for-each-ref" && c[1] === TRACKING_FORMAT;
+};
 const REVIEW_READS: string[][] = [
   ["rev-parse", "--verify", "-q", "HEAD"],
   ["rev-parse", "--absolute-git-dir"],
@@ -160,9 +167,14 @@ const REVIEW_READS: string[][] = [
   ["rev-list", "-n", "1", "<oid>", "--not", "--all"],
   ["ls-tree", "-r", "-z", "--full-tree", "<oid>"],
   ["config", "--blob", "<oid>:.gitmodules", "--null", "--list"],
+  // Feature 004 contract Δ12 "Branch marks": the 003 tracking format for the HEAD branch.
+  ["for-each-ref", TRACKING_FORMAT, "<branch>"],
 ];
 const matches = (command: readonly string[], form: readonly string[]) =>
-  command.length === form.length && form.every((f, i) => (f === "<oid>" ? OID.test(command[i]!) : f === "<oid>:.gitmodules" ? command[i]!.endsWith(":.gitmodules") && OID.test(command[i]!.slice(0, -":.gitmodules".length)) : f === command[i]));
+  command.length === form.length &&
+  form.every((f, i) =>
+    f === "<oid>" ? OID.test(command[i]!) : f === "<oid>:.gitmodules" ? command[i]!.endsWith(":.gitmodules") && OID.test(command[i]!.slice(0, -":.gitmodules".length)) : f === "<branch>" ? command[i]!.startsWith("refs/heads/") : f === command[i],
+  );
 export const isReviewRead = (args: readonly string[]) => args[0] === "--no-lazy-fetch" && args[1] === "--no-optional-locks" && REVIEW_READS.some((form) => matches(commandOf(args), form));
 
 // Contract §12 "Update protocol" step 5: the update steps. Each starts with `--no-lazy-fetch`.
@@ -331,6 +343,79 @@ export function miniWorld(name: string, subs: readonly MiniSub[], extraGlobal: (
 
 // A Git command in a mini world, with its owned global file.
 export const miniGit = (w: MiniWorld, cwd: string, args: string[], allowExit = [0]) => ownedGit(gitPath(), FIXTURE_ROOT, cwd, args, { env: w.env, allowExit }).toString("utf8");
+
+// ---- A superproject with nested submodules (004 T136, T139). ----
+
+// The nested submodules of each submodule path. A path without nested submodules uses the leaf remote.
+export type SubTree = { readonly [path: string]: SubTree };
+
+export interface TreeWorld {
+  root: string;
+  sup: string;
+  env: { GIT_CONFIG_GLOBAL: string };
+  // The two commits of `<root>/leaf.git`. Each leaf submodule records `second`.
+  leaf: { first: string; second: string };
+}
+
+// `<root>/super` is a clone of `<root>/super.git`. Git's own `submodule update --init --recursive` initializes every submodule of `tree`.
+// Each submodule with nested submodules has its own remote. Each URL is relative, so Git resolves it against the remote of the parent.
+export function treeWorld(name: string, tree: SubTree): TreeWorld {
+  const root = fixtureDir(name);
+  const global = put(root, "global.gitconfig", `${readFileSync(FIXTURE_GLOBAL_CONFIG, "utf8")}[protocol "file"]\n\tallow = always\n`);
+  const env = { GIT_CONFIG_GLOBAL: global };
+  const g = (cwd: string, args: string[], input?: Uint8Array) => ownedGit(gitPath(), FIXTURE_ROOT, cwd, args, { env, input }).toString("utf8");
+  const url = (bare: string) => join(root, bare).replaceAll("\\", "/");
+  // Commits each text in order, with the gitlinks `[path, url, oid]` in the last commit, and pushes `main` to `<root>/<bare>`.
+  const publish = (bare: string, texts: string[], links: [string, string, string][] = []): string[] => {
+    g(root, ["init", "-q", "--bare", "-b", "main", bare]);
+    const work = join(root, "src", bare);
+    mkdirSync(work, { recursive: true });
+    g(work, ["init", "-q", "-b", "main"]);
+    const commits = texts.map((text, i) => {
+      put(work, "file.txt", text);
+      g(work, ["add", "--", "file.txt"]);
+      if (i === texts.length - 1 && links.length > 0) {
+        put(work, ".gitmodules", links.map(([path, link]) => `[submodule "${path}"]\n\tpath = ${path}\n\turl = ${link}\n`).join(""));
+        g(work, ["add", "--", ".gitmodules"]);
+        g(work, ["update-index", "-z", "--index-info"], Buffer.from(links.map(([path, , oid]) => `160000 ${oid} 0\t${path}\0`).join("")));
+      }
+      g(work, ["commit", "-q", "-m", text]);
+      return g(work, ["rev-parse", "HEAD"]).trim();
+    });
+    g(work, ["push", "-q", url(bare), "HEAD:refs/heads/main"]);
+    return commits;
+  };
+  const [first, second] = publish("leaf.git", ["leaf 1\n", "leaf 2\n"]) as [string, string];
+  let remotes = 0;
+  const linksOf = (sub: SubTree): [string, string, string][] =>
+    Object.entries(sub).map(([path, nested]) => {
+      if (Object.keys(nested).length === 0) return [path, "../leaf.git", second];
+      const bare = `n${++remotes}.git`;
+      return [path, `../${bare}`, publish(bare, [`${bare}\n`], linksOf(nested))[0]!];
+    });
+  publish("super.git", ["super\n"], linksOf(tree));
+  g(root, ["clone", "-q", url("super.git"), "super"]);
+  const sup = join(root, "super");
+  g(sup, ["submodule", "update", "--init", "--recursive", "-q"]);
+  return { root, sup, env, leaf: { first, second } };
+}
+
+// git-status(1) "Branch Headers" of `status --porcelain=v2 --branch`, as the feature 004 branch mark that they state, without its row ID.
+// The upstream keeps Git's short form.
+export function statusBranchMark(out: string): object {
+  const headers = new Map(out.split("\n").filter((l) => l.startsWith("# branch.")).map((l) => [l.slice(2, l.indexOf(" ", 2)), l.slice(l.indexOf(" ", 2) + 1)]));
+  if (headers.get("branch.head") === "(detached)") return { state: "detached" };
+  const upstream = headers.get("branch.upstream") ?? null;
+  const ab = /^\+([0-9]+) -([0-9]+)$/.exec(headers.get("branch.ab") ?? "");
+  const track = upstream === null ? { state: "none" } : ab === null ? { state: "gone" } : { state: "counts", ahead: Number(ab[1]), behind: Number(ab[2]) };
+  return { state: "branch", ref: `refs/heads/${headers.get("branch.head")}`, upstream, track };
+}
+
+// The status header names the upstream in Git's short form. The fixtures hold no ambiguous ref name, so the short form drops the namespace (git-rev-parse(1) `--abbrev-ref`).
+export const shortUpstream = <T extends { upstream?: string | null }>(m: T): T => (typeof m.upstream === "string" ? { ...m, upstream: m.upstream.replace(/^refs\/(?:heads|remotes)\//, "") } : m);
+
+// A Git command in a tree world, with its owned global file.
+export const treeGit = (w: TreeWorld, cwd: string, args: string[], allowExit = [0]) => ownedGit(gitPath(), FIXTURE_ROOT, cwd, args, { env: w.env, allowExit }).toString("utf8");
 
 // `git config list -z` of a repository: "<key>\n<value>\0" records, as a key to values map in file order.
 export function configMap(output: string): Record<string, string[]> {

@@ -7,11 +7,15 @@
 // - `useSubmoduleUpdate({ bridge, repositoryId, current, onOperation, onReviewFailed })` holds the one-click flow.
 //   `current()` gives the target and the snapshot ID of the shown read. `onOperation` gets each `trackOperation` report.
 // - `SubmodulesGroup({ update, runningReason, blockedReason, onCancel })` shows the Submodules group of the sidebar.
+// tasks.md T142 (feature 004, WP31). Story US12. Spec FR-107 to FR-111. Plan D20, D15 "Tree rows". Data-model §12 "Tree node", §15.
+// - `buildSubmoduleTree({ rows, found, marks, closed })` in `src/frontend/submodules/submodule-tree.ts` gives the shown tree rows.
+// - `SubmodulesGroup` takes `repository`, the worktree key that keeps the closed folders for the window session.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { act, useState, type ReactNode } from "react";
-import { SubmoduleHostLine, SubmodulePlanRow, SubmoduleRowResult } from "../../src/contracts/submodules";
+import { SUBMODULE_TREE_FOLDERS } from "../../src/contracts/limits";
+import { SubmoduleBranch, SubmoduleHostLine, SubmodulePlanRow, SubmoduleRowResult } from "../../src/contracts/submodules";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
@@ -19,10 +23,13 @@ import { answer, button, buttons, click, hoverTooltip, menuItem, press, settle, 
 
 printOrigin("../../src/frontend/submodules/SubmodulesGroup.tsx", import.meta.dir);
 printOrigin("../../src/frontend/status/OperationStatus.tsx", import.meta.dir);
+printOrigin("../../src/frontend/submodules/submodule-tree.ts", import.meta.dir);
+printOrigin("../../src/frontend/state/tracking.ts", import.meta.dir);
 registerDom();
 const { createRoot } = await import("react-dom/client");
 const { SubmodulesGroup, useSubmoduleUpdate } = await import("../../src/frontend/submodules/SubmodulesGroup");
 const { OperationStatus } = await import("../../src/frontend/status/OperationStatus");
+const { buildSubmoduleTree } = await import("../../src/frontend/submodules/submodule-tree");
 type StatusOperation = import("../../src/frontend/status/OperationStatus").StatusOperation;
 
 const RUNNING_REASON = "A Git operation is running. Its progress and Cancel are in the status bar.";
@@ -42,7 +49,7 @@ const planRow = (fields: Partial<SubmodulePlanRow> & { rowId: string; path: stri
 const A = planRow({ rowId: ROW_A, path: "libs/a" });
 const A1 = planRow({ rowId: ROW_A1, path: "libs/a/deps/c", depth: 1, parentRowId: ROW_A, head: null, action: "clone" });
 const B = planRow({ rowId: ROW_B, path: "vendor/b" });
-const review = (fields: Record<string, unknown> = {}) => ({ generation: 3, rows: [A, A1, B], programs: [], refusals: [], hosts: [], submoduleReviewToken: TOKEN, ...fields });
+const review = (fields: Record<string, unknown> = {}) => ({ generation: 3, rows: [A, A1, B], branches: [], programs: [], refusals: [], hosts: [], submoduleReviewToken: TOKEN, ...fields });
 const reviewed = (fields: Record<string, unknown> = {}) => ({ requestId: fixtureId(30), operationId: fixtureId(31), state: "succeeded", repositoryGeneration: 3, result: review(fields) });
 const rowResult = (fields: Record<string, unknown>) => SubmoduleRowResult.parse({ oldCommit: null, newCommit: null, fetched: false, connected: false, found: false, registered: false, ...fields });
 const ended = (state: string, rows: unknown[], code?: string) => ({ requestId: fixtureId(32), operationId: OPERATION_ID, state, ...(code === undefined ? {} : { code }), result: { rows } });
@@ -85,7 +92,10 @@ async function render(node: ReactNode) {
 }
 
 // The list-only review of the first read (FR-077). `listed: null` leaves it pending.
-async function mount(options: { runningReason?: string | null; blockedReason?: string | null; listed?: unknown | null } = {}) {
+let repositories = 0;
+async function mount(options: { runningReason?: string | null; blockedReason?: string | null; listed?: unknown | null; repository?: string; onOpen?: (path: string) => void } = {}) {
+  // The closed folders last for the window session per repository, so each mount gets its own key unless the case names one.
+  const repository = options.repository ?? `repository-${repositories++}`;
   const double = createDouble();
   const operations: StatusOperation[] = [];
   const failures: string[] = [];
@@ -113,7 +123,17 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
     });
     handle.update = update;
     const own = op !== null && op.response === null ? RUNNING_REASON : null;
-    return <SubmodulesGroup update={update} runningReason={options.runningReason ?? own} blockedReason={options.blockedReason ?? null} onCancel={() => void cancels++} onTrustReads={() => void trusts++} />;
+    return (
+      <SubmodulesGroup
+        update={update}
+        repository={repository}
+        runningReason={options.runningReason ?? own}
+        blockedReason={options.blockedReason ?? null}
+        onCancel={() => void cancels++}
+        onTrustReads={() => void trusts++}
+        onOpen={options.onOpen}
+      />
+    );
   }
   await render(<Harness />);
   await settle();
@@ -129,7 +149,9 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
 }
 
 const group = () => document.querySelector<HTMLElement>('[data-slot="submodules-group"]')!;
-const rows = () => [...group().querySelectorAll<HTMLElement>('[role="treeitem"]')];
+// Submodule rows carry `data-path`. Folder rows do not.
+const rows = () => [...group().querySelectorAll<HTMLElement>('[role="treeitem"][data-path]')];
+const items = () => [...group().querySelectorAll<HTMLElement>('[role="treeitem"]')];
 const row = (path: string) => rows().find((r) => r.dataset.path === path)!;
 const rowState = (path: string) => text(row(path).querySelector('[data-slot="row-state"]')!);
 const describedText = (element: Element) =>
@@ -259,12 +281,14 @@ describe("one click (FR-076)", () => {
 describe("rows and progress (FR-077)", () => {
   test("rows nest under their parent, and a planned row without events is Waiting", async () => {
     await started();
+    // FR-107: libs > a > deps > c, and vendor > b.
     expect(rows().map((r) => [r.dataset.path, r.getAttribute("aria-level")])).toEqual([
-      ["libs/a", "1"],
-      ["libs/a/deps/c", "2"],
-      ["vendor/b", "1"],
+      ["libs/a", "2"],
+      ["libs/a/deps/c", "4"],
+      ["vendor/b", "2"],
     ]);
-    expect(rows().map((r) => r.getAttribute("tabindex"))).toEqual(["0", "-1", "-1"]);
+    // One Tab stop: the first row of the tree, the folder "libs".
+    expect(items().map((r) => r.getAttribute("tabindex"))).toEqual(["0", "-1", "-1", "-1", "-1", "-1"]);
     expect(["libs/a", "libs/a/deps/c", "vendor/b"].map(rowState)).toEqual(["Waiting", "Waiting", "Waiting"]);
   });
 
@@ -378,6 +402,17 @@ describe("results (FR-081, FR-082)", () => {
     expect(buttons("Retry", row("libs/a"))).toHaveLength(0);
     await click(button("Retry", row("vendor/b")));
     expect(payloads(double, "reviewSubmodules").at(-1)).toEqual({ snapshotId: SNAPSHOT, scope: { path: "vendor/b" } });
+  });
+
+  // Plan D15 "Rows at rest": a failed list keeps the rows of the last list beside the failure line.
+  test("a failed list after a run keeps the rows with the failure line, and the failed row keeps Retry and Show output", async () => {
+    const view = await finished();
+    await view.read(fixtureId(8));
+    await answer(view.double.pending("reviewSubmodules"), { requestId: fixtureId(30), state: "failed", code: "DEADLINE" });
+    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe("Arbareto cannot read the submodules: DEADLINE.");
+    expect(rows().map((r) => r.dataset.path)).toEqual(["libs/a", "libs/a/deps/c", "vendor/b"]);
+    expect(rowState("vendor/b")).toBe("Failed");
+    expect([buttons("Retry", row("vendor/b")).length, buttons("Show output", row("vendor/b")).length]).toEqual([1, 1]);
   });
 
   test("the row menu Update reviews that row and its nested rows; the rows above the scope row keep their state", async () => {
@@ -613,5 +648,408 @@ describe("T076 board fixes (tasks.md T111, Submodules board)", () => {
   test("each row shows the submodule icon before its path", async () => {
     await mount();
     for (const r of rows()) expect(r.querySelector('[data-slot="row-icon"] svg[aria-hidden="true"]')).not.toBeNull();
+  });
+});
+
+// tasks.md T142: the approved boards Main and BranchMarks (sample data). 10 rows, 2 of them nested under app-shared.
+const BOARD_IDS = Object.fromEntries(
+  ["http", "core", "ui", "fmt", "lint", "icons", "app", "zlib", "minizip", "docs"].map((name, i) => [name, fixtureId(0x100 + i)]),
+) as Record<string, string>;
+const ICONS = "vendor/icon-pack-sample-extended-glyph-set";
+const BOARD = [
+  planRow({ rowId: BOARD_IDS.http!, path: "libs/net/http" }),
+  planRow({ rowId: BOARD_IDS.core!, path: "libs/core" }),
+  planRow({ rowId: BOARD_IDS.ui!, path: "libs/ui" }),
+  planRow({ rowId: BOARD_IDS.fmt!, path: "vendor/tools/fmt" }),
+  planRow({ rowId: BOARD_IDS.lint!, path: "vendor/tools/lint" }),
+  planRow({ rowId: BOARD_IDS.icons!, path: ICONS, head: null, action: "clone" }),
+  planRow({ rowId: BOARD_IDS.app!, path: "app-shared" }),
+  planRow({ rowId: BOARD_IDS.zlib!, path: "app-shared/third_party/zlib", depth: 1, parentRowId: BOARD_IDS.app! }),
+  planRow({ rowId: BOARD_IDS.minizip!, path: "app-shared/third_party/contrib/minizip", depth: 1, parentRowId: BOARD_IDS.app! }),
+  planRow({ rowId: BOARD_IDS.docs!, path: "docs-theme" }),
+];
+// [kind, label, level, count] in the shown order.
+const BOARD_TREE = [
+  ["folder", "libs", 1, 3],
+  ["folder", "net", 2, 1],
+  ["submodule", "http", 3, null],
+  ["submodule", "core", 2, null],
+  ["submodule", "ui", 2, null],
+  ["folder", "vendor", 1, 3],
+  ["folder", "tools", 2, 2],
+  ["submodule", "fmt", 3, null],
+  ["submodule", "lint", 3, null],
+  ["submodule", "icon-pack-sample-extended-glyph-set", 2, null],
+  ["submodule", "app-shared", 1, null],
+  ["folder", "third_party", 2, 2],
+  ["folder", "contrib", 3, 1],
+  ["submodule", "minizip", 4, null],
+  ["submodule", "zlib", 3, null],
+  ["submodule", "docs-theme", 1, null],
+];
+type Tree = ReturnType<typeof buildSubmoduleTree>;
+const shape = (tree: Tree) => {
+  if (tree.state !== "tree") throw new Error(`tree state ${tree.state}`);
+  return tree.rows.map((r) => [r.kind, r.label, r.level, r.kind === "folder" ? r.count : null]);
+};
+const build = (rows: readonly SubmodulePlanRow[], fields: Partial<Parameters<typeof buildSubmoduleTree>[0]> = {}) => buildSubmoduleTree({ rows, found: [], marks: new Map(), closed: new Set(), ...fields });
+const UPSTREAM = "refs/remotes/origin/main";
+const mark = (rowId: string, fields: Record<string, unknown>) => SubmoduleBranch.parse({ rowId, ...fields });
+const BOARD_MARKS = [
+  mark(BOARD_IDS.http!, { state: "branch", ref: "refs/heads/main", upstream: UPSTREAM, track: { state: "counts", ahead: 0, behind: 0 } }),
+  mark(BOARD_IDS.core!, { state: "detached" }),
+  mark(BOARD_IDS.ui!, { state: "branch", ref: "refs/heads/main", upstream: UPSTREAM, track: { state: "counts", ahead: 1, behind: 0 } }),
+  mark(BOARD_IDS.fmt!, { state: "branch", ref: "refs/heads/release/2.x", upstream: "refs/remotes/origin/release/2.x", track: { state: "counts", ahead: 0, behind: 3 } }),
+  mark(BOARD_IDS.lint!, { state: "branch", ref: "refs/heads/lint", upstream: "refs/remotes/origin/lint", track: { state: "gone" } }),
+  mark(BOARD_IDS.app!, { state: "branch", ref: "refs/heads/main", upstream: UPSTREAM, track: { state: "counts", ahead: 2, behind: 1 } }),
+  mark(BOARD_IDS.zlib!, { state: "unread", ref: "refs/heads/main", code: "DEADLINE" }),
+  mark(BOARD_IDS.minizip!, { state: "branch", ref: "refs/tags/v1", upstream: null, track: { state: "none" } }),
+  mark(BOARD_IDS.docs!, { state: "branch", ref: "refs/heads/draft", upstream: null, track: { state: "none" } }),
+];
+// Four folders of their own per row: `t<i>a/t<i>b/t<i>c/t<i>d/s`.
+const folderRows = (count: number) => Array.from({ length: count }, (_, i) => planRow({ rowId: fixtureId(0x1000 + i), path: `t${i}a/t${i}b/t${i}c/t${i}d/s` }));
+
+describe("tree builder (FR-107, FR-111, data-model §12)", () => {
+  test("the board set gives the board tree in any input order: folders first, the 005 tree order, and counts of all rows below", () => {
+    const orders = [BOARD, [...BOARD].reverse(), [5, 8, 0, 9, 3, 7, 1, 6, 4, 2].map((i) => BOARD[i]!)];
+    for (const order of orders) expect(shape(build(order))).toEqual(BOARD_TREE);
+  });
+
+  test("a nested row shows in the folders of its path below the parent, directly below the parent row", () => {
+    const tree = build(BOARD);
+    if (tree.state !== "tree") throw new Error("malformed");
+    const at = tree.rows.findIndex((r) => r.label === "zlib");
+    expect(tree.rows[tree.rows[at]!.parent]!.label).toBe("third_party");
+    expect(tree.rows[tree.rows[tree.rows[at]!.parent]!.parent]!.label).toBe("app-shared");
+    expect(tree.rows.filter((r) => r.kind === "folder").map((r) => [r.key, r.path])).toEqual([
+      ["f:libs", "libs"],
+      ["f:libs/net", "libs/net"],
+      ["f:vendor", "vendor"],
+      ["f:vendor/tools", "vendor/tools"],
+      ["f:app-shared/third_party", "app-shared/third_party"],
+      ["f:app-shared/third_party/contrib", "app-shared/third_party/contrib"],
+    ]);
+    const zlib = tree.rows[at]!;
+    expect([zlib.key, zlib.path]).toEqual([`s:${btoa("app-shared/third_party/zlib")}`, "app-shared/third_party/zlib"]);
+  });
+
+  test("a folder counts the nested rows of its submodules too", () => {
+    const parent = planRow({ rowId: fixtureId(0x200), path: "ext/app" });
+    const child = planRow({ rowId: fixtureId(0x201), path: "ext/app/deps/z", depth: 1, parentRowId: parent.rowId });
+    expect(shape(build([parent, child]))).toEqual([
+      ["folder", "ext", 1, 2],
+      ["submodule", "app", 2, null],
+      ["folder", "deps", 3, 1],
+      ["submodule", "z", 4, null],
+    ]);
+  });
+
+  test("closed keys hide the rows below, and the WAI-ARIA positions count the shown siblings", () => {
+    const tree = build(BOARD, { closed: new Set(["f:libs", `s:${btoa("app-shared")}`]) });
+    expect(shape(tree)).toEqual([
+      ["folder", "libs", 1, 3],
+      ["folder", "vendor", 1, 3],
+      ["folder", "tools", 2, 2],
+      ["submodule", "fmt", 3, null],
+      ["submodule", "lint", 3, null],
+      ["submodule", "icon-pack-sample-extended-glyph-set", 2, null],
+      ["submodule", "app-shared", 1, null],
+      ["submodule", "docs-theme", 1, null],
+    ]);
+    if (tree.state !== "tree") throw new Error("malformed");
+    expect(tree.rows.map((r) => [r.pos, r.size, r.open])).toEqual([
+      [1, 4, false],
+      [2, 4, true],
+      [1, 2, true],
+      [1, 2, null],
+      [2, 2, null],
+      [2, 2, null],
+      [3, 4, false],
+      [4, 4, null],
+    ]);
+  });
+
+  test("found rows show their full path at the end of the root level", () => {
+    const tree = build([BOARD[1]!], { found: [{ rowId: fixtureId(0x300), path: "x/found" }] });
+    expect(shape(tree)).toEqual([
+      ["folder", "libs", 1, 1],
+      ["submodule", "core", 2, null],
+      ["submodule", "x/found", 1, null],
+    ]);
+  });
+
+  test("the marks join the rows by rowId", () => {
+    const tree = build(BOARD, { marks: new Map(BOARD_MARKS.map((m) => [m.rowId, m])) });
+    if (tree.state !== "tree") throw new Error("malformed");
+    const ui = tree.rows.find((r) => r.label === "ui")!;
+    expect(ui.kind === "submodule" && ui.mark).toEqual(BOARD_MARKS[2]!);
+    const icons = tree.rows.find((r) => r.label === "icon-pack-sample-extended-glyph-set")!;
+    expect(icons.kind === "submodule" && icons.mark).toBeNull();
+  });
+
+  const parent = planRow({ rowId: fixtureId(0x400), path: "a" });
+  for (const [name, child] of [
+    ["a depth that is not the parent depth + 1", planRow({ rowId: fixtureId(0x401), path: "a/b", depth: 2, parentRowId: parent.rowId })],
+    ["path bytes that do not start with the parent bytes and 0x2F", planRow({ rowId: fixtureId(0x401), path: "a/b", pathBytes: btoa("ab/b"), depth: 1, parentRowId: parent.rowId })],
+    ["a display path with another count of /", planRow({ rowId: fixtureId(0x401), path: "a/b/c", pathBytes: btoa("a/b"), depth: 1, parentRowId: parent.rowId })],
+    ["a parent that is not in the list", planRow({ rowId: fixtureId(0x401), path: "a/b", depth: 1, parentRowId: fixtureId(0x499) })],
+  ] as const)
+    test(`${name} gives the malformed state`, () => expect(build([parent, child]).state).toBe("malformed"));
+
+  test("1,024 folders show; one more gives no folder rows, and each nested row stays below its parent with its path below the parent", () => {
+    expect(SUBMODULE_TREE_FOLDERS).toBe(1_024);
+    const at = build(folderRows(256));
+    if (at.state !== "tree") throw new Error("malformed");
+    expect(at.bounded).toBe(false);
+    expect(at.rows.filter((r) => r.kind === "folder")).toHaveLength(1_024);
+    const rows = folderRows(256);
+    const nested = planRow({ rowId: fixtureId(0x2000), path: `${rows[0]!.path}/n/x`, depth: 1, parentRowId: rows[0]!.rowId });
+    const over = build([...rows, nested]);
+    if (over.state !== "tree") throw new Error("malformed");
+    expect(over.bounded).toBe(true);
+    expect(over.rows.filter((r) => r.kind === "folder")).toHaveLength(0);
+    expect(over.rows.slice(0, 3).map((r) => [r.label, r.level])).toEqual([
+      ["t0a/t0b/t0c/t0d/s", 1],
+      ["n/x", 2],
+      ["t100a/t100b/t100c/t100d/s", 1],
+    ]);
+  });
+});
+
+describe("Submodules group tree (FR-107 to FR-111)", () => {
+  const boardReview = (fields: Record<string, unknown> = {}) => reviewed({ rows: BOARD, branches: BOARD_MARKS, ...fields });
+  const item = (label: string) => items().find((r) => r.querySelector('[data-slot="row-label"]')?.textContent === label)!;
+  const focused = () => document.activeElement as HTMLElement;
+  const focusedLabel = () => focused().querySelector('[data-slot="row-label"]')?.textContent;
+
+  test("role tree with levels, positions, all folders and parent rows open at first, and one Tab stop", async () => {
+    await mount({ listed: boardReview() });
+    expect(group().querySelector('[role="tree"]')).not.toBeNull();
+    expect(items().map((r) => [r.querySelector('[data-slot="row-label"]')?.textContent ?? null, Number(r.getAttribute("aria-level"))])).toEqual(BOARD_TREE.map(([, label, level]) => [label, level]));
+    expect(items().filter((r) => r.hasAttribute("aria-expanded")).map((r) => [r.querySelector('[data-slot="row-label"]')?.textContent, r.getAttribute("aria-expanded")])).toEqual([
+      ["libs", "true"],
+      ["net", "true"],
+      ["vendor", "true"],
+      ["tools", "true"],
+      ["app-shared", "true"],
+      ["third_party", "true"],
+      ["contrib", "true"],
+    ]);
+    expect(["aria-posinset", "aria-setsize"].map((a) => item("vendor").getAttribute(a))).toEqual(["2", "4"]);
+    expect(items().filter((r) => r.getAttribute("tabindex") === "0")).toEqual([item("libs")]);
+    expect(item("libs").style.paddingLeft).toBe("8px");
+    expect(item("minizip").style.paddingLeft).toBe("44px");
+    // FR-107: the header count stays the count of all submodule rows.
+    expect(text(group().querySelector('[data-slot="group-header"]')!)).toContain("10");
+  });
+
+  test("folder rows: the folder icon, the name, the count, and the name '<folder>, folder, <n>'", async () => {
+    await mount({ listed: boardReview() });
+    expect(item("vendor").getAttribute("aria-label")).toBe("vendor, folder, 3");
+    expect(text(item("vendor").querySelector('[data-slot="folder-count"]')!)).toBe("3");
+    expect(item("vendor").querySelector('[data-slot="folder-icon"]')).not.toBeNull();
+    expect(item("vendor").hasAttribute("data-path")).toBe(false);
+  });
+
+  test("the marks of plan D15 'Tree rows': branch, no branch, counts, =, gone mark, no count, and the accessible names", async () => {
+    await mount({ listed: boardReview() });
+    const markText = (path: string) => row(path).querySelector('[data-slot="branch-mark"]')?.textContent ?? null;
+    const countText = (path: string) => row(path).querySelector('[data-slot="track-count"]')?.textContent ?? null;
+    expect(BOARD.map((r) => [r.path, markText(r.path), countText(r.path), row(r.path).querySelector('[data-slot="gone-mark"]') !== null])).toEqual([
+      ["libs/net/http", "main", "=", false],
+      ["libs/core", "no branch", null, false],
+      ["libs/ui", "main", "↑1 ↓0", false],
+      ["vendor/tools/fmt", "release/2.x", "↑0 ↓3", false],
+      ["vendor/tools/lint", "lint", null, true],
+      [ICONS, null, null, false],
+      ["app-shared", "main", "↑2 ↓1", false],
+      ["app-shared/third_party/zlib", "main", null, false],
+      ["app-shared/third_party/contrib/minizip", "refs/tags/v1", null, false],
+      ["docs-theme", "draft", null, false],
+    ]);
+    const head = short(OLD);
+    expect(BOARD.map((r) => row(r.path).getAttribute("aria-label"))).toEqual([
+      `libs/net/http, main, 0 ahead, 0 behind, ${head}`,
+      `libs/core, no branch, ${head}`,
+      `libs/ui, main, 1 ahead, 0 behind, ${head}`,
+      `vendor/tools/fmt, release/2.x, 0 ahead, 3 behind, ${head}`,
+      `vendor/tools/lint, lint, upstream gone, ${head}`,
+      ICONS,
+      `app-shared, main, 2 ahead, 1 behind, ${head}`,
+      `app-shared/third_party/zlib, main, counts are unavailable: DEADLINE, ${head}`,
+      `app-shared/third_party/contrib/minizip, refs/tags/v1, No upstream, ${head}`,
+      `docs-theme, draft, No upstream, ${head}`,
+    ]);
+  });
+
+  test("the tooltips give the full path, the branch and upstream, the 003 count text, and the gone text", async () => {
+    await mount({ listed: boardReview() });
+    expect(await hoverTooltip(row("libs/ui").querySelector('[data-slot="row-label"]')!)).toEqual(["libs/ui"]);
+    expect(await hoverTooltip(item("tools").querySelector('[data-slot="row-label"]')!)).toEqual(["vendor/tools"]);
+    expect(await hoverTooltip(row("libs/ui").querySelector('[data-slot="branch-mark"]')!)).toEqual(["main → origin/main"]);
+    expect(await hoverTooltip(row("docs-theme").querySelector('[data-slot="branch-mark"]')!)).toEqual(["draft"]);
+    expect(await hoverTooltip(row("libs/ui").querySelector('[data-slot="track-count"]')!)).toEqual([
+      "1 ahead, 0 behind. Counts compare with the remote-tracking branch from the last fetch, not with the remote itself.",
+    ]);
+    expect(await hoverTooltip(row("vendor/tools/lint").querySelector('[data-slot="gone-mark"]')!)).toEqual(["The upstream origin/lint no longer exists."]);
+    // The mark and the label shrink and end with an ellipsis.
+    for (const slot of ["row-label", "branch-mark"]) expect(row("libs/ui").querySelector(`[data-slot="${slot}"]`)!.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+  });
+
+  // 001 plan.md "Icons": the row keeps the tooltip text that its accessible name leaves out in its description.
+  test("the accessible description gives the full folder path, the upstream, and the 003 count note", async () => {
+    await mount({ listed: boardReview() });
+    const counts = "Counts compare with the remote-tracking branch from the last fetch, not with the remote itself.";
+    expect([item("tools"), item("libs")].map((r) => r.getAttribute("aria-description"))).toEqual(["vendor/tools", "libs"]);
+    expect(BOARD.map((r) => [r.path, row(r.path).getAttribute("aria-description")])).toEqual([
+      ["libs/net/http", `main → origin/main. ${counts}`],
+      ["libs/core", null],
+      ["libs/ui", `main → origin/main. ${counts}`],
+      ["vendor/tools/fmt", `release/2.x → origin/release/2.x. ${counts}`],
+      ["vendor/tools/lint", "lint → origin/lint"],
+      [ICONS, null],
+      ["app-shared", `main → origin/main. ${counts}`],
+      ["app-shared/third_party/zlib", null],
+      ["app-shared/third_party/contrib/minizip", null],
+      ["docs-theme", null],
+    ]);
+  });
+
+  test("Up, Down, Home, and End move the focus; Right opens a closed row, then goes to the first child; Left closes an open row, else goes to the parent", async () => {
+    await mount({ listed: boardReview() });
+    await act(async () => item("libs").focus());
+    await press(focused(), "ArrowDown");
+    expect(focusedLabel()).toBe("net");
+    await press(focused(), "ArrowUp");
+    expect(focusedLabel()).toBe("libs");
+    await press(focused(), "End");
+    expect(focusedLabel()).toBe("docs-theme");
+    await press(focused(), "Home");
+    expect(focusedLabel()).toBe("libs");
+    await press(focused(), "ArrowLeft");
+    expect(item("libs").getAttribute("aria-expanded")).toBe("false");
+    expect(item("net")).toBeUndefined();
+    expect(focusedLabel()).toBe("libs");
+    await press(focused(), "ArrowRight");
+    expect(item("libs").getAttribute("aria-expanded")).toBe("true");
+    expect(focusedLabel()).toBe("libs");
+    await press(focused(), "ArrowRight");
+    expect(focusedLabel()).toBe("net");
+    await press(focused(), "ArrowRight");
+    expect(focusedLabel()).toBe("http");
+    // A leaf: Right does nothing, and Left goes to the parent.
+    await press(focused(), "ArrowRight");
+    expect(focusedLabel()).toBe("http");
+    await press(focused(), "ArrowLeft");
+    expect(focusedLabel()).toBe("net");
+    expect(item("net").getAttribute("aria-expanded")).toBe("true");
+    expect(items().filter((r) => r.getAttribute("tabindex") === "0")).toEqual([item("net")]);
+    // A parent submodule row closes and opens as a folder does.
+    await act(async () => item("zlib").focus());
+    await press(focused(), "ArrowLeft");
+    expect(focusedLabel()).toBe("third_party");
+    await press(focused(), "ArrowLeft");
+    await press(focused(), "ArrowLeft");
+    expect(focusedLabel()).toBe("app-shared");
+    await press(focused(), "ArrowLeft");
+    expect(item("app-shared").getAttribute("aria-expanded")).toBe("false");
+    expect(item("zlib")).toBeUndefined();
+  });
+
+  test("Enter opens or closes a folder row, and opens the submodule of a submodule row", async () => {
+    const opened: string[] = [];
+    await mount({ listed: boardReview(), onOpen: (path) => void opened.push(path) });
+    await act(async () => item("vendor").focus());
+    await press(focused(), "Enter");
+    expect(item("vendor").getAttribute("aria-expanded")).toBe("false");
+    await press(focused(), "Enter");
+    expect(item("vendor").getAttribute("aria-expanded")).toBe("true");
+    expect(opened).toEqual([]);
+    await act(async () => item("core").focus());
+    await press(focused(), "Enter");
+    expect(opened).toEqual(["libs/core"]);
+  });
+
+  test("a folder row has no menu: no Shift+F10, no Menu key, no right-click; a submodule row has its menu", async () => {
+    await mount({ listed: boardReview() });
+    await act(async () => item("libs").focus());
+    await press(focused(), "F10", { shiftKey: true });
+    await press(focused(), "ContextMenu");
+    await act(async () => void item("libs").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    await act(async () => item("core").focus());
+    await press(focused(), "ContextMenu");
+    expect(document.querySelector('[role="menu"]')!.getAttribute("aria-label")).toBe("Actions for libs/core");
+  });
+
+  test("a click on a folder row opens or closes it", async () => {
+    await mount({ listed: boardReview() });
+    await click(item("tools"));
+    expect(item("tools").getAttribute("aria-expanded")).toBe("false");
+    expect(item("fmt")).toBeUndefined();
+  });
+
+  test("the closed rows last for the window session per repository: a remount with the same repository keeps them, another repository opens all", async () => {
+    await mount({ listed: boardReview(), repository: "kept-repository" });
+    await act(async () => item("libs").focus());
+    await press(focused(), "ArrowLeft");
+    for (const unmount of roots.splice(0)) await unmount();
+    await mount({ listed: boardReview(), repository: "kept-repository" });
+    expect(item("libs").getAttribute("aria-expanded")).toBe("false");
+    for (const unmount of roots.splice(0)) await unmount();
+    await mount({ listed: boardReview(), repository: "other-repository" });
+    expect(item("libs").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  test("the marks change with the rows: in the list review after a Refresh, and in the unscoped Update review", async () => {
+    const view = await mount({ listed: boardReview({ branches: [] }) });
+    expect(row("libs/ui").querySelector('[data-slot="branch-mark"]')).toBeNull();
+    await act(async () => view.handle.update!.refreshed());
+    await view.read(fixtureId(7));
+    await answer(view.double.pending("reviewSubmodules"), boardReview());
+    expect(text(row("libs/ui").querySelector('[data-slot="track-count"]')!)).toBe("↑1 ↓0");
+    await click(button("Update submodules", group()));
+    const moved = mark(BOARD_IDS.ui!, { state: "branch", ref: "refs/heads/main", upstream: UPSTREAM, track: { state: "counts", ahead: 0, behind: 0 } });
+    await answer(view.double.pending("reviewSubmodules"), boardReview({ branches: [moved] }));
+    expect(text(row("libs/ui").querySelector('[data-slot="track-count"]')!)).toBe("=");
+    expect(row("libs/core").querySelector('[data-slot="branch-mark"]')).toBeNull();
+  });
+
+  test("a scoped review keeps the marks of the list", async () => {
+    const view = await mount({ listed: boardReview() });
+    await act(async () => void row("libs/ui").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await settle();
+    await click(menuItem("Update"));
+    await answer(view.double.pending("reviewSubmodules"), reviewed({ rows: [BOARD[2]!], branches: [] }));
+    expect(text(row("libs/ui").querySelector('[data-slot="track-count"]')!)).toBe("↑1 ↓0");
+  });
+
+  test("a review without an array `branches` has an unknown form", async () => {
+    const { branches: _, ...value } = review();
+    await mount({ listed: { requestId: fixtureId(31), state: "succeeded", result: value } });
+    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe("The submodules did not load: the result has an unknown form.");
+  });
+
+  test("a malformed parent chain gives the Malformed result state and no tree", async () => {
+    const bad = planRow({ rowId: fixtureId(0x401), path: "a/b", depth: 1, parentRowId: fixtureId(0x499) });
+    await mount({ listed: reviewed({ rows: [planRow({ rowId: fixtureId(0x400), path: "a" }), bad] }) });
+    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe("The submodules did not load: the result has an unknown form.");
+    expect(group().querySelector('[role="tree"]')).toBeNull();
+  });
+
+  test("above 1,024 folders the bound line shows, and no folder row", async () => {
+    const rows = folderRows(256);
+    const nested = planRow({ rowId: fixtureId(0x2000), path: `${rows[0]!.path}/n/x`, depth: 1, parentRowId: rows[0]!.rowId });
+    await mount({ listed: reviewed({ rows: [...rows, nested] }) });
+    expect(text(group().querySelector('[data-slot="tree-bound"]')!)).toBe("The submodule paths have more than 1,024 folders, so the group shows no folder rows.");
+    expect(items().every((r) => r.hasAttribute("data-path"))).toBe(true);
+    expect(items()).toHaveLength(257);
+  });
+
+  test("at 1,024 folders no bound line shows", async () => {
+    await mount({ listed: reviewed({ rows: folderRows(256) }) });
+    expect(group().querySelector('[data-slot="tree-bound"]')).toBeNull();
+    expect(items()).toHaveLength(256 + 1_024);
   });
 });

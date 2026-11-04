@@ -33,14 +33,18 @@ export function refIndex(refs: RefsResult | null): ReadonlyMap<string, string> {
 
 const shown = (n: number) => (n > TRACKING_COUNT_DISPLAY ? `${TRACKING_COUNT_DISPLAY}+` : String(n));
 
-/** The label of one entry. A count shows only when both OIDs equal the newest `readRefs` values (FR-021). */
-export function trackLabel(entry: TrackingEntry, index: ReadonlyMap<string, string>): TrackLabel {
-  const track = entry.track;
+/** The label of a track state, without the FR-021 check (feature 004 plan D20: the submodule branch marks). */
+export function countLabel(track: TrackingEntry["track"]): NonNullable<TrackLabel> {
   if (track.state === "none") return { text: NO_UPSTREAM, label: NO_UPSTREAM, state: "none" };
   if (track.state === "gone") return { text: UPSTREAM_GONE, label: UPSTREAM_GONE, state: "gone" };
-  if (index.get(KINDS.branch + entry.name) !== entry.objectId || entry.upstream === null || index.get(entry.upstream) !== entry.upstreamObjectId) return null;
   const label = `${shown(track.ahead)} ahead, ${shown(track.behind)} behind`;
   return track.ahead === 0 && track.behind === 0 ? { text: "=", label, state: "counts" } : { text: `↑${shown(track.ahead)} ↓${shown(track.behind)}`, label, state: "counts" };
+}
+
+/** The label of one entry. A count shows only when both OIDs equal the newest `readRefs` values (FR-021). */
+export function trackLabel(entry: TrackingEntry, index: ReadonlyMap<string, string>): TrackLabel {
+  if (entry.track.state === "counts" && (index.get(KINDS.branch + entry.name) !== entry.objectId || entry.upstream === null || index.get(entry.upstream) !== entry.upstreamObjectId)) return null;
+  return countLabel(entry.track);
 }
 
 /** The labels by local branch name (plan.md D8: the history labels join by branch name). */

@@ -100,7 +100,12 @@ const rounded = (xs: number[]) => xs.map((x) => Math.round(x * 10) / 10);
 // ---- Page facts of the Submodules group ----
 
 const GROUP = `document.querySelector('[data-slot=submodules-group]')`;
+// T147, plan D20 "Group": above 200 shown rows, only the mounted rows are in the DOM.
 const ITEMS = `[...(${GROUP}?.querySelectorAll('[role=tree] [role=treeitem]') ?? [])]`;
+// The facts of one row that hold for a virtual tree: the full path (`data-path` of a submodule row, the description of a folder row), the label, and the ARIA tree state.
+type RowFacts = { path: string | null; label: string | null; level: number; pos: number; size: number; expanded: string | null };
+const factsOf = (element: string) =>
+  `((e) => e ? { path: e.dataset.path ?? e.getAttribute('aria-description'), label: e.querySelector('[data-slot=row-label]')?.textContent ?? null, level: Number(e.getAttribute('aria-level')), pos: Number(e.getAttribute('aria-posinset')), size: Number(e.getAttribute('aria-setsize')), expanded: e.getAttribute('aria-expanded') } : null)(${element})`;
 // [kind, label, level, folder count] of each shown row, as BOARD_TREE.
 const SHAPE = `${ITEMS}.map((e) => [e.dataset.path === undefined ? 'folder' : 'submodule', e.querySelector('[data-slot=row-label]')?.textContent ?? '', Number(e.getAttribute('aria-level')), e.dataset.path === undefined ? Number((e.querySelector('[data-slot=folder-count]')?.textContent ?? '').replaceAll(',', '')) : null])`;
 const NAMES = `Object.fromEntries(${ITEMS}.filter((e) => e.dataset.path !== undefined).map((e) => [e.dataset.path, e.getAttribute('aria-label')]))`;
@@ -344,12 +349,20 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
         await switchTo(s, b.repo);
         await until<number>(s.c, "the board rows after the switch", `${ITEMS}.length`, (v) => v === collapsed.length, LIST_WAIT_MS);
         expect(await s.c.evaluate<unknown>(SHAPE)).toEqual(collapsed);
+        // The switcher keeps the focus after Enter, and its tooltip covers the group. The board Collapsed has no tooltip.
+        await blur(s.c);
+        await until<boolean>(s.c, "the closed tooltip", `document.querySelector('[data-slot=tooltip-content]') === null`, (v) => v);
         await shot(s.c, "collapsed");
         await s.c.send("Emulation.setEmulatedMedia", { features: [] });
-        // Spec FR-111: above 1,024 folders, no folder row shows, and the bound line shows.
+        // Spec FR-111: above 1,024 folders, no folder row shows, and the bound line shows. The 256 rows are one flat level.
         await openFolder(s, bound.repo);
-        await until<number>(s.c, "the bound rows", `${ITEMS}.length`, (v) => v === 256, LIST_WAIT_MS);
-        expect({ line: await s.c.evaluate<string | null>(BOUND_LINE), folders: await s.c.evaluate<number>(`${ITEMS}.filter((e) => e.dataset.path === undefined).length`) }).toEqual({ line: TREE_BOUND, folders: 0 });
+        const firstBound = factsOf(`${ITEMS}[0]`);
+        await until<RowFacts | null>(s.c, "the bound rows", firstBound, (v) => v?.path === bound.paths[0], LIST_WAIT_MS);
+        expect({
+          line: await s.c.evaluate<string | null>(BOUND_LINE),
+          folders: await s.c.evaluate<number>(`${ITEMS}.filter((e) => e.dataset.path === undefined).length`),
+          first: await s.c.evaluate<RowFacts | null>(firstBound),
+        }).toEqual({ line: TREE_BOUND, folders: 0, first: { path: bound.paths[0]!, label: bound.paths[0]!, level: 1, pos: 1, size: 256, expanded: null } });
       } finally {
         await end(s);
       }
@@ -407,9 +420,11 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
       const f = folderWorld(GIT!, fixtureDir("sc019"), 1_024);
       const s = await session("sc019", f.repo);
       try {
-        const rows = 256 + 1_024;
-        await until<number>(s.c, "the tree rows", `${ITEMS}.length`, (v) => v === rows, LIST_WAIT_MS);
-        expect({ line: await s.c.evaluate<string | null>(BOUND_LINE), folders: await s.c.evaluate<number>(`${ITEMS}.filter((e) => e.dataset.path === undefined && e.getAttribute('aria-expanded') === 'true').length`) }).toEqual({ line: null, folders: 1_024 });
+        // T147: the tree mounts only the rows in view. The first row and the root set size show that the 256 folders `t000` to `t255` are listed.
+        const head = factsOf(`${ITEMS}[0]`);
+        await until<RowFacts | null>(s.c, "the tree rows", head, (v) => v?.path === "t000", LIST_WAIT_MS);
+        expect({ line: await s.c.evaluate<string | null>(BOUND_LINE), first: await s.c.evaluate<RowFacts | null>(head) }).toEqual({ line: null, first: { path: "t000", label: "t000", level: 1, pos: 1, size: 256, expanded: "true" } });
+        console.log(`OBSERVATION ${TASK}: SC-019 mounted rows ${await s.c.evaluate<number>(`${ITEMS}.length`)} of ${256 + 1_024}`);
         // W3C Event Timing: the duration of each keydown runs from the event to the next paint after its handlers.
         await s.c.evaluate(`(() => {
           window.__t144Keys = [];
@@ -420,20 +435,21 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           window.__t144Observer.observe({ type: 'event', durationThreshold: ${EVENT_THRESHOLD_MS} });
           return true;
         })()`);
-        const FOCUS = `(() => { const items = ${ITEMS}; const a = document.activeElement; return { i: items.indexOf(a), expanded: a?.getAttribute('aria-expanded') ?? null, n: items.length }; })()`;
-        type Focus = { i: number; expanded: string | null; n: number };
-        // Rows 0 to 4 are `t000`, `t000/a`, `t000/a/b`, `t000/a/b/c`, and the row `s`. Each step names the key and the focus that it must give (plan D15 keyboard map).
-        const CYCLE: [string, Focus][] = [
-          ["Home", { i: 0, expanded: "true", n: rows }],
-          ["ArrowDown", { i: 1, expanded: "true", n: rows }],
-          ["ArrowDown", { i: 2, expanded: "true", n: rows }],
-          ["ArrowRight", { i: 3, expanded: "true", n: rows }],
-          ["ArrowLeft", { i: 3, expanded: "false", n: rows - 1 }],
-          ["ArrowRight", { i: 3, expanded: "true", n: rows }],
-          ["Enter", { i: 3, expanded: "false", n: rows - 1 }],
-          ["Enter", { i: 3, expanded: "true", n: rows }],
-          ["End", { i: rows - 1, expanded: null, n: rows }],
-          ["ArrowUp", { i: rows - 2, expanded: "true", n: rows }],
+        // The focused treeitem of the group tree, or null.
+        const FOCUS = factsOf(`(${GROUP}?.querySelector('[role=tree]')?.contains(document.activeElement) && document.activeElement?.getAttribute('role') === 'treeitem' ? document.activeElement : null)`);
+        const folder = (path: string, level: number, expanded: string) => ({ path, label: path.split("/").at(-1)!, level, pos: 1, size: level === 1 ? 256 : 1, expanded });
+        // The tree starts with `t000`, `t000/a`, `t000/a/b`, `t000/a/b/c`, and the row `s`, and ends with `t255/a/b/c` and its row `s`. Each step names the key and the focus that it must give (plan D15 keyboard map).
+        const CYCLE: [string, RowFacts][] = [
+          ["Home", folder("t000", 1, "true")],
+          ["ArrowDown", folder("t000/a", 2, "true")],
+          ["ArrowDown", folder("t000/a/b", 3, "true")],
+          ["ArrowRight", folder("t000/a/b/c", 4, "true")],
+          ["ArrowLeft", folder("t000/a/b/c", 4, "false")],
+          ["ArrowRight", folder("t000/a/b/c", 4, "true")],
+          ["Enter", folder("t000/a/b/c", 4, "false")],
+          ["Enter", folder("t000/a/b/c", 4, "true")],
+          ["End", { path: "t255/a/b/c/s", label: "s", level: 5, pos: 1, size: 1, expanded: null }],
+          ["ArrowUp", folder("t255/a/b/c", 4, "true")],
         ];
         const first = `${GROUP}.querySelector('[role=treeitem][tabindex="0"]')`;
         await s.c.evaluate(`(${first}).focus(); true`);
@@ -443,7 +459,7 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           await s.c.evaluate("(window.__t144Keys = [], window.__t144Events = [], true)");
           for (const [key, want] of CYCLE) {
             await press(s.c, key);
-            await until<Focus>(s.c, `cycle ${cycle} ${key}`, FOCUS, (v) => v.i === want.i && v.expanded === want.expanded && v.n === want.n);
+            await until<RowFacts | null>(s.c, `cycle ${cycle} ${key}`, FOCUS, (v) => js(v) === js(want));
           }
           await s.c.evaluate("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => done(true), 50))))");
           const { keys, events } = await s.c.evaluate<{ keys: number[]; events: { start: number; duration: number }[] }>("(window.__t144Take(window.__t144Observer.takeRecords()), { keys: window.__t144Keys, events: window.__t144Events })");

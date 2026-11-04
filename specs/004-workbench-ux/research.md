@@ -781,7 +781,7 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 
 - SC-018 basis: +18 ms measured unpackaged, plus about 5 ms for the packaged process path (005 research "Packaged cost"). The budget is 30 ms per row, set before the packaged test. A miss stays a failure, unless the user approves a changed target (constitution VII).
 - WSL: record only. Estimate +40 ms to +170 ms per row (168 ms per process in 005 research). Today's WSL review costs about 1 s or more per checked-out row.
-- SC-019 keeps the 001 SC-005 targets with 256 rows and 1,024 open folders, without virtualization. T144 decides.
+- SC-019 keeps the 001 SC-005 targets with 256 rows and 1,024 open folders. A packaged probe gave a p95 of 184 ms with all rows mounted, so the group mounts only the rows in view above 200 rows (T147). T144 decides.
 - Context, not in scope: the review costs about 250 ms per checked-out row on Windows. 256 rows take about 1 minute before the tree shows.
 
 **Open assumptions**

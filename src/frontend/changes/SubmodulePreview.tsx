@@ -7,6 +7,7 @@ import type { BridgeResponse, OnProgress } from "../bridge";
 import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { INITIALIZE_FIRST } from "../submodules/SubmodulesGroup";
+import { NOT_LOCATED_TEXT } from "./limitation-text";
 
 // Feature 005 plan.md D19 (Layout, Keyboard, Texts), spec FR-069 to FR-076, data-model §15 and §16, contract Δ3 `readSubmoduleChange` and `readSubmoduleWork`.
 
@@ -92,6 +93,7 @@ function workText(read: WorkRead | null, snapshotId: string | undefined, pathByt
   // Contract Δ3: each of the first 256 stage-0 gitlinks has one entry, and `limited` counts the rest. No entry with `limited` 0 breaks the contract.
   if (entry === undefined) return work.limited > 0 ? WORK_LIMIT_TEXT : "Working tree is unavailable: STATE_UNKNOWN";
   if (entry.state === "not-initialized") return INITIALIZE_FIRST;
+  if (entry.state === "not-located") return NOT_LOCATED_TEXT;
   if (entry.state === "unchecked") return entry.reason === "programs" ? PROGRAMS_TEXT : `Working tree is unavailable: ${entry.code}`;
   return marksOf(entry).join(", ") || NO_EDITS;
 }
@@ -192,6 +194,7 @@ export function SubmodulePreview({ path, pathBytes, change, work, reader, reason
     result === null ? null
     : result.state.state === "missing" ? MISSING_TEXT
     : result.state.state === "not-initialized" ? INITIALIZE_FIRST
+    : result.state.state === "not-located" ? NOT_LOCATED_TEXT
     : null;
   const commits = result?.state.state === "commits" ? result.state : null;
   return (

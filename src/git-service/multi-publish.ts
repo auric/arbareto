@@ -471,8 +471,8 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
       stop,
       async (k): Promise<Refusal | Stop | null> => {
         const i = moved[k]!;
-        const read = await settled(pooled.signal, gitlinkFact(pooled.runner, pooled, s.indexEntries, paths[i]!));
-        if (!("value" in read)) return refusalOrStop(read);
+        const read = await settled(pooled.signal, gitlinkFact(pooled.runner, pooled, s, paths[i]!));
+        if (!("value" in read)) return isStop(read) ? read : { ...refusalOf(read), entryId: entries[i]!.entryId };
         gitlinks.set(i, read.value);
         return null;
       },

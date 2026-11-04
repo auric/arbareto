@@ -30,8 +30,8 @@ export type FileControlsProps = {
   blocked?: Blocked;
   trust?: TrustReport | null;
   eligibility?: Eligibility;
-  /** The ID of the T145 reason line. A disabled button takes it as its accessible description. */
-  reasonId: string;
+  /** The ID of the T145 reason line. A disabled button takes it as its accessible description. Absent while the reason line holds no element with it. */
+  reasonId?: string;
   /** Feeds the reason line. Null clears it. `quiet` keeps the text as a hidden description (spec FR-105). */
   onReason?(text: string | null, quiet?: boolean): void;
   /** Runs after each terminal response. The read after a mutation outcome reconciles the view (contract §3). */
@@ -56,11 +56,12 @@ const LABEL: Record<Direction, Decision["label"]> = { stage: "Stage file", unsta
 const OUTCOME: Record<Direction, string> = { stage: "File staged", unstage: "File unstaged", resolve: "File marked resolved" };
 
 /** Feature 005 plan.md D20 "Preview equality": the reason of a moved gitlink stage, or null when the preview `new` equals `gitlink.oid`. */
-export function gitlinkReason(comparison: Comparison, preview: ChangeRead | null | undefined): string | null {
+export function gitlinkReason(comparison: Comparison, preview: ChangeRead | null | undefined): "pending" | "stale" | null {
   if (comparison.gitlink === undefined) return null;
-  if (preview === undefined || preview === null || preview === "pending") return PENDING_TEXT;
-  return changeOf(preview)?.new === comparison.gitlink.oid ? null : STALE_TEXT;
+  if (preview === undefined || preview === null || preview === "pending") return "pending";
+  return changeOf(preview)?.new === comparison.gitlink.oid ? null : "stale";
 }
+const GITLINK_REASON_TEXT = { pending: PENDING_TEXT, stale: STALE_TEXT } as const;
 
 /** The file-action decision of the comparison (contract §4, feature 003 contract Δ4), then the workspace and trust state. */
 export function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
@@ -69,7 +70,8 @@ export function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
   const accepted = action === "stage" || action === "unstage" || action === "resolve";
   // Feature 003 FR-052: a Conflicted entry offers Mark resolved. The 001 `state` refusal keeps the Stage file label.
   const direction: Direction = accepted ? action : category === "staged" ? "unstage" : category === "conflicted" && action !== "state" ? "resolve" : "stage";
-  const refusal = accepted ? gitlinkReason(comparison, props.preview) : action === "submodule" && isGitlink(props.entry) ? GITLINK_TEXT : REFUSAL_TEXT[action];
+  const gitlink = accepted ? gitlinkReason(comparison, props.preview) : null;
+  const refusal = accepted ? (gitlink === null ? null : GITLINK_REASON_TEXT[gitlink]) : action === "submodule" && isGitlink(props.entry) ? GITLINK_TEXT : REFUSAL_TEXT[action];
   // A merge or a rebase in progress blocks staging, but Mark resolved exists for it. The service checks the bound operation state (plan.md D7).
   const blocked = direction === "resolve" && (props.blocked === "conflicted" || props.blocked === "operation") ? null : props.blocked;
   return { label: LABEL[direction], direction, reason: refusal ?? stagingReason({ ...props, blocked }) ?? (props.target ? null : BLOCKED_TEXT.stale), quiet: refusal === null && blocked === "operation" };

@@ -87,7 +87,7 @@ const SCORE = /^[RC]\d{1,3}$/;
 
 const refuse = (reason: FileActionReason): FileActionDecision => ({ direction: null, code: "UNSUPPORTED_COMPARISON", reason });
 const MALFORMED = { direction: null, code: "MALFORMED_GIT_OUTPUT" } as const;
-const GITLINK_MODE = 0o160000;
+export const GITLINK_MODE = 0o160000;
 
 // Feature 005 plan.md D20 rule 2: `<sub>` `SC..` and `.M` with `mI` and `mW` 160000. The parent status runs with `--ignore-submodules=dirty`.
 const isMoved = (r: StatusRecord) => r.kind === "1" && r.sub[1] === "C" && r.y === "M" && r.mI === GITLINK && r.mW === GITLINK;

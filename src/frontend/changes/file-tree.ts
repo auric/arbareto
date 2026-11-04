@@ -46,7 +46,7 @@ function childrenOf(folder: Folder): Map<string, Folder | ChangeEntry> {
     if (run === undefined || !path.startsWith(run.prefix, offset)) {
       const end = path.indexOf(SLASH, offset);
       // Data-model §3: an untracked record that ends with `/` is one nested-repository row.
-      if (end < 0 || end === path.length - 1) {
+      if (end < 0 || (end === path.length - 1 && entry.category === "untracked")) {
         children.set(`f${entry.entryId}`, entry);
         continue;
       }

@@ -454,7 +454,7 @@ export function createComparisonReader({ runner, trust, onDrop, spent }: Compari
         // Feature 005 plan.md D20 rule 2: the submodule HEAD of a moved gitlink.
         const gitlinkRead = async () => {
           if (conflicted || !movedGitlink(e.category, rawRecord(e, path))) return;
-          const read = await gitlinkFact(runner, t, t.snapshot.indexEntries, path);
+          const read = await gitlinkFact(runner, t, t.snapshot, path);
           if ("stop" in read) throw new Stop({ result: read.stop });
           if ("code" in read) throw fail(read.code);
           gitlink = read.value;

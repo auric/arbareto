@@ -586,7 +586,8 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
             <FileControls
               key={controls.comparison.comparisonId}
               {...controls}
-              reasonId={staging.fileReasonId}
+              // The reason line gets the text one render after the button. Before that, no element holds the ID.
+              reasonId={staging.reasons.some((p) => p.id === staging.fileReasonId && p.text !== null) ? staging.fileReasonId : undefined}
               onReason={staging.onFileReason}
               onSuccess={() => staging.onToolbarSuccess(shown.entry!.entryId)}
             />
@@ -731,7 +732,8 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
   const extra = shownExtra(submodules, state);
   const work = submodules === undefined ? undefined : { read: submodules.work, snapshotId };
   // The preview has no comparison heading, so it holds the reason line of the stage controls.
-  const reasonLine = staging === undefined || staging.reasons.every((p) => p.text === null) ? undefined : <ReasonLine parts={staging.reasons} />;
+  // The line keeps its height without a reason, so the list below it does not move (as in the hunk controls).
+  const reasonLine = staging === undefined ? undefined : <ReasonLine parts={staging.reasons} />;
   // Spec FR-074: only a gitlink of the index has a Working tree row. A staged gitlink deletion has none.
   // Feature 004 plan.md D15 "P2 regions": the resolve view replaces the diff of a selected Conflicted entry.
   const view =
@@ -1027,7 +1029,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const shown = shownComparison(state, undefined).comparison;
     return shown !== null && shown.gitlink !== undefined && state.capability?.comparisonId === shown.comparisonId ? shown : null;
   })();
-  const gitlinkStale = gitlinkComparison !== null && gitlinkReason(gitlinkComparison, submoduleCurrent) === STALE_TEXT;
+  const gitlinkStale = gitlinkComparison !== null && gitlinkReason(gitlinkComparison, submoduleCurrent) === "stale";
   useEffect(() => {
     if (!gitlinkStale || retryKey === null || retried === retryKey) return;
     setRetried(retryKey);

@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ReadComparisonResult } from "../../src/contracts/envelope";
+import { STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { decideFileAction, type FileActionCategory } from "../../src/contracts/file-action";
 import type { RawIndexEntry } from "../../src/git-service/eligibility";
 import { changedEntries, digestSink, fileApproval, indexInfoInput, type ExpectedChange, type FileAction } from "../../src/git-service/file-publish";
@@ -370,6 +371,125 @@ describe("T118 Stage all changes with a moved gitlink (spec FR-081, 004 contract
       expect({ ...refusal(response), entryId: (response.result as { entryId?: string } | undefined)?.entryId }).toEqual({ code: "UNSUPPORTED_COMPARISON", reason: "submodule", entryId: changes.find((e) => e.path === "gone")!.entryId });
       expect(updatesOf(service, response.operationId!)).toEqual([]);
       expect({ index: rawIndexDigest(gitPath(), sup), subs: submoduleFacts(sup), files: workingFileDigests(sup) }).toEqual({ index, subs, files });
+    }),
+    T118_MS,
+  );
+
+  caseTest(T118, `FR-038: a failed submodule HEAD read in Stage all changes refuses with GIT_FAILED, names the gitlink entry, and keeps the index SHA-256`, SHELL, () =>
+    withService({ name: "t118-head-failed" }, async (service) => {
+      const sup = world();
+      writeFileSync(join(sup, "s.txt"), "changed\n");
+      const index = rawIndexDigest(gitPath(), sup);
+      const { repositoryId } = await service.register(sup);
+      const read = await readOk(service, repositoryId);
+      const changes = changesOf(read);
+      // `rev-parse --verify -q HEAD` inside the submodule exits 128, and `show-ref --exists` then finds the branch, so no rule 2 result holds.
+      service.runner.inject.exit = ({ arguments: args }) => (args.includes("--git-dir=.git") && args.includes("--verify") && args.at(-1) === "HEAD" ? 128 : undefined);
+      const response = await applyFiles(service, repositoryId, read, changes.map((e) => e.entryId));
+      service.runner.inject.exit = undefined;
+      expect({ code: response.code, entryId: (response.result as { entryId?: string } | undefined)?.entryId }).toEqual({ code: "GIT_FAILED", entryId: changes.find((e) => e.path === "sub")!.entryId });
+      expect(updatesOf(service, response.operationId!)).toEqual([]);
+      expect(rawIndexDigest(gitPath(), sup)).toBe(index);
+    }),
+    T118_MS,
+  );
+
+  caseTest(T118, `FR-079: a commit inside the submodule after the update-index steps of Stage all changes gives STALE_SELECTION, and the index SHA-256 stays`, SHELL, async () => {
+    const sup = world();
+    writeFileSync(join(sup, "s.txt"), "changed\n");
+    let moved = "";
+    let after: ReturnType<typeof submoduleFacts> = {};
+    // The observer point 5 comes after the Git steps and before the step 7 checkpoint (`sameHead`).
+    const hunkCheckpoint = ({ step }: HunkCheckpoint) => {
+      if (step !== 5 || moved !== "") return;
+      moved = commitIn(join(sup, "sub"), "h.txt", "three\n");
+      after = submoduleFacts(sup);
+    };
+    await withService({ name: "t118-all-stale", hunkCheckpoint }, async (service) => {
+      const { repositoryId } = await service.register(sup);
+      const index = rawIndexDigest(gitPath(), sup);
+      const before = listing(sup);
+      const read = await readOk(service, repositoryId);
+      const changes = changesOf(read);
+      expect(changes.map((e) => `${e.category} ${e.path}`).sort()).toEqual(["unstaged s.txt", "unstaged sub"]);
+      const response = await applyFiles(service, repositoryId, read, changes.map((e) => e.entryId));
+      expect({ moved: moved !== "", code: response.code }).toEqual({ moved: true, code: "STALE_SELECTION" });
+      expect({ index: rawIndexDigest(gitPath(), sup), listing: listing(sup) }).toEqual({ index, listing: before });
+      expect(submoduleFacts(sup)).toEqual(after);
+      expect(candidateFiles(sup)).toEqual([]);
+    });
+  }, T118_MS);
+});
+
+describe("T118 Unstage selected with a staged gitlink (spec FR-081, 004 contract Δ4)", () => {
+  caseTest(T118, `FR-081: Unstage selected of a staged gitlink and a staged file equals git reset -q -- sub s.txt, in one update-index --index-info step`, SHELL, () =>
+    withService({ name: "t118-unstage" }, async (service) => {
+      const sup = world();
+      const recorded = gitText(sup, ["rev-parse", "HEAD:s.txt"]).trim();
+      const recordedSub = gitText(sup, ["rev-parse", "HEAD:sub"]).trim();
+      writeFileSync(join(sup, "s.txt"), "changed\n");
+      git(sup, ["--literal-pathspecs", "add", "--", "sub", "s.txt"]);
+      const subs = submoduleFacts(sup);
+      const files = workingFileDigests(sup);
+      const expected = oracle(sup, ["--literal-pathspecs", "reset", "-q", "--", "sub", "s.txt"]);
+      const { repositoryId } = await service.register(sup);
+      const read = await readOk(service, repositoryId);
+      const staged = read.entries.filter((e) => e.category === "staged");
+      expect(staged.map((e) => e.path).sort()).toEqual(["s.txt", "sub"]);
+      const response = await service.response(service.send("applyFiles", { snapshotId: read.snapshotId, entryIds: staged.map((e) => e.entryId), direction: "unstage", kind: "selected" }, { repositoryId }), T118_MS);
+      expect(outcome(response)).toEqual(SUCCEEDED);
+      expect(listing(sup)).toBe(expected);
+      const lines = staged.map((e) => (e.path === "sub" ? `160000 ${recordedSub}\tsub\0` : `100644 ${recorded}\ts.txt\0`)).join("");
+      expect(updatesOf(service, response.operationId!)).toEqual([{ args: INDEX_INFO, input: lines }]);
+      expect(submoduleFacts(sup)).toEqual(subs);
+      expect(workingFileDigests(sup)).toEqual(files);
+      expect(candidateFiles(sup)).toEqual([]);
+    }),
+    T118_MS,
+  );
+});
+
+// Contract §5: a status bound that cuts the index listing leaves `indexEntries` empty. Finding 1 of the T118 review.
+describe("T118 a cut index listing (contract §5)", () => {
+  // The real `ls-files -z --stage -v` records, then records past STATUS_LISTING_RECORDS. The gitlink record comes before the cut, so its entry keeps its flags.
+  const cutListing = (sup: string) => {
+    const oid = gitText(sup, ["rev-parse", "HEAD:s.txt"]).trim();
+    const extra = Array.from({ length: STATUS_LISTING_RECORDS + 1 }, (_, i) => `H 100644 ${oid} 0\tzz/${i}\0`).join("");
+    return Buffer.concat([git(sup, ["ls-files", "-z", "--stage", "-v"]), Buffer.from(extra)]);
+  };
+  const cutRead = async (service: Service, repositoryId: string, sup: string) => {
+    const cut = cutListing(sup);
+    service.runner.inject.stdout = (call) => (call.arguments.includes("--stage") && call.arguments.includes("-v") ? cut : undefined);
+    const read = await service.readWorkspace(repositoryId);
+    service.runner.inject.stdout = undefined;
+    expect({ state: read.state, completeness: read.result?.completeness }).toMatchObject({ state: "limited", completeness: { state: "limited", reason: "STATUS_LISTING_RECORDS" } });
+    const entry = read.result!.entries.find((e) => e.path === "sub" && e.category === "unstaged")!;
+    expect(entry.flags).toBeDefined();
+    return { read: read.result!, entry };
+  };
+
+  caseTest(T118, `readComparison of a moved gitlink gives OUTPUT_LIMIT, not reason submodule`, SHELL, () =>
+    withService({ name: "t118-cut-compare" }, async (service) => {
+      const sup = world();
+      const { repositoryId } = await service.register(sup);
+      const { read } = await cutRead(service, repositoryId, sup);
+      const c = await compare(service, repositoryId, "sub", "unstaged", read);
+      expect(outcome(c.response)).toEqual({ state: "failed", code: "OUTPUT_LIMIT" });
+    }),
+    T118_MS,
+  );
+
+  // `applyFiles` refuses a snapshot without an index fingerprint before the decision (multi-publish.ts `select`), so the gitlink read does not run.
+  caseTest(T118, `applyFiles of a moved gitlink gives OUTPUT_LIMIT and keeps the index SHA-256`, SHELL, () =>
+    withService({ name: "t118-cut-apply" }, async (service) => {
+      const sup = world();
+      const index = rawIndexDigest(gitPath(), sup);
+      const { repositoryId } = await service.register(sup);
+      const { read, entry } = await cutRead(service, repositoryId, sup);
+      const response = await service.response(service.send("applyFiles", { snapshotId: read.snapshotId, entryIds: [entry.entryId], direction: "stage", kind: "selected" }, { repositoryId }), T118_MS);
+      expect(response.code).toBe("OUTPUT_LIMIT");
+      expect(updatesOf(service, response.operationId!)).toEqual([]);
+      expect(rawIndexDigest(gitPath(), sup)).toBe(index);
     }),
     T118_MS,
   );

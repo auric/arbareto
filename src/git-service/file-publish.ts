@@ -12,7 +12,7 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import type { ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { stagedGitlink, type FileActionDecision, type ResolveDecision, type UnstagePath } from "../contracts/file-action";
+import { GITLINK_MODE, stagedGitlink, type FileActionDecision, type ResolveDecision, type UnstagePath } from "../contracts/file-action";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
 import type { ApprovalKey, FileApproval, FileBinding } from "./approvals";
 import { blobFilterProofArgs, blobHashProofArgs, isObjectId, objectCheckArgs, updateIndexAddArgs, updateIndexInfoArgs } from "./commands";
@@ -59,7 +59,6 @@ export const BLOB_PROOF_TEXT = "Arbareto cannot prove the staged content of this
 const STALE: Refusal = { code: "STALE_SELECTION" };
 const CANCELED: Stop = { stop: "canceled" };
 const NUL = Uint8Array.of(0);
-const GITLINK_LINE = 0o160000;
 // The flags of an entry that `update-index` writes.
 const CLEAN = { stage: 0, assumeUnchanged: false, skipWorktree: false, intentToAdd: false };
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -340,7 +339,7 @@ export function createFilePublisher(o: FilePublisherOptions) {
       if (!("check" in refused)) return refused;
       // Contract §7 "Missing objects": the index object of `stage`, or the HEAD object IDs that `unstage` names. `resolve` stages a new blob.
       // Feature 005 plan.md D20: a gitlink line names a commit of the submodule object database, so it names no object here.
-      const oid = action.direction === "unstage" ? action.changedPaths.find((r) => r.mode !== 0 && r.mode !== GITLINK_LINE)?.objectId : stage && head === null ? c.entry.oids?.[1] : undefined;
+      const oid = action.direction === "unstage" ? action.changedPaths.find((r) => r.mode !== 0 && r.mode !== GITLINK_MODE)?.objectId : stage && head === null ? c.entry.oids?.[1] : undefined;
       const checked = await missingObject(ctx, run.listing, oid, refused.check);
       const f = prepared.failure;
       // Contract §9: a failed `stage` or `resolve` Git step carries the `add` remedy and the output tail of its process.

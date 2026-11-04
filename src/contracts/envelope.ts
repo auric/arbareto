@@ -84,6 +84,7 @@ import {
   ProgressEvent,
   SHELL_ONLY,
   Text,
+  TrackState,
   type OperationName,
 } from "./operations";
 import { ATTRIBUTION_REASONS, OPERATION_STATES } from "./outcome";
@@ -1183,12 +1184,15 @@ export const Comparison = z
     support: SupportValue.nullable(),
     fileAction: FileActionValue,
     remedy: FileRemedy,
+    // Feature 005 contract Δ4 and data-model §17: the submodule HEAD that Stage file of a moved gitlink records.
+    gitlink: z.strictObject({ oid: ObjectId }).optional(),
   })
   .refine(
     (c) =>
       (c.completeness.state === "complete" || (c.completeness.state === "limited" && c.completeness.code === "OUTPUT_LIMIT")) &&
       (c.hunks.length === 0 || c.support === "supported") &&
-      c.hunks.every((h, i) => h.ordinal === i),
+      c.hunks.every((h, i) => h.ordinal === i) &&
+      (c.gitlink === undefined || c.fileAction === "stage"),
   )
   .meta({ title: "Comparison" });
 
@@ -1249,11 +1253,7 @@ export const TrackingEntry = z
     objectId: ObjectId,
     upstream: z.string().nullable(),
     upstreamObjectId: ObjectId.nullable(),
-    track: z.discriminatedUnion("state", [
-      z.strictObject({ state: z.literal("none") }).meta({ title: "TrackNone" }),
-      z.strictObject({ state: z.literal("gone") }).meta({ title: "TrackGone" }),
-      z.strictObject({ state: z.literal("counts"), ahead: Count, behind: Count }).meta({ title: "TrackCounts" }),
-    ]),
+    track: TrackState,
     current: z.boolean(),
   })
   .refine((e) => (e.upstream === null) === (e.track?.state === "none") && (e.upstream !== null || e.upstreamObjectId === null))

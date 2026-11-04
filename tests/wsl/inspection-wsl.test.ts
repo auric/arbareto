@@ -8,6 +8,7 @@
 // of `src-tauri/src/wsl.rs` `files_perl`. Their operation IDs start with `0f0f0f0f-0000-4000-8009-`, and no other test uses that prefix.
 // T078: the Delete, preview, and Save rows run through the WSL file actions of the shell test double `tests/git/bun-runner.ts`.
 // T108 and T111 (plan.md D19, spec FR-076, SC-012): the marks cost at 20 and 100 submodules, and the preview and the marks through the distro Git. Run them on Ubuntu-26.04.
+// T118 (plan.md D20, spec FR-082, SC-013): Stage file, Unstage file, and Stage all changes of a moved gitlink through the distro Git. Run it on Ubuntu-26.04.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync, unlinkSync } from "node:fs";
@@ -31,7 +32,7 @@ import { gitLocation } from "../git/submodule-harness";
 import { distroGitHost, globalConfig, sh } from "./fixtures";
 import { inDistro, listScopes, OWN_SCOPE_OPERATIONS, pgrep, uncPath, useWslFolder, WSL_ENV, WSL_EXE, WSL_FILES_TEXT, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
-for (const module of ["commit-changes", "blame", "ignore", "file-delete", "workbench-review", "submodule-open", "submodule-change", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+for (const module of ["commit-changes", "blame", "ignore", "file-delete", "workbench-review", "submodule-open", "submodule-change", "session", "comparison", "file-publish", "multi-publish"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 printOrigin("../../src/git-service/diff-parser.ts", import.meta.dir);
 printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 printOrigin("../../src/git-service/line-map.ts", import.meta.dir);
@@ -1415,6 +1416,76 @@ describe("T059 service rows through the shell test double and the distro Git (qu
       const locs = locations(from);
       expect({ ...inDistro(locs), solo: locs.includes(`${sup}/solo`), mid: locs.includes(`${sup}/mid`) }).toEqual({ distroForm: true, locs, solo: true, mid: true });
     });
+  });
+
+  // T118 (plan.md D20 "WSL", spec FR-082, SC-013): the gitlinks `sub` and `edit` of a distro superproject. `sub` moves one commit, `edit` gets only local edits, and `p.txt` changes.
+  // No `.gitmodules` names them, which spec FR-077 also covers.
+  const GITLINK_BUILD = [
+    'set -e; git="$1"; home="$2"; cfg="$3"; root="$4"',
+    'G() { env -i HOME="$home" PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL="$cfg" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_AUTHOR_DATE=2026-01-01T00:00:00+0000 GIT_COMMITTER_DATE=2026-01-01T00:00:00+0000 "$git" "$@"; }',
+    'mkdir -p "$root/lib" "$root/super"; G -C "$root/lib" init -q -b main; printf "one\\n" > "$root/lib/f.txt"; G -C "$root/lib" add -- f.txt; G -C "$root/lib" commit -q --no-verify -m one',
+    'oid=$(G -C "$root/lib" rev-parse HEAD); G -C "$root/super" init -q -b main; printf "p\\n" > "$root/super/p.txt"; G -C "$root/super" add -- p.txt; G -C "$root/super" commit -q --no-verify -m base',
+    'for p in sub edit; do cp -a "$root/lib" "$root/super/$p"; G -C "$root/super/$p" update-index -q --refresh; printf "160000 %s\\t%s\\n" "$oid" "$p" >> "$root/info"; done',
+    'G -C "$root/super" update-index --index-info < "$root/info"; G -C "$root/super" commit -q --no-verify -m gitlinks',
+    'printf "two\\n" > "$root/super/sub/g.txt"; G -C "$root/super/sub" add -- g.txt; G -C "$root/super/sub" commit -q --no-verify -m two',
+    'printf "q\\n" > "$root/super/p.txt"; printf "edited\\n" > "$root/super/edit/f.txt"; printf "u\\n" > "$root/super/edit/u.txt"',
+  ].join("\n");
+  let gitlinkBuilds = 0;
+  W("T118 FR-082, SC-013: Stage file, Unstage file, and Stage all changes of a moved gitlink run through the distro Git and equal git add -- sub, git restore --staged -- sub, and git add -A inside the distro", async (w) => {
+    const h = hostOf(w);
+    const root = `${h.root}/t118-${++gitlinkBuilds}`;
+    sh(w, GITLINK_BUILD, [w.probe.paths.git!, `${w.folder}/home`, h.globalConfig, root]);
+    const sup = `${root}/super`;
+    const stageListing = (dir: string) => g(h, dir, ["ls-files", "-z", "--stage"]).toString("latin1");
+    let copies = 0;
+    // Git's own command inside the distro on a copy, and the `ls-files -z --stage` bytes after it.
+    const oracle = (args: string[]) => {
+      const dir = `${sup}-oracle-${++copies}`;
+      sh(w, 'cp -a "$1" "$2"', [sup, dir]);
+      g(h, dir, args);
+      return stageListing(dir);
+    };
+    const subFacts = () => Object.fromEntries(["sub", "edit"].map((p) => [p, { head: t(h, `${sup}/${p}`, ["rev-parse", "HEAD"]).trim(), index: indexSha(h, `${sup}/${p}`), files: h.digests(`${sup}/${p}`) }]));
+    const subs = subFacts();
+    const files = h.digests(sup);
+    await withWsl(w, "t118-wsl", async (s) => {
+      const r = await s.register(uncPath(w, sup));
+      const compared = async (category: string) => {
+        const read = await readOk(s, r.repositoryId);
+        const entry = read.entries.find((e) => e.path === "sub" && e.category === category);
+        expect({ category, listed: entry !== undefined }).toEqual({ category, listed: true });
+        const env = { repositoryId: r.repositoryId, repositoryGeneration: read.generation };
+        const c = await request<{ comparisonId: string; fileAction: string; gitlink?: { oid: string } }>(s, "readComparison", { snapshotId: read.snapshotId, entryId: entry!.entryId }, { ...env, selectionId: crypto.randomUUID() });
+        expect(outcome(c)).toEqual(SUCCEEDED);
+        return { snapshotId: read.snapshotId, env, c: c.result! };
+      };
+      const apply = (x: Awaited<ReturnType<typeof compared>>, direction: "stage" | "unstage") => request(s, "applyFile", { comparisonId: x.c.comparisonId, snapshotId: x.snapshotId, direction }, x.env);
+
+      const added = oracle(["--literal-pathspecs", "add", "--", "sub"]);
+      const moved = await compared("unstaged");
+      expect({ fileAction: moved.c.fileAction, gitlink: moved.c.gitlink }).toEqual({ fileAction: "stage", gitlink: { oid: subs.sub!.head } });
+      expect(outcome(await apply(moved, "stage"))).toEqual(SUCCEEDED);
+      expect(stageListing(sup)).toBe(added);
+
+      const restored = oracle(["--literal-pathspecs", "restore", "--staged", "--", "sub"]);
+      const staged = await compared("staged");
+      expect({ fileAction: staged.c.fileAction, gitlink: staged.c.gitlink }).toEqual({ fileAction: "unstage", gitlink: undefined });
+      expect(outcome(await apply(staged, "unstage"))).toEqual(SUCCEEDED);
+      expect(stageListing(sup)).toBe(restored);
+
+      const all = oracle(["add", "-A"]);
+      const read = await readOk(s, r.repositoryId);
+      const changes = read.entries.filter((e) => e.category === "unstaged" || e.category === "untracked");
+      expect(changes.map((e) => `${e.category} ${e.path}`).sort()).toEqual(["unstaged p.txt", "unstaged sub"]);
+      const response = await s.response(s.send("applyFiles", { snapshotId: read.snapshotId, entryIds: changes.map((e) => e.entryId), direction: "stage", kind: "all-changes" }, { repositoryId: r.repositoryId }), RESPONSE_MS);
+      expect(outcome(response)).toEqual(SUCCEEDED);
+      expect(stageListing(sup)).toBe(all);
+      // Plan.md D20 "WSL": the rule 2 reads run at the distro path of the submodule.
+      const locations = [...new Set(s.runner.calls.map((c) => gitLocation(c.arguments)).filter((l): l is string => l !== null && l !== sup && l !== r.worktreeRoot))].sort();
+      expect(locations).toEqual([`${sup}/sub`]);
+    });
+    expect(subFacts()).toEqual(subs);
+    expect(h.digests(sup)).toEqual(files);
   });
 });
 

@@ -65,7 +65,7 @@ function rows(list: Row[]) {
     };
   });
 }
-const listed = (list: Row[]) => () => succeeded({ generation: 1, rows: rows(list), programs: [], refusals: [], hosts: [], submoduleReviewToken: fixtureId(0x9e1) });
+const listed = (list: Row[]) => () => succeeded({ generation: 1, rows: rows(list), branches: [], programs: [], refusals: [], hosts: [], submoduleReviewToken: fixtureId(0x9e1) });
 const recent = (current: boolean) => () => succeeded({ entries: [{ entryId: PARENT_ENTRY, path: "C:\\repo", location: { kind: "native" }, openedAt: "2026-10-23T10:00:00Z", current }] });
 const rejected = (code: string, result?: unknown) => ({ requestId: fixtureId(0x9e2), state: "rejected", code, ...(result === undefined ? {} : { result }) });
 const groupRow = (path: string) => document.querySelector<HTMLElement>(`[data-slot="submodules-group"] [role="treeitem"][data-path="${path}"]`)!;
@@ -253,6 +253,22 @@ describe("refusal texts (plan D15 Submodules, US6-5)", () => {
       expect(statusBar()).toContain(sentence);
     });
   }
+
+  // Feature 004 tasks.md T142, spec FR-107: Filter references does not filter the Submodules group.
+  test("Filter references leaves the Submodules group unchanged", async () => {
+    await setup([{ path: "libs/a" }, { path: "libs/b" }, { path: "tools" }]);
+    const items = () => [...document.querySelectorAll<HTMLElement>('[data-slot="submodules-group"] [role="treeitem"]')].map((r) => r.getAttribute("aria-label"));
+    const before = items();
+    expect(before).toHaveLength(4);
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Filter references"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "no-such-reference");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    expect(input.value).toBe("no-such-reference");
+    expect(items()).toEqual(before);
+  });
 
   test("the eighth level of a chain refuses with the chain text", async () => {
     const { double } = await setup([{ path: "lib" }]);

@@ -174,6 +174,7 @@
                     "SUBMODULE_PROGRESS_EVENTS_PER_SECOND",
                     "SUBMODULE_REVIEW_NESTING_LEVELS",
                     "SUBMODULE_REVIEW_SUBMODULES",
+                    "SUBMODULE_TREE_FOLDERS",
                     "SUBMODULE_UPDATE_CEILING_MS",
                     "SUBMODULE_UPDATE_INACTIVITY_MS",
                     "SUBMODULE_WORK_PARALLEL",
@@ -395,6 +396,7 @@
             "type",
             "symlink",
             "submodule",
+            "submodule-unborn",
             "index-flag",
             "path",
             "rename",
@@ -431,6 +433,19 @@
               "type": "null"
             }
           ]
+        },
+        "gitlink": {
+          "type": "object",
+          "properties": {
+            "oid": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            }
+          },
+          "required": [
+            "oid"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -490,6 +505,7 @@
             "type",
             "symlink",
             "submodule",
+            "submodule-unborn",
             "index-flag",
             "path",
             "rename",
@@ -702,6 +718,7 @@
                     "SUBMODULE_PROGRESS_EVENTS_PER_SECOND",
                     "SUBMODULE_REVIEW_NESTING_LEVELS",
                     "SUBMODULE_REVIEW_SUBMODULES",
+                    "SUBMODULE_TREE_FOLDERS",
                     "SUBMODULE_UPDATE_CEILING_MS",
                     "SUBMODULE_UPDATE_INACTIVITY_MS",
                     "SUBMODULE_WORK_PARALLEL",

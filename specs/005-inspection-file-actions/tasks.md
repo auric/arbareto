@@ -16,7 +16,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: The task touches different files from the other `[P]` tasks in its group and depends on no incomplete task of that group. A sub-heading starts a new group. "Depends on" names the exact order.
-- **[Story]**: The user story from spec.md (US1 to US9). A task that serves several stories carries the first story and names the others.
+- **[Story]**: The user story from spec.md (US1 to US11). A task that serves several stories carries the first story and names the others.
 - **WP and agent**: Each task names its plan.md work package. The orchestrator dispatches one WP per agent, with the agent that plan.md "Work packages" names. Each phase heading names that agent.
 - **Local tags**: `Local: Rust` needs the local Rust toolchain. `Local: Windows` needs the Windows reference host. `Local: package` needs the packaged Windows build. `Local: WSL` needs the `Ubuntu-26.04` distro with Git 2.55. Cloud sessions do not run these tasks (CLAUDE.md "Tool boundaries"). A skip never counts as a pass.
 - **Earlier specs**: The 001 to 004 texts stay unchanged in their own specs (spec.md "Changes to earlier requirements"). Tasks implement the changes and cite the changed requirement. No task edits `specs/001-desktop-qualification/` to `specs/004-workbench-ux/`.
@@ -407,6 +407,14 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 - [ ] T117 [US5] The shell fills `fileFacts` `bytes` for a WSL `content` read and refuses a Windows `content` request (contract Δ6) in `src-tauri/src/file_facts.rs`, `src-tauri/src/wsl.rs`, and `src-tauri/src/process_requests.rs`. `Local: Rust`. `Local: WSL`. Found in 008 batch 3; implemented on the 008 branch. Cause: `file_facts::parse` checked `content` and then dropped it, and both fact builders set `bytes: None`. So each WSL ignore-file read (`ignore.ts:96-111`) ended `REPOSITORY_CHANGED`, and a WSL `revert-lines` review (008 `revert.ts:543-565`) ended stale. The Windows route did not refuse `content`. The test double `tests/git/bun-runner.ts` filled the bytes, so no service test showed it. Fix: `Read` carries `content`. The WSL fact takes the base64 of the same `data` bytes that the digest takes. A Windows request with `content` gives `INVALID_REQUEST`. Evidence: tests first in `src-tauri/src/wsl.rs` (`a_content_read_carries_the_data_bytes_that_the_digest_takes`: an empty file, all 256 byte values with `detail`, a file at the 1 MiB bound, and no bytes above it; `the_real_content_read_gives_the_bytes_of_the_distro_file` through the wrapper on `Ubuntu-26.04`) and in `src-tauri/src/process_requests.rs` (`a_wsl_file_facts_content_request_carries_the_probe_bytes`, `a_windows_file_facts_request_with_content_is_refused`). Red: 0 pass, 4 fail. Green: `cargo test --locked` 652 pass, 0 fail, 16 ignored. Control mutation: drop the last byte of the WSL bytes; 3 of the 4 cases fail. Spec: FR-041, FR-043.
 
+### Submodule staging (user decisions of 2026-11-03, WP10)
+
+**Agent**: implementer-xhigh for T118, frontend-implementer (loads arbareto-ux, vercel-react-best-practices, web-design-guidelines) for T119, implementer writes and scout runs T120. Before v0.1.0: the v0.1.0 tag waits for T118 to T120. Tests first, with the red output kept. Source: plan.md D20, contract Δ4, data-model §17.
+
+- [ ] T118 [US11] Stage and unstage a moved gitlink in the contracts and the service (plan.md D20, contract Δ4, data-model §17). Before v0.1.0. `Local: WSL`. Files: `src/contracts/file-action.ts`, `src/contracts/schemas/` (reason `submodule-unborn`, the `readComparison` field `gitlink`), `src/git-service/{comparison,multi-publish,file-publish,submodule-change,commands}.ts`. Tests first. (1) In `tests/contracts/file-action.test.ts`, split the case "submodule: a gitlink on either side, or an untracked nested repository": an Unstaged `SC..` record with `gitlink: {head}` gives `stage` with the line `160000 <head>` at the path; `{refused: "submodule-unborn"}` gives that reason; a pure `S.M.` record and a `.D` gitlink deletion give `submodule`; a Staged `M.` gitlink gives `unstage` with mode 160000 and `hH`; a Staged `A.` gitlink gives mode 0; an untracked nested repository still gives `submodule`. (2) In `tests/git/file-publish.test.ts`, with real temporary repositories: a submodule moved one commit, staged through `applyFile`, gives the same `ls-files -z --stage` bytes as `git add -- sub` on a copy; Unstage file gives the bytes of `git restore --staged -- sub` on a copy; a commit inside the submodule between `readComparison` and the step 7 checkpoint gives `STALE_SELECTION` and an unchanged index SHA-256; an unborn submodule HEAD gives `submodule-unborn` and starts no `update-index`; `applyFiles` Stage all changes with a moved gitlink, a regular file, and no entry for a submodule with only local edits gives the `ls-files -z --stage` bytes of `git add -A` on a copy; a set with a deleted gitlink refuses as a whole and keeps the index SHA-256. Every case checks that the submodule HEAD, its index SHA-256, and its working-file bytes stay unchanged. (3) In `tests/wsl/inspection-wsl.test.ts`: the moved-gitlink Stage file, Unstage file, and Stage all changes cases on `Ubuntu-26.04` through the distro's Git, compared with `git add -- sub`, `git restore --staged -- sub`, and `git add -A` inside the distro. Control mutation: write `hI` in place of `head` on the `--index-info` line; the `git add` comparison cases must fail. Spec: FR-077 to FR-081, SC-013. Depends on T106.
+- [ ] T119 [US11] Enable the Stage button of a moved submodule row and fix the submodule reason texts (plan.md D20 "Preview equality", "Refusal texts", "Rows and sets"). Before v0.1.0. Files: `src/frontend/changes/{ChangesPane.tsx,FileControls.tsx,file-tree.ts,SubmodulePreview.tsx,limitation-text.ts}`. Tests first in `tests/contracts/submodule-preview.test.tsx` and `tests/contracts/file-controls.test.tsx`. (1) A moved row with a comparison `gitlink.oid` equal to the preview `new` has an available Stage button, and Space sends `applyFile` `stage`. (2) While the preview or the comparison is pending, the button is unavailable with "Arbareto reads the Git facts.". (3) A different ID shows the 001 `STALE_SELECTION` text and sends each read again one time. (4) A row with only local edits keeps "The submodule commit is unchanged. Commit the local edits inside the submodule first.". (5) Stage all changes, Stage folder, and Stage selected carry the moved gitlink entry ID and no row with only local edits. (6) Reason `submodule` on a gitlink row shows "Arbareto stages and unstages only a moved submodule commit. Use Git in a terminal for this change." in the reason line, the status bar, and the accessible description, with no Copy command. "This entry is a submodule or a nested repository." never shows for a gitlink row, and still shows for an untracked nested repository. (7) Reason `submodule-unborn` shows "The submodule branch has no commit yet. Commit inside the submodule first.". Control mutation: map reason `submodule` to the 001 limitation text for every row; case 6 must fail. Spec: FR-069, FR-080 to FR-082. Depends on T118.
+- [ ] T120 [US11] Add the packaged cases of submodule staging (P9). `Local: package`. Before v0.1.0. In `tests/windows/inspection-packaged.test.ts`: in a fixture with a submodule moved one commit, select the row by keyboard, press Space, and check through `ls-files -z --stage` that the index records the new commit. Unstage it with its row button. Then choose Stage all changes with a moved submodule, a submodule with only local edits, and a modified file: the moved submodule and the file are staged, and the other submodule row stays in Changes with its marks. Check the Stage button names and states through UIA. Control mutation: expect the old index commit after Stage file; the case must fail. Spec: FR-077 to FR-082, SC-010, SC-013. Depends on T119.
+
 ---
 
 ## Dependencies & Execution Order
@@ -428,6 +436,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Fixture cache ref check (T113): no dependency. Then T063 runs again.
 - Submodule marks speed and packaged cost (T114, T115, T116): after the v0.1.0 release, after T108.
 - Submodule change preview (T106–T111, WP9): v0.1.0 blocker. T106 beside T107, then T108, T109, T110, and T111 in order. Then T063 runs again.
+- Submodule staging (T118–T120, WP10): before v0.1.0. T118, then T119, then T120. Then T063 runs again.
 - Renderer performance fixes (T090, T091, T102): after T083. They need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
@@ -446,6 +455,9 @@ description: "Task list for the History Inspection and Commit View File Actions 
 | 001 FR-007: a submodule with only local edits shows in Changes | T107, T109 |
 | 001 FR-011 and plan "Limitation text": the preview replaces the submodule limitation text | T109, T110 |
 | 001 contract §7: two reads start Git inside a submodule | T106, T107 |
+| 001 FR-038, its clarification, scenario 11, and contract §4 and §12: Stage file and Unstage file of a moved submodule | T118, T119, T120 |
+| 001 FR-011 and plan "Limitation text": no limitation sentence on a gitlink row | T119 |
+| 004 FR-038: a moved submodule joins the set, and a row with only local edits stays out | T118, T119, T120 |
 
 ### Parallel opportunities
 
@@ -480,7 +492,8 @@ Then:          T027
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075, T080 |
 | FR-067 | T008, T043, T044, T048 to T051, T056, T060, T072, T073, T079, T080 |
 | FR-068 | T043, T044, T049, T090 |
-| FR-069 to FR-076 (US10) | T106, T107, T108, T109, T110, T111, T114, T115 |
+| FR-069 to FR-076 (US10) | T106, T107, T108, T109, T110, T111, T114, T115, T119 (FR-069) |
+| FR-077 to FR-082 (US11) | T118, T119, T120 |
 | SC-001 | T021, T061, T084, T101 |
 | SC-002 | T021, T061, T083, T090, T103, T104, T113 |
 | SC-003 | T012, T032, T059, T060, T078, T085 |
@@ -490,9 +503,10 @@ Then:          T027
 | SC-007 | T035, T060, T092, T103 |
 | SC-008 | T006, T008, T027 |
 | SC-009 | T061, T084, T091, T092, T102, T103 |
-| SC-010 | T051, T058, T060 |
+| SC-010 | T051, T058, T060, T120 |
 | SC-011 | T005, T027, T047, T058, T062 |
 | SC-012 | T106, T107, T108, T111, T114, T115, T116 |
+| SC-013 | T118, T120 |
 
 ## Implementation Strategy
 

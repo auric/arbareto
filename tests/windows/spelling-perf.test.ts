@@ -87,6 +87,8 @@ const STEP_LIMIT_MS = 60_000;
 const EVENT_THRESHOLD_MS = 16;
 // The 001 probe interval during a workload (001 plan.md "Responsiveness metrics").
 const PROBE_INTERVAL_MS = 100;
+// User budget decision of 2026-10-27 for SC-009: a p95 counts at least 20 probe inputs, so one slow frame does not decide it.
+const MIN_INPUTS = 20;
 // Spec SC-004 and src/contracts/limits.ts `COMMIT_MESSAGE_BYTES`: the spell check covers at most 64 KiB of UTF-8.
 const MESSAGE_BYTES = 64 * 1024;
 
@@ -209,8 +211,9 @@ async function closeWindow(c: Cdp, label: string): Promise<void> {
   expect({ label, p95: p95(durations) <= INPUT_P95_MS, max: Math.max(...durations) <= INPUT_MAX_MS }).toEqual({ label, p95: true, max: true });
 }
 
-// `trigger` starts the workload. Then a probe input goes to the page every 100 ms until `finish` resolves.
-async function probing<V>(c: Cdp, label: string, probe: () => Promise<void>, trigger: () => Promise<void>, finish: () => Promise<V>): Promise<V> {
+// `trigger` starts the workload. Then a probe input goes to the page every 100 ms until `finish` resolves and at least `minInputs` probes went.
+// Use `minInputs` only for a workload whose state stays after `finish`, such as an open suggestion list.
+async function probing<V>(c: Cdp, label: string, probe: () => Promise<void>, trigger: () => Promise<void>, finish: () => Promise<V>, minInputs = 0): Promise<V> {
   await openWindow(c);
   await trigger();
   let finished = false;
@@ -220,7 +223,7 @@ async function probing<V>(c: Cdp, label: string, probe: () => Promise<void>, tri
     () => void (finished = true),
     () => void (finished = true),
   );
-  while (!finished) {
+  for (let probes = 0; !finished || probes < minInputs; probes++) {
     await probe();
     await Bun.sleep(PROBE_INTERVAL_MS);
   }
@@ -435,6 +438,7 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
           () => press(s.c, (side = !side) ? "ArrowDown" : "ArrowUp"),
           () => press(s.c, "F10", MOD.Shift),
           () => until<string[]>(s.c, "the suggestions", MENU_LABELS(menu), (v) => v.includes(T.ignore) && !v.includes(T.finding)),
+          MIN_INPUTS,
         );
         await press(s.c, "Escape");
       } finally {

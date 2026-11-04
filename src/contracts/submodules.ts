@@ -5,8 +5,9 @@
 
 import { z } from "zod";
 import { Base64 } from "./channel";
+import { ERROR_CODES, type ErrorCode } from "./errors";
 import { COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES, PROCESS_EXIT_CODE_MAX } from "./limits";
-import { Count, Fingerprint, Identifier, OutputTail, Phase, ProgressFields, Text } from "./operations";
+import { Count, Fingerprint, Identifier, OutputTail, Phase, ProgressFields, Text, TrackState } from "./operations";
 import { buildRemedyCommand, type RemedyValue } from "./remedy-command";
 
 export const SUBMODULE_ACTIONS = ["clone", "reuse", "checkout", "fetch-checkout", "none", "skip"] as const;
@@ -71,6 +72,18 @@ export const SubmodulePlanRow = z
   // A top-level row has no parent row. The plan marks one default remote at most.
   .refine((row) => (row.depth === 0) === (row.parentRowId === null) && row.remotes.filter((remote) => remote.default).length <= 1);
 export type SubmodulePlanRow = z.infer<typeof SubmodulePlanRow>;
+
+// Feature 004 data-model §15 and contract Δ12 "Branch marks": the mark of a row that the list review reads as checked out.
+// `ref` is the full HEAD ref, and `upstream` is the full upstream ref. `code` names the failed mark read.
+export const SubmoduleBranch = z
+  .discriminatedUnion("state", [
+    z.strictObject({ rowId: Identifier, state: z.literal("detached") }),
+    z.strictObject({ rowId: Identifier, state: z.literal("branch"), ref: Text.min(1), upstream: Text.min(1).nullable(), track: TrackState }),
+    z.strictObject({ rowId: Identifier, state: z.literal("unread"), ref: Text.min(1), code: z.enum(ERROR_CODES as [ErrorCode, ...ErrorCode[]]) }),
+  ])
+  // The 003 `TrackingEntry` rule. zod can run a refinement on a value whose fields failed.
+  .refine((b) => b.state !== "branch" || (b.upstream === null) === (b.track?.state === "none"));
+export type SubmoduleBranch = z.infer<typeof SubmoduleBranch>;
 
 // Data-model §9 "Submodule program": a row ID or a kept Git directory, never both.
 const programFields = {

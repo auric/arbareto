@@ -16,6 +16,7 @@ import {
   objectCheckArgs,
   statusArgs,
 } from "../../src/git-service/commands";
+import { trackingArgs } from "../../src/git-service/sync-commands";
 import { useFixtureRoot } from "../git/fixture-root";
 import { buildF02 } from "../git/fixtures";
 import { GIT } from "../git/git-binary";
@@ -421,6 +422,19 @@ test("the T227 submodule review reads are exact for a worktree and for a kept Gi
   expect(() => commands.submoduleRefFormatArgs({ worktree: "C:/repo/sub" }, "refs/a\0b")).toThrow(TypeError);
   for (const location of [{ worktree: "" }, { gitDir: "" }, { worktree: "a\0b" }, {}, { worktree: "a", gitDir: "b" }]) {
     expect(() => commands.submoduleHeadOidArgs(location as never)).toThrow(TypeError);
+  }
+});
+
+// T138: feature 004 contract Δ12 "Branch marks". The mark read uses the 003 `readTracking` format for one ref in a submodule worktree.
+test("submoduleTrackingArgs is the exact for-each-ref read of one ref with the 003 tracking format, and it refuses an invalid ref name", () => {
+  const W = ["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub", "--git-dir=.git"];
+  const format = "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(HEAD)";
+  expect(commands.submoduleTrackingArgs({ worktree: "C:/repo/sub" }, "refs/heads/main")).toEqual([...W, "for-each-ref", format, "refs/heads/main"]);
+  expect(commands.submoduleTrackingArgs({ worktree: "C:/repo/sub" }, "refs/heads/feature/x")).toEqual([...W, "for-each-ref", format, "refs/heads/feature/x"]);
+  expect(trackingArgs()).toContain(format);
+  // git-check-ref-format(1) refuses `*`, `?`, `[`, and `\`, so the pattern stays literal. A name outside `refs/` or with a leading `-` is refused too.
+  for (const name of ["main", "HEAD", "-x", "--all", "", "refs/heads/", "refs/heads/a..b", "refs/heads/*", "refs/heads/a?", "refs/heads/[a]", "refs/heads/a\\b", "refs/heads/a b", "refs/heads/a\0b", "refs/heads/a.lock", "refs/heads/a@{b"]) {
+    expect(() => commands.submoduleTrackingArgs({ worktree: "C:/repo/sub" }, name)).toThrow(TypeError);
   }
 });
 

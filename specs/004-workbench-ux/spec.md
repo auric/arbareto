@@ -57,6 +57,19 @@ The user approved the mockup boards "Merge in progress" and "Merge: Commit view"
 - Q: Where do conflicted files show in the Commit view? → A: In a "Conflicted <n>" section at the top of Changes. It is always expanded. Its "U" letters use the Warning color. A selected row shows the resolve view (FR-104).
 - Q: Why does the text "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band." repeat under every list? → A: It goes from view during a merge or a rebase. Each unavailable control gives it as its tooltip and its accessible description. The band is the one visible statement (FR-105).
 
+### Session 2026-11-03
+
+The user approved the mockup boards Main, Collapsed, Dark, and BranchMarks of the Submodules group (canvas https://claude.ai/artifact/Up56G2PtcEcmGw33kb5Eh4, sample data). The design ships before v0.1.0 (research.md R31, User Story 12).
+
+- Q: Does the Submodules group show the submodule paths as a folder tree, as drawn? → A: "Approve as drawn" (FR-107, FR-108).
+- Q: Does each submodule row show its branch and its ahead and behind counts? → A: "Yes, add them" (FR-109, FR-110).
+- Q: Does a folder count its direct submodules or all submodules below it? → A: "Count all below". Nested submodules count too (FR-107).
+- Q: When does the tree ship? → A: "Before v0.1.0" (tasks.md Phase 12).
+- Q: What does a submodule branch without an upstream show? → A: No visible count. Its accessible name states "No upstream", as FR-008 rules for branches.
+- Q: What does the group show above 1,024 folder rows? → A: No folder rows, and one line that states this (FR-111). This is a main-session default.
+- Q: Does a second read after the rows load the branch marks? → A: No. The list review reads the marks, so rows and marks change together (FR-110). This is a main-session default.
+- Q: Why do nested rows show after all top rows, not under their parent? → A: The review lists each level after the level above it. This is a defect of FR-077. The review MUST list the rows depth first (FR-077, contract Δ12).
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows a read-only references sidebar and a docked commit panel. Feature 002 shows the full history of all branches. Feature 003 adds Fetch, Pull, Push, Clone, and the conflict actions Abort, Continue, Skip, and Mark resolved. This feature adds the daily branch and commit work around them: switch branches, run branch actions, merge, rebase, commit with fine staging, resolve conflicted files, and manage worktrees. It also edits Git settings, makes trust prompts calmer, and makes the submodule update a single click. Git Extensions is the reference for the functions. The design follows the mockup boards of 2026-10-16.
@@ -274,6 +287,25 @@ A developer checks "Amend last commit" in the commit workspace. The message of t
 
 ---
 
+### User Story 12 - See the submodules as a folder tree with their branches (Priority: P2)
+
+A developer opens a repository with many submodules in folders. The Submodules group shows the folders as a tree, each with the count of submodules below it. Each checked-out submodule row shows its branch and its ahead and behind counts, as the branch rows do.
+
+**Why this priority**: A flat list of long paths is hard to scan. Git Extensions shows nested submodules with a "no branch" state. The user approved the BranchMarks board on 2026-11-03.
+
+**Independent Test**: In disposable fixtures with submodules in folders, nested submodules, branches with and without an upstream, a gone upstream, and a detached HEAD, compare the folder rows, the counts, and the marks with `git -C <submodule> status --porcelain=v2 --branch` on each submodule.
+
+**Acceptance Scenarios**:
+
+1. **Given** submodules at `libs/a`, `libs/b`, `libs/net/c`, and `tools`. **When** the group shows. **Then** the root level shows the folder "libs" with the count 3, then the submodule row "tools". Inside "libs", the folder "net" shows before the rows "a" and "b".
+2. **Given** a submodule `app-shared` with a nested submodule at `third_party/zlib`. **When** the group shows. **Then** the row "zlib" shows in the folder "third_party" directly below the row "app-shared".
+3. **Given** focus on an open folder row. **When** I press ArrowLeft. **Then** the folder closes. When I press ArrowRight, it opens again. When I switch to another repository and back in the same window session, the folder keeps its state.
+4. **Given** a submodule on the branch "main" one commit ahead of its upstream. **When** the group shows. **Then** the row shows "main" and "↑1 ↓0".
+5. **Given** a submodule with a detached HEAD. **When** the group shows. **Then** the row shows "no branch" and no count.
+6. **Given** a submodule branch whose upstream no longer exists. **When** the group shows. **Then** the row shows the gone mark with the tooltip "The upstream <upstream> no longer exists.".
+
+---
+
 ### Edge Cases
 
 - HEAD is detached at a commit that no reference holds. A switch makes that commit unreachable except through the reflog. The confirmation names the commit and states this.
@@ -422,7 +454,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-035**: The Changes header MUST offer Stage all changes. The Untracked section MUST offer Stage all untracked. The Staged header MUST offer Unstage all.
 - **FR-036**: A folder in the tree layout MUST offer Stage folder or Unstage folder. The action covers exactly the entries of that list under that folder in the shown status read.
 - **FR-037**: The diff MUST show a visible "Stage hunk" or "Unstage hunk" button on each hunk, and Previous hunk and Next hunk buttons. Each hunk action MUST keep the feature 001 FR-013 and FR-014 rules.
-- **FR-038**: Stage selected, Stage folder, Stage all untracked, and Stage all changes MUST update the index in one step for all files of the action, or change nothing. Each file MUST pass the feature 001 FR-038 checks. One refused file MUST refuse the whole action and name the file and its reason.
+- **FR-038**: Stage selected, Stage folder, Stage all untracked, and Stage all changes MUST update the index in one step for all files of the action, or change nothing. Each file MUST pass the feature 001 FR-038 checks. One refused file MUST refuse the whole action and name the file and its reason. Amended by feature 005 (2026-11-03, user decision): a moved submodule passes as one file. A submodule row with only local edits stays out of the set and refuses nothing. A submodule that 005 FR-080 refuses keeps this whole-set refusal (005 FR-081).
 - **FR-039**: A multi-file action MUST bind to the status read that the user saw. When a fresh read before publication shows another set of entries, the action MUST refuse and require a refresh.
 - **FR-040**: The plan MUST document the largest file count of one multi-file action. Above it, the action MUST be unavailable with the limit stated. It MUST NOT stage a part.
 - **FR-041**: Line staging MUST stage exactly the selected added and removed lines of one hunk. Unselected removed lines stay, and unselected added lines stay out of the index. Line unstaging MUST do the reverse from the staged diff.
@@ -480,12 +512,20 @@ This feature changes these requirements for builds that include it. The earlier 
 #### Submodule update
 
 - **FR-076**: Update submodules MUST start at once from one click, with no review dialog and no selection. It MUST keep the feature 001 FR-047 update steps for every submodule.
-- **FR-077**: The Submodules group of the references sidebar MUST show each submodule as a row, nested ones indented under their parent. During the update, each row MUST show Waiting, Fetching or Updating with Git's percentage where Git reports one, Done, or Failed. The group header MUST show "Updating <i> of <n>" and Cancel.
+- **FR-077**: The Submodules group of the references sidebar MUST show the submodules as the folder tree of FR-107. The review MUST list the rows depth first: each nested row directly after its parent row and the rows nested in the earlier siblings. Siblings MUST keep the read order. Amended 2026-11-03 (user decision): the folder tree of FR-107 replaces "each submodule as a row, nested ones indented under their parent". The depth-first order fixes a defect: the review listed every nested level after all rows of the level above it. During the update, each row MUST show Waiting, Fetching or Updating with Git's percentage where Git reports one, Done, or Failed. The group header MUST show "Updating <i> of <n>" and Cancel.
 - **FR-078**: The FR-049 refusal checks of feature 001 MUST run before Git starts. A refusal MUST show as one line in the Submodules group with its reason and "Show remedy". The update MUST NOT start.
 - **FR-079**: A submodule that fetches from a host other than the host in the repository settings MUST show one line that names both hosts, before Git starts. The update MUST wait until the user selects "Update anyway" on that line. One selection MUST cover all hosts that the line names, for this run only. Cancel MUST start nothing.
 - **FR-080**: Programs from submodule settings and hooks MUST keep the feature 001 FR-050 run confirmation, as one native dialog. It MUST name the submodules and the number of programs. Cancel MUST be the default button.
 - **FR-081**: A submodule row MUST offer Update in its context menu, and a failed row MUST offer Retry. Both MUST update that submodule and its nested submodules only, with the same checks and the same confirmation. They MUST also refuse a submodule whose parent is not initialized and a submodule that is not active (contract Δ12).
 - **FR-082**: After the run, each row MUST show its observed result, such as "Checked out 4e1a9c0". A failed row MUST show the reason, the Git exit code, and Show output with the bounded output tail. The status bar MUST state the totals, such as "Update submodules finished. 4 updated, 1 failed.". Registration changes MUST show as one information line, with no extra click.
+
+#### Submodules group tree (2026-11-03, before v0.1.0)
+
+- **FR-107**: The Submodules group MUST show a folder tree. Each `/` in a submodule path below its parent starts one folder level. A folder row MUST show a chevron, a folder icon, its name, and the count of all submodules below it, nested ones included. Each level MUST show its folders first, then its submodules, in the 005 FR-015 tree order. A nested submodule MUST show directly below its parent submodule row, in the folders of its path below the parent path. A submodule row MUST show the last part of its path. Its tooltip and its accessible name MUST give the full path. The header count MUST stay the count of all submodule rows. Filter references MUST NOT filter the group.
+- **FR-108**: All folder rows and parent rows MUST be open at first. The group MUST keep their state per repository for the window session, as for branch folders. It MUST NOT store the state. The rows MUST be one Tab stop with roving focus. ArrowDown and ArrowUp MUST go to the next or the previous row. ArrowRight MUST open a closed row. On an open row, it MUST go to the first child. ArrowLeft MUST close an open row. On another row, it MUST go to the parent. Home and End MUST go to the first or the last row. Enter MUST open the submodule of a submodule row (005 FR-047). Enter MUST open or close a folder row. Shift+F10 and the Menu key MUST open the FR-081 row menu of a submodule row. A folder row MUST have no menu.
+- **FR-109**: A submodule row that the review reads as checked out MUST show a branch mark. The mark MUST show the branch name, or "no branch" for a detached HEAD. A branch with an upstream MUST also show the 003 FR-019 count, "↑<ahead> ↓<behind>" or "=". A gone upstream MUST show the 005 FR-064 gone mark. A branch without an upstream MUST show no count. Its accessible name MUST state "No upstream" (FR-008).
+- **FR-110**: The list review MUST read the branch marks. The read MUST start no repository program and MUST NOT write an index. The counts MUST come from the untranslated `for-each-ref` track output, never from Git message text. A failed mark read MUST NOT fail the list or the update. The row then shows no count, and its accessible name states "counts are unavailable: <code>". One exception applies: the operation stderr bound (001 contract §6) fails the whole review with `OUTPUT_LIMIT`. The marks MUST NOT change the update token. A scoped review MUST NOT read marks.
+- **FR-111**: Above 1,024 folder rows, the group MUST show the submodule rows without folder rows. Each nested row MUST stay below its parent row. One line MUST state "The submodule paths have more than 1,024 folders, so the group shows no folder rows."
 
 #### Spell check (moved to a later feature)
 
@@ -497,7 +537,7 @@ FR-083 and FR-084 move to a later feature (Clarifications, 2026-10-19). Feature 
 #### Visible controls and keyboard
 
 - **FR-085**: Every new control MUST have an icon or a text label, a tooltip that names the action and its shortcut, an accessible name, and visible focus. The accessible name of a menu item MUST be its label only. The menu item MUST give its shortcut in `aria-keyshortcuts`, and its visible shortcut text MUST be hidden from assistive technology. Selectable text and editable fields MUST keep the built-in menu with Copy, unless the element has its own action menu. Unavailable controls MUST state their reason. Destructive actions MUST use explicit labels and MUST stay apart from routine primary actions.
-- **FR-086**: The branch list, the worktree list, and the file lists MUST create elements only for the rows near the visible area, as 002 FR-055 requires for the sidebar. The worktree list is the list of the worktree button. The sidebar Worktrees group shows at most 1,000 records. The Submodules group needs no virtualization, because the 001 contract §5 "Submodule review" bound caps it at 256 rows.
+- **FR-086**: The branch list, the worktree list, and the file lists MUST create elements only for the rows near the visible area, as 002 FR-055 requires for the sidebar. The worktree list is the list of the worktree button. The sidebar Worktrees group shows at most 1,000 records. The Submodules group needs no virtualization. The 001 contract §5 "Submodule review" bound caps it at 256 submodule rows, and FR-111 caps its folder rows at 1,024. Amended 2026-11-03 (user decision): the folder tree of FR-107 adds the folder row cap.
 - **FR-087**: Single-letter shortcuts MUST act only while their region has focus. A new single-letter shortcut MUST NOT act globally.
 - **FR-088**: The window MUST keep the feature 001 SC-005 response targets during every operation of this feature.
 
@@ -518,6 +558,8 @@ FR-083 and FR-084 move to a later feature (Clarifications, 2026-10-19). Feature 
 - **Amend request**: The HEAD commit and its message at the check, the upstream, and the result of the upstream check.
 - **Resolve request**: One unmerged path, its index stages with their modes, the action, the side names from the operation state, and the working file identity and bytes at selection.
 - **Submodule row**: The path, the nesting level, the state, the observed commit, and for a failure the exit code and the output tail.
+- **Submodule branch mark**: For a checked-out submodule row, the HEAD ref or a detached state, the upstream, and the ahead and behind counts from Git's `for-each-ref` track output. A failed read holds its error code.
+- **Submodule tree node**: A folder or a submodule row, with its key, its tree level, its count of submodules below it, and its open state for the window session.
 
 ## Success Criteria *(mandatory)*
 
@@ -540,6 +582,8 @@ FR-083 and FR-084 move to a later feature (Clarifications, 2026-10-19). Feature 
 - **SC-015**: In every conflict fixture, Choose ours, Choose theirs, and Open in merge tool give the same working files and index as Git's own `git checkout --ours`, `git checkout --theirs`, and `git mergetool` with the same fixture tool on a copy. No repository-controlled merge tool runs before approval. No action reads conflict markers.
 - **SC-016**: In every amend fixture, the tree, the parents, the message, and the references equal Git's own `git commit --amend` on a copy. The rewrite confirmation shows exactly when `merge-base --is-ancestor HEAD <upstream>` exits 0.
 - **SC-017**: In every merge and rebase conflict fixture, the band offers Resolve conflicts exactly while a complete status read holds `u` records, and Continue otherwise. The Conflicted section lists exactly the `u` record paths. From the band and from the dock, the keyboard reaches the first conflicted row in one activation, and the focus lands on it. During the operation, the Commit view shows no visible line of the FR-105 reason, and each unavailable control gives it as its accessible description.
+- **SC-018**: On packaged Windows, warm, median of 10, with 20 and with 256 checked-out submodules: the time to the last branch mark with every submodule on a branch with an upstream, minus the time to the last row of the same fixture with every HEAD detached, is at most 30 ms per submodule row. In every mark fixture, each mark equals the `git status --porcelain=v2 --branch` headers of that submodule. For a HEAD on a ref outside `refs/heads/`, the status header gives no ref, so the research R31 fact is the oracle. WSL records the same difference without a budget.
+- **SC-019**: On packaged Windows, with 256 submodule rows and 1,024 open folder rows, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, and Enter on a folder keep the feature 001 SC-005 targets: 95% of inputs show a response within 100 ms, and every input within 500 ms.
 
 ## Assumptions
 
@@ -561,6 +605,9 @@ FR-083 and FR-084 move to a later feature (Clarifications, 2026-10-19). Feature 
 - For the later spell check feature: English is the first spell check language. More dictionaries come later. The dictionary source and its license are a plan decision.
 - Interactive rebase comes in a later feature.
 - The resolve view acts on one file at a time. The merge tool runs only on a user selection, never on its own after a conflict. This is a reviewer default.
+- Submodule rows that the review does not read as checked out show no branch mark: clone, reuse, inactive, no URL, path refusal, and clone interrupted. This is the smallest rule, not a user decision.
+- A submodule HEAD on a ref outside `refs/heads/` shows the full ref name and no count. Git gives such a HEAD no upstream (research.md R31).
+- Branch marks are as fresh as the list review. The counts compare with the remote-tracking branch from the last fetch.
 - The mockup boards of 2026-10-16 are the design reference: Main, BranchSwitcher, BranchContext, MergeRebase, Commit, Worktrees, Settings, Trust, and Submodules.
 
 ## Research inputs

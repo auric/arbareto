@@ -180,7 +180,16 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ## Δ4 File staging (001 §4)
 
-- No change. Delete and Save never touch the index.
+- Delete and Save never touch the index.
+- Moved gitlink (2026-11-03, spec FR-077 to FR-081, plan D20). The 001 reason `submodule` no longer covers an Unstaged `1` record with `C` as the second `<sub>` character and `mI` and `mW` `160000`. `stage` accepts it.
+  - Candidate change: the index entry gets mode `160000` and the submodule HEAD commit at stage 0, as `git add -- <path>` does. Step 5 is `update-index -z --index-info` with `160000 SP <head> TAB <path> NUL`. No `hash-object` runs.
+  - Facts: plan D20 rule 2 steps 1 to 5 inside the submodule, in the 001 §12 "Review reads" form. Steps 3 and 7 run them again. Another HEAD commit gives `STALE_SELECTION`.
+  - Step 6: exactly one stage-0 entry at the path with mode `160000`, the bound commit, and clean flags. No parent object check and no blob proof run for a `160000` line.
+  - `readComparison` adds `gitlink: {oid}` to a succeeded or limited result of such an entry.
+- `unstage` accepts a Staged `1` record with `mI` `160000` and `X` `M` or `A`. The `--index-info` line restores `mH` and `hH`, or mode 0 removes an added gitlink.
+- New reason `submodule-unborn`: the HEAD of the submodule names a branch without a commit. It gets no remedy.
+- `submodule` still covers a conflicted gitlink, a `2` record with a gitlink, a deleted gitlink, a type change with a gitlink, a staged gitlink deletion, and an untracked nested repository. It gets no remedy.
+- `applyFiles` (004 Δ3): a stage set runs the `--add --remove --stdin` step for its regular paths and one `--index-info` step for its gitlinks on the same candidate index. One refused entry still refuses the whole set. The renderer leaves the plan D19 rows with only local edits out of the set.
 
 ## Δ5 Finite bounds (001 §5)
 
@@ -265,6 +274,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 |---|---|---|
 | `BLAME_UNAVAILABLE` | `no-history`, `binary`, `submodule`, `size`, `lines`, `ignore-revs-file-missing`, `no-previous`, `path` | Blame cannot run for this file. No blame process starts. |
 | `UNSUPPORTED_COMPARISON` (001) | `readCommitFile` uses the 001 reason `path` | The path is no valid UTF-8, so no argv item can carry it. |
+| `UNSUPPORTED_COMPARISON` (001) | adds `submodule-unborn` (2026-11-03, Δ4) | The submodule HEAD names a branch without a commit, so Stage file has no commit to record. |
 | `SUBMODULE_UNAVAILABLE` | `not-submodule`, `submodule-not-initialized`, `path` | The open cannot start. The parent stays open. `readSubmoduleChange` uses only `path`: the preview cannot pass the path to Git. |
 | `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `long-path`, `nothing-to-delete`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `ignore-lone-cr`; keeps the 004 reasons `ignore-not-regular`, `ignore-size`, `limit`, `path`, and `unreadable`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
 | `STALE_REVIEW` (001) | adds `files-changed`, `ignore-changed` | A bound fact changed after the review. Nothing changes. |
@@ -299,6 +309,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - The Submodules group row menu adds "Open submodule". Enter and a double-click open the row.
 - A row with action `clone` or `reuse` has no `.git` entry (001 §12 "Actions"), so Open submodule is unavailable for it in the renderer. The service checks of `openSubmodule` decide every other case.
 - `readSubmoduleChange` and `readSubmoduleWork` run fixed commands inside a submodule, as `reviewSubmodules` does. This amends the 001 §7 sentence "Superproject reads never start Git inside a submodule.". The parent status keeps `--ignore-submodules=dirty`.
+- Stage file of a moved gitlink runs the plan D20 reads inside the submodule (Δ4). This amends the §12 sentence "Hunk and file staging refuse submodules with reason `submodule`.".
 - Every other §12 rule stays.
 
 ## Δ13 Changes to 002 deltas
@@ -335,6 +346,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - The renderer finds the parent recent entry by `current: true`. A recent entry that other opens push out of the 20 entries gives "Open the parent repository with Open repository.".
 - The `diff -U0` options of "Blame before this commit" follow the user's diff configuration, such as `diff.algorithm`. The mapped line is the line of Git's own zero-context diff under that configuration. `--inter-hunk-context=0` keeps `diff.interHunkContext` out.
 - `blame.ignoreRevsFile` values that the shell `below` rule refuses, such as a value outside the worktree or with a `..` component, pass to Git unchecked. A missing file there gives `GIT_FAILED` with the output tail. `config --type=path` removes the prefix rules but not this gap, because `fileFacts` checks only paths below the worktree root.
+- Stage file of a moved gitlink reads the submodule HEAD again at step 7. A commit inside the submodule between that read and the publication goes unseen. The index then records the commit of the step 7 read, and the next status shows the submodule as moved again.
 - `readSubmoduleWork` checks the submodule settings in step 2 and runs status in step 3. A settings change between the two steps is not seen. The next snapshot checks again.
 - A submodule with a repository-controlled status program gets no local-edit check. No approval path exists for it in the parent window. Open submodule gives it its own trust (spec FR-050). A later feature can reuse that approval.
 - `FileDispositionInfoEx` and `FileRenameInfoEx` need a file system with POSIX delete and rename support. Another file system gives `error`, and the file stays (plan O-4).

@@ -134,6 +134,14 @@ export const isFingerprint = (value: unknown): value is string => Fingerprint.sa
 // A nonnegative safe integer.
 export const Count = z.int().nonnegative();
 
+// Feature 003 data-model §1 `TrackingEntry` track, also feature 004 data-model §15. The member titles name the JSON Schema parts.
+export const TrackState = z.discriminatedUnion("state", [
+  z.strictObject({ state: z.literal("none") }).meta({ title: "TrackNone" }),
+  z.strictObject({ state: z.literal("gone") }).meta({ title: "TrackGone" }),
+  z.strictObject({ state: z.literal("counts"), ahead: Count, behind: Count }).meta({ title: "TrackCounts" }),
+]);
+export type TrackState = z.infer<typeof TrackState>;
+
 // Contract §6 "Process fields": no string holds NUL or a lone surrogate. A Rust `String` cannot hold a lone surrogate.
 export const Text = z
   .string()

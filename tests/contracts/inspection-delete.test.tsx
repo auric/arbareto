@@ -104,7 +104,7 @@ describe("row menu (CommitActions board, plan D15)", () => {
 
   const reasons: [string, () => ChangeEntry[], string, Partial<World>?][] = [
     ["a conflicted row", () => [entry("conflicted", "c.ts", { xy: "UU" })], "Arbareto does not delete a file with a conflict."],
-    ["a nested repository", () => [entry("untracked", "vendor/x/")], "This folder holds another Git repository."],
+    ["a nested repository", () => [entry("untracked", "x/")], "This folder holds another Git repository."],
     ["an unstaged deletion", () => [entry("unstaged", "gone.ts", { xy: ".D" })], "This file is already deleted from the working tree."],
   ];
   // Review fix 3: each path component takes the Windows name rule of the shell (src/contracts/native-path.ts).
@@ -126,7 +126,8 @@ describe("row menu (CommitActions board, plan D15)", () => {
     test(`Delete is unavailable for ${name} with its reason from the status read (FR-021, US2-7)`, async () => {
       const list = entries();
       await setup(list);
-      const path = list[0]!.path.endsWith("/") ? list[0]!.path.slice(0, -1) : list[0]!.path;
+      // Feature 005 data-model §3: a nested-repository record is one row, named with its end `/`.
+      const path = list[0]!.path;
       // Feature 004 FR-104: a conflicted row is in the Conflicted section.
       await contextMenu(item(list[0]!.category === "conflicted" ? "Conflicted" : "Changes", path));
       expect(describedBy(menuItem("Delete…"))).toBe(reason);

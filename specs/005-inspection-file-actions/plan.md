@@ -525,6 +525,45 @@ Spec FR-069 to FR-076, SC-012, research.md R18. Mockup boards "Commit view: subm
   - Stage reason of a row with only local edits: "The submodule commit is unchanged. Commit the local edits inside the submodule first.".
   - Preview failures: "<item> is unavailable: <code>" with the item "Submodule change".
 
+### D20 Submodule staging (2026-11-03, v0.1.0)
+
+Spec FR-077 to FR-082, SC-013, User Story 11. User decisions of 2026-11-03: "Before v0.1.0" and "Stage it too". Contract Δ4, data-model §17.
+
+- Status facts (probe of 2026-11-03 on Git 2.56.0.windows.2, local scratch): with `--ignore-submodules=dirty`, a moved submodule with untracked files gives `1 .M SC.. 160000 160000 160000 <hH> <hI> <path>`. Without the option, the same submodule gives `SC.U`. After the stage, the record is `1 M. S... … <hH> <new> <path>`. So the parent snapshot holds `SC..` for a moved gitlink and `S...` for a staged one. `SCM.`, `SC.U`, `SCMU`, `S.M.`, and `S..U` never reach the snapshot. The FR-075 rows come from `readSubmoduleWork` only, and the service never gets them as entries.
+- Decision rule (`decideFileAction`, `src/contracts/file-action.ts`). The input gains `gitlink`: `{head}`, `{refused: "submodule" | "submodule-unborn"}`, or null. The service fills it only for rule 2. Rules in this order:
+  1. A `u` record or a conflicted entry gives `CONFLICTED`, as now.
+  2. An Unstaged `1` record whose `<sub>` has `C` as its second character, `Y` `M`, and `mI` and `mW` `160000` is a moved gitlink. The path and index-flag rules apply first, as now. `{head}` gives `stage` with `changedPaths: [{path, mode: 0o160000, objectId: head}]`. `{refused}` gives `UNSUPPORTED_COMPARISON` with that reason. Null gives `MALFORMED_GIT_OUTPUT`.
+  3. A Staged `1` record with `mI` `160000` and `X` `M` or `A` gives `unstage` through `unstagePaths`: `mH` and `hH`, or mode 0 for `mH` `000000` or an unborn HEAD.
+  4. Every other record with `S` as the first `<sub>` character, or with mode `160000` on a side, gives reason `submodule`. An untracked nested repository also gives `submodule`.
+- Facts of rule 2 (the comparison read, `src/git-service/comparison.ts`, and the multi-file facts, `src/git-service/multi-publish.ts`). They reuse the D19 `locate` steps of `src/git-service/submodule-change.ts`:
+  1. D11 check 3 on the snapshot index entries: exactly one stage-0 entry at the exact path, mode `160000`.
+  2. D11 check 4: `fileFacts` (`digest: false`) of `<path>` and `<path>/.git`. The folder is a directory, the `.git` entry is a file or a directory, and neither is a link.
+  3. D11 check 5: `rev-parse --show-toplevel` inside the submodule names that folder.
+  4. `rev-parse --verify -q HEAD` inside the submodule (`submoduleHeadOidArgs`). Exit 0 with one object ID line gives `{head}`.
+  5. A non-zero exit runs `symbolic-ref -q HEAD` and then `show-ref --exists <name>` inside the submodule, as the parent HEAD capture does (`headTargetArgs`, `headRefExistsArgs` in `src/git-service/commands.ts`). Exit 0 with a ref name, then exit 2, gives `{refused: "submodule-unborn"}` (git-show-ref(1) `--exists`). Every other result gives `GIT_FAILED`. Probe of 2026-11-03 on an empty repository: `rev-parse` exit 1, `symbolic-ref` exit 0 `refs/heads/main`, `show-ref` exit 2.
+  - A failed check 1, 2, or 3 gives `{refused: "submodule"}`. Every command runs in the 001 §12 "Review reads" form `-C <worktree> --git-dir=.git`. These commands load no index and run no filter, hook, or status program (D19 "Commit facts").
+  - The comparison keeps `head` in its retained state and its binding (data-model §17). The `readComparison` result carries `gitlink: {oid: head}` beside the file-action decision.
+  - A multi-file set reads at most 8 submodules at the same time, the D19 bound. `MULTI_FILE_ACTION_FILES` counts a gitlink as one file. `MULTI_FILE_ACTION_BYTES` counts 0 bytes for it.
+- Preview equality (spec FR-078, renderer). Stage file and Space of a moved row are available only when the `readSubmoduleChange` value of the selected row has `new` equal to the comparison `gitlink.oid`. While either read is pending, the reason is "Arbareto reads the Git facts.". Another ID shows the 001 `STALE_SELECTION` text, and the renderer requests both reads again one time. A second mismatch keeps the stale text until the next selection or snapshot.
+- Publication (001 contract §4 steps 3 to 7, `src/git-service/file-publish.ts`):
+  - Steps 3 and 7: the policy, state, and index checks run as now. In place of the working-file read, rule 2 steps 1 to 4 run again. Another `head` or a failed step gives `STALE_SELECTION`.
+  - Step 5: `update-index -z --index-info` (`updateIndexInfoArgs`) with the line `160000 SP <head> TAB <path> NUL` (git-update-index(1) "USING --INDEX-INFO"). No `hash-object` runs, and no working blob exists.
+  - Step 6: `changedEntries` expects exactly one stage-0 entry at the path with mode `160000`, object ID `head`, and clean flags. Every other entry stays unchanged. Without this proof, the candidate fails with detail `selected-entry`, as for a file now.
+  - The parent object check (`objectCheckArgs`) and the blob proof skip a `160000` line. The commit is in the object database of the submodule, not of the parent. The §7 "Missing objects" step names no object for such a line.
+  - After publication, the `working` check reads the submodule HEAD again. Another commit counts as a changed working file (001 contract §4 "Blob proof").
+  - Unstage: the `--index-info` line from `mH` and `hH`, as now. Step 6 expects that entry. No parent object check runs for a `160000` line.
+  - Multi-file stage (004 contract Δ4): the regular paths run `update-index --add --remove -z --stdin`, as now. When the set holds gitlinks, a second step `update-index -z --index-info` writes their lines into the same candidate index before step 6. One candidate gives one publication. An unstage set already uses one `--index-info` step.
+- Oracle facts (probe of 2026-11-03): after the `--index-info` stage, `ls-files -z --stage` of the parent equals that listing after `git add -- <path>` on a copy, byte for byte. The index file bytes differ, because `--index-info` writes zero stat data and `git add` records the folder stat. So the tests compare `ls-files -z --stage`. A refused action compares the SHA-256 of the index file.
+- Refusal texts (D15 style). The reason line, the status bar, and the accessible description of the Stage button show them after "Stage file is unavailable: " or "Unstage file is unavailable: ", as now:
+  - Reason `submodule` on an entry with mode `160000` on a side or `S` as the first `<sub>` character: "Arbareto stages and unstages only a moved submodule commit. Use Git in a terminal for this change.". No Copy command (001 contract §4 "Limitation remedies").
+  - Reason `submodule` on an untracked nested repository: "This entry is a submodule or a nested repository.", as now.
+  - Reason `submodule-unborn`: "The submodule branch has no commit yet. Commit inside the submodule first.". No Copy command.
+  - Pending preview or comparison: "Arbareto reads the Git facts.".
+  - A row with only local edits: the D19 stage reason, unchanged.
+- Rows and sets (spec FR-081, FR-082): a moved row follows its comparison decision, as a file row does. `derivedRequest` keeps every snapshot entry, so Stage all changes, Stage folder, and Stage selected carry the moved gitlinks. The D19 rows with only local edits stay out. A folder with only such rows keeps the D19 stage reason. Space and the focus move follow 001 FR-038.
+- Limitations of this change (spec FR-080): a conflicted gitlink, a `2` record with a gitlink, a deleted gitlink (`mW` `000000`), a type change to or from a gitlink, and a staged gitlink deletion stay refused. Hunk and line actions on a submodule stay unsupported. The 008 Revert rules for a submodule stay unchanged.
+- WSL (spec FR-082): the rule 2 steps run through the distro wrapper in mode `read`. The `update-index` steps run as the file steps do now. T118 adds the Ubuntu-26.04 case.
+
 ### Invariants
 
 | Invariant | Evidence |
@@ -558,6 +597,9 @@ Spec FR-069 to FR-076, SC-012, research.md R18. Mockup boards "Commit view: subm
 | `<sub>` `S<c><m><u>` means commit changed, tracked changes, untracked changes. | git-status(1) "Changed Tracked Entries" |
 | `rev-list --left-right --count A...B` prints the left and the right count, separated by a tab. | git-rev-list(1) `--count` |
 | `cat-file -e` exits zero only for an existing valid object. | git-cat-file(1) `-e` |
+| `update-index --index-info` writes a `160000` line as a gitlink entry with zero stat data. `ls-files -z --stage` then equals the listing after `git add -- <path>`. | git-update-index(1) "USING --INDEX-INFO"; D20 probe of 2026-11-03 on Git 2.56.0.windows.2 |
+| With `--ignore-submodules=dirty`, status prints `SC..` for a moved submodule with untracked files. Without it, status prints `SC.U`. | D20 probe of 2026-11-03 |
+| `show-ref --exists` exits 2 for a missing reference. | git-show-ref(1) `--exists`; D20 probe of 2026-11-03 |
 
 ## Open items and reviewer defaults
 
@@ -585,7 +627,7 @@ Spec FR-069 to FR-076, SC-012, research.md R18. Mockup boards "Commit view: subm
 | 3 | P8 | WP7 alone (after WP5 and WP6). Then the WP3 removal step T057. | The Commit view UI, then the removal of the 004 one-line ignore path. |
 | 4 | P9 | WP8 (WSL alone, then packaged). | Qualification. |
 
-User stories by priority: P1 is US1 and US2 (WP4, WP5, WP6, WP7), and US10 (WP9, 2026-10-31). P2 is US3 to US7 (WP2, WP5 to WP7). P3 is US8 and US9 (WP2).
+User stories by priority: P1 is US1 and US2 (WP4, WP5, WP6, WP7), US10 (WP9, 2026-10-31), and US11 (WP10, 2026-11-03). P2 is US3 to US7 (WP2, WP5 to WP7). P3 is US8 and US9 (WP2).
 
 ### Work packages, in run order
 
@@ -601,6 +643,7 @@ User stories by priority: P1 is US1 and US2 (WP4, WP5, WP6, WP7), and US10 (WP9,
 | WP7 | frontend-implementer | `src/frontend/changes/{ChangesPane.tsx,file-actions.ts}`, new `src/frontend/changes/DeleteConfirm.tsx`, new `src/frontend/ignore/IgnoreEditor.tsx`, `src/frontend/submodules/SubmodulesGroup.tsx`, new `src/frontend/app/ParentButton.tsx`, `src/frontend/app/{Workbench,RepositoryMenu}.tsx`, `src/frontend/state/workbench.ts`, `src/frontend/bridge.ts`, `src/frontend/keyboard/shortcuts.ts`, `tests/contracts/{inspection-delete,inspection-ignore,inspection-submodule}.test.tsx`, `tests/contracts/shortcuts-005.test.ts` | P8: US2, US4, US5, US6 UI, and the Commit view Blame entry. After WP5 and WP6. |
 | WP8 | implementer writes, scout runs (WSL alone) | `tests/wsl/inspection-wsl.test.ts`, `tests/windows/{inspection-packaged,inspection-perf}.test.ts` | P9. Last. |
 | WP9 | implementer (T106 to T108), frontend-implementer (T109, T110), implementer writes and scout runs (T111) | new `src/git-service/submodule-change.ts`, `src/git-service/{commands,session}.ts`, `src/contracts/{operations,envelope,errors,limits}.ts`, `src/contracts/schemas/`, `src/frontend/changes/{ChangesPane.tsx,limitation-text.ts}`, new `src/frontend/changes/SubmodulePreview.tsx`, `src/frontend/history/CommitChanges.tsx`, `tests/git/submodule-change.test.ts`, `tests/contracts/submodule-preview.test.tsx`, `tests/windows/inspection-packaged.test.ts` | D19, 2026-10-31 addendum. v0.1.0 blocker. After the batch 4 verification. |
+| WP10 | implementer-xhigh (T118), frontend-implementer (T119), implementer writes and scout runs (T120) | `src/contracts/file-action.ts`, `src/contracts/schemas/`, `src/git-service/{comparison,multi-publish,file-publish,submodule-change,commands}.ts`, `src/frontend/changes/{ChangesPane.tsx,FileControls.tsx,file-tree.ts,SubmodulePreview.tsx,limitation-text.ts}`, `tests/contracts/file-action.test.ts`, `tests/git/file-publish.test.ts`, `tests/wsl/`, `tests/windows/inspection-packaged.test.ts` | D20. Before the v0.1.0 tag. |
 
 Parallel tracks use disjoint files in separate worktrees. These files are not disjoint:
 - `src/git-service/session.ts`: WP4, then WP5.

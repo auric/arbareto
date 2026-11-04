@@ -23,6 +23,7 @@ import {
   SubmoduleRowResult,
   type SubmoduleRemedyRequest,
 } from "../../src/contracts/submodules";
+import * as contract from "../../src/contracts/submodules";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
@@ -118,6 +119,44 @@ describe("plan row validator (data-model §9 'Plan row')", () => {
     expect(SubmodulePlanRow.safeParse({ ...row, action: "merge" }).success).toBe(false);
     expect(SubmodulePlanRow.safeParse({ ...row, rowId: "row-1" }).success).toBe(false);
     expect(SubmodulePlanRow.safeParse({ ...row, remotes: [{ name: "origin", url: "u", default: true, extra: 1 }] }).success).toBe(false);
+  });
+});
+
+// T138: feature 004 data-model §15 and contract Δ12 "Branch marks". The namespace import keeps the other cases running before T140.
+describe("branch mark validator (feature 004 data-model §15)", () => {
+  const valid = (value: unknown) => contract.SubmoduleBranch.safeParse(value).success;
+  const branch = { rowId: ROW, state: "branch", ref: "refs/heads/main", upstream: "refs/remotes/origin/main", track: { state: "counts", ahead: 1, behind: 0 } };
+  const unread = { rowId: ROW, state: "unread", ref: "refs/heads/main", code: "STATE_UNKNOWN" };
+
+  test("accepts the detached, branch, and unread forms", () => {
+    expect(valid({ rowId: ROW, state: "detached" })).toBe(true);
+    for (const track of [{ state: "counts", ahead: 0, behind: 0 }, { state: "counts", ahead: 2, behind: 3 }, { state: "gone" }]) expect(valid({ ...branch, track })).toBe(true);
+    expect(valid({ ...branch, upstream: "refs/heads/other" })).toBe(true);
+    expect(valid({ ...branch, upstream: null, track: { state: "none" } })).toBe(true);
+    // Research.md R31: a HEAD on a ref outside `refs/heads/` has no upstream.
+    expect(valid({ ...branch, ref: "refs/tags/v1", upstream: null, track: { state: "none" } })).toBe(true);
+    for (const code of ["DEADLINE", "GIT_FAILED", "OUTPUT_LIMIT", "MALFORMED_GIT_OUTPUT", "STATE_UNKNOWN", "PROCESS_OWNERSHIP_FAILED"]) expect(valid({ ...unread, code })).toBe(true);
+  });
+
+  test("upstream is null exactly when the track state is none", () => {
+    expect(valid({ ...branch, upstream: null })).toBe(false);
+    expect(valid({ ...branch, upstream: null, track: { state: "gone" } })).toBe(false);
+    expect(valid({ ...branch, track: { state: "none" } })).toBe(false);
+  });
+
+  test("rejects unknown fields, missing fields, an unknown state or code, and a malformed row ID or count", () => {
+    expect(valid({ rowId: ROW, state: "detached", ref: "refs/heads/main" })).toBe(false);
+    expect(valid({ ...branch, name: "main" })).toBe(false);
+    expect(valid({ ...branch, track: { state: "gone", ahead: 1 } })).toBe(false);
+    expect(valid({ ...branch, track: { state: "counts", ahead: -1, behind: 0 } })).toBe(false);
+    expect(valid({ ...unread, upstream: null })).toBe(false);
+    expect(valid({ ...unread, code: "NOT_A_CODE" })).toBe(false);
+    expect(valid({ rowId: ROW, state: "unread", ref: "refs/heads/main" })).toBe(false);
+    expect(valid({ rowId: ROW, state: "branch", ref: "refs/heads/main", track: { state: "none" } })).toBe(false);
+    expect(valid({ rowId: ROW, state: "unknown" })).toBe(false);
+    expect(valid({ rowId: "row-1", state: "detached" })).toBe(false);
+    expect(valid({ ...branch, ref: "" })).toBe(false);
+    expect(valid({ ...branch, ref: "refs/heads/a\0b" })).toBe(false);
   });
 });
 

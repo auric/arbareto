@@ -740,3 +740,58 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 
 - Git Extensions shows a warning button for unresolved merge conflicts in the main window. It opens its resolve dialog with the conflicted files.
 - Arbareto takes the idea of one prominent entry point. It keeps the resolve view docked in the Commit view and opens no dialog.
+
+## R31 Submodules tree and branch marks (user decisions of 2026-11-03)
+
+**Sources**: the approved mockup boards Main, Collapsed, Dark, and BranchMarks (canvas https://claude.ai/artifact/Up56G2PtcEcmGw33kb5Eh4, sample data); the Plan agent plan and the facts of 2026-11-03 (local scratch); the order proof and the marks probe (local scratch). The plan cites the repository code at f0b084cb.
+
+**User decisions**
+
+- 2026-11-03: "Approve as drawn" for the mockup, "Yes, add them" for the branch marks, "Count all below" for the folder count, and "Before v0.1.0" for the timing (spec Clarifications 2026-11-03).
+- Main-session defaults: no folder rows above 1,024 folders, with one line. The list review reads the marks, not a second read.
+
+**Order defect (004 FR-077)**
+
+- The review pushes each row in the sibling loop and reads the nested levels after it (`src/git-service/submodule-review.ts`). So the rows came breadth first.
+- Proof: a fixture with `a(a/x) b c(c/y(c/y/z))` gave `a, b, c, a/x, c/y, c/y/z`. The test expected `a, a/x, b, c, c/y, c/y/z` and failed. A copy with a pre-order walk over `parentRowId` passed. The run printed the origin of the code under test for both runs.
+- The status area lists the update rows in service order, so the renderer tree alone does not fix it.
+
+**Marks probe** (2026-11-03, Git 2.56.0.windows.2, 20 `file://` submodules, unpackaged Bun spawn, warm, medians)
+
+| Read | Processes | 1 at a time | 8 at a time | Result |
+| --- | --- | --- | --- | --- |
+| `for-each-ref` track on `<headRef>` | 1 | 48.1 ms | 16.5 ms | Chosen. No index, no program, untranslated track text. |
+| `symbolic-ref` + `for-each-ref` | 2 | 96.1 ms | 32.5 ms | Not needed. The review already reads `symbolic-ref`. |
+| `status --porcelain=v2 --branch -uno --ignore-submodules=all` | 1 | 50.9 ms | 18.0 ms | Rejected. It ran the `core.fsmonitor` program twice. Without `--no-optional-locks` it rewrote the index. A HEAD on a tag gives `# branch.head (NULL)`. The upstream is a short name. |
+| `for-each-ref %(upstream)` + `rev-list --left-right --count` | 2 | 95.4 ms | 32.9 ms | Rejected. `@{u}` exits 128 for "no upstream" and for "not a branch". Only the message text differs. |
+| `%(ahead-behind:<upstream>)` | 2 | not run | not run | Rejected. It needs the upstream name first. The Git minimum allows it, but it gives no gain. |
+
+- Inside the review, interleaved, 10 runs: today's row read (6 processes) took 251 ms per row. With the track read beside `--contains`: 269 ms (+18 ms, +7%). With the track read after it: 294 ms (+43 ms, +17%). Chosen: beside `--contains`.
+- A second read after the rows (the rejected option) would take about 4 s for 256 rows on Windows and about 12 s in WSL, 8 at a time. It needs a new operation and about 4 times the code.
+
+**Git facts (probe)**
+
+- Track forms: equal gives the upstream and an empty track. Other forms: `ahead 1`, `behind 1`, `ahead 1, behind 1`, and `gone` for a missing upstream ref. ref-filter.c `msgs` gives this text untranslated. Only builtin/branch.c and builtin/tag.c set the translated messages (003 plan.md).
+- The upstream is empty after `--unset-upstream`, and when `branch.<b>.remote` names no remote. `remote = .` gives the local upstream `refs/heads/other`.
+- `%(upstream)` is empty for a HEAD on `refs/tags/v1`, also with `branch.v1.*` set.
+- A detached HEAD: `symbolic-ref -q` exits 1.
+- The pattern `refs/heads/ma` matched neither `refs/heads/main` nor `refs/heads/mainline`. A pattern matches whole or up to a slash (git-for-each-ref(1)). A missing ref gives exit 0 and no output.
+
+**Budgets**
+
+- SC-018 basis: +18 ms measured unpackaged, plus about 5 ms for the packaged process path (005 research "Packaged cost"). The budget is 30 ms per row, set before the packaged test. A miss stays a failure, unless the user approves a changed target (constitution VII).
+- WSL: record only. Estimate +40 ms to +170 ms per row (168 ms per process in 005 research). Today's WSL review costs about 1 s or more per checked-out row.
+- SC-019 keeps the 001 SC-005 targets with 256 rows and 1,024 open folders, without virtualization. T144 decides.
+- Context, not in scope: the review costs about 250 ms per checked-out row on Windows. 256 rows take about 1 minute before the tree shows.
+
+**Open assumptions**
+
+- The move of the track union to a shared `TrackState` changes `read-tracking-result.schema.json` only by the limit-name member `SUBMODULE_TREE_FOLDERS`. T140 checks this with `bun run export:schemas --check`.
+- The display path and the path bytes have the same count of `/` (the tree builder refuses otherwise).
+- Inactive or no-URL checked-out submodules show no mark. This is the smallest rule, not a user decision.
+
+**Git Extensions (GPL-3.0, ideas only)**
+
+- The arbareto-ux reference names nested submodules with a "no branch" state. Not verified in the source in this session.
+
+**Packaged record (T145)**: pending.

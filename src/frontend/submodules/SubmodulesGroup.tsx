@@ -1,31 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, CubeIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, CubeIcon, Folder01Icon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { SUBMODULE_REVIEW_NESTING_LEVELS } from "../../contracts/limits";
-import type { SubmoduleHost, SubmoduleHostLine, SubmodulePlanRow, SubmoduleProgram, SubmoduleRefusalReason, SubmoduleRowResult } from "../../contracts/submodules";
+import { memo, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { SUBMODULE_REVIEW_NESTING_LEVELS, SUBMODULE_TREE_FOLDERS } from "../../contracts/limits";
+import type { SubmoduleBranch, SubmoduleHost, SubmoduleHostLine, SubmodulePlanRow, SubmoduleProgram, SubmoduleRefusalReason, SubmoduleRowResult } from "../../contracts/submodules";
 import { CopyButton, unknownReadText, useCopy } from "../app/RepositoryStates";
 import type { createBridge, ProgressEvent } from "../bridge";
+import { GoneMark, UPSTREAM_GONE_NAME } from "../branches/BranchCard";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
 import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { scopedAction } from "../keyboard/shortcuts";
 import { isObject } from "../lib/utils";
+import { shortRef } from "../refs/ReferencesSidebar";
+import { countLabel, COUNTS_TOOLTIP } from "../state/tracking";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { ReadsTrustNotice } from "../trust/TrustChip";
+import { buildSubmoduleTree, type TreeRow } from "./submodule-tree";
 
 // Feature 004 spec FR-076 to FR-082, plan D13 and D15 (Submodules group texts), contract Δ12. The 001 review dialog is gone.
 
 // Contract §9 `UNSUPPORTED_SUBMODULE` as the review lists it.
 export type SubmoduleRefusal = { code: "UNSUPPORTED_SUBMODULE"; reason: SubmoduleRefusalReason; path: string; text: string; remedy: { command: string | null; text?: string } | null };
 /** The `reviewSubmodules` result value (contract §12 "Plan", Δ12). */
-type SubmoduleReviewValue = { generation: number; rows: SubmodulePlanRow[]; programs: SubmoduleProgram[]; refusals: SubmoduleRefusal[]; hosts: SubmoduleHostLine[]; submoduleReviewToken: string };
+type SubmoduleReviewValue = { generation: number; rows: SubmodulePlanRow[]; branches: SubmoduleBranch[]; programs: SubmoduleProgram[]; refusals: SubmoduleRefusal[]; hosts: SubmoduleHostLine[]; submoduleReviewToken: string };
 // The fields that the group reads. Feature 004 plan.md D15 "Malformed result": a `succeeded` result without them has an unknown form.
 const isReviewValue = (result: unknown): result is SubmoduleReviewValue =>
-  isObject(result) && Array.isArray(result.rows) && Array.isArray(result.refusals) && Array.isArray(result.hosts) && typeof result.submoduleReviewToken === "string";
+  isObject(result) && Array.isArray(result.rows) && Array.isArray(result.branches) && Array.isArray(result.refusals) && Array.isArray(result.hosts) && typeof result.submoduleReviewToken === "string";
 type Bridge = Pick<ReturnType<typeof createBridge>, "reviewSubmodules" | "updateSubmodules">;
 type Target = { repositoryId: string; repositoryGeneration: number };
 
@@ -36,6 +40,8 @@ type GroupState = {
   repositoryId: string | null;
   /** The rows of the last listing, or null before the first review. */
   rows: SubmodulePlanRow[] | null;
+  /** Feature 004 plan D20 "Group": the branch marks of `rows` by `rowId`. They change only together with `rows`. */
+  branches: ReadonlyMap<string, SubmoduleBranch>;
   /** The last row result of each path. */
   results: ReadonlyMap<string, SubmoduleRowResult>;
   run: Run | null;
@@ -49,7 +55,7 @@ type GroupState = {
   /** A new host line or refusal waits for focus. */
   attention: boolean;
 };
-const empty = (repositoryId: string | null): GroupState => ({ repositoryId, rows: null, results: new Map(), run: null, refusals: [], hosts: null, summary: null, listing: false, listFailure: null, attention: false });
+const empty = (repositoryId: string | null): GroupState => ({ repositoryId, rows: null, branches: new Map(), results: new Map(), run: null, refusals: [], hosts: null, summary: null, listing: false, listFailure: null, attention: false });
 
 export type SubmoduleUpdateOptions = {
   bridge: Bridge;
@@ -77,6 +83,8 @@ export type SubmoduleUpdate = Omit<GroupState, "repositoryId" | "hosts"> & {
   /** The group moved focus to the line that waits. */
   attended(): void;
 };
+
+const marksOf = (value: SubmoduleReviewValue): ReadonlyMap<string, SubmoduleBranch> => new Map(value.branches.map((branch) => [branch.rowId, branch]));
 
 // Contract Δ12: a scope row and the rows nested under it. A malformed parent chain ends after `rows.length` steps.
 function scopeSet(rows: readonly SubmodulePlanRow[], scope: string | null): ReadonlySet<string> {
@@ -130,7 +138,7 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
     }
     const value = response.result;
     if (!isReviewValue(value)) return patch(target, (s) => ({ ...s, listFailure: { code: null } }));
-    patch(target, (s) => ({ ...s, rows: scope === null || s.rows === null ? value.rows : s.rows, refusals: value.refusals, hosts: null, listFailure: null }));
+    patch(target, (s) => ({ ...s, ...(scope === null || s.rows === null ? { rows: value.rows, branches: marksOf(value) } : {}), refusals: value.refusals, hosts: null, listFailure: null }));
     if (value.refusals.length > 0) return attention(target);
     if (value.hosts.length > 0) {
       patch(target, (s) => ({ ...s, hosts: { value, target, scope } }));
@@ -152,7 +160,7 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
       .then((response) => {
         if (!same(target)) return;
         const value = response.result;
-        if (response.state === "succeeded") patch(target, (s) => (isReviewValue(value) ? { ...s, rows: value.rows, listFailure: null } : { ...s, listFailure: { code: null } }));
+        if (response.state === "succeeded") patch(target, (s) => (isReviewValue(value) ? { ...s, rows: value.rows, branches: marksOf(value), listFailure: null } : { ...s, listFailure: { code: null } }));
         else patch(target, (s) => ({ ...s, listFailure: { code: response.code ?? response.state } }));
       })
       .finally(() => {
@@ -239,6 +247,7 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
   const shown = state.repositoryId === options.repositoryId ? state : empty(options.repositoryId);
   return {
     rows: shown.rows,
+    branches: shown.branches,
     results: shown.results,
     run: shown.run,
     refusals: shown.refusals,
@@ -308,7 +317,28 @@ function stateText(path: string, run: Run | null, result: SubmoduleRowResult | u
   return head === null ? "" : shortId(head);
 }
 
-type GroupRow = { path: string; pathBytes: string | null; depth: number; head: string | null };
+type SubmoduleNode = Extract<TreeRow, { kind: "submodule" }>;
+
+// Plan D15 "Tree rows".
+const TREE_BOUND = `The submodule paths have more than ${num(SUBMODULE_TREE_FOLDERS)} folders, so the group shows no folder rows.`;
+const NO_BRANCH_MARK = "no branch";
+const HEADS = "refs/heads/";
+const branchName = (ref: string) => (ref.startsWith(HEADS) ? ref.slice(HEADS.length) : ref);
+/** The visible mark, its tooltips, the accessible name parts, and the description of one branch mark (spec FR-109, FR-110). */
+type MarkView = { branch: string; tooltip: string; count: { text: string; tooltip: string } | null; gone?: string; names: string[]; description: string | null };
+function markView(mark: SubmoduleBranch | null): MarkView | null {
+  if (mark === null) return null;
+  if (mark.state === "detached") return { branch: NO_BRANCH_MARK, tooltip: NO_BRANCH_MARK, count: null, names: [NO_BRANCH_MARK], description: null };
+  const branch = branchName(mark.ref);
+  if (mark.state === "unread") return { branch, tooltip: branch, count: null, names: [branch, `counts are unavailable: ${mark.code}`], description: null };
+  const tooltip = mark.upstream === null ? branch : `${branch} → ${shortRef(mark.upstream)}`;
+  const upstream = mark.upstream === null ? null : tooltip;
+  const label = countLabel(mark.track);
+  // `parseTracking` accepts a track only with an upstream (src/git-service/sync-parsers.ts).
+  if (mark.track.state === "gone") return { branch, tooltip, count: null, gone: shortRef(mark.upstream!), names: [branch, UPSTREAM_GONE_NAME], description: upstream };
+  if (mark.track.state === "none") return { branch, tooltip, count: null, names: [branch, label.label], description: upstream };
+  return { branch, tooltip, count: { text: label.text, tooltip: `${label.label}. ${COUNTS_TOOLTIP}` }, names: [branch, label.label], description: [upstream, COUNTS_TOOLTIP].filter(Boolean).join(". ") };
+}
 
 // Feature 005 plan.md D11 "Availability" and D15 "Submodules" texts.
 export const INITIALIZE_FIRST = "Initialize this submodule first. Select Update submodules.";
@@ -336,6 +366,8 @@ export function openSubmoduleReason(rows: readonly SubmodulePlanRow[] | null, pa
 
 export type SubmodulesGroupProps = {
   update: SubmoduleUpdate;
+  /** The worktree key of the shown repository. The closed rows last per key for the window session (plan D20 "Group"). */
+  repository: string;
   /** The running reason. It shows only in the tooltip and the accessible description (plan D15). */
   runningReason: string | null;
   /** Another reason that blocks mutations. It shows as a visible line. */
@@ -352,12 +384,188 @@ export type SubmodulesGroupProps = {
   chain?: number;
 };
 
+// Spec FR-108: the closed rows last for the window session per repository and are not stored.
+const sessionClosed = new Map<string, ReadonlySet<string>>();
+
+const toggle = <T,>(set: ReadonlySet<T>, value: T) => {
+  const next = new Set(set);
+  if (!next.delete(value)) next.add(value);
+  return next;
+};
+
+/** The group callbacks of a tree row. The object never changes, so a memo row renders again only when its own props change. */
+type RowActions = {
+  register(key: string, element: HTMLElement | null): void;
+  focused(key: string): void;
+  keyDown(event: ReactKeyboardEvent<HTMLElement>, index: number): void;
+  setOpen(key: string, open: boolean): void;
+  openRow(row: SubmoduleNode): void;
+  menu(path: string, anchor: HTMLElement): void;
+  retry(path: string): void;
+  toggleOutput(path: string): void;
+};
+type ItemProps = { index: number; selected: boolean; actions: RowActions };
+
+const chevron = (open: boolean | null) =>
+  open === null ? (
+    <span aria-hidden="true" className="size-(--icon-size) shrink-0" />
+  ) : (
+    <HugeiconsIcon icon={open ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
+  );
+const common = (row: TreeRow, { index, selected, actions }: ItemProps) => ({
+  ref: (element: HTMLElement | null) => actions.register(row.key, element),
+  role: "treeitem",
+  "aria-level": row.level,
+  "aria-posinset": row.pos,
+  "aria-setsize": row.size,
+  "aria-expanded": row.open ?? undefined,
+  "aria-selected": selected,
+  tabIndex: selected ? 0 : -1,
+  style: { paddingLeft: 8 + 12 * (row.level - 1) },
+  onFocus: () => actions.focused(row.key),
+  onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => actions.keyDown(event, index),
+});
+
+const FolderItem = memo(function FolderItem(props: ItemProps & { row: Extract<TreeRow, { kind: "folder" }> }) {
+  const { row, actions } = props;
+  return (
+    <div
+      {...common(row, props)}
+      aria-label={`${row.label}, folder, ${num(row.count)}`}
+      aria-description={row.path}
+      className="list-row flex min-w-0 items-center gap-1 py-0.5 pr-2"
+      onClick={() => actions.setOpen(row.key, !row.open)}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {chevron(row.open)}
+      <HugeiconsIcon data-slot="folder-icon" icon={Folder01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0 text-muted-text" />
+      <TextTooltip text={row.path}>
+        <span data-slot="row-label" aria-hidden="true" className="min-w-0 truncate">
+          {row.label}
+        </span>
+      </TextTooltip>
+      <span data-slot="folder-count" aria-hidden="true" className="num ml-auto shrink-0 text-muted-text">
+        {num(row.count)}
+      </span>
+    </div>
+  );
+});
+
+type SubmoduleItemProps = ItemProps & {
+  row: SubmoduleNode;
+  /** The row state text of `stateText`. */
+  state: string;
+  /** The row is in the scope of the running update. */
+  running: boolean;
+  result: SubmoduleRowResult | undefined;
+  outputOpen: boolean;
+  reason: string | null;
+};
+const SubmoduleItem = memo(function SubmoduleItem(props: SubmoduleItemProps) {
+  const { row, actions, state, running, result, outputOpen, reason } = props;
+  const line = running || result === undefined ? null : observed(result);
+  const failed = !running && result?.state === "failed";
+  const output = failed && (result.outputTail !== undefined || result.remedy !== undefined);
+  const open = output && outputOpen;
+  const mark = markView(row.mark);
+  return (
+    <div
+      {...common(row, props)}
+      data-path={row.path}
+      aria-label={[row.path, ...(mark?.names ?? []), state, line].filter(Boolean).join(", ")}
+      aria-description={mark?.description ?? undefined}
+      className="list-row flex flex-col py-0.5 pr-2"
+      onDoubleClick={() => actions.openRow(row)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        actions.menu(row.path, event.currentTarget);
+      }}
+    >
+      <div className="flex min-w-0 items-center gap-1">
+        {chevron(row.open)}
+        <span data-slot="row-icon" className="flex shrink-0 text-muted-text">
+          <HugeiconsIcon icon={CubeIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+        </span>
+        <TextTooltip text={row.path}>
+          <span data-slot="row-label" aria-hidden="true" className="min-w-0 truncate">
+            {row.label}
+          </span>
+        </TextTooltip>
+        {mark === null ? null : (
+          <TextTooltip text={mark.tooltip}>
+            <span data-slot="branch-mark" aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
+              {mark.branch}
+            </span>
+          </TextTooltip>
+        )}
+        {mark?.gone === undefined ? null : <GoneMark upstream={mark.gone} />}
+        {mark?.count == null ? null : (
+          <TextTooltip text={mark.count.tooltip}>
+            <span data-slot="track-count" aria-hidden="true" className="num shrink-0 whitespace-nowrap">
+              {mark.count.text}
+            </span>
+          </TextTooltip>
+        )}
+        <span data-slot="row-state" aria-hidden="true" className={`num ml-auto shrink-0 pl-1 ${failed ? "text-removed" : "text-muted-text"}`}>
+          {state}
+        </span>
+      </div>
+      {line === null ? null : <p className="text-muted-text">{line}</p>}
+      {failed && result.failedRead !== undefined ? <p>{FAILED_READ}</p> : null}
+      {failed && result.exitCode !== undefined ? <p data-slot="exit-code">{exitText(result.exitCode)}</p> : null}
+      {failed ? (
+        <div className="flex flex-wrap gap-2 py-0.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            tabIndex={-1}
+            disabled={reason !== null}
+            focusableWhenDisabled
+            onClick={(event) => {
+              event.stopPropagation();
+              if (reason === null) actions.retry(row.path);
+            }}
+          >
+            Retry
+          </Button>
+          {output ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              tabIndex={-1}
+              aria-expanded={open}
+              onClick={(event) => {
+                event.stopPropagation();
+                actions.toggleOutput(row.path);
+              }}
+            >
+              Show output
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {open ? (
+        <>
+          {result!.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap select-text">{result!.outputTail}</pre>}
+          {result!.remedy?.text === undefined ? null : <p>{result!.remedy.text}</p>}
+          {typeof result!.remedy?.command === "string" ? <code className="block break-all select-text">{result!.remedy.command}</code> : null}
+        </>
+      ) : null}
+    </div>
+  );
+});
+
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
-export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0 }: SubmodulesGroupProps) {
+export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0 }: SubmodulesGroupProps) {
   const headingId = useId();
   const reasonId = useId();
-  const [active, setActive] = useState(0);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(true);
+  const [stored, setStored] = useState(() => ({ repository, closed: sessionClosed.get(repository) ?? new Set<string>() }));
+  if (stored.repository !== repository) setStored({ repository, closed: sessionClosed.get(repository) ?? new Set<string>() });
+  const closed = stored.closed;
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const [remedies, setRemedies] = useState<ReadonlySet<number>>(new Set());
   const [menu, setMenu] = useState<{ path: string; anchor: HTMLElement; byKey?: boolean } | null>(null);
@@ -365,12 +573,15 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
   const updateButton = useRef<HTMLButtonElement>(null);
   const copy = useCopy();
   const reason = runningReason ?? blockedReason;
-  const { rows, results, run, summary } = update;
+  const { rows, branches, results, run, summary } = update;
 
-  const known = new Set(rows?.map((row) => row.path));
-  const found = [...results.values()].filter((row) => row.found && !known.has(row.path));
-  const list: GroupRow[] = rows === null ? [] : [...rows.map((row) => ({ path: row.path, pathBytes: row.pathBytes, depth: row.depth, head: row.head })), ...found.map((row) => ({ path: row.path, pathBytes: null, depth: 0, head: null }))];
-  const at = Math.min(active, Math.max(0, list.length - 1));
+  const found = useMemo(() => {
+    const known = new Set(rows?.map((row) => row.path));
+    return [...results.values()].filter((row) => row.found && !known.has(row.path)).map((row) => ({ rowId: row.rowId, path: row.path }));
+  }, [rows, results]);
+  const tree = useMemo(() => (rows === null ? null : buildSubmoduleTree({ rows, found, marks: branches, closed })), [rows, found, branches, closed]);
+  const shown = tree?.state === "tree" ? tree.rows : [];
+  const at = Math.max(0, shown.findIndex((row) => row.key === activeKey));
   const counters = run?.event?.counters;
   const lines = useRef<HTMLDivElement>(null);
   // A host line or a refusal never waits unseen: it takes focus when it shows.
@@ -380,14 +591,22 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
     lines.current?.querySelector<HTMLElement>('[data-slot="host-line"], [data-slot="refusal-line"]')?.focus();
     attended();
   }, [attention, attended]);
-  const toggle = <T,>(set: ReadonlySet<T>, value: T) => {
-    const next = new Set(set);
-    if (!next.delete(value)) next.add(value);
-    return next;
-  };
+  function setOpen(key: string, open: boolean) {
+    const next = new Set(closed);
+    if (open) next.delete(key);
+    else next.add(key);
+    sessionClosed.set(repository, next);
+    setStored({ repository, closed: next });
+  }
+  function focusRow(index: number) {
+    const row = shown[Math.min(shown.length - 1, Math.max(0, index))];
+    if (row === undefined) return;
+    setActiveKey(row.key);
+    elements.current.get(row.key)?.focus();
+  }
 
-  const openReason = (row: GroupRow) => openSubmoduleReason(rows, row.pathBytes, chain);
-  const openRow = (row: GroupRow) => {
+  const openReason = (row: SubmoduleNode) => openSubmoduleReason(rows, row.row?.pathBytes ?? null, chain);
+  const openRow = (row: SubmoduleNode) => {
     if (onOpen === undefined) return;
     const why = openReason(row);
     if (why === null) onOpen(row.path);
@@ -395,37 +614,62 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
   };
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
+    const row = shown[index]!;
     // Feature 005 plan.md D15 keyboard map: Enter on the row itself opens the submodule.
-    if (event.target === event.currentTarget && scopedAction(event.nativeEvent, "submoduleRow") === "openSubmodule") {
+    if (row.kind === "submodule" && event.target === event.currentTarget && scopedAction(event.nativeEvent, "submoduleRow") === "openSubmodule") {
       event.preventDefault();
-      return openRow(list[index]!);
+      return openRow(row);
     }
     if (event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing) return;
-    // Windows sends Shift+F10 and the Menu key to the focused element.
+    // Windows sends Shift+F10 and the Menu key to the focused element. A folder row has no menu (spec FR-108).
     if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
       event.preventDefault();
-      return setMenu({ path: list[index]!.path, anchor: event.currentTarget, byKey: true });
+      if (row.kind === "submodule") setMenu({ path: row.path, anchor: event.currentTarget, byKey: true });
+      return;
     }
     if (event.shiftKey) return;
-    const last = list.length - 1;
-    const to = event.key === "ArrowDown" ? index + 1 : event.key === "ArrowUp" ? index - 1 : event.key === "Home" ? 0 : event.key === "End" ? last : null;
-    if (to === null) return;
+    // Plan D15 keyboard map, "Submodules group tree" rows.
+    const moves: Partial<Record<string, () => void>> = {
+      ArrowDown: () => focusRow(index + 1),
+      ArrowUp: () => focusRow(index - 1),
+      Home: () => focusRow(0),
+      End: () => focusRow(shown.length - 1),
+      ArrowRight: () => (row.open === false ? setOpen(row.key, true) : row.open === true ? focusRow(index + 1) : undefined),
+      ArrowLeft: () => (row.open === true ? setOpen(row.key, false) : row.parent >= 0 ? focusRow(row.parent) : undefined),
+      ...(row.kind === "folder" ? { Enter: () => setOpen(row.key, !row.open) } : {}),
+    };
+    const move = moves[event.key];
+    if (move === undefined) return;
     event.preventDefault();
-    const next = Math.min(last, Math.max(0, to));
-    setActive(next);
-    elements.current.get(list[next]!.path)?.focus();
+    move();
   }
 
   function menuGroups(path: string): ActionItem[][] {
     const result = results.get(path);
     const failed = result?.state === "failed" && (run === null || !run.inScope.has(path));
     const actions: ActionItem[] = [{ label: "Update", icon: FolderSyncIcon, reason, onSelect: () => update.update(path) }];
-    const row = list.find((r) => r.path === path);
+    const row = shown.find((r): r is SubmoduleNode => r.kind === "submodule" && r.path === path);
     if (onOpen !== undefined && row !== undefined) actions.unshift({ label: "Open submodule", icon: CubeIcon, reason: openReason(row), onSelect: () => openRow(row) });
     if (failed) actions.push({ label: "Retry", reason, onSelect: () => update.update(path) });
     if (failed && (result.outputTail !== undefined || result.remedy !== undefined)) actions.push({ label: "Show output", onSelect: () => setOpened((s) => toggle(s, path)) });
     return [actions, [{ label: "Copy path", onSelect: () => copy(path) }]];
   }
+
+  const live = useRef({ onKeyDown, setOpen, openRow, update, reason });
+  live.current = { onKeyDown, setOpen, openRow, update, reason };
+  const actions = useMemo<RowActions>(
+    () => ({
+      register: (key, element) => void (element ? elements.current.set(key, element) : elements.current.delete(key)),
+      focused: setActiveKey,
+      keyDown: (event, index) => live.current.onKeyDown(event, index),
+      setOpen: (key, open) => live.current.setOpen(key, open),
+      openRow: (row) => live.current.openRow(row),
+      menu: (path, anchor) => setMenu({ path, anchor }),
+      retry: (path) => void (live.current.reason === null && live.current.update.update(path)),
+      toggleOutput: (path) => setOpened((s) => toggle(s, path)),
+    }),
+    [],
+  );
 
   return (
     <section data-slot="submodules-group" aria-labelledby={headingId} className="flex min-h-0 flex-col">
@@ -436,7 +680,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
             Submodules
           </button>
         </h3>
-        {rows === null ? null : <span className="num font-normal text-muted-text">{num(list.length)}</span>}
+        {rows === null ? null : <span className="num font-normal text-muted-text">{num(rows.length + found.length)}</span>}
         {run !== null ? (
           <>
             {counters?.rowIndex === undefined || counters.rowCount === undefined ? null : <HeaderStatus text={`Updating ${num(counters.rowIndex)} of ${num(counters.rowCount)}`} />}
@@ -541,100 +785,41 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
               }}
             />
           </div>
-        ) : update.listFailure !== null ? (
-          <p data-slot="list-failure" className="px-2">{update.listFailure.code === null ? unknownReadText("The submodules") : `Arbareto cannot read the submodules: ${update.listFailure.code}.`}</p>
+        ) : update.listFailure !== null || tree?.state === "malformed" ? (
+          <p data-slot="list-failure" className="px-2">{update.listFailure?.code == null ? unknownReadText("The submodules") : `Arbareto cannot read the submodules: ${update.listFailure.code}.`}</p>
         ) : rows === null ? (
           <p data-slot="list-loading" className="px-2 text-muted-text">
             {LOADING}
           </p>
-        ) : rows.length === 0 && found.length === 0 ? (
+        ) : shown.length === 0 ? (
           <p className="px-2 text-muted-text">{NO_ROWS}</p>
         ) : null}
-        {!expanded || list.length === 0 ? null : (
+        {!expanded || tree?.state !== "tree" || !tree.bounded ? null : (
+          <p data-slot="tree-bound" className="px-2 text-muted-text">
+            {TREE_BOUND}
+          </p>
+        )}
+        {/* Plan D15 "Rows at rest": a failed list keeps the rows of the last list. Only a malformed tree shows no rows. */}
+        {!expanded || shown.length === 0 ? null : (
           <div role="tree" aria-labelledby={headingId} className="flex flex-col">
-            {list.map((row, index) => {
-              const result = results.get(row.path);
-              const running = run !== null && run.inScope.has(row.path);
-              const state = stateText(row.path, run, result, row.head);
-              const line = running || result === undefined ? null : observed(result);
-              const failed = !running && result?.state === "failed";
-              const output = failed && (result.outputTail !== undefined || result.remedy !== undefined);
-              const open = output && opened.has(row.path);
-              return (
-                <div
-                  key={row.path}
-                  ref={(element) => void (element ? elements.current.set(row.path, element) : elements.current.delete(row.path))}
-                  role="treeitem"
-                  data-path={row.path}
-                  aria-level={row.depth + 1}
-                  aria-label={[row.path, state, line].filter(Boolean).join(", ")}
-                  aria-selected={index === at}
-                  tabIndex={index === at ? 0 : -1}
-                  className="list-row flex flex-col py-0.5 pr-2"
-                  style={{ paddingLeft: 8 + 12 * row.depth }}
-                  onFocus={() => setActive(index)}
-                  onKeyDown={(event) => onKeyDown(event, index)}
-                  onDoubleClick={() => openRow(row)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setMenu({ path: row.path, anchor: event.currentTarget });
-                  }}
-                >
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span data-slot="row-icon" className="flex shrink-0 text-muted-text">
-                      <HugeiconsIcon icon={CubeIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
-                    </span>
-                    <span className="min-w-0 break-all">{row.path}</span>
-                    <span data-slot="row-state" className={`num ml-auto shrink-0 ${failed ? "text-removed" : "text-muted-text"}`}>
-                      {state}
-                    </span>
-                  </div>
-                  {line === null ? null : <p className="text-muted-text">{line}</p>}
-                  {failed && result.failedRead !== undefined ? <p>{FAILED_READ}</p> : null}
-                  {failed && result.exitCode !== undefined ? <p data-slot="exit-code">{exitText(result.exitCode)}</p> : null}
-                  {failed ? (
-                    <div className="flex flex-wrap gap-2 py-0.5">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        tabIndex={-1}
-                        disabled={reason !== null}
-                        focusableWhenDisabled
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (reason === null) update.update(row.path);
-                        }}
-                      >
-                        Retry
-                      </Button>
-                      {output ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          tabIndex={-1}
-                          aria-expanded={open}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setOpened((s) => toggle(s, row.path));
-                          }}
-                        >
-                          Show output
-                        </Button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {open ? (
-                    <>
-                      {result!.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap select-text">{result!.outputTail}</pre>}
-                      {result!.remedy?.text === undefined ? null : <p>{result!.remedy.text}</p>}
-                      {typeof result!.remedy?.command === "string" ? <code className="block break-all select-text">{result!.remedy.command}</code> : null}
-                    </>
-                  ) : null}
-                </div>
-              );
-            })}
+            {shown.map((row, index) =>
+              row.kind === "folder" ? (
+                <FolderItem key={row.key} row={row} index={index} selected={index === at} actions={actions} />
+              ) : (
+                <SubmoduleItem
+                  key={row.key}
+                  row={row}
+                  index={index}
+                  selected={index === at}
+                  actions={actions}
+                  state={stateText(row.path, run, results.get(row.path), row.row?.head ?? null)}
+                  running={run !== null && run.inScope.has(row.path)}
+                  result={results.get(row.path)}
+                  outputOpen={opened.has(row.path)}
+                  reason={reason}
+                />
+              ),
+            )}
           </div>
         )}
       </div>

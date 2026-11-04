@@ -152,5 +152,5 @@ Each section names its source. Field names are contract names. "001 data-model Â
   - `{rowId, state: "branch", ref, upstream, track}`: `ref` is the full HEAD ref. `upstream` is the full upstream ref, or null. `track` is the shared `TrackState` of the 003 `TrackingEntry`. `upstream` is null exactly when `track.state` is `none`.
   - `{rowId, state: "unread", ref, code}`: the track read failed. `code` is `DEADLINE`, `GIT_FAILED`, `OUTPUT_LIMIT`, `MALFORMED_GIT_OUTPUT`, `STATE_UNKNOWN`, or the runner refusal code.
 - A HEAD ref outside `refs/heads/` gives `branch` with `upstream` null and track `none`, with no process. Git sets `%(upstream)` only for `refs/heads/` refs (research R31).
-- `STATE_UNKNOWN`: no record has `refname` equal to the HEAD ref with `%(HEAD)` set. HEAD moved between the two reads.
+- `STATE_UNKNOWN`: no record has `refname` equal to the HEAD ref with `%(HEAD)` set. HEAD moved between the two reads. A HEAD record with a name that is not valid UTF-8 also gives `STATE_UNKNOWN`.
 - The marks never enter the observed rows, the program inputs, or the review token binding.

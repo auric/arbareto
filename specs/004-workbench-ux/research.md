@@ -786,7 +786,7 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 
 **Open assumptions**
 
-- The move of the track union to a shared `TrackState` keeps `read-tracking-result.schema.json` byte-identical (T140 checks with `bun run export:schemas --check`).
+- The move of the track union to a shared `TrackState` changes `read-tracking-result.schema.json` only by the limit-name member `SUBMODULE_TREE_FOLDERS`. T140 checks this with `bun run export:schemas --check`.
 - The display path and the path bytes have the same count of `/` (the tree builder refuses otherwise).
 - Inactive or no-URL checked-out submodules show no mark. This is the smallest rule, not a user decision.
 

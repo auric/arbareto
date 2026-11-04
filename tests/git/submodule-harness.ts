@@ -159,7 +159,8 @@ export const isTrackCall = (args: readonly string[]) => {
 const REVIEW_READS: string[][] = [
   ["rev-parse", "--verify", "-q", "HEAD"],
   ["rev-parse", "--absolute-git-dir"],
-  ["rev-parse", "--git-path", "hooks"],
+  // Feature 004 contract Δ12 "Review reads": the Git directory and the hooks path come from one process.
+  ["rev-parse", "--absolute-git-dir", "--git-path", "hooks"],
   ["symbolic-ref", "-q", "HEAD"],
   ["config", "list", "--show-scope", "--show-origin", "-z"],
   ["for-each-ref", "--contains=HEAD", "--count=1", "--format=%(refname)"],

@@ -524,8 +524,9 @@ export function submoduleGitDirArgs(location: SubmoduleLocation): string[] {
   return submoduleRead(location, "rev-parse", "--absolute-git-dir");
 }
 
-export function submoduleHooksPathArgs(location: SubmoduleLocation): string[] {
-  return submoduleRead(location, "rev-parse", "--git-path", "hooks");
+// Feature 004 contract Δ12 "Review reads": Git prints one line for each option, in argument order (builtin/rev-parse.c `cmd_rev_parse`).
+export function submoduleGitPathsArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "rev-parse", "--absolute-git-dir", "--git-path", "hooks");
 }
 
 export function submoduleHeadTargetArgs(location: SubmoduleLocation): string[] {

@@ -398,7 +398,8 @@ test("the T227 submodule review reads are exact for a worktree and for a kept Gi
   for (const [location, prefix] of [[{ worktree: "C:/repo/sub" }, W], [{ gitDir: "C:/repo/.git/modules/a/b" }, K]] as const) {
     expect(commands.submoduleHeadOidArgs(location)).toEqual([...prefix, "rev-parse", "--verify", "-q", "HEAD"]);
     expect(commands.submoduleGitDirArgs(location)).toEqual([...prefix, "rev-parse", "--absolute-git-dir"]);
-    expect(commands.submoduleHooksPathArgs(location)).toEqual([...prefix, "rev-parse", "--git-path", "hooks"]);
+    // T148, feature 004 contract Δ12 "Review reads": one process prints one line for each option, in argument order.
+    expect(commands.submoduleGitPathsArgs(location)).toEqual([...prefix, "rev-parse", "--absolute-git-dir", "--git-path", "hooks"]);
     expect(commands.submoduleHeadTargetArgs(location)).toEqual([...prefix, "symbolic-ref", "-q", "HEAD"]);
     expect(commands.submoduleRefExistsArgs(location, "refs/heads/main")).toEqual([...prefix, "show-ref", "--exists", "refs/heads/main"]);
     expect(commands.submoduleRefExistsArgs(location, "master")).toEqual([...prefix, "show-ref", "--exists", "master"]);
@@ -481,7 +482,7 @@ test("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` wi
   const submodule = [
     commands.submoduleHeadOidArgs(location),
     commands.submoduleGitDirArgs(location),
-    commands.submoduleHooksPathArgs(location),
+    commands.submoduleGitPathsArgs(location),
     commands.submoduleHeadTargetArgs(location),
     commands.submoduleHeadTargetNoRecurseArgs(location),
     commands.submoduleRefFormatArgs(location, "refs/heads/main"),

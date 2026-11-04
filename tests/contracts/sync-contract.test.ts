@@ -120,6 +120,9 @@ describe("contract Δ9 codes", () => {
       "not-rebasing",
       "no-skip-commit",
       "rebase-exec",
+      // Feature 010 contract Δ9.
+      "nothing-to-commit",
+      "sequence",
     ]);
     expect([...E.PUSH_REJECTED_REASONS]).toEqual(["rejected", "stale-lease", "remote-rejected", "remote-failure"]);
     expect([...E.PUTTY_UNAVAILABLE_REASONS]).toEqual(["missing", "unreadable", "version", "exit", "not-ready"]);
@@ -419,7 +422,8 @@ describe("contract Δ3 results", () => {
     const R = C.ReviewSyncResult;
     expect(ok(R, { action: "continue", plan: plan({ remotes: [], operationState: "rebasing" }), syncReviewToken: id() })).toBe(true);
     expect(ok(R, { action: "abort", plan: plan({ remotes: [], operation: "merging" }), syncReviewToken: id() })).toBe(false);
-    expect(ok(R, { action: "abort", plan: plan({ remotes: [], operationState: "cherry-picking" }), syncReviewToken: id() })).toBe(false);
+    // Feature 010 contract Δ3 adds cherry-picking and reverting.
+    expect(ok(R, { action: "abort", plan: plan({ remotes: [], operationState: "sequencer-active" }), syncReviewToken: id() })).toBe(false);
     expect(ok(R, { action: "integrate", plan: plan({ mode: "rebase", modeSource: "payload" }), syncReviewToken: id() })).toBe(false);
   });
 

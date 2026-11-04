@@ -1,0 +1,5 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"create-tag\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"refs\":[],\"tag\":null,\"outputTail\":\"error: gpg failed to sign the data\\nerror: unable to sign the tag\\n\"}"
+}

@@ -1,0 +1,5 @@
+{
+  "schema": "sync-result",
+  "expected": "valid",
+  "text": "{\"action\":\"continue\",\"integration\":{\"state\":\"stopped\",\"operation\":\"reverting\",\"unmerged\":0}}"
+}

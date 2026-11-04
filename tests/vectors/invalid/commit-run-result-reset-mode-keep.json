@@ -1,0 +1,8 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"reset\",\"mode\":\"keep\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"refs\":[{\"ref\":\"refs/heads/main\"}],\"trackedChanges\":0}",
+  "repair": {
+    "mode": "hard"
+  }
+}

@@ -51,6 +51,11 @@ export const WORKBENCH_TRUST: Record<(typeof WORKBENCH_ACTIONS)[number], TrustAc
   "revert-lines": null,
   "revert-files": null,
   "revert-unstaged": null,
+  // Feature 010 contract Δ6 and Δ7.
+  reset: "reset",
+  "create-tag": "tag",
+  "cherry-pick": "cherry-pick",
+  "revert-commit": "revert",
 };
 
 /**

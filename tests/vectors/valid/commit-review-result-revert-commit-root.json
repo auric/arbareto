@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"revert-commit\",\"plan\":{\"commit\":\"89abcdef0123456789abcdef0123456789abcdef\",\"parents\":[],\"mainline\":null,\"branch\":\"refs/heads/main\"},\"workbenchToken\":\"0f0f0f0f-0000-4000-8000-00000000000e\"}"
+}

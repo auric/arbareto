@@ -1,0 +1,8 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"create-tag\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"refs\":[{\"ref\":\"refs/tags/v1.0\"}],\"tag\":{\"name\":\"v1.0\",\"oid\":\"fedcba9876543210fedcba9876543210fedcba98\"}}",
+  "repair": {
+    "tag.annotated": true
+  }
+}

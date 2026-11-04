@@ -2095,6 +2095,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           onOpen={openSubmodule}
           onRefused={setNotice}
           chain={parents.length}
+          scrollElement={profile === "constrained" ? referencesElement : undefined}
         />
       </div>
     );

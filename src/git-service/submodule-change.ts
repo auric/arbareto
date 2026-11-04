@@ -499,7 +499,7 @@ const NOT_LOCATED: GitlinkRead = { value: { refused: "submodule" } };
 const HEAD_FAILED: { code: ErrorCode } = { code: "GIT_FAILED" };
 
 // Rule 2 step 1 (plan.md D11 check 3) on the snapshot index entries.
-export const gitlinkEntry = (index: readonly IndexEntry[], path: Uint8Array): boolean => oneGitlink(index.filter((e) => Buffer.compare(e.path, path) === 0), path);
+const gitlinkEntry = (index: readonly IndexEntry[], path: Uint8Array): boolean => oneGitlink(index.filter((e) => Buffer.compare(e.path, path) === 0), path);
 
 // Rule 2 steps 2 to 5 inside the submodule, in the 001 §12 "Review reads" form. These commands load no index and run no filter, hook, or status program.
 // The caller runs step 1 first. A checkpoint covers it with the bound index digest.

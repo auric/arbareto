@@ -4,13 +4,14 @@
 // T060: the feature 005 checks in the installed package (plan.md P9, WP8). Quickstart.md Q11, Q12, Q31, and "Manual checks in the packaged build".
 // Spec FR-018, FR-024, FR-028, FR-051, FR-067, SC-003, SC-007, SC-010. `Local: package`.
 // T111: the submodule preview of plan.md D19 in Changes and in History. Spec FR-067, FR-076, SC-010, SC-012.
+// T120: the submodule staging of plan.md D20 in Changes. Spec FR-077 to FR-082, SC-010, SC-013.
 // The cases drive the page through the WebView2 CDP endpoint and UI Automation patterns. They send no OS input and never move the pointer.
 // CDP keys go through `Input.dispatchKeyEvent`, as tests/windows/keys-cdp.test.ts does (T124). They do not replace one live-input check of the native key path.
 // Dark and Light are the System theme under the CDP `prefers-color-scheme` emulation. Forced colors is the CDP `forced-colors` emulation, not a Windows contrast theme.
 // A case that moves a Recycle Bin item purges it through the `recycledPath` of the `runWorkbench` reply. A hook on the page invoke records that reply.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { printOrigin } from "../origin";
 import { buildFiles, buildSubmodules, faGit, write } from "../git/file-actions-fixtures";
@@ -21,7 +22,7 @@ import { buildHistory } from "../git/history-diff-fixtures";
 import { connectPage, freePort, holdIpc, keyEvents, MOD, watchIpc, type Cdp } from "./cdp";
 import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import { appEnv, COMMIT_VIEW, explorerReveal, explorerWindows, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
+import { close, ControlType, find, invoke, isEnabled, MAX_CALL_MS, MAX_WAIT_MS, setValue, UiaError, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./contrast.ts", "../git/file-actions-fixtures.ts", "../git/history-diff-fixtures.ts"]) printOrigin(helper, import.meta.dir);
 
@@ -47,6 +48,11 @@ const RECENT_KEYS = [
   { type: "keyUp", key: "r", code: "KeyR", windowsVirtualKeyCode: 0x52, modifiers: MOD.Ctrl },
   { type: "keyUp", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 0x11, modifiers: 0 },
 ];
+// One typed Space press, as in tests/windows/workbench-packaged.test.ts. The `cdp.ts` key table has no Space key.
+const SPACE_KEYS = [
+  { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 0x20, modifiers: 0, text: " ", unmodifiedText: " " },
+  { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 0x20, modifiers: 0 },
+];
 
 // ---- App texts (the source of each value is named) ----
 
@@ -65,6 +71,11 @@ const absentText = (path: string) => `${path} does not exist. Select Refresh (F5
 // src/frontend/state/workbench.ts: the discard modal of the ignore editor (D15 "Ignore editor texts").
 const DISCARD_TITLE = "Discard changes to .gitignore?";
 const DISCARD = "Discard";
+// src/frontend/changes/ChangesPane.tsx `ROW_LABEL` with the row name, the `FilesButton` label, and src/frontend/changes/FileControls.tsx `LABEL` in the stage bar.
+const rowStage = (name: string) => `Stage file ${name}`;
+const rowUnstage = (name: string) => `Unstage file ${name}`;
+const STAGE_ALL = "Stage all changes";
+const STAGE_FILE_BAR = "Stage file (Space)";
 
 // quickstart.md "Manual checks in the packaged build". The tester confirms each line in the package.
 const MANUAL = [
@@ -650,17 +661,27 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
 
   // ---- T111: the submodule preview (plan.md D19) ----
 
+  const commitIn = (dir: string, message: string) => {
+    const file = `${message.replaceAll(" ", "-")}.txt`;
+    write(dir, file, `${message}\n`);
+    git(dir, ["add", "--", file]);
+    git(dir, ["commit", "-q", "--no-verify", "-m", message]);
+    return git(dir, ["rev-parse", "HEAD"]).trim();
+  };
+  // git-status(1) porcelain v2 `1` record, submodule field `S<c><m><u>`: the oracle of each mark (plan.md D19 "Local edits").
+  function submoduleMarks(sup: string, paths: string[]): Record<string, string[]> {
+    const marks: Record<string, string[]> = {};
+    for (const record of git(sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", ...paths]).split("\0")) {
+      const m = /^1 \S\S S[C.]([M.])([U.]) \S+ \S+ \S+ \S+ \S+ (.*)$/.exec(record);
+      if (m) marks[m[3]!] = [...(m[1] === "M" ? ["modified content"] : []), ...(m[2] === "U" ? ["untracked content"] : [])];
+    }
+    return marks;
+  }
+
   // `buildSubmodules`, then the commit `moved` takes `solo` and `mid` one commit on. One more commit in each gives two unstaged rows.
   // `solo` also gets an untracked file, so its row has a mark.
   function previewWorld(name: string) {
     const w = buildSubmodules(GIT!, name);
-    const commitIn = (dir: string, message: string) => {
-      const file = `${message.replaceAll(" ", "-")}.txt`;
-      write(dir, file, `${message}\n`);
-      git(dir, ["add", "--", file]);
-      git(dir, ["commit", "-q", "--no-verify", "-m", message]);
-      return git(dir, ["rev-parse", "HEAD"]).trim();
-    };
     const dirs = { solo: join(w.sup, "solo"), mid: join(w.sup, "mid") };
     const base = { solo: git(w.sup, ["rev-parse", "HEAD:solo"]).trim(), mid: git(w.sup, ["rev-parse", "HEAD:mid"]).trim() };
     const one = { solo: commitIn(dirs.solo, "t111 solo one"), mid: commitIn(dirs.mid, "t111 mid one") };
@@ -672,12 +693,7 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
     // Spec FR-073: the tag "Submodule" needs a `submodule.<name>.path` entry equal to the path in .gitmodules.
     const named = git(w.sup, ["config", "-z", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"]).split("\0").filter((r) => r !== "").map((r) => r.slice(r.indexOf("\n") + 1));
     expect({ solo: named.includes("solo"), mid: named.includes("mid") }).toEqual({ solo: true, mid: true });
-    // git-status(1) porcelain v2 `1` record, submodule field `S<c><m><u>`: the oracle of each mark (plan.md D19 "Local edits").
-    const marks: Record<string, string[]> = {};
-    for (const record of git(w.sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", "solo", "mid"]).split("\0")) {
-      const m = /^1 \S\S S[C.]([M.])([U.]) \S+ \S+ \S+ \S+ \S+ (.*)$/.exec(record);
-      if (m) marks[m[3]!] = [...(m[1] === "M" ? ["modified content"] : []), ...(m[2] === "U" ? ["untracked content"] : [])];
-    }
+    const marks = submoduleMarks(w.sup, ["solo", "mid"]);
     expect(Object.keys(marks).sort()).toEqual(["mid", "solo"]);
     return { w, base, one, two, moved, marks };
   }
@@ -902,5 +918,140 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
       }
     },
     caseTimeout(40 + 4 * PREVIEW_RUNS),
+  );
+
+  // ---- T120: submodule staging (plan.md D20) ----
+
+  const FILE_ALLOW = ["-c", "protocol.file.allow=always"];
+  const listing = (repo: string) => git(repo, ["ls-files", "-z", "--stage"]);
+  // A `ls-files -z --stage` record is `<mode> SP <object> SP <stage> TAB <path>`.
+  const entryOf = (list: string, path: string) => list.split("\0").find((r) => r.endsWith(`\t${path}`)) ?? null;
+  let copies = 0;
+  // Git's own commands on a disposable copy, and the `ls-files -z --stage` bytes after them (plan.md D20 "Oracle facts").
+  function oracle(repo: string, steps: string[][]): string {
+    const copy = join(fixtureDir(`t120-oracle-${++copies}`), "repo");
+    cpSync(repo, copy, { recursive: true });
+    for (const args of steps) git(copy, args);
+    return listing(copy);
+  }
+
+  // As tests/git/file-publish.test.ts `world` (T118): a library with one commit, and a superproject with the submodules `sub` and `edit` at that commit.
+  // Then `sub` moves one commit, `edit` gets only local edits, and `base.txt` changes. The oracles run before the app starts.
+  function stageWorld(name: string) {
+    const root = fixtureDir(name);
+    const lib = join(root, "lib");
+    const sup = join(root, "super");
+    for (const dir of [lib, sup]) {
+      mkdirSync(dir);
+      git(dir, ["init", "-q", "-b", "main"]);
+    }
+    const lone = commitIn(lib, "t120 lib one");
+    commitIn(sup, "base");
+    for (const path of ["sub", "edit"]) git(sup, [...FILE_ALLOW, "submodule", "add", "-q", "--", lib, path]);
+    git(sup, ["commit", "-q", "--no-verify", "-m", "t120 submodules"]);
+    const old = git(sup, ["rev-parse", "HEAD:sub"]).trim();
+    expect(old).toBe(lone);
+    const moved = commitIn(join(sup, "sub"), "t120 sub moved");
+    write(sup, "base.txt", "changed\n");
+    write(join(sup, "edit"), "t120-lib-one.txt", "edited\n");
+    write(join(sup, "edit"), "t120-untracked.txt", "u\n");
+    // Plan.md D20 "Status facts": the snapshot holds `SC..` for the moved gitlink and no record for `edit`.
+    const records = git(sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=dirty"])
+      .split("\0")
+      .map((r) => /^1 (\S\S) (\S{4}) \S+ \S+ \S+ \S+ \S+ (.*)$/.exec(r))
+      .filter((m) => m !== null)
+      .map((m) => `${m[1]} ${m[2]} ${m[3]}`);
+    expect(records.sort()).toEqual([".M N... base.txt", ".M SC.. sub"]);
+    const marks = submoduleMarks(sup, ["edit"]).edit!;
+    expect(marks).toEqual(["modified content", "untracked content"]);
+    const before = listing(sup);
+    const staged = oracle(sup, [["--literal-pathspecs", "add", "--", "sub"]]);
+    const restored = oracle(sup, [["--literal-pathspecs", "add", "--", "sub"], ["--literal-pathspecs", "restore", "--staged", "--", "sub"]]);
+    const all = oracle(sup, [["add", "-A"]]);
+    expect({ staged: entryOf(staged, "sub"), restored, allSub: entryOf(all, "sub"), allEdit: entryOf(all, "edit") }).toEqual({ staged: `160000 ${moved} 0\tsub`, restored: before, allSub: `160000 ${moved} 0\tsub`, allEdit: entryOf(before, "edit") });
+    expect(entryOf(all, "base.txt")).not.toBe(entryOf(before, "base.txt"));
+    return { sup, old, moved, marks, before, staged, restored, all };
+  }
+
+  // UIA_E_ELEMENTNOTAVAILABLE: a render replaced the element.
+  const UIA_E_ELEMENTNOTAVAILABLE = 0x8004_0201;
+  // Polls the UIA IsEnabled of the named button until it equals `want`. Then `act` runs on that element. Each poll finds the element again.
+  async function buttonState(pid: number, name: string, want: boolean, act?: (element: Element) => void): Promise<void> {
+    let last: boolean | null = null;
+    for (const end = performance.now() + ACTION_WAIT_MS; ; await Bun.sleep(50)) {
+      try {
+        const done = await uia(pid, name, ControlType.Button, (element) => {
+          last = isEnabled(element);
+          if (last !== want) return false;
+          act?.(element);
+          return true;
+        });
+        if (done) return;
+      } catch (error) {
+        if (!(error instanceof UiaError && error.hresult === UIA_E_ELEMENTNOTAVAILABLE)) throw error;
+      }
+      if (performance.now() >= end) throw new Error(`the button ${js(name)} has IsEnabled ${last}, not ${want}, after ${ACTION_WAIT_MS} ms`);
+    }
+  }
+  // The listing of the parent index after an app action, polled until it equals `expected` or the bound ends.
+  async function indexListing(repo: string, expected: string): Promise<string> {
+    let now = listing(repo);
+    for (const end = performance.now() + ACTION_WAIT_MS; now !== expected && performance.now() < end; now = listing(repo)) await Bun.sleep(100);
+    return now;
+  }
+  const stagedRow = (name: string) => changesRow(name).replace("[data-file-tree=changes]", "[data-file-tree=staged]");
+  const fileRowLabels = (list: string) => `[...document.querySelectorAll('[data-file-tree=${list}] [role=treeitem]:not([data-section-row])')].map((e) => e.getAttribute('aria-label'))`;
+
+  test.skipIf(reason !== null)(
+    "T120 FR-077 to FR-082, SC-010, SC-013 by keyboard: Space stages a moved submodule, its row button unstages it, and Stage all changes stages it with a modified file while a submodule with only local edits stays in Changes; the index equals Git's own add, restore --staged, and add -A",
+    async () => {
+      const f = stageWorld("t120-stage");
+      const s = await session("t120-stage", f.sup);
+      try {
+        await toCommitView(s.app.pid);
+        await focusOn(s.c, `document.querySelector('[data-file-tree=changes] [role=treeitem]')`, "the first Changes row");
+        await press(s.c, "Home");
+        for (let i = 0; i < 8 && !(await s.c.evaluate<boolean>(`document.activeElement === (${changesRow("sub")})`)); i++) await press(s.c, "ArrowDown");
+        await until<string | null>(s.c, "the selected sub row", `(${changesRow("sub")})?.getAttribute('aria-selected') ?? null`, (v) => v === "true");
+        // Plan.md D20 "Preview equality": Stage file waits for the preview `new` ID. An unstaged row shows `hI`, then the submodule HEAD.
+        const region = previewIn(COMMIT_SCOPE, "sub");
+        await until<string[] | null>(s.c, "the sub preview Commit row", `(${previewTexts(region)})?.commit?.ids ?? null`, (v) => js(v) === js([short(f.old), short(f.moved)]), ACTION_WAIT_MS);
+        await buttonState(s.app.pid, STAGE_FILE_BAR, true);
+        await buttonState(s.app.pid, rowStage("sub"), true);
+        // The reason line always mounts, so its text is the fact.
+        expect(await s.c.evaluate<string>(`(${region}).querySelector('[data-slot="reason-line"]').innerText.trim()`)).toBe("");
+        for (const params of SPACE_KEYS) await s.c.send("Input.dispatchKeyEvent", params);
+        console.log(`KEY ${TASK}: Space mods=0`);
+
+        // Spec SC-013: Stage file equals `git add -- sub` on a copy.
+        const afterStage = await indexListing(f.sup, f.staged);
+        expect(afterStage).toBe(f.staged);
+        expect(entryOf(afterStage, "sub")).toBe(`160000 ${f.moved} 0\tsub`);
+        await until<boolean>(s.c, "the sub row in Staged", `!!(${stagedRow("sub")}) && !(${changesRow("sub")})`, (v) => v, ACTION_WAIT_MS);
+
+        // Spec FR-080: the row button of the staged row unstages it, as `git restore --staged -- sub` on a copy does.
+        await focusOn(s.c, stagedRow("sub"), "the staged sub row");
+        await buttonState(s.app.pid, rowUnstage("sub"), true, invoke);
+        expect(await indexListing(f.sup, f.restored)).toBe(f.restored);
+        await until<boolean>(s.c, "the sub row back in Changes", `!!(${changesRow("sub")}) && !(${stagedRow("sub")})`, (v) => v, ACTION_WAIT_MS);
+
+        // Spec FR-075, FR-082: the row with only local edits keeps an unavailable Stage button.
+        const editName = ["edit, submodule, modified", ...f.marks].join(", ");
+        await focusOn(s.c, changesRow("edit"), "the edit row");
+        expect(await s.c.evaluate<string | null>(`(${changesRow("edit")}).getAttribute('aria-label')`)).toBe(editName);
+        await buttonState(s.app.pid, rowStage("edit"), false);
+
+        // Spec FR-081, SC-013: Stage all changes equals `git add -A` on a copy. The edit row stays in Changes with its marks.
+        await buttonState(s.app.pid, STAGE_ALL, true, invoke);
+        expect(await indexListing(f.sup, f.all)).toBe(f.all);
+        await until<boolean>(s.c, "base.txt and sub in Staged", `!!(${stagedRow("base.txt")}) && !!(${stagedRow("sub")})`, (v) => v, ACTION_WAIT_MS);
+        expect(await s.c.evaluate<(string | null)[]>(fileRowLabels("changes"))).toEqual([editName]);
+        expect(await s.c.evaluate<string | null>(`(${changesRow("edit")}).querySelector('[data-slot=submodule-marks]')?.textContent ?? null`)).toBe(f.marks.join(", "));
+        await uia(s.app.pid, editName, ControlType.TreeItem, () => {});
+      } finally {
+        await end(s);
+      }
+    },
+    caseTimeout(40),
   );
 });

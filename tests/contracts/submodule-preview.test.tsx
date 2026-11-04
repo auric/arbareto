@@ -7,9 +7,9 @@ import type { OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { fixtureId } from "./bridge-contract";
-import { b64, contextMenu, describedBy, entry, item, menuLabels, openCommitView, pressKey } from "./commit-fake";
+import { b64, contextMenu, describedBy, entry, item, menuLabels, openCommitView, pressKey, statusBar } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { button, buttons, click, createWorld, hoverTooltip, mountWorkbench, oid, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, hoverTooltip, mountWorkbench, oid, press, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T109 and T110 (feature 005, WP9). Story US10. Spec FR-069 to FR-076, FR-010, FR-047. Plan D19, data-model §15 and §16, contract Δ3 `readSubmoduleChange` and `readSubmoduleWork`.
 
@@ -487,5 +487,153 @@ describe("review fix 6: a folder of only local-edits rows", () => {
     expect(describedBy([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((m) => text(m).startsWith("Stage folder"))!)).toBe(
       "The submodule commit is unchanged. Commit the local edits inside the submodule first.",
     );
+  });
+});
+
+describe("T119 Stage file of a moved submodule (FR-078 to FR-082, plan D20)", () => {
+  const STALE = "The comparison or the staged scope changed. Arbareto reads it again.";
+  const PENDING = "Arbareto reads the Git facts.";
+  const GITLINK_TEXT = "Arbareto stages and unstages only a moved submodule commit. Use Git in a terminal for this change.";
+  // Contract Δ4: the comparison of a moved gitlink carries the bound submodule HEAD.
+  const movedComparison = (head: string | null, fileAction = "stage") => (args: unknown[]) => {
+    const payload = args[1] as { snapshotId: string; entryId: string };
+    return succeeded({ comparisonId: fixtureId(0x7fe), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(""), hunks: [], support: "submodule", fileAction, remedy: null, ...(head === null ? {} : { gitlink: { oid: head } }) });
+  };
+  const stageBar = () => buttons("Stage file (Space)");
+  // The reason line drops the end period of each sentence (HunkControls `ReasonLine`).
+  const line = (t: string) => t.replace(/\.$/, "");
+  const disabled = (b: HTMLElement) => b.getAttribute("aria-disabled") === "true" || b.hasAttribute("disabled");
+  type Moved = { comparison?: ((args: unknown[]) => unknown) | undefined; change?: ((args: unknown[]) => unknown) | undefined };
+  async function moved(fields: Moved = {}) {
+    const lib = LIB();
+    const result = await setup({ entries: [lib], change: "change" in fields ? fields.change : () => succeeded(change("lib", commitState(1, 0))), work: work({ entries: [checked("lib", false, false)] }) });
+    result.world.answers.readComparison = "comparison" in fields ? fields.comparison : movedComparison(NEW);
+    return { ...result, lib };
+  }
+  const lastPayload = (double: Awaited<ReturnType<typeof moved>>["double"], operation: string) => double.calls.findLast((c) => c.operation === operation)!.args[1] as Record<string, unknown>;
+
+  test("case 1: an equal preview new ID gives an available Stage file, and Space sends applyFile stage", async () => {
+    const { double, lib } = await moved();
+    await click(item("Changes", "lib"));
+    expect(disabled(stageBar()[0]!)).toBe(false);
+    await press(item("Changes", "lib"), " ");
+    const call = double.pending("applyFile")!;
+    expect(call.args[1]).toEqual({ comparisonId: fixtureId(0x7fe), snapshotId: lastPayload(double, "readComparison").snapshotId, direction: "stage" });
+    expect(lastPayload(double, "readComparison").entryId).toBe(lib.entryId);
+  });
+
+  test("case 2: a pending preview disables Stage file with the pending text; a Space held for the comparison refuses with it", async () => {
+    const { double } = await moved({ change: undefined, comparison: undefined });
+    await click(item("Changes", "lib"));
+    await press(item("Changes", "lib"), " ");
+    const read = double.pending("readComparison")!;
+    await answer(read, movedComparison(NEW)(read.args));
+    await settle();
+    const stage = stageBar()[0]!;
+    expect(disabled(stage)).toBe(true);
+    expect(describedBy(stage)).toBe(line(PENDING));
+    expect(statusBar()).toContain(`Stage file is unavailable: ${PENDING}`);
+    expect(double.count("applyFile")).toBe(0);
+  });
+
+  test("case 3: another ID shows the stale text and sends each read again one time", async () => {
+    const { double } = await moved({ comparison: movedComparison(OLD) });
+    await click(item("Changes", "lib"));
+    await settle();
+    expect(double.count("readComparison")).toBe(2);
+    expect(double.count("readSubmoduleChange")).toBe(2);
+    const stage = stageBar()[0]!;
+    expect(disabled(stage)).toBe(true);
+    expect(describedBy(stage)).toBe(line(STALE));
+    await press(item("Changes", "lib"), " ");
+    expect(double.count("applyFile")).toBe(0);
+    expect(double.count("readComparison")).toBe(2);
+    expect(double.count("readSubmoduleChange")).toBe(2);
+  });
+
+  test("case 3: a re-read with the equal ID makes Stage file available", async () => {
+    const { double } = await moved({ comparison: undefined });
+    await click(item("Changes", "lib"));
+    const first = double.pending("readComparison")!;
+    await answer(first, movedComparison(OLD)(first.args));
+    await settle();
+    expect(double.count("readComparison")).toBe(2);
+    const second = double.pending("readComparison")!;
+    await answer(second, movedComparison(NEW)(second.args));
+    await settle();
+    expect(disabled(stageBar()[0]!)).toBe(false);
+    expect(double.count("readComparison")).toBe(2);
+  });
+
+  test("case 4: a row with only local edits keeps the D19 stage reason", async () => {
+    await setup({ entries: [entry("unstaged", "a.ts")], work: work({ entries: [checked("dep", true, false)], extraRows: ["dep"] }) });
+    const stage = buttons("Stage file dep", item("Changes", "dep"))[0]!;
+    expect(describedBy(stage)).toBe("The submodule commit is unchanged. Commit the local edits inside the submodule first.");
+  });
+
+  test("case 5: Stage all changes, Stage folder, and Stage selected carry the moved gitlink and no row with only local edits", async () => {
+    const lib = entry("unstaged", "vendor/lib", { submodule: "SC..", xy: ".M", modes: GITLINK });
+    const file = entry("unstaged", "vendor/a.ts");
+    const { double } = await setup({ entries: [lib, file], change: () => succeeded(change("vendor/lib", commitState(1, 0))), work: work({ entries: [checked("vendor/lib", false, false), checked("vendor/dep", true, false)], extraRows: ["vendor/dep"] }) });
+    const ids = () => [...(double.pending("applyFiles")!.args[1] as { entryIds: string[] }).entryIds].sort();
+    const both = [lib.entryId, file.entryId].sort();
+    await click(button("Stage all changes"));
+    expect(ids()).toEqual(both);
+    await act(async () => double.pending("applyFiles")!.resolve(rejected("BUSY")));
+    await settle();
+    await contextMenu(item("Changes", "vendor"));
+    await click([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((m) => text(m).startsWith("Stage folder"))!);
+    expect(ids()).toEqual(both);
+    await act(async () => double.pending("applyFiles")!.resolve(rejected("BUSY")));
+    await settle();
+    await click(item("Changes", "vendor/lib"));
+    await act(async () => void item("Changes", "vendor/a.ts").dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true })));
+    await settle();
+    await click(button("Stage selected (2)"));
+    expect(ids()).toEqual(both);
+  });
+
+  const refusals: [string, () => World["entries"][number]][] = [
+    ["a deleted gitlink", () => entry("unstaged", "lib", { submodule: "SC..", xy: ".D", modes: ["160000", "160000", "000000"] })],
+    ["a staged type change to a gitlink", () => entry("staged", "lib", { submodule: "SC..", xy: "T.", modes: ["100644", "160000", "160000"] })],
+  ];
+  for (const [name, make] of refusals) {
+    test(`case 6: reason submodule on ${name} shows the D20 text in the reason line, the status bar, and the description, with no Copy command`, async () => {
+      const row = make();
+      const { world, double } = await setup({ entries: [row], change: () => succeeded(change("lib", commitState(1, 0))), work: work({ entries: [checked("lib", false, false)] }) });
+      world.answers.readComparison = movedComparison(null, "submodule");
+      const list = row.category === "staged" ? "Staged" : "Changes";
+      const label = row.category === "staged" ? "Unstage file" : "Stage file";
+      await click(item(list, "lib"));
+      const control = button(`${label} (Space)`);
+      expect(disabled(control)).toBe(true);
+      expect(describedBy(control)).toBe(line(GITLINK_TEXT));
+      expect(text(document.querySelector('[data-slot="submodule-preview"] [data-slot="reason-line"]')!)).toContain(line(GITLINK_TEXT));
+      await press(item(list, "lib"), " ");
+      expect(statusBar()).toContain(`${label} is unavailable: ${GITLINK_TEXT}`);
+      expect(buttons("Copy command")).toHaveLength(0);
+      expect(text(document.body)).not.toContain(LIMITATION);
+      expect(double.count("applyFile")).toBe(0);
+    });
+  }
+
+  test("case 6: an untracked nested repository keeps the 001 limitation text", async () => {
+    const nested = entry("untracked", "nested/");
+    const { world } = await setup({ entries: [nested], work: work({ entries: [] }) });
+    world.answers.readComparison = movedComparison(null, "submodule");
+    expect(text(item("Changes", "nested/"))).toContain("nested/");
+    expect(buttons("Stage file nested/", item("Changes", "nested/"))).toHaveLength(1);
+    await click(item("Changes", "nested/"));
+    expect(describedBy(button("Stage file (Space)"))).toBe(line(LIMITATION));
+    expect(text(document.body)).not.toContain(GITLINK_TEXT);
+  });
+
+  test("case 7: reason submodule-unborn shows the D20 text", async () => {
+    await moved({ comparison: movedComparison(null, "submodule-unborn") });
+    await click(item("Changes", "lib"));
+    const stage = stageBar()[0]!;
+    expect(disabled(stage)).toBe(true);
+    expect(describedBy(stage)).toBe("The submodule branch has no commit yet. Commit inside the submodule first");
+    expect(text(document.body)).not.toContain(LIMITATION);
   });
 });

@@ -9,7 +9,7 @@ import { TEXTS } from "../integrate/texts";
 import type { IgnoreTarget } from "../state/workbench";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { folderEntries, formatCount, type FilesRequest } from "./file-tree";
-import { LIMITATION_TEXT } from "./limitation-text";
+import { GITLINK_TEXT, isGitlink, LIMITATION_TEXT, UNBORN_TEXT } from "./limitation-text";
 
 // Feature 004 contract Δ3 `applyFiles` and `revealPath`; feature 005 contract Δ3 `reviewWorkbench` and `runWorkbench` with action `delete`, plan.md D5, D6, D15; spec FR-018 to FR-033.
 
@@ -22,7 +22,7 @@ export const IGNORE_LINE_REASON = { path: "The path holds a control character or
 export const LIMIT_TEXT = "One action covers at most 10,000 files and 512 MiB of working files.";
 export const CUT_REASON = "Git lists more untracked files than Arbareto reads.";
 // Feature 003 data-model §9 `missing` and the contract Δ9 `blob-proof` reason of a file action.
-const FILE_REASONS: Record<string, string> = { ...LIMITATION_TEXT, missing: "The working file of this conflicted path is missing.", "blob-proof": "Git did not store the exact bytes of this file." };
+const FILE_REASONS: Record<string, string> = { ...LIMITATION_TEXT, missing: "The working file of this conflicted path is missing.", "blob-proof": "Git did not store the exact bytes of this file.", "submodule-unborn": UNBORN_TEXT };
 
 // Feature 005 plan.md D15 "Delete unavailable reasons".
 export const DELETE_REASON: Record<string, string> = {
@@ -56,7 +56,7 @@ export function filesRefusal(response: BridgeResponse, entries: readonly ChangeE
   const reason = reasonOf(response);
   if (response.code === "WORKBENCH_UNAVAILABLE" && reason === "limit") return `${label} did not start: ${LIMIT_TEXT}`;
   const entry = typeof result.entryId === "string" ? entries.find((e) => e.entryId === result.entryId) : undefined;
-  const text = reason !== undefined ? FILE_REASONS[reason] : undefined;
+  const text = reason === "submodule" && isGitlink(entry) ? GITLINK_TEXT : reason !== undefined ? FILE_REASONS[reason] : undefined;
   if (entry !== undefined) return `${label} did not start: ${entry.path}. ${text ?? coded(response)}`;
   return `${label} did not start: ${coded(response)}`;
 }

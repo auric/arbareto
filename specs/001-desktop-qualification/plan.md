@@ -574,7 +574,7 @@ Limitation text: the reason line, the comparison pane, and the accessible descri
 - `mode`: "This change alters the file mode."
 - `type`: "This change alters the file type, or the path is not a regular file."
 - `symlink`: "This entry is a symbolic link."
-- `submodule`: "This entry is a submodule or a nested repository." Amended by 005 (2026-10-31): the comparison pane shows the 005 submodule change preview (005 plan D19) in place of this sentence. The reason line and the accessible description of the unavailable hunk and file actions keep it.
+- `submodule`: "This entry is a submodule or a nested repository." Amended by 005 (2026-10-31): the comparison pane shows the 005 submodule change preview (005 plan D19) in place of this sentence. The reason line and the accessible description of the unavailable hunk and file actions keep it. Amended by feature 005 (2026-11-03, user decision): a gitlink row never shows this sentence. Its file-action reason line shows the 005 FR-080 text "Arbareto stages and unstages only a moved submodule commit. Use Git in a terminal for this change.". An untracked nested repository keeps this sentence (005 plan D20).
 - `LFS`: "Git LFS manages this file."
 - `filter`: "A Git filter applies to this file."
 - `state`: "This file has conflicts."

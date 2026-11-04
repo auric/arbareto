@@ -12,7 +12,7 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import type { ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import type { FileActionDecision, ResolveDecision, UnstagePath } from "../contracts/file-action";
+import { GITLINK_MODE, stagedGitlink, type FileActionDecision, type ResolveDecision, type UnstagePath } from "../contracts/file-action";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
 import type { ApprovalKey, FileApproval, FileBinding } from "./approvals";
 import { blobFilterProofArgs, blobHashProofArgs, isObjectId, objectCheckArgs, updateIndexAddArgs, updateIndexInfoArgs } from "./commands";
@@ -49,6 +49,7 @@ import {
 import { latin1, objectCheckInput, objectCheckOutcome } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, ReadInstallation } from "./snapshot";
+import { submoduleHead } from "./submodule-change";
 import { hashWriteArgs } from "./sync-commands";
 import { wslProofA, wslProofB } from "./wsl-files";
 
@@ -110,8 +111,10 @@ export function changedSet(ts: readonly ExpectedChange[], candidate: readonly Ra
   const staged: (string | null)[] = [];
   for (const [index, t] of ts.entries()) {
     const selected = { detail: "selected-entry" as const, index };
-    if (t.action.direction === "unstage") {
-      const each = t.action.changedPaths.every((r) => Bun.deepEquals(at(r.path), r.mode === 0 ? [] : [{ mode: r.mode.toString(8).padStart(6, "0"), oid: r.objectId, ...CLEAN }], true));
+    // Feature 005 contract Δ4 step 6: a moved gitlink expects its `--index-info` line, as an unstage does. No blob was staged.
+    const lines = t.action.direction === "stage" ? t.action.changedPaths.filter((p): p is UnstagePath => p.mode !== undefined) : [];
+    if (t.action.direction === "unstage" || lines.length > 0) {
+      const each = (t.action.direction === "unstage" ? t.action.changedPaths : lines).every((r) => Bun.deepEquals(at(r.path), r.mode === 0 ? [] : [{ mode: r.mode.toString(8).padStart(6, "0"), oid: r.objectId, ...CLEAN }], true));
       if (!each) return selected;
       staged.push(null);
       continue;
@@ -152,6 +155,20 @@ export function digestSink(size: number): Collector & { digest(): string } {
 }
 
 const refusalOrStop = (f: Exclude<Fact<unknown>, { value: unknown }>): Refusal | Stop => (isStop(f) ? f : refusalOf(f));
+
+// Feature 005 plan.md D20 "Publication": the checkpoints read the submodule HEAD in place of the working file. Another HEAD or a failed step gives STALE_SELECTION.
+export async function sameHead(ctx: PublishContext, path: Uint8Array, head: string): Promise<Refusal | Stop | null> {
+  const read = await settled(ctx.signal, submoduleHead(ctx.runner, ctx, path));
+  if (isStop(read)) return read;
+  return "value" in read && "head" in read.value && read.value.head === head ? null : STALE;
+}
+
+// After publication, another submodule HEAD counts as a changed working file (001 contract §4 "Blob proof").
+export async function headMoved(ctx: PublishContext, path: Uint8Array, head: string): Promise<Fact<boolean>> {
+  const read = await settled(ctx.signal, submoduleHead(ctx.runner, ctx, path));
+  if (!("value" in read)) return read;
+  return { value: !("head" in read.value) || read.value.head !== head };
+}
 
 // The verified bytes of the working file: exactly `bound.size` bytes with `bound.sha256`. Null for any other file state.
 // ponytail: proof B holds the whole file, up to WHOLE_FILE_STAGE_INPUT_BYTES, in one buffer. Upgrade path: a streamed `GitCall.input` source.
@@ -250,6 +267,8 @@ export function createFilePublisher(o: FilePublisherOptions) {
     const { workspace: w, signal, operationId, installation } = ctx;
     const stage = action.direction === "stage";
     const resolve = action.direction === "resolve";
+    // Feature 005 data-model §17: a moved gitlink binds the submodule HEAD in place of the working file.
+    const head = stagedGitlink(action);
     // Contract §4 "Limitation remedies": the `add` remedy of the entry.
     const addRemedy = () => wholeFileRemedy({ entry: c.entry, workspace: w, installation, headUnborn: binding.head.state === "unborn" }, path);
     // FR-053: Mark resolved also binds the working version of the comparison: existence, type, mode, size, and raw digest. A WSL read folds no working version.
@@ -261,6 +280,7 @@ export function createFilePublisher(o: FilePublisherOptions) {
       if ("listing" in policy) run.listing = policy.listing;
       const refused = checkpointRefusal({ ...binding, working: version }, policy, await observeState(ctx, path, version !== null, canonicalIndex(ctx, binding.index, resolve)), w.objectFormat, w.wsl !== undefined, resolve);
       if (refused !== null || action.direction === "unstage") return refused;
+      if (head !== null) return sameHead(ctx, path, head);
       const read = differs(binding.working, await settled(signal, wholeWorking(ctx, path)));
       if (!("value" in read)) return refusalOrStop(read);
       return read.value ? STALE : null;
@@ -288,8 +308,9 @@ export function createFilePublisher(o: FilePublisherOptions) {
         if (out.limited || !line.endsWith("\n") || !isObjectId(oid, w.objectFormat)) return owned.fail({ reason: "malformed", step: "hash" });
         hashed = oid;
         input = indexInfoInput(action.changedPaths.map((p) => ({ path: p.path, mode: p.mode, objectId: oid })));
-      } else input = stage ? Buffer.concat([path, NUL]) : indexInfoInput(action.changedPaths);
-      await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail);
+      } else input = stage && head === null ? Buffer.concat([path, NUL]) : indexInfoInput(action.changedPaths as UnstagePath[]);
+      // Feature 005 contract Δ4 step 5: a moved gitlink writes `160000 SP <head> TAB <path> NUL`. No `hash-object` runs.
+      await owned.step("update-index", stage && head === null ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail);
       // T197 races write the working file at this observer point, after the Git step and before the proofs.
       await o.hunkCheckpoint?.({ step: 5, operationId });
       if (signal.aborted) return owned.fail({ reason: "canceled" });
@@ -317,7 +338,8 @@ export function createFilePublisher(o: FilePublisherOptions) {
       const refused = candidateRefusal(prepared.failure);
       if (!("check" in refused)) return refused;
       // Contract §7 "Missing objects": the index object of `stage`, or the HEAD object IDs that `unstage` names. `resolve` stages a new blob.
-      const oid = action.direction === "unstage" ? action.changedPaths.find((r) => r.mode !== 0)?.objectId : stage ? c.entry.oids?.[1] : undefined;
+      // Feature 005 plan.md D20: a gitlink line names a commit of the submodule object database, so it names no object here.
+      const oid = action.direction === "unstage" ? action.changedPaths.find((r) => r.mode !== 0 && r.mode !== GITLINK_MODE)?.objectId : stage && head === null ? c.entry.oids?.[1] : undefined;
       const checked = await missingObject(ctx, run.listing, oid, refused.check);
       const f = prepared.failure;
       // Contract §9: a failed `stage` or `resolve` Git step carries the `add` remedy and the output tail of its process.
@@ -343,7 +365,9 @@ export function createFilePublisher(o: FilePublisherOptions) {
 
   // Contract §4 "Blob proof": after publication, a new digest of the working file decides the working-file effect. `unstage` reads no working file.
   async function working({ approval: { binding }, action }: Admitted, ctx: PublishContext, path: Uint8Array): Promise<Fact<boolean>> {
-    return action.direction === "unstage" ? { value: false } : differs(binding.working, await wholeWorking(ctx, path));
+    if (action.direction === "unstage") return { value: false };
+    const head = stagedGitlink(action);
+    return head !== null ? headMoved(ctx, path, head) : differs(binding.working, await wholeWorking(ctx, path));
   }
 
   function applyFile(request: ApplyFileRequest, w: Workspace, installation: ReadInstallation): void {

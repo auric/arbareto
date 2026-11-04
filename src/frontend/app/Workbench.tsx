@@ -11,9 +11,9 @@ import { ChangesPane as ChangesList, type FileAction, type FileActionResult } fr
 import { ComparisonView as Comparison, resultOf, showsDiff, type LineState } from "../changes/ComparisonView";
 import { deleteBlock, fileActions } from "../changes/file-actions";
 import { conflictedRows, countsText } from "../changes/file-tree";
-import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
-import { changeOf, EXTRA_ID, extraEntries, indexGitlink, SubmodulePreview, useSubmoduleChange, useSubmoduleWork, workOf, type ChangeRead, type SubmoduleReader, type WorkRead } from "../changes/SubmodulePreview";
-import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
+import { FileControls, FileFailure, gitlinkReason, runFileAction } from "../changes/FileControls";
+import { changeOf, EXTRA_ID, extraEntries, indexGitlink, SubmodulePreview, useSubmoduleChangeRead, useSubmoduleWork, workOf, type ChangeRead, type SubmoduleReader, type WorkRead } from "../changes/SubmodulePreview";
+import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, ReasonLine, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
 import { RevertConfirm } from "../changes/RevertConfirm";
 import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, revertUnstagedRefusal, reviewRefusal, type RevertLinesPlan, type RevertUnstagedPlan } from "../changes/revert-text";
 import { CommitTray } from "../commit/CommitTray";
@@ -241,7 +241,8 @@ export type WorkbenchPaneProps = {
   /** Feature 005 plan.md D19: the preview reads, the work state of the shown snapshot, the change of the selected row, and the selected row with only local edits. */
   submodules?: SubmodulePane;
 };
-export type SubmodulePane = { reader: SubmoduleReader; work: WorkRead | null; change: ChangeRead | null; extra: string | null; selectExtra(pathBytes: string | null): void };
+/** `current` is "pending" while an earlier result of the same row stands in for `change` (feature 005 plan.md D20 "Preview equality"). */
+export type SubmodulePane = { reader: SubmoduleReader; work: WorkRead | null; change: ChangeRead | null; current: ChangeRead | null; extra: string | null; selectExtra(pathBytes: string | null): void };
 export type CommitActions = {
   ignore: IgnoreStore;
   onBlame(entry: ChangeEntry): void;
@@ -473,6 +474,8 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
     target: shown.target,
     comparison,
     category,
+    entry: shown.entry ?? undefined,
+    preview: submodules?.current,
     blocked: s.blocked,
     trust: s.trust,
     eligibility: s.eligibility,
@@ -583,7 +586,8 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
             <FileControls
               key={controls.comparison.comparisonId}
               {...controls}
-              reasonId={staging.fileReasonId}
+              // The reason line gets the text one render after the button. Before that, no element holds the ID.
+              reasonId={staging.reasons.some((p) => p.id === staging.fileReasonId && p.text !== null) ? staging.fileReasonId : undefined}
               onReason={staging.onFileReason}
               onSuccess={() => staging.onToolbarSuccess(shown.entry!.entryId)}
             />
@@ -727,13 +731,16 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
   const snapshotId = state.workspace?.snapshotId;
   const extra = shownExtra(submodules, state);
   const work = submodules === undefined ? undefined : { read: submodules.work, snapshotId };
+  // The preview has no comparison heading, so it holds the reason line of the stage controls.
+  // The line keeps its height without a reason, so the list below it does not move (as in the hunk controls).
+  const reasonLine = staging === undefined ? undefined : <ReasonLine parts={staging.reasons} />;
   // Spec FR-074: only a gitlink of the index has a Working tree row. A staged gitlink deletion has none.
   // Feature 004 plan.md D15 "P2 regions": the resolve view replaces the diff of a selected Conflicted entry.
   const view =
     extra !== null ? (
-      <SubmodulePreview path={extra.path} pathBytes={extra.pathBytes} change={null} work={work} reader={submodules!.reader} />
+      <SubmodulePreview path={extra.path} pathBytes={extra.pathBytes} change={null} work={work} reader={submodules!.reader} reasonLine={reasonLine} />
     ) : submodules !== undefined && isSubmoduleRow(entry) ? (
-      <SubmodulePreview path={entry.path} pathBytes={entry.pathBytes} change={submodules.change ?? "pending"} work={indexGitlink(entry) ? work : undefined} reader={submodules.reader} />
+      <SubmodulePreview path={entry.path} pathBytes={entry.pathBytes} change={submodules.change ?? "pending"} work={indexGitlink(entry) ? work : undefined} reader={submodules.reader} reasonLine={reasonLine} />
     ) : entry?.category === "conflicted" && staging !== undefined && state.workspace !== null ? (
       <ResolveView
         entry={entry}
@@ -1012,7 +1019,22 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   }, [state.selection?.entryId, state.entries]);
   // The service runs one `readSubmoduleChange` per window, so only the shown view sends its source.
   const submoduleSource = selectedSubmodule === null || state.workspace === null || view !== "commit" ? null : { kind: "workspace" as const, snapshotId: state.workspace.snapshotId, entryId: selectedSubmodule.entryId };
-  const submoduleChange = useSubmoduleChange(submoduleReader, submoduleSource, selectedSubmodule === null ? null : `${selectedSubmodule.category}:${selectedSubmodule.pathBytes}`);
+  // Feature 005 plan.md D20 "Preview equality": another ID sends both reads again, one time per selected entry ID. An entry ID names one entry of one snapshot.
+  const [retried, setRetried] = useState<string | null>(null);
+  const retryKey = selectedSubmodule?.entryId ?? null;
+  if (retried !== null && retried !== retryKey) setRetried(null);
+  const { read: submoduleChange, fresh: submoduleFresh } = useSubmoduleChangeRead(submoduleReader, submoduleSource, selectedSubmodule === null ? null : `${selectedSubmodule.category}:${selectedSubmodule.pathBytes}`, retryKey !== null && retried === retryKey ? 1 : 0);
+  const submoduleCurrent: ChangeRead | null = submoduleFresh ? submoduleChange : "pending";
+  const gitlinkComparison = (() => {
+    const shown = shownComparison(state, undefined).comparison;
+    return shown !== null && shown.gitlink !== undefined && state.capability?.comparisonId === shown.comparisonId ? shown : null;
+  })();
+  const gitlinkStale = gitlinkComparison !== null && gitlinkReason(gitlinkComparison, submoduleCurrent) === "stale";
+  useEffect(() => {
+    if (!gitlinkStale || retryKey === null || retried === retryKey) return;
+    setRetried(retryKey);
+    requests.selectEntry(retryKey);
+  }, [gitlinkStale, retryKey]);
   const filterRef = useRef<HTMLInputElement>(null);
   const filesFilterRef = useRef<HTMLInputElement>(null);
   // Feature 005 plan.md D15 keyboard map: Ctrl+F focuses Filter files while the focus is in Changed files or in the History diff.
@@ -1855,7 +1877,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       onOpenSubmodule: openSubmodule,
       submoduleReason: (pathBytes) => openSubmoduleReason(submoduleUpdate.rows, pathBytes, parents.length),
     },
-    submodules: { reader: submoduleReader, work: submoduleWork, change: submoduleChange, extra: extraRow, selectExtra: setExtraRow },
+    submodules: { reader: submoduleReader, work: submoduleWork, change: submoduleChange, current: submoduleCurrent, extra: extraRow, selectExtra: setExtraRow },
   };
   // Feature 004 plan.md D16 "Geometry": the Commit view holds the commit workspace without the references sidebar.
   const commitProfile = commitViewProfile(profile, client.width);

@@ -383,7 +383,7 @@ describe("runFileAction", () => {
   for (const [category, fileAction, reason, label] of [
     ["unstaged", "size", "size", "Stage file"],
     ["conflicted", "state", "state", "Stage file"],
-    ["staged", "submodule", "submodule", "Unstage file"],
+    ["staged", "mode", "mode", "Unstage file"],
   ] as const) {
     test(`a ${fileAction} decision in ${category} sends nothing and returns "${label} is unavailable: <reason>"`, async () => {
       const { runFileAction } = await fileControls();
@@ -393,6 +393,53 @@ describe("runFileAction", () => {
       expect(s.calls).toEqual([]);
     });
   }
+
+  // Feature 005 plan.md D20 "Refusal texts".
+  const GITLINK_TEXT = "Arbareto stages and unstages only a moved submodule commit. Use Git in a terminal for this change.";
+  for (const [name, category, fields, text] of [
+    ["a staged gitlink", "staged", { submodule: "SC..", modes: ["160000", "160000", "160000"] }, GITLINK_TEXT],
+    ["a deleted gitlink without an S field", "unstaged", { modes: ["160000", "160000", "000000"] }, GITLINK_TEXT],
+    ["an untracked nested repository", "untracked", {}, LIMITATION_TEXT.submodule],
+  ] as const) {
+    test(`reason submodule on ${name} refuses with "${text}"`, async () => {
+      const { runFileAction } = await fileControls();
+      const s = setup({ category, entry: fields, comparison: comparison("submodule") });
+      const label = category === "staged" ? "Unstage file" : "Stage file";
+      expect(await runFileAction(s.props)).toEqual({ state: "refused", text: `${label} is unavailable: ${text}` });
+      expect(s.calls).toEqual([]);
+    });
+  }
+
+  test(`reason submodule-unborn refuses with the D20 text`, async () => {
+    const { runFileAction } = await fileControls();
+    const s = setup({ entry: { submodule: "SC..", modes: ["160000", "160000", "160000"] }, comparison: comparison("submodule-unborn") });
+    expect(await runFileAction(s.props)).toEqual({ state: "refused", text: "Stage file is unavailable: The submodule branch has no commit yet. Commit inside the submodule first." });
+  });
+
+  // Plan D20 "Preview equality": the comparison `gitlink.oid` must equal the preview `new`.
+  const HEAD = "c".repeat(40);
+  const previewOf = (newId: string) => ({ requestId: crypto.randomUUID(), state: "succeeded", result: { pathBytes: "bGli", path: "lib", kind: "submodule", old: "a".repeat(40), new: newId, state: { state: "single" }, limited: false } });
+  for (const [name, preview, text] of [
+    ["a pending preview", "pending", "Arbareto reads the Git facts."],
+    ["no preview", null, "Arbareto reads the Git facts."],
+    ["another new ID", previewOf("d".repeat(40)), "The comparison or the staged scope changed. Arbareto reads it again."],
+    ["a failed preview", { requestId: crypto.randomUUID(), state: "failed", code: "GIT_FAILED" }, "The comparison or the staged scope changed. Arbareto reads it again."],
+  ] as const) {
+    test(`a moved gitlink with ${name} refuses with "${text}"`, async () => {
+      const { runFileAction } = await fileControls();
+      const s = setup({ comparison: { ...comparison("stage"), gitlink: { oid: HEAD } }, preview });
+      expect(await runFileAction(s.props)).toEqual({ state: "refused", text: `Stage file is unavailable: ${text}` });
+      expect(s.calls).toEqual([]);
+    });
+  }
+
+  test(`a moved gitlink with an equal preview new ID sends one applyFile stage`, async () => {
+    const { runFileAction } = await fileControls();
+    const s = setup({ comparison: { ...comparison("stage"), gitlink: { oid: HEAD } }, preview: previewOf(HEAD) });
+    void runFileAction(s.props);
+    await flush();
+    expect(s.calls.map((c) => [c.operation, c.payload.direction])).toEqual([["applyFile", "stage"]]);
+  });
 
   test(`an accepted decision sends one applyFile and returns succeeded after the service succeeds`, async () => {
     const { runFileAction } = await fileControls();

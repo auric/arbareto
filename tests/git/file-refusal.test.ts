@@ -5,7 +5,7 @@
 // The checkpoint observer is the T110 seam `hunkCheckpoint`: 5 after the Git step, 11 after the final recheck, 13 after publication.
 
 import { describe, expect, spyOn } from "bun:test";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { APPROVAL_LIFETIME_MS } from "../../src/contracts/limits";
@@ -287,7 +287,19 @@ describe("refused entries (contract §4 \"File staging\", §9)", () => {
   const REFUSED: Refused[] = [
     { label: "type", repo: f05("type"), path: () => "type-change.txt", category: "staged", reason: "type", trust: true },
     { label: "staged-symlink", repo: f05("staged-symlink"), path: () => "new-link", category: "staged", reason: "symlink", trust: true },
-    { label: "gitlink", repo: f05("gitlink"), path: () => "sub-moved", category: "unstaged", reason: "submodule", trust: true },
+    // Feature 005 FR-080: Stage file stages a moved gitlink (`sub-moved`) and still refuses a deleted one.
+    {
+      label: "deleted-gitlink",
+      repo: () => {
+        const f = f05("deleted-gitlink")();
+        rmSync(join(f.repo, "sub-same"), { recursive: true, force: true });
+        return f;
+      },
+      path: () => "sub-same",
+      category: "unstaged",
+      reason: "submodule",
+      trust: true,
+    },
     // `ls-files -o` and status list a nested repository as its folder name with a final `/` (fixture facts).
     { label: "nested", repo: f05("nested"), path: (b) => b.facts.repos.super!.untracked[0]!, category: "untracked", reason: "submodule", trust: true },
     { label: "lfs", repo: f05("lfs"), path: () => "asset.psd", category: "unstaged", reason: "LFS", trust: true },

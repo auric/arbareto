@@ -393,6 +393,7 @@
             "type",
             "symlink",
             "submodule",
+            "submodule-unborn",
             "index-flag",
             "path",
             "rename",
@@ -429,6 +430,19 @@
               "type": "null"
             }
           ]
+        },
+        "gitlink": {
+          "type": "object",
+          "properties": {
+            "oid": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            }
+          },
+          "required": [
+            "oid"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -488,6 +502,7 @@
             "type",
             "symlink",
             "submodule",
+            "submodule-unborn",
             "index-flag",
             "path",
             "rename",

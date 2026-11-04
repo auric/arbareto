@@ -1179,12 +1179,15 @@ export const Comparison = z
     support: SupportValue.nullable(),
     fileAction: FileActionValue,
     remedy: FileRemedy,
+    // Feature 005 contract Δ4 and data-model §17: the submodule HEAD that Stage file of a moved gitlink records.
+    gitlink: z.strictObject({ oid: ObjectId }).optional(),
   })
   .refine(
     (c) =>
       (c.completeness.state === "complete" || (c.completeness.state === "limited" && c.completeness.code === "OUTPUT_LIMIT")) &&
       (c.hunks.length === 0 || c.support === "supported") &&
-      c.hunks.every((h, i) => h.ordinal === i),
+      c.hunks.every((h, i) => h.ordinal === i) &&
+      (c.gitlink === undefined || c.fileAction === "stage"),
   )
   .meta({ title: "Comparison" });
 

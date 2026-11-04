@@ -1124,6 +1124,46 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
     });
   });
 
+  // SC-018: git-for-each-ref(1) gives a ref whose tip is the commit as a ref that contains it.
+  const fixCase = (name: string, fn: () => Promise<void>) => caseTest("T146", name, SHELL, fn, TIMEOUT_MS);
+  const containsIn = (service: Service, dir: string) => callsSince(service).filter((c) => inDir(dir)(c) && commandOf(c.arguments)[1] === "--contains=HEAD");
+
+  fixCase("a branch row at its HEAD commit starts no --contains read, so it starts as many Git processes as a detached row", async () => {
+    const w = markWorld("t146-count", { onmain: SPECS.equal, detached: SPECS.detached });
+    await withTree(w, "t146-count", async (service) => {
+      const { r } = await reviewedTree(service, w);
+      const per = (path: string) => {
+        const dir = join(w.sup, path);
+        return { processes: callsSince(service).filter(inDir(dir)).length, contains: containsIn(service, dir).length };
+      };
+      const got = { outcome: outcome(r.response), marks: markByPath(r), onmain: per("onmain"), detached: per("detached") };
+      console.log(`OBSERVATION T146: ${JSON.stringify(got)}`);
+      expect({ outcome: got.outcome, marks: got.marks, onmain: got.onmain.contains, detached: got.detached.contains }).toEqual({
+        outcome: SUCCEEDED,
+        marks: { onmain: SPECS.equal.want, detached: SPECS.detached.want },
+        onmain: 0,
+        detached: 1,
+      });
+      expect(got.onmain.processes).toBe(got.detached.processes);
+    });
+  });
+
+  // The record names the HEAD branch with `*`, so the mark keeps its upstream and track. Only the object ID decides `held`.
+  fixCase("a mark record with * at another object ID keeps the record mark and starts one --contains read", async () => {
+    const w = markWorld("t146-moved", { onmain: SPECS.equal });
+    const dir = join(w.sup, "onmain");
+    const other = treeGit(w, dir, ["rev-parse", "HEAD~1"]).trim();
+    await withTree(w, "t146-moved", async (service) => {
+      service.runner.inject.stdout = (c) => (isTrackCall(c.arguments) && inDir(dir)(c) ? new TextEncoder().encode(`refs/heads/main\0${other}\0refs/remotes/origin/main\0ahead 5\0*\n`) : undefined);
+      const { r } = await reviewedTree(service, w);
+      expect({ outcome: outcome(r.response), marks: markByPath(r), contains: containsIn(service, dir).map((c) => c.exit?.exitCode ?? null) }).toEqual({
+        outcome: SUCCEEDED,
+        marks: { onmain: onMain(counts(5, 0)) },
+        contains: [0],
+      });
+    });
+  });
+
   const FAILURES: [label: string, code: string, arm: (service: Service, hit: (c: Call) => boolean) => void][] = [
     ["exit 128", "GIT_FAILED", (service, hit) => void (service.runner.inject.exit = (c) => (hit(c) ? 128 : undefined))],
     // `spawn` reads the injected deadline synchronously after the start check of each call.
@@ -1131,37 +1171,23 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
     ["the stderr bound", "OUTPUT_LIMIT", (service, hit) => void (service.runner.inject.stderr = (c) => (hit(c) ? new Uint8Array(UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION) : undefined))],
     ["a runner refusal", "PROCESS_OWNERSHIP_FAILED", (service, hit) => void (service.runner.inject.refuse = (c) => (hit(c) ? "PROCESS_OWNERSHIP_FAILED" : undefined))],
   ];
-  // Contract Δ12 "Branch marks": these two exits close the operation Job. Only the deadline gives a second `--contains` read.
-  const CLOSING = new Set(["DEADLINE", "OUTPUT_LIMIT"]);
   for (const [label, code, arm] of FAILURES) {
-    const closing = CLOSING.has(code);
-    const rerun = closing ? ", and the --contains read that the Job close ends runs once more" : "";
     // Contract §5 "Total unexpected diagnostic output": the 4 MiB bound counts per operation, so each later exit of the review carries `diagnosticLimit`.
     const bound = code === "OUTPUT_LIMIT";
-    const end = bound ? "the review fails OUTPUT_LIMIT" : `gives that row unread ${code}${rerun}, and the review succeeds with every row and the other mark`;
-    markCase(`${label} on the mark read of one row ${bound ? `ends the --contains read, which runs no second time, and ${end}` : end}`, async () => {
+    const end = bound ? "the --contains read after it, and the review fails OUTPUT_LIMIT" : `gives that row unread ${code}, one --contains read runs after it, and the review succeeds with every row and the other mark`;
+    markCase(`${label} on the mark read of one row ${bound ? `carries over to ${end}` : end}`, async () => {
       const name = `t139-${code.toLowerCase().replaceAll("_", "-")}`;
       const w = markWorld(name, { ahead: SPECS.ahead, equal: SPECS.equal });
       await withTree(w, name, async (service) => {
         const dir = join(w.sup, "equal");
-        const isContains = (c: Call) => inDir(dir)(c) && commandOf(c.arguments)[1] === "--contains=HEAD";
-        // The first `--contains` read of the row stays in the operation Job until the Job close: its stdout waits on a held drain.
-        let first: readonly string[] | null = null;
-        const isFirst = (c: Call) => closing && isContains(c) && (first ??= c.arguments) === c.arguments;
-        service.runner.inject.stdout = (c) => (isFirst(c) ? new TextEncoder().encode("refs/heads/main\n") : undefined);
-        const release = service.runner.pauseStdout(isFirst);
         arm(service, (c) => isTrackCall(c.arguments) && inDir(dir)(c));
-        try {
-          const { r } = await reviewedTree(service, w);
-          const contains = callsSince(service).filter(isContains).map((c) => c.exit?.exitCode ?? null);
-          expect({ outcome: outcome(r.response), rows: r.rows.map((row) => row.path), marks: markByPath(r), contains }).toEqual(
-            bound
-              ? { outcome: { state: "failed", code }, rows: [], marks: {}, contains: [null] }
-              : { outcome: SUCCEEDED, rows: ["ahead", "equal"], marks: { ahead: SPECS.ahead.want, equal: { state: "unread", ref: "refs/heads/main", code } }, contains: closing ? [null, 0] : [0] },
-          );
-        } finally {
-          release();
-        }
+        const { r } = await reviewedTree(service, w);
+        const contains = containsIn(service, dir).map((c) => c.exit?.exitCode ?? null);
+        expect({ outcome: outcome(r.response), rows: r.rows.map((row) => row.path), marks: markByPath(r), contains }).toEqual(
+          bound
+            ? { outcome: { state: "failed", code }, rows: [], marks: {}, contains: [0] }
+            : { outcome: SUCCEEDED, rows: ["ahead", "equal"], marks: { ahead: SPECS.ahead.want, equal: { state: "unread", ref: "refs/heads/main", code } }, contains: [0] },
+        );
       });
     });
   }

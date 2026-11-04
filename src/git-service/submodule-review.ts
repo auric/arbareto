@@ -681,9 +681,9 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     };
 
     // Feature 004 contract Δ12 "Branch marks". A failed read gives `unread`. Only an abort and the operation stderr bound end the review.
-    // `closed`: the deadline of the read closed the operation Job (contract §5 "Deadline outcomes"). The stderr bound counts per operation, so every later exit carries `diagnosticLimit`.
-    const markOf = async (location: { worktree: string }, rowId: string, headRef: string | null): Promise<{ mark: SubmoduleBranch; closed: boolean }> => {
-      const done = (mark: SubmoduleBranch, closed = false) => ({ mark, closed });
+    // `held`: git-for-each-ref(1) gives the HEAD ref at the HEAD commit, so that ref contains HEAD.
+    const markOf = async (location: { worktree: string }, rowId: string, headRef: string | null, head: string): Promise<{ mark: SubmoduleBranch; held: boolean }> => {
+      const done = (mark: SubmoduleBranch, held = false) => ({ mark, held });
       if (headRef === null) return done({ rowId, state: "detached" });
       // Research.md R31: Git gives a HEAD outside `refs/heads/` no upstream.
       if (!headRef.startsWith("refs/heads/")) return done({ rowId, state: "branch", ref: headRef, upstream: null, track: { state: "none" } });
@@ -692,7 +692,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const step = await runRead(runner, t, submoduleTrackingArgs(location, headRef), out);
       if (t.signal.aborted) throw new Halt({ stop: "canceled" });
       if ("refused" in step) return done(unread(step.refused));
-      if (step.exit.deadline !== undefined) return done(unread("DEADLINE"), true);
+      if (step.exit.deadline !== undefined) return done(unread("DEADLINE"));
       if (step.exit.diagnosticLimit) return done(unread("OUTPUT_LIMIT"));
       if (out.limited) return done(unread("OUTPUT_LIMIT"));
       if (step.exit.exitCode !== 0) return done(unread("GIT_FAILED"));
@@ -701,7 +701,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       // `%(HEAD)` marks the record of the current HEAD. Without it, HEAD moved after the `symbolic-ref` read.
       const entry = entries.find((e) => e.current && !e.invalidUtf8 && `refs/heads/${e.name}` === headRef);
       if (entry === undefined) return done(unread("STATE_UNKNOWN"));
-      return done({ rowId, state: "branch", ref: headRef, upstream: entry.upstream, track: entry.track });
+      return done({ rowId, state: "branch", ref: headRef, upstream: entry.upstream, track: entry.track }, entry.objectId === head);
     };
 
     // `markRow`: the row ID of a checked-out row whose branch mark this read adds (contract Δ12 "Branch marks").
@@ -711,16 +711,15 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       let refHeld: boolean | null = null;
       if (head !== null) {
         const marking = readMarks && markRow !== null && "worktree" in location;
-        // Both reads settle before the step ends, so no process outlives it.
-        const [refs, mark] = await Promise.allSettled([git(submoduleHeadRefArgs(location)), marking ? markOf(location, markRow, headRef) : null]);
-        if (refs.status === "rejected") throw refs.reason;
-        if (mark.status === "rejected") throw mark.reason;
-        let held = refs.value;
-        // The Job close of the mark read ends the `--contains` read without an exit code, so that read gives no answer.
-        if (held.code === null && mark.value?.closed === true) held = await git(submoduleHeadRefArgs(location));
-        if (held.code !== 0) throw failed("GIT_FAILED");
-        refHeld = held.out.length > 0;
-        if (mark.value !== null) marks.set(markRow!, mark.value.mark);
+        const mark = marking ? await markOf(location, markRow, headRef, head) : null;
+        if (mark !== null) marks.set(markRow!, mark.mark);
+        if (mark?.held === true) refHeld = true;
+        else {
+          // The stderr bound counts per operation, so after a bound on the mark read this read fails the review.
+          const held = await git(submoduleHeadRefArgs(location));
+          if (held.code !== 0) throw failed("GIT_FAILED");
+          refHeld = held.out.length > 0;
+        }
       }
       const repo = { location, head, headRef, gitDir, hooks, entries, refHeld };
       observed.push({ repo: { ...repo, entries: entries.map((e) => Buffer.from(e.keyValueBytes).toString("base64")) } });

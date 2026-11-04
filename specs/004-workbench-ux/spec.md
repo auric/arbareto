@@ -70,6 +70,14 @@ The user approved the mockup boards Main, Collapsed, Dark, and BranchMarks of th
 - Q: Does a second read after the rows load the branch marks? → A: No. The list review reads the marks, so rows and marks change together (FR-110). This is a main-session default.
 - Q: Why do nested rows show after all top rows, not under their parent? → A: The review lists each level after the level above it. This is a defect of FR-077. The review MUST list the rows depth first (FR-077, contract Δ12).
 
+### Session 2026-11-04
+
+- Q: Must the Submodules list read several submodules at once before v0.1.0? → A: User decision 2026-11-04: yes. The list review reads up to 8 submodules at the same time, the 005 bound (FR-112). On packaged build ba095f87, 256 checked-out submodules take about 100 s before the list shows. 20 submodules take about 10 s.
+- Q: Does Update submodules also read 8 at once? → A: User decision 2026-11-04: yes, before v0.1.0. The preflight and the level reads read 8 at once. The update steps stay one at a time (FR-112, FR-113, SC-021).
+- Q: Do the reconciliation reads also read 8 at once? → A: User decision 2026-11-04: yes, before v0.1.0 (FR-113).
+- Q: How fast must the list show? → A: SC-020, from research.md R31 "List time". The user accepted it on 2026-11-04, before the packaged run.
+- Q: How fast must Update all start its first step? → A: SC-021, from research.md R31 "Update time". The user approved this budget with the update decision.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows a read-only references sidebar and a docked commit panel. Feature 002 shows the full history of all branches. Feature 003 adds Fetch, Pull, Push, Clone, and the conflict actions Abort, Continue, Skip, and Mark resolved. This feature adds the daily branch and commit work around them: switch branches, run branch actions, merge, rebase, commit with fine staging, resolve conflicted files, and manage worktrees. It also edits Git settings, makes trust prompts calmer, and makes the submodule update a single click. Git Extensions is the reference for the functions. The design follows the mockup boards of 2026-10-16.
@@ -303,6 +311,7 @@ A developer opens a repository with many submodules in folders. The Submodules g
 4. **Given** a submodule on the branch "main" one commit ahead of its upstream. **When** the group shows. **Then** the row shows "main" and "↑1 ↓0".
 5. **Given** a submodule with a detached HEAD. **When** the group shows. **Then** the row shows "no branch" and no count.
 6. **Given** a submodule branch whose upstream no longer exists. **When** the group shows. **Then** the row shows the gone mark with the tooltip "The upstream <upstream> no longer exists.".
+7. **Given** a repository with 20 checked-out submodules. **When** I open it. **Then** the Submodules group shows every row with its branch mark within the SC-020 time.
 
 ---
 
@@ -526,6 +535,8 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-109**: A submodule row that the review reads as checked out MUST show a branch mark. The mark MUST show the branch name, or "no branch" for a detached HEAD. A branch with an upstream MUST also show the 003 FR-019 count, "↑<ahead> ↓<behind>" or "=". A gone upstream MUST show the 005 FR-064 gone mark. A branch without an upstream MUST show no count. Its accessible name MUST state "No upstream" (FR-008).
 - **FR-110**: The list review MUST read the branch marks. The read MUST start no repository program and MUST NOT write an index. The counts MUST come from the untranslated `for-each-ref` track output, never from Git message text. A failed mark read MUST NOT fail the list or the update. The row then shows no count, and its accessible name states "counts are unavailable: <code>". One exception applies: the operation stderr bound (001 contract §6) fails the whole review with `OUTPUT_LIMIT`. The marks MUST NOT change the update token. A scoped review MUST NOT read marks.
 - **FR-111**: Above 1,024 folder rows, the group MUST show the submodule rows without folder rows. Each nested row MUST stay below its parent row. One line MUST state "The submodule paths have more than 1,024 folders, so the group shows no folder rows."
+- **FR-112**: The list review MUST read up to 8 submodules at the same time. A one-at-a-time review MUST give the same rows, row order, refusals, branch marks, and update token. A failed read MUST give the result of the first failed row in row order. When a deadline closes the operation Job (001 contract §5), each other read that the close ended MUST run again. Cancel MUST end every read, and no Git process of the review MUST run after its response. The update preflight and its level reads MUST also read up to 8 submodules at once, with the same equality. A scoped review MUST read one submodule at a time. Each update step MUST run alone.
+- **FR-113**: Update submodules MUST run each update step alone and in row order. The steps are clone, connect, checkout, register, fetch, and the fallback fetch. The checks of a step MUST run right before it. Only the reads of one level read MUST run at the same time. A level read MUST run after the step of its parent row. It MUST end before the first step of a nested row. The reconciliation reads after the last step MUST also read up to 8 rows at once. They MUST apply in row order.
 
 #### Spell check (moved to a later feature)
 
@@ -584,6 +595,8 @@ FR-083 and FR-084 move to a later feature (Clarifications, 2026-10-19). Feature 
 - **SC-017**: In every merge and rebase conflict fixture, the band offers Resolve conflicts exactly while a complete status read holds `u` records, and Continue otherwise. The Conflicted section lists exactly the `u` record paths. From the band and from the dock, the keyboard reaches the first conflicted row in one activation, and the focus lands on it. During the operation, the Commit view shows no visible line of the FR-105 reason, and each unavailable control gives it as its accessible description.
 - **SC-018**: On packaged Windows, warm, median of 10, with 20 and with 256 checked-out submodules: the time to the last branch mark with every submodule on a branch with an upstream, minus the time to the last row of the same fixture with every HEAD detached, is at most 30 ms per submodule row. In every mark fixture, each mark equals the `git status --porcelain=v2 --branch` headers of that submodule. For a HEAD on a ref outside `refs/heads/`, the status header gives no ref, so the research R31 fact is the oracle. WSL records the same difference without a budget.
 - **SC-019**: On packaged Windows, with 256 submodule rows and 1,024 open folder rows, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, and Enter on a folder keep the feature 001 SC-005 targets: 95% of inputs show a response within 100 ms, and every input within 500 ms.
+- **SC-020**: Measure on packaged Windows, warm, median of 10, with the SC-018 twins of 20 and 256 checked-out submodules. With 20 rows, Enter on the recent entry to the last branch mark takes at most 6.5 s. With 256 rows, it takes at most 55 s. Both limits apply to the branch twin and to the detached twin. SC-018 still holds. WSL Ubuntu-26.04 records the list time of 20 rows without a budget.
+- **SC-021**: Measure on packaged Windows, warm, median of 10 counted runs after one warm-up run. Use the moved twins of 20 and 100 checked-out submodules. In each twin, every gitlink is one branch ahead of HEAD, and the clone holds it. Measure from the Update all click to the first animation frame with "Updating 1 of <n>" in the group header. This time is at most 10 s with 20 rows. It is at most 36 s with 100 rows. Each update step runs alone. WSL Ubuntu-26.04 records the same time for 20 rows without a budget.
 
 ## Assumptions
 

@@ -783,7 +783,114 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 - SC-018 basis: +18 ms measured unpackaged, plus about 5 ms for the packaged process path (005 research "Packaged cost"). The budget is 30 ms per row, set before the packaged test. A miss stays a failure, unless the user approves a changed target (constitution VII).
 - WSL: record only. Estimate +40 ms to +170 ms per row (168 ms per process in 005 research). Today's WSL review costs about 1 s or more per checked-out row.
 - SC-019 keeps the 001 SC-005 targets with 256 rows and 1,024 open folders. A packaged probe gave a p95 of 184 ms with all rows mounted, so the group mounts only the rows in view above 200 rows (T147). T144 decides.
-- Context, not in scope: the review costs about 250 ms per checked-out row on Windows. 256 rows take about 1 minute before the tree shows.
+- SC-020 and SC-021: see "List time" and "Update time" below.
+
+**List time (user decision 2026-11-04)**
+
+- User decision 2026-11-04: the list review reads up to 8 submodules at the same time, before v0.1.0 (spec FR-112). The user accepted SC-020: at most 6.5 s for 20 rows and at most 55 s for 256 rows. The values are medians of 10 for both twins.
+- Before the change, packaged build ba095f87 gave 10.3 s for 20 rows and 107.8 s for 256 rows. These are SC-018 branch medians.
+- Source: the design of 2026-11-04 (local scratch `list-parallel-plan`). Unpackaged service harness, Windows 11 10.0.26300, 16 logical processors, Git 2.56.0.windows.2, T146 code. The prototype is evidence only.
+
+| Read per checked-out row (256 rows, T146 code) | Processes | Mean wall each |
+| --- | --- | --- |
+| `rev-parse --verify -q HEAD` | 1 | 40.7 ms |
+| `symbolic-ref -q HEAD` | 1 | 45.5 ms |
+| `rev-parse --absolute-git-dir` | 1 | 40.0 ms |
+| `rev-parse --git-path hooks` | 1 | 45.6 ms |
+| `config list --show-scope --show-origin -z` | 1 | 40.3 ms |
+| mark `for-each-ref` (branch row) or `for-each-ref --contains=HEAD` (detached row) | 1 | 45.3 ms or 45.4 ms |
+| `cat-file --batch-check` (target present) | 1 | 44.8 ms |
+| `ls-tree -r -z --full-tree` | 1 | 41.7 ms |
+| Total | 8 | 344 ms of process time; wall 371.7 ms (branch) and 368.7 ms (detached) per row |
+
+- Phases at 20 rows, one at a time: rows 7.2 to 7.9 s, and the walk 1.6 to 1.8 s. The kept-directory walk ran 37 `rev-parse`: 20 kept directories and 17 folders between them. Programs took 0.35 s, and the rest about 0.4 s. At 256 rows the walk stops at its first folder. The 256 rows fill the 001 §5 bound.
+- The cost is process starts, not Git work. Every read is one small fixed read.
+
+A/B, unpackaged, median of 3 counted reviews after one warm-up, in ms. "One rev-parse" merges the Git directory read and the hooks read. "Walk skip" skips the walk read in a row Git directory.
+
+| 20 rows | Run 1 branch | Run 1 detached | Run 2 branch | Run 2 detached | Git processes | Peak at once |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 lane (T146 code) | 9,523 | 9,750 | 9,657 | - | 205 | 3 |
+| 8 lanes | 4,657 | - | 4,814 | - | 205 | 8 |
+| 8 lanes, one rev-parse | 4,440 | 5,325 | 4,692 | 3,928 | 185 | 8 |
+| 8 lanes, one rev-parse, walk skip | - | - | 3,770 | 3,032 | 165 | 8 |
+| 4 lanes, one rev-parse | 4,938 | - | 5,112 | - | 185 | 4 |
+| 16 lanes, one rev-parse | 4,453 | - | 3,741 | - | 185 | 16 |
+
+| 256 rows | Branch | Detached | Git processes | Peak at once | Mean process wall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 lane (T146 code) | 95,002 | 94,392 | 2,056 | 3 | 45.7 ms |
+| 8 lanes | 29,608 | - | 2,056 | 8 | 90.6 ms |
+| 8 lanes, one rev-parse | 26,904 | 33,034 | 1,800 | 8 | 92.1 ms and 119.1 ms |
+| 8 lanes, one rev-parse, walk skip | 26,601 | 35,505 (runs 32,850 to 40,217) | 1,800 | 8 | 92.1 ms |
+| 4 lanes, one rev-parse | 35,895 | - | 1,800 | 4 | 66.4 ms |
+| 16 lanes, one rev-parse | 32,076 | - | 1,800 | 16 | 225.6 ms |
+
+- Phases at 20 rows, run 2, branch: 1 lane gave rows 7,930, walk 1,779, programs 349. 8 lanes with both cuts gave rows 2,333, walk 816, programs 345. At 256 rows, 8 lanes with one rev-parse gave rows 21,595, walk 1, programs 4,312.
+- Equality: the result digest covers rows without IDs, branches by path, programs, refusals, and hosts. It was the same for every configuration of a fixture in each run. No read ran again, because no deadline occurred.
+- Gain: 20 rows from 9.5 to 9.7 s down to 3.0 to 3.8 s. 256 rows from 95 s down to 26.6 to 35.5 s.
+- Lanes: 8 is the best measured value. 4 lanes are 33% slower at 256 rows. 16 lanes are 19% slower at 256 rows and equal or faster at 20 rows. This matches 005 R18.
+- Throughput at 8 lanes: about 12 ms per process. The floor is the process start, as in 005 R18 (13 ms).
+- Drift: the harness ran the twins one after the other. In the 256 run every detached read was about 25% slower. This includes `rev-parse --verify`, which does not depend on the HEAD kind. So it is host drift. The packaged SC-018 case alternates the twins.
+- Merge, exact: `rev-parse --absolute-git-dir --git-path hooks`. builtin/rev-parse.c `cmd_rev_parse` handles argv in order, and each option prints one line. Probe of 2026-11-04: the two lines equal the separate outputs, also with a relative `core.hooksPath` and the kept-directory form. A missing Git directory exits 128, as before.
+- Merge, exact: no walk `rev-parse` in a Git directory that a row read printed. Git accepts a gitfile only after `is_git_directory` on its target (setup.c `read_gitfile_gently`). The walk read with `--git-dir=<folder>` applies the same check (setup.c `repo_discover_explicit_gitdir`). Neither path checks ownership. Source read from git master on 2026-11-04.
+- Rejected: parallel reads inside one row. All 8 lanes are busy at 20 and 256 rows, so a split adds no throughput. It adds sibling Job-close cases inside each row.
+- Rejected: 16 lanes. They give no stable gain and twice the load beside the 005 marks read.
+- Rejected: `rev-parse --verify -q HEAD` in the merged process. `--verify` exits 1 after the other lines print. Then the exit code no longer names one read.
+- Rejected: `cat-file --batch-check` with `HEAD` instead of `rev-parse --verify`. It also tests object presence and type, so the meaning differs.
+- Rejected: no `cat-file` when HEAD equals the target. A HEAD at a tag object then changes `local` and `unknownNested`. No source proves the case away.
+- Rejected: a second operation for the reads. It needs a new operation and about 4 times the code.
+- Rejected: a parallel walk with a look-ahead. It can pass the §5 bound.
+- Job close: each operation has one Job with kill-on-close only and no process count limit. A deadline closes the Job, and each other running read ends with `exitCode` null (001 §6 `exit`). The 005 `readSubmoduleWork` already runs 8 processes in one read operation, packaged (005 R18 T108). So no Rust change.
+- Memory: at most 8 output collectors run, so the worst case is 8 x 32 MiB of `ls-tree` bytes. The read-ahead keeps parsed results only.
+- SC-020 basis: the unpackaged worst medians with all changes are 4.4 s (20 rows) and 35.5 s (256 rows). Add a factor of 1.1 for the shell path (005 R18 T108). The 005 marks read beside the list adds 0.7 s at 20 rows and 8.2 s at 256 rows. These values are the 005 T108 packaged medians. Open and render add 0.4 s. Estimate: 5.9 s at 20 rows and 47.7 s at 256 rows. The budget is 6.5 s and 55 s, set before the packaged test.
+- SC-018 still holds: both twins start 7 processes per row. The packaged alternating case decides.
+- WSL estimate, not measured: T141 gave 2,205 ms per row for 8 detached rows. 005 R18 gave 49 to 57 ms per Git process at 8 at a time. Estimate: 20 rows about 9 to 12 s, 256 rows about 100 s. T151 records the real value. No budget.
+- Not in scope: the program listing stays in row order. It takes 4.3 s at 256 rows and 0.35 s at 20 rows. The rowless directories also stay in row order.
+
+**Update time (user decision 2026-11-04)**
+
+- User decision 2026-11-04: Update submodules reads up to 8 rows at the same time, before v0.1.0 (spec FR-112, FR-113). This applies to the preflight, the level reads, and the reconciliation reads. The update steps stay one at a time.
+- The user accepted SC-021 for the moved twins, median of 10. Update all reaches "Updating 1 of <n>" in at most 10 s at 20 rows. It reaches it in at most 36 s at 100 rows.
+- Flow of Update all: the list review, the admission (`admitUpdate`), and then the preflight (`observeAgain`). The preflight runs a full `observe(...).top()` and compares the binding. With programs, a second preflight follows `confirmRun`. The run takes the rows depth first. For each row it runs the checks, the step, and then the level read of the nested level. The reconciliation (`observeUpdateRows`) reads each row after the last step.
+
+| Git processes per checked-out row | Clean row (action `none`) | Moved row (action `checkout`) |
+| --- | --- | --- |
+| Preflight | 7 (the list review reads, no mark read) | 8 (adds `rev-list -n 1 <target> --not --all`) |
+| Run: checks and gate | 0 | 3 + 3 (`check`: 2 HEAD reads and `--contains`; `gate`: `programsOf`) |
+| Run: step | 0 | 1 (`submodule update --init --no-fetch -- :(literal)<path>`) |
+| Run: level read | 6 | 6 |
+| Reconciliation | 2 | 2 |
+
+Unpackaged, Windows, ms from the `updateSubmodules` request. The list review before it is not included. 20 rows: median of 3 after one warm-up. 100 rows: one counted run after one warm-up, unless the row states otherwise.
+
+| Rows | Fixture | Configuration | Update total | First step | Preflight | Run | Reconciliation | Git processes |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20 | Clean | 1 lane | 16,164 | - | 9,231 | 5,197 | 1,797 | 367 |
+| 20 | Clean | 8 lanes, one rev-parse, walk skip | 9,738 | - | 3,509 | 4,310 | 1,939 | 307 |
+| 20 | Clean | the same and the level pair | 7,962 | - | 3,172 | 3,140 | 1,786 | 307 |
+| 20 | Nested (1 parent, 19 nested rows) | 1 lane | 25,362 | - | 9,721 | 13,755 | 1,981 | 539 |
+| 20 | Nested | all changes | 11,738 | - | 3,882 | 5,999 | 1,857 | 441 |
+| 20 | Moved | 1 lane | 44,388 | 10,414 | 10,154 | 32,443 | 1,801 | 527 |
+| 20 | Moved | all changes | 35,468 | 3,794 | 3,546 | 30,079 | 1,797 | 447 |
+| 100 | Clean | 1 lane | 76,803 | - | 41,754 | 26,203 | 8,843 | 1,727 |
+| 100 | Clean | all changes, median of 3 | 37,616 | - | 12,434 | 16,357 | 8,900 | 1,427 |
+| 100 | Moved | 1 lane | failed, no step | - | 70,529 | - | - | 1,025 |
+| 100 | Moved | all changes | 175,714 | 14,271 | 14,058 | 152,889 | 8,764 | 2,127 |
+| 100 | Moved, Cancel after the first step | all changes, median of 3 | - | 13,051 | 12,823 | - | - | - |
+
+- The prototype kept the reconciliation serial. The reconciliation read-ahead was not measured. Serial, it takes 8.8 s at 100 rows.
+- Preflight: 2.9 times faster at 20 moved rows and 3.4 times faster at 100 clean rows.
+- Run with steps: about 1.5 to 1.6 s per moved row, mostly the step and its checks. The parallel reads cut the run by 7% at 20 rows.
+- Approval expiry: the review token lives 60 s (`APPROVAL_LIFETIME_MS`). The 1-lane moved update of 100 rows failed after 70.5 s of preflight with no step. On that path, `consume` after the preflight gives `APPROVAL_EXPIRED`. The response code was not logged. A later 1-lane run of the same fixture passed. With 8 lanes the 100-row preflight took 14.1 s.
+- Update bound: the review counts each row and each kept-directory folder toward the 001 §5 bound of 256. Each has its own key. The kept Git directory of a row is such a folder. So the twin layout reaches the bound at 2n + 17 > 256 (n >= 120). A flat layout reaches it at n >= 129. With 256 rows the review gives a `limit` refusal, and `updateSubmodules` refuses at admission with `UNSUPPORTED_SUBMODULE`. Measured: the review of the 256-row clean twin gave the reason `limit`.
+- SC-021 metric: measure from the Update all click to the first animation frame with "Updating 1 of <n>". This text shows in the group header. The time covers the list review, the admission, the preflight, and the checks of the first row.
+- SC-021 basis, unpackaged: 20 rows take about 7.9 s. That is the list review (3.4 to 4.1 s) plus 3.8 s to the first step. 100 rows take about 27.6 s. That is the list review (about 14.5 s, an estimate) plus 13.1 s. Apply the shell factor of 1.1, and add 0.4 s for the click and the render. The result is about 9.1 s and 30.8 s. The budget is 10 s and 36 s, fixed before the packaged test.
+- WSL estimate, not measured: the preflight gains about 3 to 4 times, as the list review does. The steps stay serial. At 100 rows the WSL preflight takes about 35 to 50 s, near the 60 s approval lifetime. T155 records the time.
+- Rejected: parallel update steps. Steps write, and a sign-in window can open. The contract allows one update process at a time. Each has its own stall notice and inactivity limit.
+- Rejected: checks read ahead of their step. Contract §12 "Trust" needs the program re-check right before a process. Step 5 "Check" needs HEAD right before the checkout.
+- Rejected: level reads of later rows ahead of earlier steps. A level read must follow the step of its row. `level` shares the observer row and refusal lists, so two level reads at once mix their slices.
+- Rejected: no level read for a row with action `none`. It changes the §12 step 6 rule and needs its own contract decision.
 
 **Open assumptions**
 

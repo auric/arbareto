@@ -680,8 +680,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       return { head: null, headRef };
     };
 
-    // Feature 004 contract Δ12 "Branch marks". A failed read gives `unread` and never fails the review. Only an abort ends it.
-    // `closed`: the deadline or the stderr bound of the read closed the operation Job (contract §5 "Deadline outcomes", §6).
+    // Feature 004 contract Δ12 "Branch marks". A failed read gives `unread`. Only an abort and the operation stderr bound end the review.
+    // `closed`: the deadline of the read closed the operation Job (contract §5 "Deadline outcomes"). The stderr bound counts per operation, so every later exit carries `diagnosticLimit`.
     const markOf = async (location: { worktree: string }, rowId: string, headRef: string | null): Promise<{ mark: SubmoduleBranch; closed: boolean }> => {
       const done = (mark: SubmoduleBranch, closed = false) => ({ mark, closed });
       if (headRef === null) return done({ rowId, state: "detached" });
@@ -693,7 +693,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       if (t.signal.aborted) throw new Halt({ stop: "canceled" });
       if ("refused" in step) return done(unread(step.refused));
       if (step.exit.deadline !== undefined) return done(unread("DEADLINE"), true);
-      if (step.exit.diagnosticLimit) return done(unread("OUTPUT_LIMIT"), true);
+      if (step.exit.diagnosticLimit) return done(unread("OUTPUT_LIMIT"));
       if (out.limited) return done(unread("OUTPUT_LIMIT"));
       if (step.exit.exitCode !== 0) return done(unread("GIT_FAILED"));
       const entries = parseTracking(out.take(), objectFormat);
@@ -1433,7 +1433,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       };
       add(null);
       // Each nested row comes from the level read of a row in `list`, so the walk reaches every row.
-      if (out.length !== list.length) throw new Error("submodule row without its parent row");
+      if (out.length !== list.length) throw failed("STATE_UNKNOWN");
       return out;
     };
 

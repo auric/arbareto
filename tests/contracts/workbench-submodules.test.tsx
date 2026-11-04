@@ -404,6 +404,17 @@ describe("results (FR-081, FR-082)", () => {
     expect(payloads(double, "reviewSubmodules").at(-1)).toEqual({ snapshotId: SNAPSHOT, scope: { path: "vendor/b" } });
   });
 
+  // Plan D15 "Rows at rest": a failed list keeps the rows of the last list beside the failure line.
+  test("a failed list after a run keeps the rows with the failure line, and the failed row keeps Retry and Show output", async () => {
+    const view = await finished();
+    await view.read(fixtureId(8));
+    await answer(view.double.pending("reviewSubmodules"), { requestId: fixtureId(30), state: "failed", code: "DEADLINE" });
+    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe("Arbareto cannot read the submodules: DEADLINE.");
+    expect(rows().map((r) => r.dataset.path)).toEqual(["libs/a", "libs/a/deps/c", "vendor/b"]);
+    expect(rowState("vendor/b")).toBe("Failed");
+    expect([buttons("Retry", row("vendor/b")).length, buttons("Show output", row("vendor/b")).length]).toEqual([1, 1]);
+  });
+
   test("the row menu Update reviews that row and its nested rows; the rows above the scope row keep their state", async () => {
     const { double } = await finished();
     await act(async () => void row("libs/a/deps/c").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
@@ -883,6 +894,25 @@ describe("Submodules group tree (FR-107 to FR-111)", () => {
     expect(await hoverTooltip(row("vendor/tools/lint").querySelector('[data-slot="gone-mark"]')!)).toEqual(["The upstream origin/lint no longer exists."]);
     // The mark and the label shrink and end with an ellipsis.
     for (const slot of ["row-label", "branch-mark"]) expect(row("libs/ui").querySelector(`[data-slot="${slot}"]`)!.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+  });
+
+  // 001 plan.md "Icons": the row keeps the tooltip text that its accessible name leaves out in its description.
+  test("the accessible description gives the full folder path, the upstream, and the 003 count note", async () => {
+    await mount({ listed: boardReview() });
+    const counts = "Counts compare with the remote-tracking branch from the last fetch, not with the remote itself.";
+    expect([item("tools"), item("libs")].map((r) => r.getAttribute("aria-description"))).toEqual(["vendor/tools", "libs"]);
+    expect(BOARD.map((r) => [r.path, row(r.path).getAttribute("aria-description")])).toEqual([
+      ["libs/net/http", `main → origin/main. ${counts}`],
+      ["libs/core", null],
+      ["libs/ui", `main → origin/main. ${counts}`],
+      ["vendor/tools/fmt", `release/2.x → origin/release/2.x. ${counts}`],
+      ["vendor/tools/lint", "lint → origin/lint"],
+      [ICONS, null],
+      ["app-shared", `main → origin/main. ${counts}`],
+      ["app-shared/third_party/zlib", null],
+      ["app-shared/third_party/contrib/minizip", null],
+      ["docs-theme", null],
+    ]);
   });
 
   test("Up, Down, Home, and End move the focus; Right opens a closed row, then goes to the first child; Left closes an open row, else goes to the parent", async () => {

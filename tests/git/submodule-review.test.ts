@@ -7,7 +7,7 @@
 import { describe, expect, spyOn } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
+import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES, UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { redactUrlUserInfo, type SubmoduleAction, type SubmodulePlanRow } from "../../src/contracts/submodules";
 import * as approvalsModule from "../../src/git-service/approvals";
 import { printOrigin } from "../origin";
@@ -1128,24 +1128,40 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
     ["exit 128", "GIT_FAILED", (service, hit) => void (service.runner.inject.exit = (c) => (hit(c) ? 128 : undefined))],
     // `spawn` reads the injected deadline synchronously after the start check of each call.
     ["a 1 ms deadline", "DEADLINE", (service, hit) => void service.runner.holdStart((c) => ((service.runner.inject.deadlineMs = hit(c) ? 1 : null), false))],
+    ["the stderr bound", "OUTPUT_LIMIT", (service, hit) => void (service.runner.inject.stderr = (c) => (hit(c) ? new Uint8Array(UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION) : undefined))],
     ["a runner refusal", "PROCESS_OWNERSHIP_FAILED", (service, hit) => void (service.runner.inject.refuse = (c) => (hit(c) ? "PROCESS_OWNERSHIP_FAILED" : undefined))],
   ];
+  // Contract Δ12 "Branch marks": these two exits close the operation Job. Only the deadline gives a second `--contains` read.
+  const CLOSING = new Set(["DEADLINE", "OUTPUT_LIMIT"]);
   for (const [label, code, arm] of FAILURES) {
-    markCase(`${label} on the mark read of one row gives that row unread ${code}, and the review succeeds with every row and the other mark`, async () => {
+    const closing = CLOSING.has(code);
+    const rerun = closing ? ", and the --contains read that the Job close ends runs once more" : "";
+    // Contract §5 "Total unexpected diagnostic output": the 4 MiB bound counts per operation, so each later exit of the review carries `diagnosticLimit`.
+    const bound = code === "OUTPUT_LIMIT";
+    const end = bound ? "the review fails OUTPUT_LIMIT" : `gives that row unread ${code}${rerun}, and the review succeeds with every row and the other mark`;
+    markCase(`${label} on the mark read of one row ${bound ? `ends the --contains read, which runs no second time, and ${end}` : end}`, async () => {
       const name = `t139-${code.toLowerCase().replaceAll("_", "-")}`;
       const w = markWorld(name, { ahead: SPECS.ahead, equal: SPECS.equal });
       await withTree(w, name, async (service) => {
         const dir = join(w.sup, "equal");
+        const isContains = (c: Call) => inDir(dir)(c) && commandOf(c.arguments)[1] === "--contains=HEAD";
+        // The first `--contains` read of the row stays in the operation Job until the Job close: its stdout waits on a held drain.
+        let first: readonly string[] | null = null;
+        const isFirst = (c: Call) => closing && isContains(c) && (first ??= c.arguments) === c.arguments;
+        service.runner.inject.stdout = (c) => (isFirst(c) ? new TextEncoder().encode("refs/heads/main\n") : undefined);
+        const release = service.runner.pauseStdout(isFirst);
         arm(service, (c) => isTrackCall(c.arguments) && inDir(dir)(c));
-        const { r } = await reviewedTree(service, w);
-        // Contract §5 "Deadline outcomes": a deadline closes the operation Job, which also ends the `--contains` read beside the mark read.
-        const contains = callsSince(service).filter((c) => inDir(dir)(c) && commandOf(c.arguments)[1] === "--contains=HEAD").map((c) => c.exit?.exitCode ?? null);
-        console.log(`OBSERVATION T139: ${label}: the --contains reads of the row exit with ${JSON.stringify(contains)}`);
-        expect({ outcome: outcome(r.response), rows: r.rows.map((row) => row.path), marks: markByPath(r) }).toEqual({
-          outcome: SUCCEEDED,
-          rows: ["ahead", "equal"],
-          marks: { ahead: SPECS.ahead.want, equal: { state: "unread", ref: "refs/heads/main", code } },
-        });
+        try {
+          const { r } = await reviewedTree(service, w);
+          const contains = callsSince(service).filter(isContains).map((c) => c.exit?.exitCode ?? null);
+          expect({ outcome: outcome(r.response), rows: r.rows.map((row) => row.path), marks: markByPath(r), contains }).toEqual(
+            bound
+              ? { outcome: { state: "failed", code }, rows: [], marks: {}, contains: [null] }
+              : { outcome: SUCCEEDED, rows: ["ahead", "equal"], marks: { ahead: SPECS.ahead.want, equal: { state: "unread", ref: "refs/heads/main", code } }, contains: closing ? [null, 0] : [0] },
+          );
+        } finally {
+          release();
+        }
       });
     });
   }

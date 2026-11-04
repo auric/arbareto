@@ -3,7 +3,7 @@
 
 import { ArrowDown01Icon, ArrowRight01Icon, CubeIcon, Folder01Icon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SUBMODULE_REVIEW_NESTING_LEVELS, SUBMODULE_TREE_FOLDERS } from "../../contracts/limits";
 import type { SubmoduleBranch, SubmoduleHost, SubmoduleHostLine, SubmodulePlanRow, SubmoduleProgram, SubmoduleRefusalReason, SubmoduleRowResult } from "../../contracts/submodules";
 import { CopyButton, unknownReadText, useCopy } from "../app/RepositoryStates";
@@ -324,18 +324,20 @@ const TREE_BOUND = `The submodule paths have more than ${num(SUBMODULE_TREE_FOLD
 const NO_BRANCH_MARK = "no branch";
 const HEADS = "refs/heads/";
 const branchName = (ref: string) => (ref.startsWith(HEADS) ? ref.slice(HEADS.length) : ref);
-/** The visible mark, its tooltips, and the accessible name parts of one branch mark (spec FR-109, FR-110). */
-type MarkView = { branch: string; tooltip: string; count: { text: string; tooltip: string } | null; gone: string | null; names: string[] };
+/** The visible mark, its tooltips, the accessible name parts, and the description of one branch mark (spec FR-109, FR-110). */
+type MarkView = { branch: string; tooltip: string; count: { text: string; tooltip: string } | null; gone?: string; names: string[]; description: string | null };
 function markView(mark: SubmoduleBranch | null): MarkView | null {
   if (mark === null) return null;
-  if (mark.state === "detached") return { branch: NO_BRANCH_MARK, tooltip: NO_BRANCH_MARK, count: null, gone: null, names: [NO_BRANCH_MARK] };
+  if (mark.state === "detached") return { branch: NO_BRANCH_MARK, tooltip: NO_BRANCH_MARK, count: null, names: [NO_BRANCH_MARK], description: null };
   const branch = branchName(mark.ref);
-  if (mark.state === "unread") return { branch, tooltip: branch, count: null, gone: null, names: [branch, `counts are unavailable: ${mark.code}`] };
+  if (mark.state === "unread") return { branch, tooltip: branch, count: null, names: [branch, `counts are unavailable: ${mark.code}`], description: null };
   const tooltip = mark.upstream === null ? branch : `${branch} → ${shortRef(mark.upstream)}`;
+  const upstream = mark.upstream === null ? null : tooltip;
   const label = countLabel(mark.track);
-  if (mark.track.state === "gone") return { branch, tooltip, count: null, gone: mark.upstream === null ? null : shortRef(mark.upstream), names: [branch, UPSTREAM_GONE_NAME] };
-  if (mark.track.state === "none") return { branch, tooltip, count: null, gone: null, names: [branch, label.label] };
-  return { branch, tooltip, count: { text: label.text, tooltip: `${label.label}. ${COUNTS_TOOLTIP}` }, gone: null, names: [branch, label.label] };
+  // `parseTracking` accepts a track only with an upstream (src/git-service/sync-parsers.ts).
+  if (mark.track.state === "gone") return { branch, tooltip, count: null, gone: shortRef(mark.upstream!), names: [branch, UPSTREAM_GONE_NAME], description: upstream };
+  if (mark.track.state === "none") return { branch, tooltip, count: null, names: [branch, label.label], description: upstream };
+  return { branch, tooltip, count: { text: label.text, tooltip: `${label.label}. ${COUNTS_TOOLTIP}` }, names: [branch, label.label], description: [upstream, COUNTS_TOOLTIP].filter(Boolean).join(". ") };
 }
 
 // Feature 005 plan.md D11 "Availability" and D15 "Submodules" texts.
@@ -385,6 +387,176 @@ export type SubmodulesGroupProps = {
 // Spec FR-108: the closed rows last for the window session per repository and are not stored.
 const sessionClosed = new Map<string, ReadonlySet<string>>();
 
+const toggle = <T,>(set: ReadonlySet<T>, value: T) => {
+  const next = new Set(set);
+  if (!next.delete(value)) next.add(value);
+  return next;
+};
+
+/** The group callbacks of a tree row. The object never changes, so a memo row renders again only when its own props change. */
+type RowActions = {
+  register(key: string, element: HTMLElement | null): void;
+  focused(key: string): void;
+  keyDown(event: ReactKeyboardEvent<HTMLElement>, index: number): void;
+  setOpen(key: string, open: boolean): void;
+  openRow(row: SubmoduleNode): void;
+  menu(path: string, anchor: HTMLElement): void;
+  retry(path: string): void;
+  toggleOutput(path: string): void;
+};
+type ItemProps = { index: number; selected: boolean; actions: RowActions };
+
+const chevron = (open: boolean | null) =>
+  open === null ? (
+    <span aria-hidden="true" className="size-(--icon-size) shrink-0" />
+  ) : (
+    <HugeiconsIcon icon={open ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
+  );
+const common = (row: TreeRow, { index, selected, actions }: ItemProps) => ({
+  ref: (element: HTMLElement | null) => actions.register(row.key, element),
+  role: "treeitem",
+  "aria-level": row.level,
+  "aria-posinset": row.pos,
+  "aria-setsize": row.size,
+  "aria-expanded": row.open ?? undefined,
+  "aria-selected": selected,
+  tabIndex: selected ? 0 : -1,
+  style: { paddingLeft: 8 + 12 * (row.level - 1) },
+  onFocus: () => actions.focused(row.key),
+  onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => actions.keyDown(event, index),
+});
+
+const FolderItem = memo(function FolderItem(props: ItemProps & { row: Extract<TreeRow, { kind: "folder" }> }) {
+  const { row, actions } = props;
+  return (
+    <div
+      {...common(row, props)}
+      aria-label={`${row.label}, folder, ${num(row.count)}`}
+      aria-description={row.path}
+      className="list-row flex min-w-0 items-center gap-1 py-0.5 pr-2"
+      onClick={() => actions.setOpen(row.key, !row.open)}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {chevron(row.open)}
+      <HugeiconsIcon data-slot="folder-icon" icon={Folder01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0 text-muted-text" />
+      <TextTooltip text={row.path}>
+        <span data-slot="row-label" aria-hidden="true" className="min-w-0 truncate">
+          {row.label}
+        </span>
+      </TextTooltip>
+      <span data-slot="folder-count" aria-hidden="true" className="num ml-auto shrink-0 text-muted-text">
+        {num(row.count)}
+      </span>
+    </div>
+  );
+});
+
+type SubmoduleItemProps = ItemProps & {
+  row: SubmoduleNode;
+  /** The row state text of `stateText`. */
+  state: string;
+  /** The row is in the scope of the running update. */
+  running: boolean;
+  result: SubmoduleRowResult | undefined;
+  outputOpen: boolean;
+  reason: string | null;
+};
+const SubmoduleItem = memo(function SubmoduleItem(props: SubmoduleItemProps) {
+  const { row, actions, state, running, result, outputOpen, reason } = props;
+  const line = running || result === undefined ? null : observed(result);
+  const failed = !running && result?.state === "failed";
+  const output = failed && (result.outputTail !== undefined || result.remedy !== undefined);
+  const open = output && outputOpen;
+  const mark = markView(row.mark);
+  return (
+    <div
+      {...common(row, props)}
+      data-path={row.path}
+      aria-label={[row.path, ...(mark?.names ?? []), state, line].filter(Boolean).join(", ")}
+      aria-description={mark?.description ?? undefined}
+      className="list-row flex flex-col py-0.5 pr-2"
+      onDoubleClick={() => actions.openRow(row)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        actions.menu(row.path, event.currentTarget);
+      }}
+    >
+      <div className="flex min-w-0 items-center gap-1">
+        {chevron(row.open)}
+        <span data-slot="row-icon" className="flex shrink-0 text-muted-text">
+          <HugeiconsIcon icon={CubeIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+        </span>
+        <TextTooltip text={row.path}>
+          <span data-slot="row-label" aria-hidden="true" className="min-w-0 truncate">
+            {row.label}
+          </span>
+        </TextTooltip>
+        {mark === null ? null : (
+          <TextTooltip text={mark.tooltip}>
+            <span data-slot="branch-mark" aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
+              {mark.branch}
+            </span>
+          </TextTooltip>
+        )}
+        {mark?.gone === undefined ? null : <GoneMark upstream={mark.gone} />}
+        {mark?.count == null ? null : (
+          <TextTooltip text={mark.count.tooltip}>
+            <span data-slot="track-count" aria-hidden="true" className="num shrink-0 whitespace-nowrap">
+              {mark.count.text}
+            </span>
+          </TextTooltip>
+        )}
+        <span data-slot="row-state" aria-hidden="true" className={`num ml-auto shrink-0 pl-1 ${failed ? "text-removed" : "text-muted-text"}`}>
+          {state}
+        </span>
+      </div>
+      {line === null ? null : <p className="text-muted-text">{line}</p>}
+      {failed && result.failedRead !== undefined ? <p>{FAILED_READ}</p> : null}
+      {failed && result.exitCode !== undefined ? <p data-slot="exit-code">{exitText(result.exitCode)}</p> : null}
+      {failed ? (
+        <div className="flex flex-wrap gap-2 py-0.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            tabIndex={-1}
+            disabled={reason !== null}
+            focusableWhenDisabled
+            onClick={(event) => {
+              event.stopPropagation();
+              if (reason === null) actions.retry(row.path);
+            }}
+          >
+            Retry
+          </Button>
+          {output ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              tabIndex={-1}
+              aria-expanded={open}
+              onClick={(event) => {
+                event.stopPropagation();
+                actions.toggleOutput(row.path);
+              }}
+            >
+              Show output
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {open ? (
+        <>
+          {result!.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap select-text">{result!.outputTail}</pre>}
+          {result!.remedy?.text === undefined ? null : <p>{result!.remedy.text}</p>}
+          {typeof result!.remedy?.command === "string" ? <code className="block break-all select-text">{result!.remedy.command}</code> : null}
+        </>
+      ) : null}
+    </div>
+  );
+});
+
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
 export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0 }: SubmodulesGroupProps) {
   const headingId = useId();
@@ -419,11 +591,6 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
     lines.current?.querySelector<HTMLElement>('[data-slot="host-line"], [data-slot="refusal-line"]')?.focus();
     attended();
   }, [attention, attended]);
-  const toggle = <T,>(set: ReadonlySet<T>, value: T) => {
-    const next = new Set(set);
-    if (!next.delete(value)) next.add(value);
-    return next;
-  };
   function setOpen(key: string, open: boolean) {
     const next = new Set(closed);
     if (open) next.delete(key);
@@ -488,25 +655,21 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
     return [actions, [{ label: "Copy path", onSelect: () => copy(path) }]];
   }
 
-  const chevron = (open: boolean | null) =>
-    open === null ? (
-      <span aria-hidden="true" className="size-(--icon-size) shrink-0" />
-    ) : (
-      <HugeiconsIcon icon={open ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
-    );
-  const common = (row: TreeRow, index: number) => ({
-    ref: (element: HTMLElement | null) => void (element ? elements.current.set(row.key, element) : elements.current.delete(row.key)),
-    role: "treeitem",
-    "aria-level": row.level,
-    "aria-posinset": row.pos,
-    "aria-setsize": row.size,
-    "aria-expanded": row.open ?? undefined,
-    "aria-selected": index === at,
-    tabIndex: index === at ? 0 : -1,
-    style: { paddingLeft: 8 + 12 * (row.level - 1) },
-    onFocus: () => setActiveKey(row.key),
-    onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => onKeyDown(event, index),
-  });
+  const live = useRef({ onKeyDown, setOpen, openRow, update, reason });
+  live.current = { onKeyDown, setOpen, openRow, update, reason };
+  const actions = useMemo<RowActions>(
+    () => ({
+      register: (key, element) => void (element ? elements.current.set(key, element) : elements.current.delete(key)),
+      focused: setActiveKey,
+      keyDown: (event, index) => live.current.onKeyDown(event, index),
+      setOpen: (key, open) => live.current.setOpen(key, open),
+      openRow: (row) => live.current.openRow(row),
+      menu: (path, anchor) => setMenu({ path, anchor }),
+      retry: (path) => void (live.current.reason === null && live.current.update.update(path)),
+      toggleOutput: (path) => setOpened((s) => toggle(s, path)),
+    }),
+    [],
+  );
 
   return (
     <section data-slot="submodules-group" aria-labelledby={headingId} className="flex min-h-0 flex-col">
@@ -636,127 +799,27 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
             {TREE_BOUND}
           </p>
         )}
-        {!expanded || update.listFailure !== null || shown.length === 0 ? null : (
+        {/* Plan D15 "Rows at rest": a failed list keeps the rows of the last list. Only a malformed tree shows no rows. */}
+        {!expanded || shown.length === 0 ? null : (
           <div role="tree" aria-labelledby={headingId} className="flex flex-col">
-            {shown.map((row, index) => {
-              if (row.kind === "folder")
-                return (
-                  <div
-                    key={row.key}
-                    {...common(row, index)}
-                    aria-label={`${row.label}, folder, ${num(row.count)}`}
-                    className="list-row flex min-w-0 items-center gap-1 py-0.5 pr-2"
-                    onClick={() => setOpen(row.key, !row.open)}
-                    onContextMenu={(event) => event.preventDefault()}
-                  >
-                    {chevron(row.open)}
-                    <HugeiconsIcon data-slot="folder-icon" icon={Folder01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0 text-muted-text" />
-                    <TextTooltip text={row.path}>
-                      <span data-slot="row-label" aria-hidden="true" className="min-w-0 truncate">
-                        {row.label}
-                      </span>
-                    </TextTooltip>
-                    <span data-slot="folder-count" aria-hidden="true" className="num ml-auto shrink-0 text-muted-text">
-                      {num(row.count)}
-                    </span>
-                  </div>
-                );
-              const result = results.get(row.path);
-              const running = run !== null && run.inScope.has(row.path);
-              const state = stateText(row.path, run, result, row.row?.head ?? null);
-              const line = running || result === undefined ? null : observed(result);
-              const failed = !running && result?.state === "failed";
-              const output = failed && (result.outputTail !== undefined || result.remedy !== undefined);
-              const open = output && opened.has(row.path);
-              const mark = markView(row.mark);
-              return (
-                <div
+            {shown.map((row, index) =>
+              row.kind === "folder" ? (
+                <FolderItem key={row.key} row={row} index={index} selected={index === at} actions={actions} />
+              ) : (
+                <SubmoduleItem
                   key={row.key}
-                  {...common(row, index)}
-                  data-path={row.path}
-                  aria-label={[row.path, ...(mark?.names ?? []), state, line].filter(Boolean).join(", ")}
-                  className="list-row flex flex-col py-0.5 pr-2"
-                  onDoubleClick={() => openRow(row)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setMenu({ path: row.path, anchor: event.currentTarget });
-                  }}
-                >
-                  <div className="flex min-w-0 items-center gap-1">
-                    {chevron(row.open)}
-                    <span data-slot="row-icon" className="flex shrink-0 text-muted-text">
-                      <HugeiconsIcon icon={CubeIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
-                    </span>
-                    <TextTooltip text={row.path}>
-                      <span data-slot="row-label" aria-hidden="true" className="min-w-0 truncate">
-                        {row.label}
-                      </span>
-                    </TextTooltip>
-                    {mark === null ? null : (
-                      <TextTooltip text={mark.tooltip}>
-                        <span data-slot="branch-mark" aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
-                          {mark.branch}
-                        </span>
-                      </TextTooltip>
-                    )}
-                    {mark?.gone == null ? null : <GoneMark upstream={mark.gone} />}
-                    {mark?.count == null ? null : (
-                      <TextTooltip text={mark.count.tooltip}>
-                        <span data-slot="track-count" aria-hidden="true" className="num shrink-0 whitespace-nowrap">
-                          {mark.count.text}
-                        </span>
-                      </TextTooltip>
-                    )}
-                    <span data-slot="row-state" aria-hidden="true" className={`num ml-auto shrink-0 pl-1 ${failed ? "text-removed" : "text-muted-text"}`}>
-                      {state}
-                    </span>
-                  </div>
-                  {line === null ? null : <p className="text-muted-text">{line}</p>}
-                  {failed && result.failedRead !== undefined ? <p>{FAILED_READ}</p> : null}
-                  {failed && result.exitCode !== undefined ? <p data-slot="exit-code">{exitText(result.exitCode)}</p> : null}
-                  {failed ? (
-                    <div className="flex flex-wrap gap-2 py-0.5">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        tabIndex={-1}
-                        disabled={reason !== null}
-                        focusableWhenDisabled
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (reason === null) update.update(row.path);
-                        }}
-                      >
-                        Retry
-                      </Button>
-                      {output ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          tabIndex={-1}
-                          aria-expanded={open}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setOpened((s) => toggle(s, row.path));
-                          }}
-                        >
-                          Show output
-                        </Button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {open ? (
-                    <>
-                      {result!.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap select-text">{result!.outputTail}</pre>}
-                      {result!.remedy?.text === undefined ? null : <p>{result!.remedy.text}</p>}
-                      {typeof result!.remedy?.command === "string" ? <code className="block break-all select-text">{result!.remedy.command}</code> : null}
-                    </>
-                  ) : null}
-                </div>
-              );
-            })}
+                  row={row}
+                  index={index}
+                  selected={index === at}
+                  actions={actions}
+                  state={stateText(row.path, run, results.get(row.path), row.row?.head ?? null)}
+                  running={run !== null && run.inScope.has(row.path)}
+                  result={results.get(row.path)}
+                  outputOpen={opened.has(row.path)}
+                  reason={reason}
+                />
+              ),
+            )}
           </div>
         )}
       </div>

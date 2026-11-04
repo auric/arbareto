@@ -684,6 +684,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     holdWalk: null as ((kind: string) => Promise<void>) | null,
     // Bytes replace the process of a call. No process starts, and the bytes go to stdout in 64 KiB chunks. The exit code is 0, or null after abort, closeJob, or a limited stdout collector of a `read` or `search` call.
     stdout: undefined as ((call: { operationId: string; arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
+    // Bytes replace the process of a call and go to stderr in 64 KiB chunks. They count toward the operation stderr bound, which closes the Job (contract §5, §6).
+    stderr: undefined as ((call: { operationId: string; arguments: readonly string[] }) => Uint8Array | undefined) | undefined,
     // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
     exit: undefined as ((call: { arguments: readonly string[] }) => number | undefined) | undefined,
     // A code refuses a call as the shell refuses it. No process starts (T377).
@@ -1585,18 +1587,28 @@ export function createBunRunner(options: BunRunnerOptions) {
       const exitCode = inject.exit?.({ arguments: call.arguments });
       if (exitCode !== undefined) return { exitCode, activeDescendants: 0 };
       const injected = inject.stdout?.({ operationId: call.operationId, arguments: call.arguments, input: call.input });
-      if (injected === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout, wrapped);
+      const injectedErr = inject.stderr?.({ operationId: call.operationId, arguments: call.arguments });
+      if (injected === undefined && injectedErr === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout, wrapped);
       leave = joinJob(call.operationId, halt);
+      for (let at = 0; injectedErr !== undefined && at < injectedErr.length && !halted; at += NATIVE_CHUNK_BYTES) {
+        const chunk = injectedErr.subarray(at, at + NATIVE_CHUNK_BYTES);
+        call.stderr.push(chunk);
+        recorded?.stderr?.push(chunk);
+        if (diagnostics.add(call, chunk.length)) cancelRun(call.operationId);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const bytes = injected ?? new Uint8Array();
       // Contract §5 "Native stdout/stderr chunk": at most 64 KiB in one chunk.
-      for (let at = 0; at < injected.length && !halted; at += NATIVE_CHUNK_BYTES) {
+      for (let at = 0; at < bytes.length && !halted; at += NATIVE_CHUNK_BYTES) {
         for (let barrier = heldStdout(); barrier; barrier = heldStdout()) await barrier;
         if (halted) break;
-        call.stdout.push(injected.subarray(at, at + NATIVE_CHUNK_BYTES));
+        call.stdout.push(bytes.subarray(at, at + NATIVE_CHUNK_BYTES));
         // Contract §6 `stop`: a limited stdout ends only this call.
         if (call.stdout.limited && stopsAtBound(call.environmentPolicy)) halt();
         await new Promise((resolve) => setImmediate(resolve));
       }
-      return { exitCode: halted ? null : 0, activeDescendants: 0 };
+      // src/git-service/native-runner.ts: each exit after the operation stderr bound carries `diagnosticLimit`.
+      return { exitCode: halted ? null : 0, activeDescendants: 0, ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}) };
     } finally {
       leave();
       call.signal.removeEventListener("abort", halt);

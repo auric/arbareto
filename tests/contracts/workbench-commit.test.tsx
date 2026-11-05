@@ -972,7 +972,7 @@ describe("message editor (FR-047) and Amend last commit (FR-098)", () => {
     expect(unborn.calls).toEqual([]);
     for (const operationState of ["merging", "rebasing"]) {
       const t = await tray({ operationState, amend: box });
-      expect(describedBy(t.host.querySelector('input[type="checkbox"]')!)).toBe("A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.");
+      expect(describedBy(t.host.querySelector('input[type="checkbox"]')!)).toBe("A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.");
     }
   });
 
@@ -1448,7 +1448,7 @@ describe("Filter files (FR-101, Q29)", () => {
 
 const RESOLVE = "Resolve conflicts";
 const RESOLVE_TIP = "Open the Commit view and select the first conflicted file.";
-const OPERATION_REASON = "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.";
+const OPERATION_REASON = "A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.";
 const workingRow = () => document.querySelector<HTMLElement>('section[aria-label="History"] [role="option"][data-row-id="working-directory"]')!;
 const dock = () => document.querySelector<HTMLElement>('section[aria-label="Dock"]')!;
 const bandRow = () => document.querySelector<HTMLElement>('[data-slot="notice-band"] [data-slot="conflict-row"]')!;

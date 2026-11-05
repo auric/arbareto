@@ -27,13 +27,14 @@ export type StagingTarget = { repositoryId: string; repositoryGeneration: number
 export type Eligibility = WorkspaceSnapshot["hunkEligibility"];
 /**
  * A workspace state that blocks hunk and file actions. `busy` is a running file action, `running` any other mutation.
- * `operation` is a merge or a rebase in progress, which the notice band conflict row finishes (feature 003 FR-030). `conflicted` is every other state that is not `normal`.
+ * `operation` is a merge, a rebase, a cherry-pick, or a revert in progress, which the notice band conflict row finishes (feature 003 FR-030, feature 010 FR-060). `conflicted` is every other state that is not `normal`.
  */
 export type Blocked = "conflicted" | "operation" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "refreshing" | "unknown" | null;
 
 export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   conflicted: "Arbareto blocks changes until the Git operation ends outside Arbareto. Then select Refresh (F5).",
-  operation: "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.",
+  // Feature 010 plan.md D11 "Menu" changes this text.
+  operation: "A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.",
   loading: "A status page is still loading.",
   incomplete: "The status read is incomplete, so changes stay blocked.",
   stale: "The comparison is not current. Wait for the new comparison.",
@@ -46,9 +47,11 @@ export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
 };
 /** Plan D15 running rule and feature 004 spec FR-105: these blocks show their reason only in the tooltip and the accessible description. */
 export const quietBlock = (blocked: Blocked | undefined) => blocked === "running" || blocked === "operation";
-/** The block of an operation state that is not `normal`. Only `merging` and `rebasing` have the conflict row. */
+/** The states that the Notices band conflict row finishes (feature 003 FR-030, feature 010 plan.md D6). */
+export const IN_APP_STATES: readonly WorkspaceSnapshot["operationState"][] = ["merging", "rebasing", "cherry-picking", "reverting"];
+/** The block of an operation state that is not `normal`. Only the `IN_APP_STATES` have the conflict row. */
 export const operationBlock = (operationState: WorkspaceSnapshot["operationState"]): Blocked =>
-  operationState === "normal" ? null : operationState === "merging" || operationState === "rebasing" ? "operation" : "conflicted";
+  operationState === "normal" ? null : IN_APP_STATES.includes(operationState) ? "operation" : "conflicted";
 export const TRUST_TEXT = "Staging needs trust. Select Not trusted in the status bar.";
 // plan.md "Required visible states", Stale selection.
 export const STALE_TEXT = "The comparison or the staged scope changed. Arbareto reads it again.";

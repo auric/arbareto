@@ -149,9 +149,9 @@ describe("unavailable reasons (FR-017, FR-028)", () => {
     expect(disabled(button("Fetch"))).toBe(false);
   });
 
-  // Feature 003 FR-030: only a merge or a rebase has the conflict row. Every other state keeps the 001 text.
+  // Feature 003 FR-030 and feature 010 plan.md D6: a merge, a rebase, a cherry-pick, and a revert have the conflict row. Every other state keeps the 001 text.
   test("an operation without the conflict row keeps the 001 reason", async () => {
-    for (const operationState of ["cherry-picking", "reverting", "sequencer-active", "unknown", "conflicted"] as const) {
+    for (const operationState of ["sequencer-active", "unknown", "conflicted"] as const) {
       await open({ operationState });
       expect(reasonOf(button("Pull"))).toContain(BLOCKED_TEXT.conflicted);
       expect(reasonOf(button("Pull"))).not.toContain(BLOCKED_TEXT.operation);

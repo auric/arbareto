@@ -125,7 +125,7 @@ describe("branch button (FR-007)", () => {
     const double = await mountWorkbench(workbench, branchWorld(undefined, { operationState: "merging" }));
     expect(text(branchButton()!)).toContain("Merging");
     await openList();
-    expect(text(popup()!)).toContain("A merge or a rebase is in progress.");
+    expect(text(popup()!)).toContain("A merge, a rebase, a cherry-pick, or a revert is in progress.");
     expect(options()).toHaveLength(0);
     expect(double.count("reviewWorkbench")).toBe(0);
   });
@@ -133,11 +133,11 @@ describe("branch button (FR-007)", () => {
   test("during a merge, the inline sync reason line takes only the width that the branch button leaves (plan.md D15 Top bar row)", async () => {
     await mountWorkbench(workbench, branchWorld(undefined, { operationState: "merging" }));
     const group = document.querySelector<HTMLElement>('header [role="group"][aria-label="Remote sync"]')!;
-    const line = [...group.querySelectorAll<HTMLElement>("span[id]")].find((e) => text(e).includes("A merge or a rebase is in progress."));
+    const line = [...group.querySelectorAll<HTMLElement>("span[id]")].find((e) => text(e).includes("A merge, a rebase, a cherry-pick, or a revert is in progress."));
     expect(line).toBeDefined();
-    expect(text(line!)).toBe("Pull, Push: A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.");
+    expect(text(line!)).toBe("Pull, Push: A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.");
     expect(line!.hasAttribute("title")).toBe(false);
-    expect(await hoverTooltip(line!)).toEqual(["Pull, Push: A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band."]);
+    expect(await hoverTooltip(line!)).toEqual(["Pull, Push: A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band."]);
     // `contain: inline-size` gives the reason no content width, so it never claims the width of the branch text. The control names stay whole.
     const [names, reason] = [...line!.children] as HTMLElement[];
     expect(text(names!)).toBe("Pull, Push:");
@@ -462,11 +462,13 @@ describe("keys during IME composition and the keyboard path to the history label
     ["Shift+F10", { key: "F10", shiftKey: true }],
     ["the Menu key", { key: "ContextMenu" }],
   ] as const) {
-    test(`${name} on a history row opens the branch menu of its branch label`, async () => {
+    // Feature 010 plan.md R3: the key opens the branch menu only after Right makes a label active.
+    test(`${name} on a history row opens the branch menu of its active branch label`, async () => {
       await mountWorkbench(workbench, branchWorld());
       const chip = document.querySelector<HTMLElement>('[data-slot="row-labels"] .chip[data-kind="branch"]')!;
       const row = chip.closest<HTMLElement>('[role="option"]')!;
       await click(row);
+      await press(row.closest('[role="listbox"]')!, "ArrowRight");
       await press(row.closest('[role="listbox"]')!, init.key, init);
       expect(openMenuItems().map(itemLabel)[0]).toBe("Switch");
       expect(document.querySelector('[data-slot="dropdown-menu-content"]')!.getAttribute("aria-label")).toBe(`Actions for ${text(chip.querySelector("[data-chip-name]")!)}`);
@@ -514,6 +516,7 @@ describe("the menu of each label on a History row with several branch labels (FR
     await act(async () => historyList().focus());
   }
 
+  // Feature 010 plan.md D1 and R3: no label is active until Right moves to one. Shift+F10 then opens the commit menu.
   test("Right and Left move the active label, and Shift+F10 opens the menu of the active label; the list stays one Tab stop", async () => {
     await mountWorkbench(workbench, labelsWorld());
     await selectRow0();
@@ -521,10 +524,14 @@ describe("the menu of each label on a History row with several branch labels (FR
     // The row orders its labels as Git lists them: `feature/login`, then `main`.
     const names = [...document.querySelectorAll<HTMLElement>('[data-row-id] [data-slot="row-labels"] .chip[data-kind="branch"]')].slice(0, 2).map((c) => text(c.querySelector("[data-chip-name]")!));
     expect(names).toEqual(["feature/login", "main"]);
+    expect(activeChip()).toEqual([]);
     await press(list, "F10", { shiftKey: true });
-    expect(menuName()).toBe("Actions for feature/login");
+    expect(menuName()).toBe(`Actions for commit ${oid(1).slice(0, 12)}`);
     await press(document.activeElement!, "Escape");
     await act(async () => list.focus());
+    await press(list, "ArrowRight");
+    expect(activeChip()).toEqual(["feature/login"]);
+    expect(status()).toContain("feature/login, branch label 1 of 2.");
     await press(list, "ArrowRight");
     expect(activeChip()).toEqual(["main"]);
     expect(status()).toContain("main, branch label 2 of 2.");
@@ -533,26 +540,40 @@ describe("the menu of each label on a History row with several branch labels (FR
     expect(menuName()).toBe("Actions for main");
     await press(document.activeElement!, "Escape");
     await act(async () => list.focus());
-    // Right stops at the last label. Left goes back to the first one.
+    // Right stops at the last label. Left goes back to the first one, then to no label.
     await press(list, "ArrowRight");
     expect(activeChip()).toEqual(["main"]);
     await press(list, "ArrowLeft");
     expect(activeChip()).toEqual(["feature/login"]);
     await press(list, "F10", { shiftKey: true });
     expect(menuName()).toBe("Actions for feature/login");
+    await press(document.activeElement!, "Escape");
+    await act(async () => list.focus());
+    await press(list, "ArrowLeft");
+    expect(activeChip()).toEqual([]);
+    expect(status()).toContain(`Commit ${oid(1).slice(0, 12)}.`);
+    await press(list, "F10", { shiftKey: true });
+    expect(menuName()).toBe(`Actions for commit ${oid(1).slice(0, 12)}`);
     // No label is a Tab stop.
     for (const chip of document.querySelectorAll('[data-slot="row-labels"] .chip')) expect(chip.hasAttribute("tabindex")).toBe(false);
   });
 
-  test("a new selected row starts at its first label", async () => {
+  test("a new selected row starts with no active label", async () => {
     await mountWorkbench(workbench, labelsWorld());
     await selectRow0();
     const list = historyList();
+    await press(list, "ArrowRight");
     await press(list, "ArrowRight");
     expect(activeChip()).toEqual(["main"]);
     await press(list, "ArrowDown");
     expect(activeChip()).toEqual([]);
     await press(list, "ArrowUp");
+    expect(activeChip()).toEqual([]);
+    await press(list, "F10", { shiftKey: true });
+    expect(menuName()).toBe(`Actions for commit ${oid(1).slice(0, 12)}`);
+    await press(document.activeElement!, "Escape");
+    await act(async () => list.focus());
+    await press(list, "ArrowRight");
     await press(list, "F10", { shiftKey: true });
     expect(menuName()).toBe("Actions for feature/login");
   });

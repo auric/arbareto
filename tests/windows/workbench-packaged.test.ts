@@ -647,7 +647,7 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
     throw new Error(`${what}: 40 presses of ${key} did not reach it, the focus is on ${js(await active(c))}`);
   }
   const RESOLVE_BUTTON = "Resolve conflicts";
-  const OPERATION_REASON = "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.";
+  const OPERATION_REASON = "A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.";
   // The Chromium accessibility description is the UIA FullDescription of the control.
   async function description(c: Cdp, expression: string): Promise<string | null> {
     await c.send("Accessibility.enable");

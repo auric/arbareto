@@ -20,7 +20,7 @@ import { quietReason } from "./SyncToolbar";
 // Destructive actions show an icon and text and never fold into a More menu (plan.md D12).
 
 export type ConflictAction = "abort" | "continue" | "skip";
-type Kind = "merging" | "rebasing";
+type Kind = "merging" | "rebasing" | "cherry-picking" | "reverting";
 type Remedy = { text?: string; command?: string | null };
 /** Contract Δ3 `SyncRefused`: the `SYNC_UNAVAILABLE` reason and the `rebase-exec` remedy. */
 type Refusal = { reason: string; remedy?: Remedy };
@@ -29,6 +29,27 @@ export const SKIP_TOOLTIP = "Skip leaves the current commit out of the rebased b
 export const NO_SKIP_TEXT = "Skip is unavailable: Git names no commit at this rebase stop.";
 export const RESOLVE_CONFLICTS = "Resolve conflicts";
 export const RESOLVE_TOOLTIP = "Open the Commit view and select the first conflicted file.";
+
+// Feature 010 plan.md D11 "Band": the Abort label and the confirmation texts of each kind.
+const KINDS: Record<Kind, { abort: string; button: string; title: string; body: string; nothing?: string }> = {
+  merging: { abort: "Abort merge…", button: "Abort merge", title: "Abort the merge?", body: "Git returns the branch, the index, and the working files to their state before the merge." },
+  rebasing: { abort: "Abort rebase…", button: "Abort rebase", title: "Abort the rebase?", body: "Git returns the branch, the index, and the working files to their state before the rebase." },
+  "cherry-picking": {
+    abort: "Abort cherry-pick…",
+    button: "Abort cherry-pick",
+    title: "Abort the cherry-pick?",
+    body: "Git returns the branch, the index, and the working files to their state before the cherry-pick.",
+    nothing: "The cherry-pick makes no change. Select Abort to end it.",
+  },
+  reverting: {
+    abort: "Abort revert…",
+    button: "Abort revert",
+    title: "Abort the revert?",
+    body: "Git returns the branch, the index, and the working files to their state before the revert.",
+    nothing: "The revert makes no change. Select Abort to end it.",
+  },
+};
+const SEQUENCE = "A cherry-pick or revert sequence is in progress. Finish it in a terminal.";
 
 export type ConflictRowProps = {
   operationState: Kind;
@@ -56,7 +77,7 @@ function refusalOf(response: BridgeResponse | null): Refusal | null {
 }
 
 /**
- * The conflict row of a merge or a rebase in progress. A refused review hides the refused actions for this stop.
+ * The conflict row of a merge, a rebase, a cherry-pick, or a revert in progress. A refused review hides the refused actions for this stop.
  * The caller keys the row by the operation state and HEAD, so a new stop shows every action again.
  */
 export function ConflictRow({ operationState, conflicted, reason: given, running = false, reconciling = false, loading = false, onAction, onResolve, bindControl }: ConflictRowProps) {
@@ -127,7 +148,7 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
               <TooltipContent>{RESOLVE_TOOLTIP}</TooltipContent>
             </Tooltip>
           ) : null}
-          {hidden("abort") ? null : tip("abort", action("abort", operationState === "merging" ? "Abort merge…" : "Abort rebase…", UndoIcon, reason, reasonId, true), null)}
+          {hidden("abort") ? null : tip("abort", action("abort", KINDS[operationState].abort, UndoIcon, reason, reasonId, true), null)}
           {resolving || hidden("continue") ? null : tip("continue", action("continue", "Continue", ArrowRight02Icon, continueReason, reason === null ? continueId : reasonId), null)}
           {hidden("skip") ? null : skip}
         </div>
@@ -145,6 +166,8 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
       {lines.map(([name, r]) =>
         name === "skip" && r.reason === "no-skip-commit" ? (
           <span key={name}>{NO_SKIP_TEXT}</span>
+        ) : r.reason === "sequence" || (r.reason === "nothing-to-commit" && KINDS[operationState].nothing !== undefined) ? (
+          <span key={name}>{r.reason === "sequence" ? SEQUENCE : KINDS[operationState].nothing}</span>
         ) : (
           <span key={name}>
             {`${SYNC_NAMES[name]} is unavailable: `}
@@ -182,16 +205,16 @@ export type ConflictConfirmProps = {
 /** The modal confirmation of Abort (FR-042) and Skip (FR-044). Cancel has the initial focus. */
 export function ConflictConfirm({ action, plan, onConfirm, onCancel, finalFocus }: ConflictConfirmProps) {
   const cancel = useRef<HTMLButtonElement>(null);
-  const kind = plan.operationState === "merging" ? "merge" : "rebase";
+  const kind = KINDS[plan.operationState];
   const commit = plan.skippedCommit;
   return (
     <Dialog open onOpenChange={(next) => void (next || onCancel())}>
       <DialogContent showCloseButton={false} initialFocus={cancel} finalFocus={finalFocus ?? true} className="flex flex-col gap-2 sm:max-w-lg">
         {action === "abort" ? (
           <>
-            <DialogTitle>{`Abort the ${kind}?`}</DialogTitle>
-            <p>{`Git returns the branch, the index, and the working files to their state before the ${kind}.`}</p>
-            {kind === "merge" ? <p>Git can fail to restore uncommitted changes from before the merge.</p> : null}
+            <DialogTitle>{kind.title}</DialogTitle>
+            <p>{kind.body}</p>
+            {plan.operationState === "merging" ? <p>Git can fail to restore uncommitted changes from before the merge.</p> : null}
           </>
         ) : (
           <>
@@ -211,7 +234,7 @@ export function ConflictConfirm({ action, plan, onConfirm, onCancel, finalFocus 
         )}
         <div className="flex justify-end gap-2">
           <Button className="bg-removed text-surface hover:bg-removed/80" onClick={onConfirm}>
-            {action === "abort" ? `Abort ${kind}` : "Skip commit"}
+            {action === "abort" ? kind.button : "Skip commit"}
           </Button>
           <Button ref={cancel} variant="outline" onClick={onCancel}>
             Cancel

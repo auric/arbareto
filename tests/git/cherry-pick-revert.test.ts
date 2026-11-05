@@ -11,7 +11,8 @@ import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { fc, gitOut, gitPaths, gitRun, importStream, markers, refMap, type GitHost } from "./remote-fixtures";
-import { caseTest, keepConfigs, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
+import type { RecordedCall } from "./bun-runner";
+import { caseTest, keepConfigs, siblingDeadline, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { ANY_EXIT, hostFor, INTEGRATE_ENV, native, refreshIndex, register, repoShape, TIMEOUT_MS, until, withSync as syncService } from "./sync-harness";
 import { hookEvents, logHooks } from "./workbench-fixtures";
 
@@ -22,6 +23,7 @@ for (const module of ["commit-actions", "workbench-review"]) printOrigin(`../../
 useFixtureRoot();
 
 const TASK = "T009";
+const SIBLING_TIMEOUT_MS = 60_000;
 const SHELL = ["shell-double"] as const;
 const L = "--no-lazy-fetch";
 const MAIN = "refs/heads/main";
@@ -66,6 +68,13 @@ async function reviewed(service: Service, r: RegistrationResult, payload: object
 const run = async (service: Service, r: RegistrationResult, payload: object) => service.response<PickRun>(sendRun(service, r, (await reviewed(service, r, payload)).workbenchToken));
 const steps = (service: Service, from = 0) => service.runner.calls.slice(from).filter((c) => c.environmentPolicy === "integrate").map((c) => [...c.arguments]);
 const isStep = (call: { arguments: readonly string[] }) => call.arguments[1] === "cherry-pick" || call.arguments[1] === "revert";
+// SC-010b: the `conflicted` read, the `detachCommit` read, and the parent subjects read of the review.
+const isIndexRead = (call: { arguments: readonly string[] }) => call.arguments.includes("ls-files") && call.arguments.includes("--stage");
+const batchInput = (call: { arguments: readonly string[]; input?: Uint8Array }) => (call.arguments.includes("cat-file") && call.input !== undefined ? Buffer.from(call.input).toString("latin1") : "");
+const isDetachOf = (oid: string) => (call: { arguments: readonly string[]; input?: Uint8Array }) => batchInput(call) === `info ${oid}^{commit}\0`;
+const isSubjects = (call: { arguments: readonly string[]; input?: Uint8Array }) => batchInput(call).startsWith("contents ");
+// The most calls that ran at once. A call runs from `at` to its exit.
+const peak = (calls: readonly RecordedCall[]) => Math.max(...calls.map((c) => calls.filter((d) => d.at <= c.at && c.at < d.at + (d.durationMs ?? Infinity)).length));
 
 const stateOf = (h: GitHost, repo: string) => ({ ...repoShape(h, repo), refs: refMap(h, repo), headOid: gitRun(h, repo, ["rev-parse", "--verify", "-q", "HEAD"], { allowExit: [0, 1] }).stdout.toString("utf8").trim() });
 // Git's own command of each action with the step options of plan.md D5.
@@ -287,6 +296,111 @@ describeGit("cherry-pick commit and revert commit (T009)", () => {
       expect({ name, state: stateOf(h, f.repo) }).toEqual({ name, state: before });
     }
   }, TIMEOUT_MS);
+
+  caseTest(TASK, "SC-010b: with parallel reads, CONFLICTED comes before UNKNOWN_TARGET, already-on-branch, and dirty-tree; UNKNOWN_TARGET and the mainline refusals come before already-on-branch and dirty-tree", SHELL, async () => {
+    const h = hostFor("t009-order");
+    const missing = "0123456789abcdef0123456789abcdef01234567";
+    const conflicted = build(h, "order-conflicted");
+    const blob = gitOut(h, conflicted.repo, ["rev-parse", "HEAD:a.txt"]).trim();
+    gitRun(h, conflicted.repo, ["update-index", "--index-info"], { input: Buffer.from(`0 ${"0".repeat(40)}\ta.txt\n100644 ${blob} 1\ta.txt\n100644 ${blob} 2\ta.txt\n100644 ${blob} 3\ta.txt\n`) });
+    h.write(`${conflicted.repo}/c.txt`, "c edited\n");
+    const dirty = build(h, "order-dirty");
+    h.write(`${dirty.repo}/c.txt`, "c edited\n");
+    const CONFLICTED = { state: "failed", code: "CONFLICTED", result: { unmerged: 1 } };
+    const UNKNOWN = { state: "failed", code: "UNKNOWN_TARGET", result: undefined };
+    const parents = [{ oid: dirty.c.s1, subject: "s1" }, { oid: dirty.c.x1, subject: "x1" }];
+    const cases: [Fixture, string, object, { state: string; code: string; result: unknown }][] = [
+      [conflicted, "conflicted, on the branch", PICK("cherry-pick", conflicted.c.m1), CONFLICTED],
+      [conflicted, "conflicted, missing pick", PICK("cherry-pick", missing), CONFLICTED],
+      [conflicted, "conflicted, missing revert", PICK("revert-commit", missing), CONFLICTED],
+      [conflicted, "conflicted, dirty revert", PICK("revert-commit", conflicted.c.m2), CONFLICTED],
+      [dirty, "dirty, on the branch", PICK("cherry-pick", dirty.c.m1), unavailable("already-on-branch")],
+      [dirty, "dirty, on the branch with -m", PICK("cherry-pick", dirty.c.m1, 1), unavailable("not-merge")],
+      [dirty, "dirty, revert with -m", PICK("revert-commit", dirty.c.t1, 1), unavailable("not-merge")],
+      [dirty, "dirty, missing pick", PICK("cherry-pick", missing), UNKNOWN],
+      [dirty, "dirty, missing revert", PICK("revert-commit", missing), UNKNOWN],
+      [dirty, "dirty, merge pick", PICK("cherry-pick", dirty.c.merge), unavailable("mainline-needed", { parents })],
+      [dirty, "dirty, merge revert", PICK("revert-commit", dirty.c.merge), unavailable("mainline-needed", { parents })],
+      [dirty, "dirty, merge -m 3", PICK("cherry-pick", dirty.c.merge, 3), { state: "failed", code: "INVALID_REQUEST", result: undefined }],
+      [dirty, "dirty, merge -m 1", PICK("revert-commit", dirty.c.merge, 1), unavailable("dirty-tree")],
+    ];
+    for (const f of [conflicted, dirty]) {
+      const before = stateOf(h, f.repo);
+      await withSync(`t009-order-${f === dirty ? "dirty" : "conflicted"}`, async (service) => {
+        const r = await approved(service, f.repo);
+        for (const [, name, payload, want] of cases.filter(([g]) => g === f)) expect({ name, ...refusal(await review(service, r, payload)) }).toEqual({ name, ...want });
+        expect(steps(service)).toEqual([]);
+      });
+      expect(stateOf(h, f.repo)).toEqual(before);
+    }
+  }, TIMEOUT_MS);
+
+  const ownOf = (service: Service, from: number, operationId: string | undefined) => service.runner.calls.slice(from).filter((c) => c.operationId === operationId);
+  const PAIRS = (f: Fixture) => [["cherry-pick", f.c.t1], ["revert-commit", f.c.m2]] as const;
+
+  caseTest(TASK, "SC-010b: the review reads of one stage run in parallel, at most 4 at once", SHELL, async () => {
+    const h = hostFor("t009-parallel");
+    const f = build(h, "parallel");
+    await withSync("t009-parallel", async (service) => {
+      const r = await approved(service, f.repo);
+      for (const [action, commit] of PAIRS(f)) {
+        const isDetach = isDetachOf(commit);
+        const release = service.runner.holdStart(isIndexRead);
+        let requestId = "";
+        try {
+          requestId = service.send("reviewWorkbench", PICK(action, commit), { repositoryId: r.repositoryId, repositoryGeneration: r.generation });
+          const operationId = await service.operationId(requestId);
+          await until(() => service.runner.calls.some((c) => c.operationId === operationId && isDetach(c)), `${action}: detachCommit read while the conflicted read waits`);
+        } finally {
+          release();
+        }
+        const response = await service.response<Reviewed>(requestId);
+        expect({ action, ...outcome(response) }).toEqual({ action, ...SUCCEEDED });
+        const most = peak(ownOf(service, 0, response.operationId));
+        console.log(`OBSERVATION SC-010b: ${action} review peak=${most}`);
+        expect(most).toBeLessThanOrEqual(4);
+      }
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "SC-010b: an already-on-branch refusal of a one-parent commit starts no subjects read", SHELL, async () => {
+    const h = hostFor("t009-no-subjects");
+    const f = build(h, "no-subjects");
+    await withSync("t009-no-subjects", async (service) => {
+      const r = await approved(service, f.repo);
+      const from = service.runner.calls.length;
+      const refused = await review(service, r, PICK("cherry-pick", f.c.m1));
+      const own = ownOf(service, from, refused.operationId);
+      expect({ ...refusal(refused), parents: own.filter((c) => c.arguments.includes("--parents")).length, subjects: own.filter(isSubjects).length }).toEqual({ ...unavailable("already-on-branch"), parents: 1, subjects: 0 });
+      expect(steps(service)).toEqual([]);
+    });
+  }, TIMEOUT_MS);
+
+  // Serial reads never start the detachCommit read while the conflicted read waits, so this case ends at SIBLING_TIMEOUT_MS.
+  caseTest(TASK, "SC-010b: a deadline of one stage-1 review read gives DEADLINE, every read ends before the reply, and no parents read starts", SHELL, async () => {
+    const h = hostFor("t009-deadline");
+    const f = build(h, "deadline");
+    await withSync("t009-deadline", async (service) => {
+      const r = await approved(service, f.repo);
+      for (const [action, commit] of PAIRS(f)) {
+        const isDetach = isDetachOf(commit);
+        const from = service.runner.calls.length;
+        const stop = siblingDeadline(service, isDetach, isIndexRead);
+        const late = await review(service, r, PICK(action, commit)).finally(stop);
+        const own = ownOf(service, from, late.operationId);
+        const endOf = (c: RecordedCall | undefined) => c?.exit?.deadline ?? (c?.exit?.exitCode === null ? "closed" : String(c?.exit?.exitCode));
+        expect({ action, ...outcome(late), exits: [own.find(isDetach), own.find(isIndexRead)].map(endOf), running: own.filter((c) => c.exit === undefined && c.refused === undefined).length, parents: own.filter((c) => c.arguments.includes("--parents")).length }).toEqual({
+          action,
+          state: "failed",
+          code: "DEADLINE",
+          exits: ["deadline", "closed"],
+          running: 0,
+          parents: 0,
+        });
+      }
+      expect(steps(service)).toEqual([]);
+    });
+  }, SIBLING_TIMEOUT_MS);
 
   caseTest(TASK, "FR-003 and FR-007: an external commit after the review gives STALE_REVIEW, Cancel before the step changes nothing, and a step killed while index.lock exists gives failed-with-effects", SHELL, async () => {
     const h = hostFor("t009-stale");

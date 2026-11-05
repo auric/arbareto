@@ -11,7 +11,8 @@ import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { fc, fiModes, gitOut, gitPaths, gitRun, importStream, markers, refMap, type GitHost } from "./remote-fixtures";
-import { caseTest, keepConfigs, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
+import type { RecordedCall } from "./bun-runner";
+import { caseTest, keepConfigs, siblingDeadline, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { gitExe, hostFor, native, refreshIndex, register, repoShape, TIMEOUT_MS, until, withSync as syncService } from "./sync-harness";
 import { hookEvents, logHooks } from "./workbench-fixtures";
 
@@ -22,6 +23,7 @@ for (const module of ["commit-actions", "workbench-review", "switch"]) printOrig
 useFixtureRoot();
 
 const TASK = "T007";
+const SIBLING_TIMEOUT_MS = 60_000;
 const SHELL = ["shell-double"] as const;
 const L = "--no-lazy-fetch";
 const MAIN = "refs/heads/main";
@@ -73,6 +75,11 @@ async function reviewed(service: Service, r: RegistrationResult, payload: object
 const run = async (service: Service, r: RegistrationResult, payload: object) => service.response<ResetRun>(sendRun(service, r, (await reviewed(service, r, payload)).workbenchToken));
 const steps = (service: Service, from = 0) => service.runner.calls.slice(from).filter((c) => c.environmentPolicy === "integrate").map((c) => [...c.arguments]);
 const isReset = (call: { arguments: readonly string[] }) => call.arguments[1] === "reset";
+// SC-010b: the `conflicted` read and the `detachCommit` read of the review.
+const isIndexRead = (call: { arguments: readonly string[] }) => call.arguments.includes("ls-files") && call.arguments.includes("--stage");
+const isDetachOf = (oid: string) => (call: { arguments: readonly string[]; input?: Uint8Array }) => call.arguments.includes("cat-file") && call.input !== undefined && Buffer.from(call.input).toString("latin1") === `info ${oid}^{commit}\0`;
+// The most calls that ran at once. A call runs from `at` to its exit.
+const peak = (calls: readonly RecordedCall[]) => Math.max(...calls.map((c) => calls.filter((d) => d.at <= c.at && c.at < d.at + (d.durationMs ?? Infinity)).length));
 
 // SC-001: HEAD, every ref, the index entries, every working byte, and the markers.
 const stateOf = (h: GitHost, repo: string) => ({ ...repoShape(h, repo), refs: refMap(h, repo), headOid: gitRun(h, repo, ["rev-parse", "--verify", "-q", "HEAD"], { allowExit: [0, 1] }).stdout.toString("utf8").trim() });
@@ -202,6 +209,56 @@ describeGit("reset current branch to here (T007)", () => {
     expect(stateOf(h, f.repo)).toEqual(stateOf(h, o));
   }, TIMEOUT_MS);
 
+  // A tracking ref makes the second review stage four reads: three counts and the force note count.
+  function tracked(h: GitHost, name: string): Fixture {
+    const f = build(h, name);
+    const bare = `${h.root}/${name}-remote.git`;
+    gitRun(h, h.root, ["init", "-q", "--bare", "--", bare]);
+    for (const [key, value] of [["remote.origin.url", native(bare)], ["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], ["branch.main.remote", "origin"], ["branch.main.merge", MAIN]]) gitRun(h, f.repo, ["config", key!, value!]);
+    gitRun(h, f.repo, ["update-ref", "refs/remotes/origin/main", f.c.m3]);
+    return f;
+  }
+
+  caseTest(TASK, "SC-010b: the review reads of one stage run in parallel, at most 4 at once", SHELL, async () => {
+    const h = hostFor("t007-parallel");
+    const f = tracked(h, "parallel");
+    const isDetach = isDetachOf(f.c.other);
+    await withSync("t007-parallel", async (service) => {
+      const r = await approved(service, f.repo);
+      const release = service.runner.holdStart(isIndexRead);
+      let requestId = "";
+      try {
+        requestId = service.send("reviewWorkbench", RESET(f.c.other, "mixed"), { repositoryId: r.repositoryId, repositoryGeneration: r.generation });
+        const operationId = await service.operationId(requestId);
+        await until(() => service.runner.calls.some((c) => c.operationId === operationId && isDetach(c)), "detachCommit read while the conflicted read waits");
+      } finally {
+        release();
+      }
+      const response = await service.response<Reviewed>(requestId);
+      expect({ ...outcome(response), forceNote: response.result?.plan.forceNote }).toEqual({ ...SUCCEEDED, forceNote: { trackingRef: "refs/remotes/origin/main" } });
+      const most = peak(service.runner.calls.filter((c) => c.operationId === response.operationId));
+      console.log(`OBSERVATION SC-010b: reset review peak=${most}`);
+      expect(most).toBeLessThanOrEqual(4);
+    });
+  }, TIMEOUT_MS);
+
+  // Serial reads never start the detachCommit read while the conflicted read waits, so this case ends at SIBLING_TIMEOUT_MS.
+  caseTest(TASK, "SC-010b: a deadline of one stage-1 review read gives DEADLINE, every read ends before the reply, and no count read starts", SHELL, async () => {
+    const h = hostFor("t007-deadline");
+    const f = tracked(h, "deadline");
+    const isDetach = isDetachOf(f.c.other);
+    await withSync("t007-deadline", async (service) => {
+      const r = await approved(service, f.repo);
+      const from = service.runner.calls.length;
+      const stop = siblingDeadline(service, isDetach, isIndexRead);
+      const late = await review(service, r, RESET(f.c.other, "mixed")).finally(stop);
+      const own = service.runner.calls.slice(from).filter((c) => c.operationId === late.operationId);
+      const endOf = (c: RecordedCall | undefined) => c?.exit?.deadline ?? (c?.exit?.exitCode === null ? "closed" : String(c?.exit?.exitCode));
+      expect({ ...outcome(late), exits: [own.find(isDetach), own.find(isIndexRead)].map(endOf), running: own.filter((c) => c.exit === undefined && c.refused === undefined).length, counts: own.filter((c) => c.arguments.includes("rev-list")).length }).toEqual({ state: "failed", code: "DEADLINE", exits: ["deadline", "closed"], running: 0, counts: 0 });
+      expect(steps(service)).toEqual([]);
+    });
+  }, SIBLING_TIMEOUT_MS);
+
   caseTest(TASK, "SC-001: each mode with the target at the branch tip, on a clean and a dirty tree, equals Git's own reset on a copy, and the branch ref does not move", SHELL, async () => {
     const h = hostFor("t007-tip");
     for (const tree of ["clean", "dirty"] as const) {
@@ -241,13 +298,15 @@ describeGit("reset current branch to here (T007)", () => {
       ["unborn", unborn.repo, (c) => c.m2, unavailable("unborn")],
       ["conflicted", conflicted.repo, (c) => c.m2, { state: "failed", code: "CONFLICTED", result: { unmerged: 1 } }],
       ["merging", merging.repo, (c) => c.m2, { state: "failed", code: "OPERATION_IN_PROGRESS", result: undefined }],
+      // SC-010b: the parallel reads keep the order of the outcomes, so CONFLICTED comes before UNKNOWN_TARGET.
+      ["conflicted missing commit", conflicted.repo, () => "0123456789abcdef0123456789abcdef01234567", { state: "failed", code: "CONFLICTED", result: { unmerged: 1 } }],
       ["missing commit", missing.repo, () => "0123456789abcdef0123456789abcdef01234567", { state: "failed", code: "UNKNOWN_TARGET", result: undefined }],
       ["tree object", missing.repo, (c) => gitOut(h, missing.repo, ["rev-parse", `${c.m2}^{tree}`]).trim(), { state: "failed", code: "UNKNOWN_TARGET", result: undefined }],
     ];
-    const fixtures: Record<string, Fixture> = { detached, unborn, conflicted, merging, "missing commit": missing, "tree object": missing };
+    const fixtures: Record<string, Fixture> = { detached, unborn, conflicted, "conflicted missing commit": conflicted, merging, "missing commit": missing, "tree object": missing };
     for (const [name, repo, target, expected] of cases) {
       const before = stateOf(h, repo);
-      await withSync(`t007-refusal-${name.replace(" ", "-")}`, async (service) => {
+      await withSync(`t007-refusal-${name.replaceAll(" ", "-")}`, async (service) => {
         const r = await approved(service, repo);
         for (const mode of MODES) {
           const from = service.runner.calls.length;

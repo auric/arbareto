@@ -10,8 +10,8 @@ import { refExists } from "./branch-ops";
 import { batchCommandArgs, isObjectId, isRefName } from "./commands";
 import { createCollector, firstEnd, isDeadlineStop, stepUnits } from "./git-runner";
 import { objectStream } from "./history-view";
-import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
-import { forceNoteOf, lastBool, trackedChanges } from "./merge-rebase";
+import { stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
+import { lastBool, trackedChanges, trackingRefOf } from "./merge-rebase";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
 import { detachCommit, inTheWayCheck, trackedStatus } from "./switch";
@@ -19,7 +19,7 @@ import { changedRefs, changes } from "./sync";
 import { observe, parentsOf } from "./sync-integrate";
 import { indexMatches, indexState, readOut, refKey } from "./sync-review";
 import type { ConfigEntry } from "./trust";
-import { cherryPickArgs, commitIsAncestorArgs, gainCountArgs, parentsArgs, reflogOnlyCountArgs, resetArgs, resetCandidatesArgs, revertCommitArgs, rewrittenCountArgs, tagArgs, tagNameCheckArgs } from "./workbench-commands";
+import { cherryPickArgs, commitIsAncestorArgs, forceNoteCountArgs, gainCountArgs, parentsArgs, reflogOnlyCountArgs, resetArgs, resetCandidatesArgs, revertCommitArgs, rewrittenCountArgs, tagArgs, tagNameCheckArgs } from "./workbench-commands";
 import { conclude, killed, registerWorkbenchAction, revCount, unavailable, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
 
 type Branch = Extract<Head, { state: "branch" }>;
@@ -34,6 +34,9 @@ async function conflicted(ctx: ObserveContext): Promise<Fact<null> | Refused> {
   if (!("value" in index)) return index;
   return index.value.unmerged > 0 ? { refused: "CONFLICTED", result: { unmerged: index.value.unmerged } } : { value: null };
 }
+
+// 001 contract §5 "Deadline outcomes": a deadline closes the Job of the parallel reads, so it decides first. Then the first other end in today's read order decides.
+const fault = (ends: readonly (Fact<unknown> | Refused | null)[]): Refused | Failure | Stop | null => firstEnd(ends.map((f) => (f === null || "value" in f ? null : f)), isDeadlineStop);
 
 const objectPrecheck = (oid: string, objectFormat: Parameters<typeof isObjectId>[1]): Refused | null => (isObjectId(oid, objectFormat) ? null : { refused: "INVALID_REQUEST" });
 
@@ -64,21 +67,17 @@ registerWorkbenchAction<"reset", ResetBound>("reset", {
     const of = ctx.workspace.objectFormat;
     const branch = onBranch(head);
     if ("refused" in branch) return branch;
-    const index = await conflicted(ctx);
-    if (!("value" in index)) return index;
-    const target = await detachCommit(ctx, p.target);
-    if (!("value" in target)) return target;
+    const [index, target, tracking, status] = await Promise.all([conflicted(ctx), detachCommit(ctx, p.target), trackingRefOf(ctx, branch, listing.entries), trackedStatus(ctx)]);
+    if (!("value" in index) || !("value" in target) || isDeadlineStop(tracking) || isDeadlineStop(status)) return fault([index, target, tracking, status])!;
     const t = target.value;
-    const leave = await revCount(ctx, rewrittenCountArgs(t, of));
-    if (!("value" in leave)) return leave;
-    const gain = await revCount(ctx, gainCountArgs(t, of));
-    if (!("value" in gain)) return gain;
-    const reflogOnly = await revCount(ctx, reflogOnlyCountArgs(t, branch.target.slice(HEADS.length), of));
-    if (!("value" in reflogOnly)) return reflogOnly;
-    const forceNote = await forceNoteOf(ctx, branch, t, leave.value, listing.entries);
-    if (!("value" in forceNote)) return forceNote;
-    const status = await trackedStatus(ctx);
-    if (!("value" in status)) return status;
+    const [leave, gain, reflogOnly, kept] = await Promise.all([
+      revCount(ctx, rewrittenCountArgs(t, of)),
+      revCount(ctx, gainCountArgs(t, of)),
+      revCount(ctx, reflogOnlyCountArgs(t, branch.target.slice(HEADS.length), of)),
+      "value" in tracking && tracking.value !== null ? revCount(ctx, forceNoteCountArgs(t, tracking.value, of)) : null,
+    ]);
+    if (!("value" in leave) || !("value" in gain) || !("value" in reflogOnly) || !("value" in tracking) || (kept !== null && !("value" in kept)) || !("value" in status)) return fault([leave, gain, reflogOnly, tracking, kept, status])!;
+    const forceNote = kept !== null && kept.value < leave.value ? { trackingRef: tracking.value! } : null;
     // Research.md R2 P4 and P15: Git overwrites an untracked file in the way, and the index listing also names a path that `git rm --cached` removed.
     let ignoredReplaced = 0;
     if (p.mode === "hard") {
@@ -86,7 +85,7 @@ registerWorkbenchAction<"reset", ResetBound>("reset", {
       if (!("value" in way)) return way;
       ignoredReplaced = way.value.ignored;
     }
-    const plan: ResetPlan = { target: t, mode: p.mode, branch: branch.target, from: branch.oid, leave: leave.value, gain: gain.value, reflogOnly: reflogOnly.value, forceNote: forceNote.value, trackedChanges: status.value.count, ignoredReplaced };
+    const plan: ResetPlan = { target: t, mode: p.mode, branch: branch.target, from: branch.oid, leave: leave.value, gain: gain.value, reflogOnly: reflogOnly.value, forceNote, trackedChanges: status.value.count, ignoredReplaced };
     return { bound: { plan, tracked: status.value.digest }, plan };
   },
   started: () => "reset",
@@ -243,36 +242,40 @@ async function subjectsOf(ctx: ObserveContext, oids: readonly string[]): Promise
   return { value: subjects };
 }
 
+// git-merge-base(1) `--is-ancestor`: exit 0 true, exit 1 false. Another exit gives GIT_FAILED.
+async function onBranchRead(ctx: ObserveContext, commit: string): Promise<Fact<boolean>> {
+  const step = await stepOf(ctx, commitIsAncestorArgs(commit, ctx.workspace.objectFormat), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }));
+  if (!("exit" in step)) return step;
+  return step.exit.exitCode === 0 ? { value: true } : step.exit.exitCode === 1 ? { value: false } : { code: "GIT_FAILED" };
+}
+
 async function observePick(ctx: ObserveContext, p: PickPayload, head: Head): Promise<Observation<PickBound>> {
-  const of = ctx.workspace.objectFormat;
   const branch = onBranch(head);
   if ("refused" in branch) return branch;
-  const index = await conflicted(ctx);
-  if (!("value" in index)) return index;
-  const target = await detachCommit(ctx, p.commit);
-  if (!("value" in target)) return target;
+  // A Cherry-pick reads the tracked status only after `already-on-branch`, because that refusal needs no status.
+  const [index, target, early] = await Promise.all([conflicted(ctx), detachCommit(ctx, p.commit), p.action === "revert-commit" ? trackedChanges(ctx) : null]);
+  if (!("value" in index) || !("value" in target) || isDeadlineStop(early)) return fault([index, target, early])!;
   const commit = target.value;
-  const parents = await parentsRead(ctx, commit);
-  if (!("value" in parents)) return parents;
-  const subjects = await subjectsOf(ctx, parents.value);
-  if (!("value" in subjects)) return subjects;
-  const listed = parents.value.map((oid, i) => ({ oid, subject: subjects.value[i]! }));
+  const [parents, ancestor] = await Promise.all([parentsRead(ctx, commit), p.action === "cherry-pick" ? onBranchRead(ctx, commit) : { value: false }]);
+  if (!("value" in parents) || isDeadlineStop(ancestor)) return fault([parents, ancestor])!;
+  const ids = parents.value;
+  // Only `mainline-needed` and the plan show the subjects. A refusal of a commit with fewer than 2 parents reads none.
+  const named = ids.length >= 2 ? await subjectsOf(ctx, ids) : null;
+  if (named !== null && !("value" in named)) return named;
+  const listed = (subjects: (string | null)[]) => ids.map((oid, i) => ({ oid, subject: subjects[i]! }));
   // Research.md R2 P7: Git refuses a merge without `-m` and a mainline for a commit with one parent.
-  if (listed.length >= 2 && p.mainline === null) return unavailable("mainline-needed", { parents: listed });
-  if (listed.length < 2 && p.mainline !== null) return unavailable("not-merge");
-  if (p.mainline !== null && p.mainline > listed.length) return { refused: "INVALID_REQUEST" };
-  if (p.action === "cherry-pick") {
-    // git-merge-base(1) `--is-ancestor`: exit 0 true, exit 1 false. Another exit gives GIT_FAILED.
-    const ancestor = await stepOf(ctx, commitIsAncestorArgs(commit, of), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }));
-    if (!("exit" in ancestor)) return ancestor;
-    if (ancestor.exit.exitCode === 0) return unavailable("already-on-branch");
-    if (ancestor.exit.exitCode !== 1) return { code: "GIT_FAILED" };
-  }
+  if (named !== null && p.mainline === null) return unavailable("mainline-needed", { parents: listed(named.value) });
+  if (named === null && p.mainline !== null) return unavailable("not-merge");
+  if (p.mainline !== null && p.mainline > ids.length) return { refused: "INVALID_REQUEST" };
+  if (!("value" in ancestor)) return ancestor;
+  if (ancestor.value) return unavailable("already-on-branch");
   // Git-cherry-pick(1) and git-revert(1): "This requires your working tree to be clean". Research.md R4 takes this rule over the P10 behavior.
-  const dirty = await trackedChanges(ctx);
+  const dirty = early ?? (await trackedChanges(ctx));
   if (!("value" in dirty)) return dirty;
   if (dirty.value) return unavailable("dirty-tree");
-  const plan: PickPlan = { commit, parents: listed, mainline: p.mainline, branch: branch.target };
+  const subjects = named ?? (await subjectsOf(ctx, ids));
+  if (!("value" in subjects)) return subjects;
+  const plan: PickPlan = { commit, parents: listed(subjects.value), mainline: p.mainline, branch: branch.target };
   return { bound: { plan, clean: true }, plan };
 }
 

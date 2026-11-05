@@ -98,6 +98,8 @@ Done on 2026-11-04 with Git 2.56.0.windows.2. Scripts `probe.sh`, `probe2.sh`, `
 
 Pending. T019 records the build identity, the OS version, each SC-009 to SC-011 result, and the records.
 
+- SC-011 probe (decision 2026-11-05): the probe waits 2 ms between inputs. Thus a run of about 400 ms still gets the minimum of 20 inputs. The 001 SC-005 targets do not change.
+
 ### Requirement-to-test map (T022)
 
 Pending. T022 maps every FR and SC to its tests (spec SC-012).

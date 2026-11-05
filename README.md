@@ -37,6 +37,7 @@ These features work on the `main` branch today.
 - Recovery from a rejected push, with force push with lease after a confirmation.
 - Clone a repository.
 - Branches: switch, create, rename, delete, merge, and rebase. Resolve a conflicted file, or open it in your merge tool.
+- A commit menu in History: check out a commit, create a branch or a tag, and copy the commit ID. Reset the current branch to a commit, cherry-pick a commit, or revert it. Abort or continue a stopped cherry-pick or revert.
 - A sidebar with branches, remote-tracking branches, tags, worktrees, and submodules. Add and remove worktrees. Update submodules.
 - Git settings by scope: system, global, and local.
 - Repositories inside WSL 2 distros, through the Git of the distro.

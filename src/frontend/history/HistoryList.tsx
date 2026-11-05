@@ -278,7 +278,8 @@ export type HistoryListProps = {
   /** Feature 004 plan.md D15: Ctrl+B on the selected commit row opens Create branch here. */
   onCreateBranch?: (oid: string, anchor: HTMLElement) => void;
   /** Feature 010 plan.md D13 "Menu": a right-click, Shift+F10, or the Menu key on a commit row. `merge` is true for a row with two or more parents. */
-  onCommitMenu?: (oid: string, anchor: HTMLElement, byKey: boolean, merge: boolean) => void;
+  /** `pointerX` is the client x of a right-click, or undefined for a key. */
+  onCommitMenu?: (oid: string, anchor: HTMLElement, byKey: boolean, merge: boolean, pointerX?: number) => void;
   /** Feature 004 spec FR-072: the reason that no workspace read ran, in place of Loading…, or null. */
   unread?: string | null;
 };
@@ -606,7 +607,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
                 event.preventDefault();
                 go(item);
                 list.current?.focus();
-                onCommitMenu(row.oid, event.currentTarget, false, row.parents.length >= 2);
+                onCommitMenu(row.oid, event.currentTarget, false, row.parents.length >= 2, event.clientX);
               },
       },
     );

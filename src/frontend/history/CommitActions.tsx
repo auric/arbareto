@@ -3,7 +3,7 @@
 
 import { Alert02Icon, ArrowTurnBackwardIcon, CherryIcon, Copy01Icon, GitBranchIcon, GitCommitIcon, Tag01Icon, Undo03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { MERGE_MESSAGE_BYTES } from "../../contracts/limits";
 import { tagNameRefusal } from "../../contracts/tag-name";
@@ -68,7 +68,7 @@ const BLANK = /^[ \t\n\r]*$/;
 
 /** The menu, the popovers, and the Hard dialog of a History commit row. */
 export function useCommitActions({ bridge, target, repositoryId, head, blockedReason, blockedRunning, onOperation, onNotice, workbench, branches, askTrust }: CommitActionsOptions) {
-  const [menu, setMenu] = useState<{ oid: string; anchor: Element; byKey: boolean; merge: boolean } | null>(null);
+  const [menu, setMenu] = useState<{ oid: string; anchor: Element; byKey: boolean; merge: boolean; pointerX: number | null } | null>(null);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   // Each review takes a number. A response of an older review or of a closed popover changes nothing.
   const seq = useRef(0);
@@ -175,7 +175,11 @@ export function useCommitActions({ bridge, target, repositoryId, head, blockedRe
   function confirmTag(o: Extract<Overlay, { kind: "tag" }>) {
     void reviewLatest({ action: "create-tag", name: o.name, target: o.oid, message: o.annotated ? o.message : null }, (response) => {
       const reviewed = reviewedOf(response);
-      if (reviewed === null || reviewed.token === null) return setOverlay((x) => (x?.kind === "tag" ? { ...x, error: tagRefusal(response, o.name) } : x));
+      if (reviewed === null || reviewed.token === null) {
+        setOverlay((x) => (x?.kind === "tag" ? { ...x, error: tagRefusal(response, o.name) } : x));
+        // Mockup board 5: the refusal names the tag name, so Tag name takes the focus.
+        return field.current?.focus();
+      }
       close();
       void run(reviewed.token, "create-tag", (r) => (r.state === "succeeded" ? { outcome: TAG.done(o.name, o.oid) } : {}));
     });
@@ -264,7 +268,7 @@ export function useCommitActions({ bridge, target, repositoryId, head, blockedRe
 
   const overlays = (
     <>
-      {menu === null ? null : <CommitMenu label={MENU_NAME(menu.oid)} groups={(copy) => groups(menu, copy)} anchor={menu.anchor} byKey={menu.byKey} handoff={handoff} onClose={() => setMenu(null)} />}
+      {menu === null ? null : <CommitMenu label={MENU_NAME(menu.oid)} groups={(copy) => groups(menu, copy)} anchor={menu.anchor} pointerX={menu.pointerX} detached={head?.state === "detached"} byKey={menu.byKey} handoff={handoff} onClose={() => setMenu(null)} />}
       {overlay?.kind === "tag" ? <TagPopover o={overlay} field={field} fieldRef={fieldRef} finalFocus={focusList(overlay.anchor)} onChange={setOverlay} onConfirm={() => confirmTag(overlay)} onCancel={close} /> : null}
       {overlay?.kind === "reset" ? (
         <ResetPopover
@@ -314,9 +318,9 @@ export function useCommitActions({ bridge, target, repositoryId, head, blockedRe
 
   return {
     /** Plan D13 "Menu": a right-click, Shift+F10, or the Menu key on a commit row. `merge` is true for a row with two or more parents. */
-    openMenu(oid: string, anchor: Element, byKey: boolean, merge: boolean) {
+    openMenu(oid: string, anchor: Element, byKey: boolean, merge: boolean, pointerX?: number) {
       handoff.current = false;
-      setMenu({ oid, anchor, byKey, merge });
+      setMenu({ oid, anchor, byKey, merge, pointerX: byKey || pointerX === undefined ? null : pointerX });
     },
     overlays,
   };
@@ -336,10 +340,13 @@ function pickRefusal(response: BridgeResponse, pick: boolean, branch: string): s
 }
 
 /** The menu reads the copy helper inside the `CopyFailed` provider of the window. */
-function CommitMenu({ label, groups, anchor, byKey, handoff, onClose }: { label: string; groups(copy: (text: string) => void): ActionItem[][]; anchor: Element; byKey: boolean; handoff: RefObject<boolean>; onClose(): void }) {
+function CommitMenu({ label, groups, anchor, pointerX, detached, byKey, handoff, onClose }: { label: string; groups(copy: (text: string) => void): ActionItem[][]; anchor: Element; pointerX: number | null; detached: boolean; byKey: boolean; handoff: RefObject<boolean>; onClose(): void }) {
   const copy = useCopy();
+  // Mockup default 2: a right-click anchors the menu below the row at the pointer x. A key anchors it below the row start.
+  const at = useMemo(() => (pointerX === null ? anchor : { contextElement: anchor, getBoundingClientRect: () => { const row = anchor.getBoundingClientRect(); return new DOMRect(pointerX, row.top, 0, row.height); } }), [anchor, pointerX]);
+  // Mockup default 3: the detached menu has width 320, so each reason wraps below its label.
   // The option is no focus target under aria-activedescendant, so the focus goes back to its list.
-  return <ActionMenu label={label} groups={groups(copy)} open anchor={anchor} byKey={byKey} finalFocus={() => (handoff.current ? false : (anchor.closest<HTMLElement>('[role="listbox"]') ?? true))} onOpenChange={(next) => void (next || onClose())} />;
+  return <ActionMenu label={label} groups={groups(copy)} open anchor={at} side="bottom" width={detached ? 320 : undefined} byKey={byKey} finalFocus={() => (handoff.current ? false : (anchor.closest<HTMLElement>('[role="listbox"]') ?? true))} onOpenChange={(next) => void (next || onClose())} />;
 }
 
 type PopoverParts = { field: RefObject<HTMLElement | null>; fieldRef(element: HTMLElement | null): void; finalFocus(): HTMLElement | boolean; onCancel(): void; onConfirm(): void };
@@ -452,12 +459,12 @@ function ResetPopover({ o, branch, field, fieldRef, finalFocus, onMode, onConfir
       ))}
       {plan === null && !refused ? <p className="text-muted-text">{REVIEW_PENDING}</p> : null}
       {o.inTheWay === null ? null : (
-        <div role="alert" className="flex flex-col gap-1">
+        <div role="alert" className="flex min-h-0 flex-col gap-1">
           <p className="flex items-start gap-2">
             <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-removed" />
             <span>{RESET.inTheWayLead}</span>
           </p>
-          <ul className="max-h-[160px] overflow-y-auto rounded-sm border border-divider bg-canvas px-2 py-1.5 font-mono leading-[18px] select-text">
+          <ul className="max-h-[160px] min-h-0 overflow-y-auto rounded-sm border border-divider bg-canvas px-2 py-1.5 font-mono leading-[18px] select-text">
             {o.inTheWay.paths.map((path) => (
               <li key={path} className="break-all">
                 {path}

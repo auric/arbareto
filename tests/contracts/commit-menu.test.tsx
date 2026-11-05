@@ -263,3 +263,51 @@ describe("availability (FR-014, plan D1)", () => {
     expect(double.count("reviewWorkbench")).toBe(0);
   });
 });
+
+describe("menu geometry (mockup board defaults 2 and 3)", () => {
+  const positioner = () => menu()!.parentElement!;
+  /** Stubs the row box: x 40, y 100, width 1000, height 30. Base UI keeps 5 px collision padding at the window edge. */
+  function rowBox(oid: string) {
+    option(oid).getBoundingClientRect = () => new DOMRect(40, 100, 1000, 30);
+  }
+  // jsdom has no layout. Base UI collision avoidance reads the viewport from the root element, so the tests give it a 1280 x 800 window.
+  const root = document.documentElement;
+  beforeAll(() => {
+    Object.defineProperty(root, "clientWidth", { configurable: true, value: 1280 });
+    Object.defineProperty(root, "clientHeight", { configurable: true, value: 800 });
+  });
+  afterAll(() => {
+    delete (root as { clientWidth?: number }).clientWidth;
+    delete (root as { clientHeight?: number }).clientHeight;
+  });
+
+  test("a right-click opens the menu below the row, start-aligned at the pointer", async () => {
+    await mountWorkbench(workbench, menuWorld());
+    rowBox(B);
+    await rightClick(option(B), 300);
+    expect({ side: positioner().getAttribute("data-side"), align: positioner().getAttribute("data-align") }).toEqual({ side: "bottom", align: "start" });
+    expect(positioner().style.transform).toBe("translate(300px, 132px)");
+  });
+
+  test("Shift+F10 opens the menu below the row at its start", async () => {
+    await mountWorkbench(workbench, menuWorld());
+    await selectRow(B);
+    rowBox(B);
+    await press(historyList(), "F10", { key: "F10", shiftKey: true });
+    expect({ side: positioner().getAttribute("data-side"), align: positioner().getAttribute("data-align") }).toEqual({ side: "bottom", align: "start" });
+    expect(positioner().style.transform).toBe("translate(40px, 132px)");
+  });
+
+  test("a detached HEAD gives the menu width 320, and each reason wraps below its label", async () => {
+    await mountWorkbench(workbench, menuWorld({ head: { state: "detached", oid: A }, branches: [] }));
+    await keyMenu(B);
+    expect(menu()!.style.width).toBe("320px");
+    expect(menuItem("Revert commit…").querySelector('[data-slot="menu-text"] [data-slot="menu-reason"]')).not.toBeNull();
+  });
+
+  test("a branch HEAD keeps the menu width free", async () => {
+    await mountWorkbench(workbench, menuWorld());
+    await keyMenu(B);
+    expect(menu()!.style.width).toBe("");
+  });
+});

@@ -376,6 +376,9 @@ function rowOf(r: UpdateRowFacts, o: RowObservation): { result: SubmoduleRowResu
   return { result, effect, failing, reached };
 }
 
+// Contract §12 "Output tail", amended by feature 004: the `outputTail` values of one update result, in UTF-8 bytes.
+const UPDATE_OUTPUT_TAILS_BYTES = 4 * 1024 * 1024;
+
 // Contract §12 "Reconciliation and outcome": the row states, then the outcome. First match wins in both lists.
 export function classifyUpdate(facts: UpdateFacts): { event: OperationEvent; rows: SubmoduleRowResult[] } {
   const rows: ReturnType<typeof rowOf>[] = [];
@@ -385,7 +388,13 @@ export function classifyUpdate(facts: UpdateFacts): { event: OperationEvent; row
     if ("stop" in o) return { event: { type: "reconciliation-read-deadline" }, rows: [] };
     rows.push(rowOf(r, o.value));
   }
-  const results = rows.map((x) => x.result);
+  // The tails fill the total in row order. After the first tail that does not fit, each failed row keeps an empty tail.
+  let tails = 0;
+  const results = rows.map(({ result }) => {
+    if (result.outputTail === undefined) return result;
+    tails += Buffer.byteLength(result.outputTail);
+    return tails <= UPDATE_OUTPUT_TAILS_BYTES ? result : { ...result, outputTail: "" };
+  });
   const effect = rows.some((x) => x.effect);
   const failing = rows.some((x) => x.failing);
   const { stop } = facts;
@@ -529,7 +538,7 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
   }
 }
 
-// Contract §8 "Observed locks": `updateSubmodules` names at most 5 + 2 × 256 files.
+// Contract §8 "Observed locks": `updateSubmodules` names at most 5 files plus 2 for each submodule of the §5 bound.
 const SUBMODULE_FOREIGN_CAP = 5 + 2 * SUBMODULE_REVIEW_SUBMODULES;
 
 // Contract §8 "Observed locks" with the submodule locks: the superproject `config.lock`, then `index.lock` and `HEAD.lock` of each plan Git directory.

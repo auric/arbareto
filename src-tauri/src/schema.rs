@@ -15,8 +15,8 @@ use crate::settings::{TRUST_RECORD_BYTES, utc_time};
 use crate::wsl::WslIdentity;
 
 const INVALID: Code = Code::InvalidRequest;
-/// Contract §5 "Submodule review": at most 256 submodules.
-const SUBMODULE_PATHS: usize = 256;
+/// Contract §5 "Submodule review", feature 004 contract Δ12 "Submodule bound": `src/contracts/limits.ts` `SUBMODULE_REVIEW_SUBMODULES`.
+const SUBMODULE_PATHS: usize = 1_024;
 /// Contract §6 "Channel frames" `limits.deadlineMs`: a WSL distro start probe has at most 60 seconds.
 pub const WSL_START_DEADLINE_MS: u64 = 60_000;
 /// Feature 003 contract Δ3 `clone`: `src/contracts/limits.ts` `CLONE_URL_BYTES`.
@@ -1601,9 +1601,10 @@ mod tests {
         // Feature 006 T061 adds the 5 `read-dictionary-result` chunk vectors, 2 of them new (contract Δ1).
         // Feature 008 T006 adds 4 `mutation-request`, 4 `progress`, 9 `fileReplace`, 2 `tempRemove`, and 2 `fileFacts` vectors (contract Δ10).
         // WP4 adds the 2 `run` vectors of the size rule. The batch 1 gaps add 4 `fileReplace` and 1 `tempRemove` request vectors.
+        // Feature 004 T159 adds the 2 `confirmRun` vectors of the 1,024-path bound (contract Δ12 "Submodule bound").
         assert_eq!(
             checked,
-            if cfg!(windows) { 261 } else { 256 },
+            if cfg!(windows) { 263 } else { 258 },
             "shell-read vectors"
         );
     }

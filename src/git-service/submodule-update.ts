@@ -341,8 +341,6 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     const forms = pathForms(w, ctx.installation);
     const wsl = forms.wsl;
     const confirmed = new Set(read.programs.map((e) => JSON.stringify([e.owner, e.identity, e.program.digest])));
-    const fold = forms.key;
-    const confirmedDirs = new Map(read.rowless.map((repo) => [fold(repo.gitDir), programDirOwner(repo.gitDir)]));
     const progress = createProgress(registry, operationId);
     let lastDescendants = 0;
     let visited = 0;
@@ -446,8 +444,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       if (has(e.owner, e.identity)) return true;
       if (holder === null) return false;
       // A kept Git directory without a row can become a row of a level read. It keeps its confirmed entries.
-      const dir = holder.p.repo === null ? undefined : confirmedDirs.get(fold(holder.p.repo.gitDir));
-      if (dir !== undefined && has(dir, e.identity)) return true;
+      // Contract Δ12: Git forms compare exactly. `rev-parse --absolute-git-dir` prints the letter case of the folder on disk.
+      if (holder.p.repo !== null && has(programDirOwner(holder.p.repo.gitDir), e.identity)) return true;
       const [copy, ...value] = e.identity;
       // A confirmed `unchecked` copy for unknown nested submodules covers the same value for each row below its row.
       if (e.program.digest === "unchecked" && (copy === "" || copy === "nested")) {
@@ -787,7 +785,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       const rowIds = new Map(a.review.value.rows.map((row) => [row.pathBytes, row.rowId]));
       let pre = await preflight(ctx, rowIds, a);
       if (!("observer" in pre)) return refuse(pre);
-      if (!approvals.consume(key, operationId)) {
+      // Feature 004 contract Δ12 "Update token": acceptance checked the lifetime. A 1,024-row preflight can take longer.
+      if (!approvals.consume(key, operationId, { lifetime: false })) {
         const now = approvals.accept(key);
         return refuse({ code: !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET" });
       }

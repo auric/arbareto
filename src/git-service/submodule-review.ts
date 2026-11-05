@@ -135,8 +135,6 @@ export interface PathForms {
   root: string;
   join(base: string, ...parts: string[]): string;
   resolve(base: string, path: string): string;
-  // The key of one folder. Linux names keep their letter case.
-  key(path: string): string;
   // The UNC form of a Linux path. Null: the path has no UNC form (contract §11 "Route").
   native(path: string): string | null;
   platform: GitPlatform;
@@ -147,8 +145,7 @@ export interface PathForms {
 
 export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installation: Pick<ReadInstallation, "selectedPath">): PathForms {
   if (w.wsl === undefined) {
-    const key = (path: string) => NATIVE.fold(resolve(path));
-    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, key, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined };
+    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined };
   }
   const { distro, guid, wslExecutable, path } = w.wsl;
   const route = routeWslPath(w.worktreeRoot, { listed: [distro], registry: [{ name: distro, guid, version: 2 }] });
@@ -158,7 +155,6 @@ export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installati
     root: route.linuxPath,
     join: (base, ...parts) => posix.join(base, ...parts),
     resolve: (base, linux) => posix.resolve(base, linux),
-    key: (linux) => posix.normalize(linux),
     native: (linux) => wslIdentityPath(distro, linux),
     platform: "posix",
     gitPath: path,
@@ -191,7 +187,8 @@ export const REFUSAL_TEXTS = {
   activeValue: (path: string, name: string) => `Submodule ${path} has a submodule.${name}.active value that is not true or false. Fix it in a terminal, then use Refresh.`,
   remoteName: (path: string, name: string) => `Submodule ${path} has a remote named ${name}, which Git can read as an option. Rename that remote in a terminal, then use Refresh.`,
   gitdirConfig: "This repository sets custom locations for submodule Git folders. Arbareto reads only the default location. Update the submodules in a terminal.",
-  limit: "This repository has more than 256 submodules or more than 8 nesting levels. Update them in a terminal.",
+  // Feature 004 contract Δ12 "Submodule bound": the 001 §12 text names SUBMODULE_REVIEW_SUBMODULES.
+  limit: "This repository has more than 1,024 submodules or more than 8 nesting levels. Update them in a terminal.",
   // Feature 004 contract Δ12.
   parentNotInitialized: (parent: string, path: string) => `Submodule ${parent} is not initialized. Update ${parent} first, then update submodule ${path}.`,
   inactive: (path: string) => `Submodule ${path} is not active, and Arbareto does not activate submodules. Activate it with the command, then update it again.`,
@@ -282,6 +279,8 @@ class Halt {
 const NUL = 0x00;
 const NEWLINE = 0x0a;
 const TAB = 0x09;
+// Feature 004 contract Δ12 "Submodule bound": one row can hold TRUST_INPUT_BYTES, so this total bounds the service memory of a review.
+const REVIEW_CONFIG_BYTES = 64 * 1024 * 1024;
 const latin1 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const sha256 = (value: unknown) => new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex");
@@ -595,6 +594,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     // The branch marks by row ID. They stay out of `observed`, `programInputs`, and the binding.
     const marks = new Map<string, SubmoduleBranch>();
     let cachedListing: TrustListing | null = null;
+    // Feature 004 contract Δ12 "Submodule bound": the `config list` bytes that `top` reads for the binding, across all rows. Null outside `top`.
+    let boundConfig: number | null = null;
 
     // Contract §3: trust gating follows the read rule of §7, before any Git process inside a submodule.
     const superTrust = async (): Promise<TrustListing> => {
@@ -714,6 +715,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const config = await git(submoduleConfigListArgs(location), { max: TRUST_INPUT_BYTES });
       if (config.limited) throw failed("OUTPUT_LIMIT");
       if (config.code !== 0) throw failed("GIT_FAILED");
+      if (boundConfig !== null && (boundConfig += config.out.length) > REVIEW_CONFIG_BYTES) throw failed("OUTPUT_LIMIT");
       const entries = parseConfigListing(config.out, false);
       if (entries === null) throw failed("MALFORMED_GIT_OUTPUT");
       return { gitDir, hooks, entries };
@@ -1582,6 +1584,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
 
     // Contract §12 "Review reads" from the superproject: the rows at every depth, the kept Git directories, and the programs.
     function top(input: SuperprojectInput): Promise<SubmoduleFact<Observed>> {
+      boundConfig = 0;
       return attempt(async () => {
         const superListing = await superTrust();
         programInputs.push(superListing.fingerprint);
@@ -1644,7 +1647,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         const programs = await programsOfAll(superListing, rows, rowless, true);
         hosts = hostsOf(rows);
         return { rows: treeOrder(rows), refusals: ordered(0), rowless, programs, config: superListing.entries, activeRefused: false, ...attachment(0), hosts };
-      });
+      }).finally(() => (boundConfig = null));
     }
 
     // Contract Δ12 and plan.md D13: a row that fetches inside its submodule names the host of each remote URL that differs from the host of its effective URL.

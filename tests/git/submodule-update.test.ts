@@ -8,14 +8,35 @@ import { describe, expect } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import policyFile from "../../src/contracts/git-environment.json";
+import { APPROVAL_LIFETIME_MS } from "../../src/contracts/limits";
 import { SUBMODULE_PROGRESS_PHASES, SubmoduleProgress } from "../../src/contracts/submodules";
 import { printOrigin } from "../origin";
-import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { fixtureGitPath } from "./git-binary";
-import { buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
+import { buildChanged, buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, submoduleState, workingFileDigests, type SubmoduleUpdateResult } from "./git-oracle";
-import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService } from "./hunk-harness";
+import {
+  applyHunk,
+  commit as runCommit,
+  commitCalls,
+  gitPath,
+  mutationFrames,
+  outcome,
+  readOk,
+  repoOf,
+  reviewOk as commitReview,
+  selectHunks,
+  SUCCEEDED,
+  TIMEOUT_MS,
+  underTest,
+  until,
+  valuesOf,
+  withService,
+} from "./hunk-harness";
+import { buildFetchFlags } from "./remote-fixtures";
 import { caseTest, once, withFsCalls, withKeptWorkspaces, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
+import { callsFrom, gitExe, hostFor, native, register, reviewed as syncReviewed, subcommandOf, sync, withSync } from "./sync-harness";
+import { buildWorkbench } from "./workbench-fixtures";
 import {
   callsSince,
   checkoutRemedy,
@@ -52,9 +73,11 @@ import {
   updateSubmodules,
   sendUpdate,
   treeGit,
+  treeWorld,
   withFixture,
   type MiniWorld,
   type SubmoduleReview,
+  type TreeWorld,
 } from "./submodule-harness";
 import { nestedFlat } from "./submodule-count-fixture";
 
@@ -1448,8 +1471,7 @@ describe("submodule count (004 FR-114, contract Δ12 \"Submodule count\")", () =
       // git-submodule(1) `status`: a leading space means that the checked-out commit equals the recorded commit.
       const status = () => treeGit(w, w.sup, ["submodule", "status", "--recursive"]).split("\n").filter((line) => line !== "");
       const before = status();
-      // The one-lane preflight of 129 rows can outlast the 60-second lifetime at consume until T160 (FR-115). The case holds the approval clock.
-      await withService({ name: "t156-nested", environment: serviceEnv(w.env), approvalClock: () => 0 }, async (service) => {
+      await withService({ name: "t156-nested", environment: serviceEnv(w.env) }, async (service) => {
         await update();
         const { repositoryId } = await service.register(w.sup);
         const r = await reviewSubmodules(service, repositoryId);
@@ -1462,5 +1484,173 @@ describe("submodule count (004 FR-114, contract Δ12 \"Submodule count\")", () =
     },
     25 * 60_000,
   );
+});
+
+// ---- Feature 004 FR-115: the update token (T159 case c, contract Δ12 "Update token") ----
+
+// The approval clock passes the 60-second lifetime when the mutation enters its exclusion: after acceptance, before the consume step.
+function lateClock(): { approvalClock: () => number; onStarted: () => void; late: () => boolean } {
+  let elapsed = 0;
+  return { approvalClock: () => performance.now() + elapsed, onStarted: () => void (elapsed = APPROVAL_LIFETIME_MS + 1), late: () => elapsed > 0 };
+}
+
+describe("update token (004 FR-115, contract Δ12 \"Update token\", 001 §5 \"Approval lifetime\")", () => {
+  const tokenCase = (name: string, fn: () => Promise<void>) => caseTest("T159", name, SHELL, fn, TIMEOUT_MS);
+  const EXPIRED = { state: "failed", code: "APPROVAL_EXPIRED" };
+  let shared: TreeWorld | null = null;
+  const world = () => (shared ??= treeWorld("t159-token", { a: {} }));
+
+  tokenCase("case c: an update whose preflight ends past the approval lifetime still consumes its token and succeeds", async () => {
+    const w = world();
+    const clock = lateClock();
+    await withService({ name: "t159-token-late", environment: serviceEnv(w.env), approvalClock: clock.approvalClock, onStarted: clock.onStarted }, async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      const response = await updateSubmodules(service, repositoryId, r);
+      expect({ outcome: outcome(response), late: clock.late(), rows: resultsOf(response).map((row) => [row.path, row.state]) }).toEqual({ outcome: SUCCEEDED, late: true, rows: [["a", "unchanged"]] });
+    });
+  });
+
+  tokenCase("case c: a token past the approval lifetime at acceptance gives APPROVAL_EXPIRED, and no Git process starts", async () => {
+    const w = world();
+    let elapsed = 0;
+    await withService({ name: "t159-token-expired", environment: serviceEnv(w.env), approvalClock: () => performance.now() + elapsed }, async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      elapsed = APPROVAL_LIFETIME_MS + 1;
+      const from = service.runner.calls.length;
+      const response = await updateSubmodules(service, repositoryId, r);
+      expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "APPROVAL_EXPIRED", runs: 0 });
+    });
+  });
+
+  tokenCase("case c: commit and applyHunk tokens past the approval lifetime at their consume step give APPROVAL_EXPIRED", async () => {
+    const repo = repoOf(buildChanged(gitPath(), "t159-consume-index", "F09"));
+    for (const kind of ["commit", "applyHunk"] as const) {
+      const clock = lateClock();
+      await withService({ name: `t159-consume-${kind}`, approvalClock: clock.approvalClock, onStarted: clock.onStarted }, async (service) => {
+        await underTest(kind === "commit" ? "commit" : "hunk-publish");
+        const { repositoryId } = await service.register(repo);
+        const response =
+          kind === "commit"
+            ? await runCommit(service, repositoryId, await commitReview(service, repositoryId), "late\n")
+            : await (async () => {
+                const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+                return applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage");
+              })();
+        expect({ kind, ...outcome(response), late: clock.late(), commits: commitCalls(service).length }).toEqual({ kind, ...EXPIRED, late: true, commits: 0 });
+      });
+    }
+  });
+
+  tokenCase("case c: a sync token past the approval lifetime at its consume step gives APPROVAL_EXPIRED, and no fetch starts", async () => {
+    const { clone } = buildFetchFlags(hostFor("t159-consume-sync"));
+    const clock = lateClock();
+    await withSync(
+      "t159-consume-sync",
+      async (service) => {
+        const r = await register(service, clone);
+        const review = await syncReviewed(service, r, { action: "fetch" });
+        const from = service.runner.calls.length;
+        const response = await sync(service, r, review.syncReviewToken);
+        const fetches = callsFrom(service, from).filter((c) => subcommandOf(c.arguments) === "fetch");
+        expect({ ...outcome(response), late: clock.late(), fetches: fetches.length }).toEqual({ ...EXPIRED, late: true, fetches: 0 });
+      },
+      { approvalClock: clock.approvalClock, onStarted: clock.onStarted },
+    );
+  });
+
+  tokenCase("case c: a workbench token past the approval lifetime at its consume step gives APPROVAL_EXPIRED", async () => {
+    const f = buildWorkbench(gitExe(), "switch-clean", "t159-consume-workbench");
+    const clock = lateClock();
+    await withSync(
+      "t159-consume-workbench",
+      async (service) => {
+        const r = await service.register(native(f.repo));
+        if ((await service.readTrust(r.repositoryId)).result!.approvalRequired.sync) expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+        const reviewed = await service.request<{ workbenchToken: string }>("reviewWorkbench", { action: "switch", target: { ref: "refs/heads/target" }, choice: "keep" }, { repositoryId: r.repositoryId, repositoryGeneration: r.generation });
+        expect(outcome(reviewed)).toEqual(SUCCEEDED);
+        const response = await service.response(service.send("runWorkbench", { workbenchToken: reviewed.result!.workbenchToken, start: true }, { repositoryId: r.repositoryId }));
+        expect({ ...outcome(response), late: clock.late() }).toEqual({ ...EXPIRED, late: true });
+      },
+      { approvalClock: clock.approvalClock, onStarted: clock.onStarted },
+    );
+  });
+});
+
+// ---- Contract Δ12 "Submodule count": every compare of Git forms is exact (T160) ----
+
+describe("kept Git directories whose names differ only in letter case (contract Δ12, §12 \"Trust\" nested levels)", () => {
+  // `p` is at `p1`, which records no submodule. The index records `p2`, which records `X`, and the review cannot read `p2`.
+  // So the review lists `X` and its twin `x` as kept Git directories without a row. The level read of `p` after its checkout lists `X`.
+  // Null: the OS refuses a second folder name that differs only in letter case.
+  function twinWorld(name: string): { sup: string; env: { GIT_CONFIG_GLOBAL: string } } | null {
+    const root = fixtureDir(name);
+    const env = { GIT_CONFIG_GLOBAL: put(root, "global.gitconfig", `${readFileSync(FIXTURE_GLOBAL_CONFIG, "utf8")}[protocol "file"]\n\tallow = always\n`) };
+    const g = (cwd: string, args: string[]) => ownedGit(gitPath(), FIXTURE_ROOT, cwd, args, { env }).toString("utf8").trim();
+    const url = (bare: string) => join(root, bare).replaceAll("\\", "/");
+    const work = (bare: string) => {
+      g(root, ["init", "-q", "--bare", "-b", "main", bare]);
+      const dir = join(root, "src", bare);
+      mkdirSync(dir, { recursive: true });
+      g(dir, ["init", "-q", "-b", "main"]);
+      return dir;
+    };
+    const commit = (dir: string, bare: string, files: Record<string, string>, links: Record<string, string> = {}) => {
+      for (const [path, text] of Object.entries(files)) put(dir, path, text);
+      g(dir, ["add", "--", ...Object.keys(files)]);
+      for (const [path, oid] of Object.entries(links)) g(dir, ["update-index", "--add", "--cacheinfo", `160000,${oid},${path}`]);
+      g(dir, ["commit", "-q", "-m", bare]);
+      g(dir, ["push", "-q", url(bare), "HEAD:refs/heads/main"]);
+      return g(dir, ["rev-parse", "HEAD"]);
+    };
+    const leaf = commit(work("leaf.git"), "leaf.git", { "file.txt": "leaf\n" });
+    const p = work("p.git");
+    const p1 = commit(p, "p.git", { "file.txt": "p1\n" });
+    commit(work("super.git"), "super.git", { ".gitmodules": `[submodule "p"]\n\tpath = p\n\turl = ../p.git\n` }, { p: p1 });
+    g(root, ["clone", "-q", url("super.git"), "super"]);
+    const sup = join(root, "super");
+    g(sup, ["submodule", "update", "--init", "-q"]);
+    const p2 = commit(p, "p.git", { ".gitmodules": `[submodule "X"]\n\tpath = X\n\turl = ../leaf.git\n` }, { X: leaf });
+    g(sup, ["update-index", "--cacheinfo", `160000,${p2},p`]);
+    const modules = join(sup, ".git", "modules", "p", "modules");
+    mkdirSync(modules);
+    // `fsutil` exits 0 also when it sets nothing, so the folder state comes from the OS refusal of a second name below.
+    if (process.platform === "win32") Bun.spawnSync(["fsutil", "file", "setCaseSensitiveInfo", modules, "enable"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    mkdirSync(join(modules, "probe"));
+    try {
+      mkdirSync(join(modules, "PROBE"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      return null;
+    } finally {
+      rmSync(join(modules, "probe"), { recursive: true, force: true });
+    }
+    rmSync(join(modules, "PROBE"), { recursive: true });
+    for (const [twin, folder] of [["X", "kept-upper"], ["x", "kept-lower"]] as const) {
+      g(root, ["clone", "-q", `--separate-git-dir=${join(modules, twin)}`, url("leaf.git"), join(root, folder)]);
+      rmSync(join(root, folder), { recursive: true });
+    }
+    // A local entry names no program, so the review lists it as an entry of `X` (contract §12 "Trust").
+    g(root, [`--git-dir=${join(modules, "X")}`, "config", "arbareto.kept", "X"]);
+    return { sup, env };
+  }
+
+  caseTest("T160", "a kept Git directory that becomes a row of a level read keeps its confirmed entries beside a twin whose name differs only in letter case", SHELL, async () => {
+    const w = twinWorld("t160-twins");
+    if (w === null) {
+      console.log("SKIP T160 twins: fsutil file setCaseSensitiveInfo did not make the modules folder case-sensitive");
+      return;
+    }
+    await withService({ name: "t160-twins", environment: serviceEnv(w.env) }, async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      expect({ rows: r.rows.map((row) => [row.path, row.action]), programs: r.programs.map((x) => x.key) }).toEqual({ rows: [["p", "fetch-checkout"]], programs: expect.arrayContaining(["arbareto.kept"]) });
+      const response = await updateSubmodules(service, repositoryId, r);
+      const rows = resultsOf(response).map((row) => [row.path, row.state, row.reason ?? null, row.found]);
+      console.log(`OBSERVATION T160 twins: ${JSON.stringify(rows)}`);
+      expect({ outcome: outcome(response), refused: rows.filter(([, state]) => state === "refused"), nested: rows.filter(([path]) => path === "p/X").length }).toEqual({ outcome: SUCCEEDED, refused: [], nested: 1 });
+    });
+  });
 });
 

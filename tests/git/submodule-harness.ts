@@ -247,7 +247,8 @@ export const TEXTS = {
   path: (path: string) => `Arbareto cannot pass the path of submodule ${path} to Git literally.`,
   remoteName: (path: string, name: string) => `Submodule ${path} has a remote named ${name}, which Git can read as an option. Rename that remote in a terminal, then use Refresh.`,
   gitdirConfig: "This repository sets custom locations for submodule Git folders. Arbareto reads only the default location. Update the submodules in a terminal.",
-  limit: "This repository has more than 256 submodules or more than 8 nesting levels. Update them in a terminal.",
+  // Feature 004 contract Δ12 "Submodule bound": the 001 §12 text with the bound of 1,024.
+  limit: "This repository has more than 1,024 submodules or more than 8 nesting levels. Update them in a terminal.",
   programs: (path: string) => `Submodule ${path} needs programs that the run confirmation did not cover. Use Update submodules again to review them.`,
   changedAfterReview: (path: string) => `Another program changed submodule ${path} after the review. Use Update submodules again to review it.`,
   foundFolder: (path: string, oid: string) =>

@@ -9,7 +9,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { SUBMODULE_REVIEW_SUBMODULES } from "../../src/contracts/limits";
 import type { ObserveContext } from "../../src/git-service/hunk-publish";
 import type { RetainedUpdate } from "../../src/git-service/reconcile";
 import { fixturePath, useFixtureRoot } from "./fixture-root";
@@ -41,11 +40,12 @@ describe("submoduleLocks (contract §8 \"Observed locks\")", () => {
     expect(await submoduleLocks(ctx, null, [...modules, modules[0]!])).toEqual([`${gitDir}/index.lock`, `${gitDir}/config.lock`, `${modules[0]}/index.lock`, `${modules[0]}/HEAD.lock`, `${modules[1]}/HEAD.lock`]);
   });
 
-  test("the list holds at most 5 + 2 × 256 files", async () => {
+  // Feature 004 contract Δ12 "Submodule bound" (T159 case g): `SUBMODULE_FOREIGN_CAP` is 5 + 2 × 1,024 = 2,053. Literal values, so a bound of 256 turns the case red.
+  test("the list holds at most 5 + 2 × 1,024 files", async () => {
     const { submoduleLocks } = (await underTest("reconcile")) as Reconcile;
     const { gitDir, ctx } = workspaceAt("locks-cap");
     for (const file of ["index.lock", "HEAD.lock", "packed-refs.lock", "config.lock"]) writeFileSync(join(gitDir, file), "");
-    const modules = Array.from({ length: SUBMODULE_REVIEW_SUBMODULES + 4 }, (_, i) => `${gitDir}/modules/m${i}`);
+    const modules = Array.from({ length: 1_024 + 4 }, (_, i) => `${gitDir}/modules/m${i}`);
     for (const dir of modules) {
       mkdirSync(dir, { recursive: true });
       writeFileSync(`${dir}/index.lock`, "");
@@ -53,7 +53,7 @@ describe("submoduleLocks (contract §8 \"Observed locks\")", () => {
     }
     const locks = await submoduleLocks(ctx, null, modules);
     if (!Array.isArray(locks)) throw new Error(`no locks: ${JSON.stringify(locks)}`);
-    expect({ length: locks.length, first: locks[0], last: locks.at(-1) }).toEqual({ length: 5 + 2 * SUBMODULE_REVIEW_SUBMODULES, first: `${gitDir}/index.lock`, last: `${modules[SUBMODULE_REVIEW_SUBMODULES]}/index.lock` });
+    expect({ length: locks.length, first: locks[0], last: locks.at(-1) }).toEqual({ length: 2_053, first: `${gitDir}/index.lock`, last: `${modules[1_024]}/index.lock` });
   });
 });
 

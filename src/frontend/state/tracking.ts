@@ -24,10 +24,10 @@ const KINDS = { branch: "refs/heads/", remote: "refs/remotes/" } as const;
 /** Contract Δ3 `readTracking`: a `TrackingList` has `entries`, and a refusal has none. */
 export const isTrackingList = (value: unknown): value is { entries: TrackingEntry[] } => isObject(value) && Array.isArray(value.entries);
 
-/** The object ID of each branch and remote-tracking ref of a `readRefs` list, by full ref name. */
-export function refIndex(refs: RefsResult | null): ReadonlyMap<string, string> {
-  const index = new Map<string, string>();
-  for (const ref of refs?.refs ?? []) if (ref.kind === "branch" || ref.kind === "remote") index.set(KINDS[ref.kind] + ref.name, ref.objectId);
+/** The object ID and the `%(upstream)` of each branch and remote-tracking ref of a `readRefs` list, by full ref name. */
+export function refIndex(refs: RefsResult | null): ReadonlyMap<string, { objectId: string; upstream: string | null }> {
+  const index = new Map<string, { objectId: string; upstream: string | null }>();
+  for (const ref of refs?.refs ?? []) if (ref.kind === "branch" || ref.kind === "remote") index.set(KINDS[ref.kind] + ref.name, { objectId: ref.objectId, upstream: ref.upstream });
   return index;
 }
 
@@ -41,9 +41,11 @@ export function countLabel(track: TrackingEntry["track"]): NonNullable<TrackLabe
   return track.ahead === 0 && track.behind === 0 ? { text: "=", label, state: "counts" } : { text: `↑${shown(track.ahead)} ↓${shown(track.behind)}`, label, state: "counts" };
 }
 
-/** The label of one entry. A count shows only when both OIDs equal the newest `readRefs` values (FR-021). */
-export function trackLabel(entry: TrackingEntry, index: ReadonlyMap<string, string>): TrackLabel {
-  if (entry.track.state === "counts" && (index.get(KINDS.branch + entry.name) !== entry.objectId || entry.upstream === null || index.get(entry.upstream) !== entry.upstreamObjectId)) return null;
+/** The label of one entry. A label shows only when the upstream equals the newest `readRefs` value, and a count only when both OIDs do too (FR-020, FR-021). */
+export function trackLabel(entry: TrackingEntry, index: ReadonlyMap<string, { objectId: string; upstream: string | null }>): TrackLabel {
+  const branch = index.get(KINDS.branch + entry.name);
+  if (branch === undefined || branch.upstream !== entry.upstream) return null;
+  if (entry.track.state === "counts" && (branch.objectId !== entry.objectId || entry.upstream === null || index.get(entry.upstream)?.objectId !== entry.upstreamObjectId)) return null;
   return countLabel(entry.track);
 }
 

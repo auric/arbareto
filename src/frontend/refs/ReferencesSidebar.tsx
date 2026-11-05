@@ -56,7 +56,8 @@ export const shortRef = (name: string) => {
 
 // Feature 005 spec FR-064 and plan.md O-1: the visible "→ <upstream>" stays, and the gone mark replaces ", not present".
 const upstreamText = (entry: RefEntry) => (entry.upstream === null ? null : `→ ${shortRef(entry.upstream)}`);
-const NAME_SLOT = '[data-slot="ref-name"]';
+// Spec FR-065: a cut name or a cut upstream text opens the card, which states both in full.
+const CUT_SLOTS = '[data-slot="ref-name"], [data-slot="ref-upstream"]';
 
 function refusalText(response: BridgeResponse): string {
   if (response.state === "succeeded") return unknownReadText("The references");
@@ -406,7 +407,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
               // Spec FR-065: a keyboard focus opens the card of a cut name at once.
               onFocus: (event: ReactFocusEvent<HTMLElement>) => {
                 setActiveKey(node.key);
-                if (event.currentTarget.matches(":focus-visible") && isCut([event.currentTarget.querySelector(NAME_SLOT)])) setCard({ key: node.key, instant: true });
+                if (event.currentTarget.matches(":focus-visible") && isCut([...event.currentTarget.querySelectorAll(CUT_SLOTS)])) setCard({ key: node.key, instant: true });
               },
               onBlur: () => setCard((open) => (open?.key === node.key ? null : open)),
             }
@@ -428,7 +429,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
             </span>
             {gone ? <GoneMark upstream={shortRef(entry.upstream!)} /> : null}
             {upstream === null ? null : (
-              <span aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
+              <span data-slot="ref-upstream" aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
                 {upstream}
               </span>
             )}
@@ -465,7 +466,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         open={cardOpen}
         instant={cardOpen && card?.instant === true}
         onOpenChange={(next) => setCard(next ? { key: node.key, instant: false } : (open) => (open?.key === node.key ? null : open))}
-        names={() => [elements.current.get(node.key)?.querySelector(NAME_SLOT)]}
+        names={() => [...(elements.current.get(node.key)?.querySelectorAll(CUT_SLOTS) ?? [])]}
         trigger={view}
       />
     );

@@ -45,8 +45,16 @@ describe("label rule (data-model §1, FR-020, FR-021)", () => {
   });
 
   test("no upstream and a gone upstream show their texts", () => {
-    expect(trackLabel(entry({ upstream: null, upstreamObjectId: null, track: { state: "none" } }), index())).toEqual({ text: "No upstream", label: "No upstream", state: "none" });
+    const unset = createWorld({ branches: [{ name: "main", objectId: oid(1), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: true }] });
+    expect(trackLabel(entry({ upstream: null, upstreamObjectId: null, track: { state: "none" } }), index(unset))).toEqual({ text: "No upstream", label: "No upstream", state: "none" });
     expect(trackLabel(entry({ upstreamObjectId: null, track: { state: "gone" } }), index())).toEqual({ text: "Upstream gone", label: "Upstream gone", state: "gone" });
+  });
+
+  test("an entry whose upstream differs from the newest readRefs upstream shows nothing (FR-020, FR-021)", () => {
+    // `git branch --set-upstream-to` after the last readTracking: readRefs lists main with refs/remotes/origin/main.
+    expect(trackLabel(entry({ upstream: null, upstreamObjectId: null, track: { state: "none" } }), index())).toBeNull();
+    expect(trackLabel(entry({ upstream: "refs/remotes/origin/old", upstreamObjectId: null, track: { state: "gone" } }), index())).toBeNull();
+    expect(trackLabel(entry({ upstream: "refs/remotes/origin/old", upstreamObjectId: oid(9) }), index())).toBeNull();
   });
 
   test("a count above 10,000 shows 10000+", () => {
@@ -145,5 +153,20 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
     await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: fixtureId(0x101) }));
     await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x201), state: "succeeded", result: { action: "fetch", fetch: { remotes: [], observed: [] } } });
     expect(double.count("readTracking")).toBe(4);
+  });
+
+  test("a new readRefs upstream with the same refsDigest reads the tracking again (FR-020, FR-021, 004 FR-008)", async () => {
+    const world = createWorld({ branches: [{ name: "main", objectId: oid(1), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: true }] });
+    const double = await mountWorkbench(workbench, world);
+    expect(double.count("readTracking")).toBe(1);
+    // `git branch --set-upstream-to=origin/main main`: refname and objectname stay, so the digest stays.
+    world.branches = [{ name: "main", objectId: oid(1), upstream: "refs/remotes/origin/main", upstreamObjectId: oid(9), track: { state: "counts", ahead: 2, behind: 3 }, current: true }];
+    await press(document.body, "F5");
+    await settle();
+    expect(double.count("readRefs")).toBe(2);
+    expect(double.count("readTracking")).toBe(2);
+    const row = [...document.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((e) => e.getAttribute("aria-label")?.startsWith("main,"))!;
+    expect(text(row)).not.toContain("No upstream");
+    expect(text(row)).toContain("↑2 ↓3");
   });
 });

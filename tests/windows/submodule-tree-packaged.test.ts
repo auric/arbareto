@@ -29,7 +29,7 @@ const STEP_MS = MAX_WAIT_MS + MAX_CALL_MS;
 const caseTimeout = (steps: number, extraMs = 0) => steps * STEP_MS + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS + extraMs;
 // A key response, a view change, or a service round trip after a key stays far below it.
 const KEY_WAIT_MS = 10_000;
-// Research R31: a list review costs about 250 ms per checked-out row on Windows, so 256 rows take about 64 s.
+// Research R31 "List time": the SC-020 budget for 256 rows is 55 s, and build ba095f87 took 107.8 s.
 const LIST_WAIT_MS = 300_000;
 
 // ---- Budgets and sample counts (spec SC-018, SC-019; 001 SC-005). Fixed before the first measured run (constitution VII). ----
@@ -39,6 +39,8 @@ const RUNS = 10;
 const SIZES = [20, 256] as const;
 // Spec SC-018: (median time to the last branch mark) - (median time to the last row of the detached twin), per submodule row. The T144 control sets it to 1.
 const MARK_MS_PER_ROW = 30;
+// Spec SC-020: the median time from the Enter keydown to the last branch mark, for each twin. The T150 control sets each value to 1.
+const LIST_MS: Record<(typeof SIZES)[number], number> = { 20: 6_500, 256: 55_000 };
 // Spec SC-019 and 001 SC-005: 95% of inputs within 100 ms, every input within 500 ms. The T144 control sets INPUT_P95_MS to 1.
 const INPUT_P95_MS = 100;
 const INPUT_MAX_MS = 500;
@@ -374,7 +376,7 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
 
   for (const n of SIZES) {
     test.skipIf(reason !== null)(
-      `SC-018: with ${n} checked-out submodules, the time to the last branch mark minus the time to the last row of the detached twin is at most ${MARK_MS_PER_ROW} ms per row (medians of ${RUNS} after one warm-up run)`,
+      `SC-018: with ${n} checked-out submodules, the time to the last branch mark minus the time to the last row of the detached twin is at most ${MARK_MS_PER_ROW} ms per row, and SC-020: each twin shows its last mark within ${LIST_MS[n]} ms (medians of ${RUNS} after one warm-up run)`,
       async () => {
         const t = twinWorlds(GIT!, fixtureDir(`sc018-${n}`), n);
         const other = otherRepo(GIT!, fixtureDir(`sc018-${n}-other`));
@@ -403,7 +405,8 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           const b = median(times.detached);
           const perRow = (a - b) / n;
           console.log(`OBSERVATION ${TASK}: SC-018 ${n} rows: branch runs ${js(rounded(times.branch))} ms, median ${a.toFixed(1)} ms; detached runs ${js(rounded(times.detached))} ms, median ${b.toFixed(1)} ms; ${perRow.toFixed(2)} ms per row, budget ${MARK_MS_PER_ROW} ms`);
-          expect({ n, perRow: perRow <= MARK_MS_PER_ROW }).toEqual({ n, perRow: true });
+          console.log(`OBSERVATION ${TASK}: SC-020 ${n} rows: branch median ${a.toFixed(1)} ms, detached median ${b.toFixed(1)} ms, budget ${LIST_MS[n]} ms`);
+          expect({ n, perRow: perRow <= MARK_MS_PER_ROW, branch: a <= LIST_MS[n], detached: b <= LIST_MS[n] }).toEqual({ n, perRow: true, branch: true, detached: true });
         } finally {
           await end(s);
         }

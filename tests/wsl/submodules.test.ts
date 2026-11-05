@@ -121,8 +121,8 @@ async function until(condition: () => boolean, what: string, timeoutMs: number):
   }
 }
 
-// T141: the rows and the runs of the WSL list-time record. Spec SC-018 sets no WSL budget.
-const SC018_ROWS = 8;
+// T141, T151: the rows and the runs of the WSL list-time record. Spec SC-018 and SC-020 set no WSL budget. The T151 control builds the fixture with 19 rows.
+const SC018_ROWS = 20;
 const SC018_RUNS = 3;
 
 // T141: `<root>/super` with one submodule of `<root>/leaf.git` at each path. The distro Git's own update leaves each one detached at the tip of `origin/main`.
@@ -382,7 +382,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     });
   });
 
-  // T141: feature 004 contract Δ12 "Branch marks" and spec SC-018 (WSL record without a budget).
+  // T141, T151: feature 004 contract Δ12 "Branch marks", spec SC-018 and SC-020 (WSL record without a budget).
   wslCase("branch marks: ahead 1, detached, and gone equal the distro status headers, and the list time per row is recorded for branch and detached HEADs", async (host) => {
     await underTest();
     const named = ["ahead", "detached", "gone"];
@@ -420,12 +420,16 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
       for (const mode of ["branch", "detached"] as const) {
         each(mode === "branch" ? ["checkout", "-q", "main"] : ["checkout", "-q", "--detach"]);
         const { review: r, ms } = await listReview(s, timed);
-        expect({ mode, state: r.state, marks: (valuesOf(r.result, "branches")[0] as unknown[]).length }).toEqual({ mode, state: "succeeded", marks: SC018_ROWS });
+        const rows = objectsWith<SubmodulePlanRow>(r.result, ["rowId", "action"]).length;
+        expect({ mode, state: r.state, rows, marks: (valuesOf(r.result, "branches")[0] as unknown[]).length }).toEqual({ mode, state: "succeeded", rows: 20, marks: 20 });
         times[mode].push(ms);
       }
     }
     const median = (list: number[]) => [...list].sort((a, b) => a - b)[Math.floor(list.length / 2)]!;
     const perRow = (mode: "branch" | "detached") => median(times[mode]) / SC018_ROWS;
+    console.log(
+      `OBSERVATION T151: WSL ${host.distro} SC-020 list time of ${SC018_ROWS} rows, median of ${SC018_RUNS}: branch ${median(times.branch).toFixed(1)} ms, detached ${median(times.detached).toFixed(1)} ms`,
+    );
     console.log(
       `OBSERVATION T141: WSL ${host.distro} list review of ${SC018_ROWS} rows, median of ${SC018_RUNS}: branch ${perRow("branch").toFixed(1)} ms per row, detached ${perRow("detached").toFixed(1)} ms per row, difference ${(perRow("branch") - perRow("detached")).toFixed(1)} ms per row (runs: ${JSON.stringify(times)})`,
     );

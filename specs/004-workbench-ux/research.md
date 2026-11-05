@@ -782,7 +782,7 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 
 - SC-018 basis: +18 ms measured unpackaged, plus about 5 ms for the packaged process path (005 research "Packaged cost"). The budget is 30 ms per row, set before the packaged test. A miss stays a failure, unless the user approves a changed target (constitution VII).
 - WSL: record only. Estimate +40 ms to +170 ms per row (168 ms per process in 005 research). Today's WSL review costs about 1 s or more per checked-out row.
-- SC-019 keeps the 001 SC-005 targets with 256 rows and 1,024 open folders. A packaged probe gave a p95 of 184 ms with all rows mounted, so the group mounts only the rows in view above 200 rows (T147). T144 decides.
+- SC-019 keeps 001 SC-005 with 256 rows and 1,024 open folders. Amended 2026-11-04: the same targets apply with 1,024 rows and 1,024 open folders. A packaged probe gave a p95 of 184 ms with all rows mounted, so the group mounts only the rows in view above 200 rows (T147). T144 decides.
 - SC-020 and SC-021: see "List time" and "Update time" below.
 
 **List time (user decision 2026-11-04)**
@@ -846,7 +846,7 @@ A/B, unpackaged, median of 3 counted reviews after one warm-up, in ms. "One rev-
 - SC-020 basis: the unpackaged worst medians with all changes are 4.4 s (20 rows) and 35.5 s (256 rows). Add a factor of 1.1 for the shell path (005 R18 T108). The 005 marks read beside the list adds 0.7 s at 20 rows and 8.2 s at 256 rows. These values are the 005 T108 packaged medians. Open and render add 0.4 s. Estimate: 5.9 s at 20 rows and 47.7 s at 256 rows. The budget is 6.5 s and 55 s, set before the packaged test.
 - SC-018 still holds: both twins start 7 processes per row. The packaged alternating case decides.
 - WSL estimate, not measured: T141 gave 2,205 ms per row for 8 detached rows. 005 R18 gave 49 to 57 ms per Git process at 8 at a time. Estimate: 20 rows about 9 to 12 s, 256 rows about 100 s. T151 records the real value. No budget.
-- Not in scope: the program listing stays in row order. It takes 4.3 s at 256 rows and 0.35 s at 20 rows. The rowless directories also stay in row order.
+- The program listing of the list review reads ahead and applies in row order (user decision 2026-11-04, T156, T157). Serial, it took 4.3 s at 256 rows and 0.35 s at 20 rows. The rowless directories stay in row order.
 
 **Update time (user decision 2026-11-04)**
 
@@ -896,9 +896,9 @@ Unpackaged, Windows, ms from the `updateSubmodules` request. The list review bef
 
 - User decision 2026-11-04: each submodule counts once toward the bound, before v0.1.0 (spec FR-114). The user also chose the name-folder rule (Q5).
 - Rule today (001 §5, §12 "Review reads"): each row has the key `row <path>`, and each walk folder has the key `dir <folder>`. The two key spaces never meet. So a checked-out row counts once as its row and once as its kept Git directory `modules/<name>`. Each name folder on the way, such as `modules/m` and `modules/m/00`, counts once more.
-- Other `limit` causes stay: nesting level 8 with gitlinks, a worktree `.gitmodules` above 1 MiB, and a `.gitmodules` source above 1 MiB.
+- Other `limit` causes stay. They are nesting level 8 with gitlinks, a worktree `.gitmodules` above 1 MiB, and a `.gitmodules` source above 1 MiB.
 - New rule: a walk folder can equal the `rev-parse --absolute-git-dir` output of a row of the same observation. Such a folder counts as that row. The walk starts no process for it. Git form replaces each `\` with `/` on Windows. Windows forbids `\` and `/` in a name, so each path has one Git form. The compare is ordinal, with no case fold. The owned-folder test uses equality only.
-- Name folders (Q5): a name folder has a Git form that, plus `/`, is an exact prefix of a row Git directory. It still gets its read. Name folders that do not count stay within a walk bound of 1,024 name folders (user decision 2026-11-04). This is the value of `SUBMODULE_TREE_FOLDERS`. A larger walk gives reason `limit`, so a `.gitmodules` with deep names cannot start an unbounded walk. It counts only when Git accepts it as a Git directory.
+- Name folders (Q5): take the Git form of a name folder and add `/`. The result is an exact prefix of a row Git directory. It still gets its read. Name folders that do not count stay within a walk bound of 1,024 name folders (user decision 2026-11-04). This is the value of `SUBMODULE_TREE_FOLDERS`. A larger walk gives reason `limit`, so a `.gitmodules` with deep names cannot start an unbounded walk. It counts only when Git accepts it as a Git directory.
 - Proof: the row read prints the canonical path (`strbuf_realpath`) of the gitfile target. Git accepts a gitfile only after `is_git_directory` on that target (setup.c `read_gitfile_gently`, `READ_GITFILE_ERR_NOT_A_REPO`). The walk read with `--git-dir=<folder>` applies the same check (setup.c `repo_discover_explicit_gitdir`) and prints the same path.
 - Probe of 2026-11-04 (Git 2.56.0.windows.2, local scratch `probe`): the test used a flat name `x` and a folder name `f/y`. The `path.join` form of each walk folder with `/` equals the row output exactly. The walk read of that folder prints the same string. `modules/f` plus `/` is an exact prefix of `modules/f/y`.
 - Conservative cases: Git can reach a folder through another spelling, such as a junction under `modules` or an 8.3 name. Then the strings differ. It counts and gets its read, as before. The rule never counts less than one per submodule.
@@ -920,7 +920,7 @@ Unpackaged, Windows, ms from the `updateSubmodules` request. The list review bef
 - Processes at 1,024 rows: the list review starts about 7,200 Git processes. The moved preflight starts about 8,200, and the reconciliation about 2,050. At most 9 run at once.
 - Memory: the review keeps the config entries of each row for the binding, about 5 MB at 1,024 typical rows. The worst case is 4 MiB per row (`TRUST_INPUT_BYTES`), so 4 GiB at 1,024 rows. User decision 2026-11-04: the config bytes that one review binds hold at most 64 MiB in total. A larger total ends the review with `OUTPUT_LIMIT`. The 1,024-row process-tree memory is not measured.
 - Reply frame (user decision 2026-11-04): each failed row can carry a 16 KiB `outputTail`. 1,024 failed rows give about 16 MiB. That passes the 16 MiB pipe frame. So one update result holds at most 4 MiB of output tails, in row order. A later failed row keeps `exitCode` with an empty tail.
-- Stderr (user decision 2026-11-04): the 4 MiB stderr bound of each operation stays. It now covers about 7,200 read processes. T145 records the stderr bytes of the 1,024-row review. Pass condition, set before T145 runs: the 1,024-row review of the fixture ends without `OUTPUT_LIMIT`, and its stderr bytes stay below 1 MiB.
+- Stderr (user decision 2026-11-04): the 4 MiB stderr bound of each operation stays. It now covers about 7,200 read processes. T145 records the stderr bytes of the 1,024-row review. Pass condition, set before T145 runs: the 1,024-row review of the fixture ends without `OUTPUT_LIMIT`. Its stderr bytes stay below 1 MiB.
 
 **Open assumptions**
 

@@ -3,7 +3,7 @@
 
 import { Alert02Icon, ArrowRight02Icon, GitMergeIcon, NextIcon, UndoIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useId, useRef, useState, type ReactElement } from "react";
+import { useEffect, useId, useRef, useState, type ReactElement } from "react";
 import { blockingText, FINISH_OUTSIDE, WarningIcon } from "../app/NoticeBand";
 import { CommandRemedy } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
@@ -98,11 +98,20 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
 
   // FR-102: the count is known only when every entry page arrived. Resolve conflicts opens a view, so no reason blocks it.
   const resolving = !loading && conflicted > 0;
+  // Feature 010 mockup board 7: the last Mark resolved removes its row button, so the focus falls to the page. Continue then takes it.
+  const rowRef = useRef<HTMLDivElement>(null);
+  const wasResolving = useRef(resolving);
+  useEffect(() => {
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (wasResolving.current && !resolving && lost) rowRef.current?.querySelector<HTMLElement>('[data-action="continue"]')?.focus();
+    wasResolving.current = resolving;
+  }, [resolving]);
   const continueReason = reason ?? (loading ? BLOCKED_TEXT.loading : null);
   const action = (name: ConflictAction, label: string, icon: IconSvgElement, own: string | null, describedBy: string, danger = false) => (
     <Button
       key={name}
       ref={bindControl}
+      data-action={name}
       variant="outline"
       size="sm"
       disabled={own !== null}
@@ -130,7 +139,7 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
   // Refusals other than `rebase-exec` and `unknown-operation` name their action and reason.
   const lines = (Object.entries(refusals) as [ConflictAction, Refusal][]).filter(([, r]) => r.reason !== "rebase-exec" && r.reason !== "unknown-operation");
   return (
-    <div data-slot="conflict-row" className="flex flex-wrap items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
+    <div ref={rowRef} data-slot="conflict-row" className="flex flex-wrap items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
       <WarningIcon />
       <span>{unknown ? `${blockingText("unknown", conflicted)} ${FINISH_OUTSIDE}` : blockingText(operationState, conflicted)}</span>
       {unknown ? null : (

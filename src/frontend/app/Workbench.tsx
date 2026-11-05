@@ -786,7 +786,7 @@ export function HistoryViewMount({ state, history, density, profile, textScale, 
   const onScope = useLatest((scope: Parameters<HistoryListProps["onScope"]>[0]) => void history.setScope(scope));
   const onLabelMenu = useLatest((label: Parameters<NonNullable<HistoryListProps["onLabelMenu"]>>[0], anchor: HTMLElement, byKey?: boolean) => branches?.onRef(label.kind as "branch" | "remote", label.name, "menu", anchor, byKey));
   const onCreateBranch = useLatest((oid: string, anchor: HTMLElement) => branches?.create(oid, anchor));
-  const onCommitMenu = useLatest((oid: string, anchor: HTMLElement, byKey: boolean, merge: boolean) => commitMenu?.openMenu(oid, anchor, byKey, merge));
+  const onCommitMenu = useLatest((oid: string, anchor: HTMLElement, byKey: boolean, merge: boolean, pointerX?: number) => commitMenu?.openMenu(oid, anchor, byKey, merge, pointerX));
   return (
     <HistoryListMemo
       unread={state.readFailure !== null && needsTrust(state.readFailure) ? READS_TRUST_TEXT : null}

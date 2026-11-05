@@ -217,6 +217,16 @@ describe("Create tag (FR-030 to FR-034, plan D3)", () => {
       expect(double.count("runWorkbench")).toBe(0);
     });
   }
+
+  test("after the name-exists refusal, Tag name has the focus (mockup board 5)", async () => {
+    const double = await mountWorkbench(workbench, menuWorld());
+    const t = await openTag(double);
+    await type(t.name, "v1.0");
+    await act(async () => t.create().focus());
+    await click(t.create());
+    await answer(double.pending("reviewWorkbench"), refused("WORKBENCH_UNAVAILABLE", { reason: "name-exists", ref: "refs/tags/v1.0" }));
+    expect(document.activeElement).toBe(field("Tag name", popover()!));
+  });
 });
 
 describe("Reset (FR-040 to FR-044, plan D4)", () => {
@@ -373,6 +383,22 @@ describe("Reset (FR-040 to FR-044, plan D4)", () => {
       expect([...p.querySelectorAll("button")].map((b) => text(b))).toEqual(["Cancel"]);
     });
   }
+
+  // Mockup board 4: the popover never passes the window. Only the body scrolls, and the path list shrinks first.
+  test("the in-the-way popover caps its height at the available space, and the path list scrolls in its own region", async () => {
+    const double = await mountWorkbench(workbench, menuWorld());
+    const p = await hardReview(double, await openReset(double), refused("UNTRACKED_IN_WAY", { reason: "untracked-in-way", paths: ["docs/guide.md", "src/parser.ts"], more: 0 }));
+    const classes = (element: Element) => element.className.split(/\s+/);
+    expect(classes(p)).toContain("max-h-(--available-height)");
+    const body = p.querySelector('[data-slot="popover-body"]')!;
+    expect(classes(body)).toEqual(expect.arrayContaining(["min-h-0", "overflow-y-auto"]));
+    // The title and the buttons stay outside the scrolling body.
+    expect(body.contains(p.querySelector("h2, [id][class*='font-semibold']"))).toBe(false);
+    expect([...p.querySelectorAll("button")].some((b) => body.contains(b))).toBe(false);
+    const list = p.querySelector("ul")!;
+    expect(classes(list)).toEqual(expect.arrayContaining(["min-h-0", "overflow-y-auto"]));
+    expect(classes(list.parentElement!)).toContain("min-h-0");
+  });
 });
 
 describe("Cherry-pick and Revert (FR-050 to FR-053, plan D5)", () => {

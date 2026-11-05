@@ -46,15 +46,18 @@ export function ConfirmPopover({ open, anchor, title, children, confirmLabel, ca
             data-slot="popover-content"
             initialFocus={initialFocus ?? cancel}
             finalFocus={finalFocus}
-            className="flex w-[min(480px,calc(100vw-32px))] flex-col gap-3 rounded-lg bg-popover p-3 text-xs text-popover-foreground ring-1 ring-control-border outline-hidden"
+            className="flex max-h-(--available-height) w-[min(480px,calc(100vw-32px))] flex-col gap-3 rounded-lg bg-popover p-3 text-xs text-popover-foreground ring-1 ring-control-border outline-hidden"
           >
-            <PopoverPrimitive.Title className="font-semibold">{title}</PopoverPrimitive.Title>
-            {children}
+            <PopoverPrimitive.Title className="shrink-0 font-semibold">{title}</PopoverPrimitive.Title>
+            {/* The popover never passes the window: only the body scrolls, and the title and the buttons stay visible. */}
+            <div data-slot="popover-body" className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+              {children}
+            </div>
             {/* The live region stays mounted, so a reason that appears later is announced. */}
             <p id={reasonId} role="status" className={reason === null ? "sr-only" : "text-muted-text"}>
               {reason}
             </p>
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex shrink-0 items-center justify-end gap-2">
               <Button ref={cancel} variant="outline" onClick={onCancel}>
                 {cancelLabel}
               </Button>

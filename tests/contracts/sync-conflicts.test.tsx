@@ -447,3 +447,47 @@ describe("conflict row while an operation runs (plan D12)", () => {
     host.remove();
   });
 });
+
+// Mockup board 7 (feature 010): the last Mark resolved removes its row button, and the focus goes to Continue.
+describe("the focus after the last conflicted file is resolved", () => {
+  for (const kind of ["merging", "rebasing", "cherry-picking", "reverting"] as const) {
+    test(`a ${kind} row moves the lost focus to Continue`, async () => {
+      const { ConflictRow } = await import("../../src/frontend/sync/ConflictActions");
+      const { createRoot } = await import("react-dom/client");
+      const host = document.body.appendChild(document.createElement("div"));
+      const root = createRoot(host);
+      const view = (conflicted: number) => (
+        <>
+          <ConflictRow operationState={kind} conflicted={conflicted} reason={null} onAction={async () => null} onResolve={() => {}} />
+          {conflicted > 0 ? <button type="button">Mark resolved a.txt</button> : null}
+        </>
+      );
+      await act(async () => root.render(view(1)));
+      await act(async () => button("Mark resolved a.txt", host).focus());
+      await act(async () => root.render(view(0)));
+      expect(document.activeElement).toBe(button("Continue", host));
+      await act(async () => root.unmount());
+      host.remove();
+    });
+  }
+
+  test("a focus outside the row stays where it is", async () => {
+    const { ConflictRow } = await import("../../src/frontend/sync/ConflictActions");
+    const { createRoot } = await import("react-dom/client");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const view = (conflicted: number) => (
+      <>
+        <ConflictRow operationState="cherry-picking" conflicted={conflicted} reason={null} onAction={async () => null} onResolve={() => {}} />
+        <input aria-label="Commit message" />
+      </>
+    );
+    await act(async () => root.render(view(1)));
+    const field = host.querySelector("input")!;
+    await act(async () => field.focus());
+    await act(async () => root.render(view(0)));
+    expect(document.activeElement).toBe(field);
+    await act(async () => root.unmount());
+    host.remove();
+  });
+});

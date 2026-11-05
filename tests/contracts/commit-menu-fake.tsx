@@ -43,8 +43,8 @@ export const liveText = () => text(historyList().parentElement!.querySelector('p
 export const radio = (label: string, from: ParentNode = document) => [...from.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find((r) => text(r.closest("label") ?? r).startsWith(label))!;
 export const reviews = (double: { calls: { operation: string; args: unknown[] }[] }) => double.calls.filter((c) => c.operation === "reviewWorkbench").map((c) => c.args[1] as Record<string, unknown>);
 
-export async function rightClick(element: Element) {
-  await act(async () => void element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })));
+export async function rightClick(element: Element, clientX = 0) {
+  await act(async () => void element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX })));
   await settle();
 }
 

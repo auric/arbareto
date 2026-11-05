@@ -282,9 +282,9 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - A configured `branch.<name>.remote` that `git remote` does not list shows "Remote missing".
   - Above 10,000, the label shows "10000+".
 - Pairing: the renderer shows a count only when the branch OID and the upstream OID of the tracking result equal the newest `readRefs` values. Otherwise it shows no number (FR-021).
-- Triggers: each new `readRefs.refsDigest` (002 Δ8), each outcome, and each focus return.
+- Triggers: each new `readRefs.refsDigest` (002 Δ8), each outcome, and each focus return. Note (2026-11-05): the tracking read also runs when a branch upstream in the `readRefs` result changes, because `refsDigest` holds only the ref name and object ID. A tracking entry whose upstream differs from the `readRefs` upstream shows no label (003 FR-020, FR-021; 004 FR-008).
 - The tooltip says that the counts compare with the last fetch (FR-022).
-- The toolbar uses the `*` entry. A detached HEAD shows "No branch checked out".
+- The toolbar uses the `*` entry. A detached HEAD shows "No branch checked out". Note (2026-11-05, user decision): on a detached HEAD the header shows no count text; the branch button and the Pull and Push reason line state it (004 plan "Top bar row").
 - The history labels join by branch name with the 002 row labels.
 
 ### D9 PuTTY

@@ -15,8 +15,6 @@ export type TrackLabel = { text: string; label: string; state: TrackingEntry["tr
 
 // FR-022.
 export const COUNTS_TOOLTIP = "Counts compare with the remote-tracking branch from the last fetch, not with the remote itself.";
-// Plan.md D8: a detached HEAD.
-export const NO_BRANCH = "No branch checked out";
 const NO_UPSTREAM = "No upstream";
 const UPSTREAM_GONE = "Upstream gone";
 const KINDS = { branch: "refs/heads/", remote: "refs/remotes/" } as const;

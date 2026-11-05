@@ -20,7 +20,7 @@ registerDom();
 const { createRoot } = await import("react-dom/client");
 const workbench = await import("../../src/frontend/app/Workbench");
 const { ReferencesSidebar } = await import("../../src/frontend/refs/ReferencesSidebar");
-const { COUNTS_TOOLTIP, NO_BRANCH, refIndex, trackingLabels, trackLabel } = await import("../../src/frontend/state/tracking");
+const { COUNTS_TOOLTIP, refIndex, trackingLabels, trackLabel } = await import("../../src/frontend/state/tracking");
 
 let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
@@ -113,10 +113,14 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
     expect(count()?.textContent ?? "").not.toMatch(/[0-9]/);
   });
 
-  test("a detached HEAD shows No branch checked out and no counts", async () => {
+  // Feature 004 plan "Top bar row" (2026-11-05): the branch button and the Pull and Push reason line state a detached HEAD.
+  test("a detached HEAD shows no count element, the Detached at button, and the Pull and Push reason line", async () => {
     await mountWorkbench(workbench, createWorld({ head: { state: "detached", oid: oid(1) }, branches: [{ name: "main", objectId: oid(1), upstream: "refs/remotes/origin/main", upstreamObjectId: oid(9), track: { state: "counts", ahead: 2, behind: 3 }, current: false }] }));
-    expect(text(count()!)).toBe(NO_BRANCH);
-    expect(text(count()!)).not.toMatch(/[↑↓]/);
+    expect(count()).toBeNull();
+    expect(text(document.querySelector('header [data-slot="branch-button"]')!)).toContain(`Detached at ${oid(1).slice(0, 12)}`);
+    const reason = document.getElementById(button("Pull").getAttribute("aria-describedby")!)!;
+    expect(text(reason)).toBe("Pull, Push: No branch checked out.");
+    expect(button("Push").getAttribute("aria-describedby")).toBe(button("Pull").getAttribute("aria-describedby"));
   });
 
   test("a failed readTracking shows its code and no counts", async () => {

@@ -305,9 +305,20 @@ describe("menu geometry (mockup board defaults 2 and 3)", () => {
     expect(menuItem("Revert commit…").querySelector('[data-slot="menu-text"] [data-slot="menu-reason"]')).not.toBeNull();
   });
 
-  test("a branch HEAD keeps the menu width free", async () => {
+  test("a branch HEAD with no unavailable item keeps the menu width free", async () => {
     await mountWorkbench(workbench, menuWorld());
     await keyMenu(B);
+    expect(Object.values(reasons()).every((r) => r === null)).toBe(true);
     expect(menu()!.style.width).toBe("");
+  });
+
+  test("a merge in progress gives the menu width 320, and each reason wraps below its label", async () => {
+    await mountWorkbench(workbench, menuWorld({ operationState: "merging" }));
+    await keyMenu(B);
+    expect(menu()!.style.width).toBe("320px");
+    for (const label of ACTIONS) {
+      expect(describedBy(menuItem(label))).toBe(OPERATION);
+      expect(menuItem(label).querySelector('[data-slot="menu-text"] [data-slot="menu-reason"]')).not.toBeNull();
+    }
   });
 });

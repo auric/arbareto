@@ -268,7 +268,7 @@ export function useCommitActions({ bridge, target, repositoryId, head, blockedRe
 
   const overlays = (
     <>
-      {menu === null ? null : <CommitMenu label={MENU_NAME(menu.oid)} groups={(copy) => groups(menu, copy)} anchor={menu.anchor} pointerX={menu.pointerX} detached={head?.state === "detached"} byKey={menu.byKey} handoff={handoff} onClose={() => setMenu(null)} />}
+      {menu === null ? null : <CommitMenu label={MENU_NAME(menu.oid)} groups={(copy) => groups(menu, copy)} anchor={menu.anchor} pointerX={menu.pointerX} byKey={menu.byKey} handoff={handoff} onClose={() => setMenu(null)} />}
       {overlay?.kind === "tag" ? <TagPopover o={overlay} field={field} fieldRef={fieldRef} finalFocus={focusList(overlay.anchor)} onChange={setOverlay} onConfirm={() => confirmTag(overlay)} onCancel={close} /> : null}
       {overlay?.kind === "reset" ? (
         <ResetPopover
@@ -340,13 +340,15 @@ function pickRefusal(response: BridgeResponse, pick: boolean, branch: string): s
 }
 
 /** The menu reads the copy helper inside the `CopyFailed` provider of the window. */
-function CommitMenu({ label, groups, anchor, pointerX, detached, byKey, handoff, onClose }: { label: string; groups(copy: (text: string) => void): ActionItem[][]; anchor: Element; pointerX: number | null; detached: boolean; byKey: boolean; handoff: RefObject<boolean>; onClose(): void }) {
+function CommitMenu({ label, groups, anchor, pointerX, byKey, handoff, onClose }: { label: string; groups(copy: (text: string) => void): ActionItem[][]; anchor: Element; pointerX: number | null; byKey: boolean; handoff: RefObject<boolean>; onClose(): void }) {
   const copy = useCopy();
   // Mockup default 2: a right-click anchors the menu below the row at the pointer x. A key anchors it below the row start.
   const at = useMemo(() => (pointerX === null ? anchor : { contextElement: anchor, getBoundingClientRect: () => { const row = anchor.getBoundingClientRect(); return new DOMRect(pointerX, row.top, 0, row.height); } }), [anchor, pointerX]);
-  // Mockup default 3: the detached menu has width 320, so each reason wraps below its label.
+  // Mockup default 3: a menu with an unavailable item has width 320, so each reason wraps below its label.
+  const items = groups(copy);
+  const reasoned = items.some((group) => group.some((item) => item.reason != null));
   // The option is no focus target under aria-activedescendant, so the focus goes back to its list.
-  return <ActionMenu label={label} groups={groups(copy)} open anchor={at} side="bottom" width={detached ? 320 : undefined} byKey={byKey} finalFocus={() => (handoff.current ? false : (anchor.closest<HTMLElement>('[role="listbox"]') ?? true))} onOpenChange={(next) => void (next || onClose())} />;
+  return <ActionMenu label={label} groups={items} open anchor={at} side="bottom" width={reasoned ? 320 : undefined} byKey={byKey} finalFocus={() => (handoff.current ? false : (anchor.closest<HTMLElement>('[role="listbox"]') ?? true))} onOpenChange={(next) => void (next || onClose())} />;
 }
 
 type PopoverParts = { field: RefObject<HTMLElement | null>; fieldRef(element: HTMLElement | null): void; finalFocus(): HTMLElement | boolean; onCancel(): void; onConfirm(): void };

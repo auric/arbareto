@@ -5,9 +5,9 @@
 // The oracle is a second build of the same fixture with Git's own commands. Fresh Git reads decide every expectation, never message text.
 
 import { expect, spyOn } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
+import { STATUS_LISTING_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { syncRefsArgs } from "../../src/git-service/sync-commands";
 import { trackedStatusArgs } from "../../src/git-service/workbench-commands";
 import { localNameOf } from "../../src/git-service/workbench-parsers";
@@ -271,6 +271,23 @@ caseTest(TASK, "FR-011 and SC-002: Discard with an untracked file or folder in t
   });
   for (const args of [["stash", "push", "--quiet", "-m", MESSAGE], ["checkout", "-q", "--no-guess", "target", "--"], ["stash", "drop", "--quiet"]]) git(o, args);
   expect(stateOf(f)).toEqual(stateOf(o));
+}, TIMEOUT_MS);
+
+caseTest(TASK, "FR-011: Discard with an ignored folder in the way reviews as replaceable and starts no ls-files --others --ignored read, so an output above STATUS_LISTING_BYTES cannot refuse it", SHELL, async () => {
+  const f = build("switch-clean");
+  put(f, "b.txt", "b changed\n");
+  mkdirSync(join(f.repo, "build.log", "z"), { recursive: true });
+  for (const name of ["x.txt", "y.txt", "z/w.txt"]) put(f, `build.log/${name}`, `${name} local\n`);
+  const isIgnoredList = (args: readonly string[]) => args.includes("ls-files") && args.includes("--others") && args.includes("--ignored");
+  await withSync("t021-in-the-way-ignored-folder", async (service) => {
+    const r = await open(service, f.repo);
+    const from = service.runner.calls.length;
+    service.runner.inject.stdout = (call) => (isIgnoredList(call.arguments) ? new Uint8Array(STATUS_LISTING_BYTES + 1) : undefined);
+    const response = await review(service, r, switchTo("discard"));
+    service.runner.inject.stdout = undefined;
+    expect({ ...outcome(response), inTheWay: (response.result as Reviewed | undefined)?.plan?.inTheWay }).toEqual({ ...SUCCEEDED, inTheWay: null });
+    expect(service.runner.calls.slice(from).filter((c) => isIgnoredList(c.arguments)).length).toBe(0);
+  });
 }, TIMEOUT_MS);
 
 // Contract §2: the token is in use from the accepted run on. The held process starts keep the first run in its validation.

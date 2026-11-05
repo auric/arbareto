@@ -11,12 +11,12 @@ import { createCollector, firstEnd, isDeadlineStop, stepUnits } from "./git-runn
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
-import { discardCandidates, ignoreRead, inTheWay, sortFacts, untrackedOf } from "./switch-check";
+import { discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, sortFacts, untrackedOf } from "./switch-check";
 import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { indexState, readOut, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
-import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, refPeelArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
+import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, ignoredFilesArgs, refPeelArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
 import { oidList, parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
 import { conclude, heldElsewhere, killed, readWorktrees, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
 
@@ -146,11 +146,11 @@ export async function detachCommit(ctx: ObserveContext, oid: string): Promise<Fa
 }
 
 // Contract §6 command-line bound: each `ls-files` batch fits WINDOWS_COMMAND_LINE_UNITS under the measure of its route.
-function batches(paths: readonly string[], ctx: ObserveContext): string[][] {
+function batches(paths: readonly string[], ctx: ObserveContext, args: (list: string[]) => string[] = stagesArgs): string[][] {
   const out: string[][] = [];
   for (const path of paths) {
     const last = out.at(-1);
-    if (last !== undefined && stepUnits(ctx, "read", stagesArgs([...last, path])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(path);
+    if (last !== undefined && stepUnits(ctx, "read", args([...last, path])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(path);
     else out.push([path]);
   }
   return out;
@@ -158,8 +158,8 @@ function batches(paths: readonly string[], ctx: ObserveContext): string[][] {
 
 // Plan.md D3 and research.md R4: the untracked-in-the-way check of Discard. Paths stay byte strings (`latin1`) until an argv or a `fileFacts` entry needs text.
 // `listing` reads the candidates in the `--name-status -z` form. Feature 010 plan.md D4 read 7: a Hard reset reads them from the index.
-// `ignored` counts the ignored candidates in the way, which Git replaces (feature 010 research.md R2 P4c).
-export async function inTheWayCheck(ctx: ObserveContext, listing: string[]): Promise<Fact<{ ignored: number }> | Refused> {
+// `ignored` counts the ignored files in the way, which Git replaces (feature 010 research.md R2 P4c). Without `countFolders`, an ignored folder counts as one.
+export async function inTheWayCheck(ctx: ObserveContext, listing: string[], countFolders = false): Promise<Fact<{ ignored: number }> | Refused> {
   const w = ctx.workspace;
   const diff = await readOut(ctx, listing, STATUS_LISTING_BYTES);
   if ("limited" in diff) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
@@ -204,7 +204,19 @@ export async function inTheWayCheck(ctx: ObserveContext, listing: string[]): Pro
   const verdict = inTheWay(ordered, { exitCode: step.exit.exitCode, stdout: out.take() });
   if (verdict === "malformed") return MALFORMED;
   if (verdict === "failed") return { code: "GIT_FAILED" };
-  return verdict === null ? { value: { ignored: ordered.length } } : { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...verdict } };
+  if (verdict !== null) return { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...verdict } };
+  if (!countFolders) return { value: { ignored: ordered.length } };
+  // Git replaces each ignored file below an ignored folder, so a folder counts its listed files and not itself.
+  let ignored = ordered.length - sorted.folders.length;
+  for (const batch of batches(sorted.folders, ctx, ignoredFilesArgs)) {
+    const listed = await readOut(ctx, ignoredFilesArgs(batch.map((path) => texts.get(path)!)), STATUS_LISTING_BYTES);
+    if ("limited" in listed) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
+    if (!("value" in listed)) return listed;
+    const files = ignoredFilesOf(batch, listed.value);
+    if (files === "malformed") return MALFORMED;
+    ignored += files;
+  }
+  return { value: { ignored } };
 }
 
 registerWorkbenchAction("switch", {

@@ -137,6 +137,11 @@ export function stagesArgs(list: readonly string[]): string[] {
   return read("ls-files", "-z", "--stage", "--", ...paths(list));
 }
 
+// git-ls-files(1) `--others --ignored --exclude-standard`: each ignored untracked file below the folders. The caller splits long lists under the contract §6 command-line limit.
+export function ignoredFilesArgs(list: readonly string[]): string[] {
+  return read("ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ...paths(list));
+}
+
 // Research.md R21 F1: Git exits 128 for this read with `--literal-pathspecs`. The paths go on stdin.
 export function checkIgnoreArgs(): string[] {
   return [L, "--no-optional-locks", "check-ignore", "-z", "--stdin", "--no-index"];

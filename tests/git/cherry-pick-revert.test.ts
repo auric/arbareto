@@ -220,12 +220,14 @@ describeGit("cherry-pick commit and revert commit (T009)", () => {
     ]);
   }, TIMEOUT_MS);
 
-  caseTest(TASK, "FR-051: detached, unborn, CONFLICTED, already-on-branch, more than 64 parents, UNKNOWN_TARGET, and dirty-tree for each P10 case refuse before any step; every byte stays", SHELL, async () => {
+  caseTest(TASK, "FR-051: detached, unborn, CONFLICTED, already-on-branch, more than 64 parents, mainline-needed for exactly 64 parents, UNKNOWN_TARGET, and dirty-tree for each P10 case refuse before any step; every byte stays", SHELL, async () => {
     const h = hostFor("t009-refusals");
     // 65 commits and one commit with all 65 as parents. Fast-import writes the parents in the order of `from` and `merge`.
     const many = Array.from({ length: 65 }, (_, i) => fc({ mark: 20 + i, ref: `refs/heads/p${i}`, message: `p${i}\n`, from: 1, files: { [`p${i}.txt`]: `${i}\n` } }));
     const octopus = fc({ mark: 85, ref: "refs/heads/octopus", message: "octopus\n", from: 20, merge: Array.from({ length: 64 }, (_, i) => 21 + i) });
-    const cases: [string, (f: Fixture) => void, Action[], (c: Fixture["c"], f: Fixture) => string, number | null, { state: string; code: string; result: unknown }][] = [
+    const octopus64 = fc({ mark: 86, ref: "refs/heads/octopus", message: "octopus\n", from: 20, merge: Array.from({ length: 63 }, (_, i) => 21 + i) });
+    type Expected = { state: string; code: string; result: unknown };
+    const cases: [string, (f: Fixture) => void, Action[], (c: Fixture["c"], f: Fixture) => string, number | null, Expected | ((f: Fixture) => Expected)][] = [
       ["detached", (f) => gitRun(h, f.repo, ["checkout", "-q", "--detach", "main"]), ["cherry-pick", "revert-commit"], (c) => c.t1, null, unavailable("detached")],
       ["unborn", (f) => gitRun(h, f.repo, ["checkout", "-q", "--orphan", "fresh"]), ["cherry-pick", "revert-commit"], (c) => c.t1, null, unavailable("unborn")],
       [
@@ -241,6 +243,14 @@ describeGit("cherry-pick commit and revert commit (T009)", () => {
       ],
       ["already on the branch", () => {}, ["cherry-pick"], (c) => c.m1, null, unavailable("already-on-branch")],
       ["more than 64 parents", () => {}, ["cherry-pick", "revert-commit"], (_, f) => gitOut(h, f.repo, ["rev-parse", "octopus"]).trim(), 1, unavailable("limit")],
+      [
+        "exactly 64 parents",
+        () => {},
+        ["cherry-pick", "revert-commit"],
+        (_, f) => gitOut(h, f.repo, ["rev-parse", "octopus"]).trim(),
+        null,
+        (f) => unavailable("mainline-needed", { parents: Array.from({ length: 64 }, (_, i) => ({ oid: gitOut(h, f.repo, ["rev-parse", `p${i}`]).trim(), subject: `p${i}` })) }),
+      ],
       ["missing commit", () => {}, ["cherry-pick", "revert-commit"], () => "0123456789abcdef0123456789abcdef01234567", null, { state: "failed", code: "UNKNOWN_TARGET", result: undefined }],
       // Research.md R2 P10: Git runs the first case and refuses the other two. The documentation rule refuses all three (research.md R4).
       ["P10 unstaged unrelated", (f) => h.write(`${f.repo}/a.txt`, "a edited\n"), ["cherry-pick", "revert-commit"], (c) => c.t1, null, unavailable("dirty-tree")],
@@ -259,15 +269,17 @@ describeGit("cherry-pick commit and revert commit (T009)", () => {
       ["P10 unstaged overlap", (f) => h.write(`${f.repo}/b.txt`, "b edited\n"), ["cherry-pick", "revert-commit"], (c) => c.t2, null, unavailable("dirty-tree")],
     ];
     for (const [name, prepare, actions, commit, mainline, expected] of cases) {
-      const f = build(h, name.replaceAll(" ", "-"), name === "more than 64 parents" ? [...many, octopus] : []);
+      const f = build(h, name.replaceAll(" ", "-"), name === "more than 64 parents" ? [...many, octopus] : name === "exactly 64 parents" ? [...many, octopus64] : []);
       if (name === "more than 64 parents") expect(gitOut(h, f.repo, ["rev-list", "--parents", "-n", "1", "octopus", "--"]).trim().split(" ").length).toBe(66);
+      if (name === "exactly 64 parents") expect(gitOut(h, f.repo, ["rev-list", "--parents", "-n", "1", "octopus", "--"]).trim().split(" ").length).toBe(65);
+      const want = typeof expected === "function" ? expected(f) : expected;
       prepare(f);
       const before = stateOf(h, f.repo);
       await withSync(`t009-refusal-${name.replaceAll(" ", "-")}`, async (service) => {
         const r = await approved(service, f.repo);
         for (const action of actions) {
           const payload = action === "revert-commit" && name === "P10 unstaged overlap" ? PICK(action, f.c.m3) : PICK(action, commit(f.c, f), mainline);
-          expect({ name, action, ...refusal(await review(service, r, payload)) }).toEqual({ name, action, ...expected });
+          expect({ name, action, ...refusal(await review(service, r, payload)) }).toEqual({ name, action, ...want });
         }
         expect({ name, steps: steps(service) }).toEqual({ name, steps: [] });
         if (name === "already on the branch") expect(outcome(await review(service, r, PICK("revert-commit", f.c.m1)))).toEqual(SUCCEEDED);

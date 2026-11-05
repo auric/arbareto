@@ -1740,8 +1740,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The states that block mutations (plan.md "Required visible states": Busy, State unknown, Conflicted/unfinished operation, Limited output).
   const running = operation !== null && operation.response === null;
   const loading = workspace === null || state.entries.length < workspace.entryCount;
-  // Spec FR-103 and SC-017: the dock names the conflicted count only during a merge or a rebase, and only from a complete read.
-  const conflictCount = loading || (workspace.operationState !== "merging" && workspace.operationState !== "rebasing") ? 0 : conflicted;
+  // Spec FR-103 and SC-017: the dock names the conflicted count only in the states of the conflict row, and only from a complete read. Feature 010 plan.md D6 adds a cherry-pick and a revert.
+  const conflictCount = loading || !IN_APP_STATES.includes(workspace.operationState) ? 0 : conflicted;
   // Data-model 001 §2: `refreshing` means a refresh read runs, so the block ends without a user action.
   const stateBlocked: Blocked = state.blocked ? (workspace?.recoveryState === "refreshing" ? "refreshing" : "unknown") : workspace !== null ? operationBlock(workspace.operationState) : null;
   const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;

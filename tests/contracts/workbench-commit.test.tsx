@@ -1710,6 +1710,21 @@ describe("conflict guidance review fixes", () => {
     expect(describedBy(folder)).toBe(OPERATION_REASON);
   });
 
+  // Feature 010 plan.md D6 and the Stopped board: a cherry-pick or a revert in progress names the count too. A normal snapshot does not.
+  test("the dock names the conflicted count during a cherry-pick and a revert, and not in a normal snapshot (010 FR-060)", async () => {
+    for (const operationState of ["cherry-picking", "reverting"] as const) {
+      await mountWorkbench(workbench, createWorld({ operationState, entries: mergeBoard().all }));
+      await click(workingRow());
+      expect(text(dock())).toContain("3 working changes, 2 staged, 2 conflicted");
+      expect([...dock().querySelectorAll("button")].map((b) => text(b))).toContain(RESOLVE);
+      await unmountAll();
+    }
+    await mountWorkbench(workbench, createWorld({ operationState: "normal", entries: mergeBoard().all }));
+    await click(workingRow());
+    expect(text(dock())).toContain("3 working changes, 2 staged");
+    expect(text(dock())).not.toContain("conflicted");
+  });
+
   test("the dock names no conflicted count outside a merge or a rebase, nor while entry pages are missing (FR-103, SC-017)", async () => {
     await mountWorkbench(workbench, createWorld({ operationState: "conflicted", entries: mergeBoard().all }));
     await click(workingRow());

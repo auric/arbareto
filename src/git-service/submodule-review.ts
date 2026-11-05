@@ -16,6 +16,7 @@ import {
   SUBMODULE_GITMODULES_BYTES,
   SUBMODULE_REVIEW_NESTING_LEVELS,
   SUBMODULE_REVIEW_SUBMODULES,
+  SUBMODULE_TREE_FOLDERS,
   SUBMODULE_WORK_PARALLEL,
   TRUST_INPUT_BYTES,
   WINDOWS_COMMAND_LINE_UNITS,
@@ -897,7 +898,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "unsaved-commits", source: "review", gitPath, commit: repo.head, wsl, ...location });
       refuse("unsaved-commits", path, REFUSAL_TEXTS.unsavedCommits(path, repo.head), remedy, row);
     };
-    // Every folder of the kept-directory walk and every row count toward the §5 bound once. A level read sees plan rows again.
+    // Each row and each counted folder of the kept-directory walk count toward the §5 bound once (contract Δ12 "Submodule count"). A level read sees plan rows again.
     const counted = new Set<string>();
     const count = (key: string) => {
       if (!counted.has(key)) {
@@ -1346,13 +1347,21 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const urlsByPath = new Map<string, string>();
 
     // ---- Kept Git directories (contract §12 "Review reads") ----
-    const fold = forms.key;
-    const knownOf = (list: readonly ObservedRow[]) => new Set(list.flatMap((p) => (p.repo === null ? [] : [fold(p.repo.gitDir)])));
+    // Contract Δ12 "Submodule count": the Git form of a walk folder. Windows forbids `\` in a name, so each native path has one Git form.
+    // Every compare of Git forms is ordinal, with no case fold.
+    const gitFormOf = (folder: string) => (forms.wsl === undefined ? folder.replaceAll(NATIVE.path.sep, "/") : folder);
+    // The Git directories that the row reads of `list` printed.
+    const knownOf = (list: readonly ObservedRow[]) => new Set(list.flatMap((p) => (p.repo === null ? [] : [p.repo.gitDir])));
+    // The name folders of this observation. A level read meets the folders of the preflight again.
+    const nameFolders = new Set<string>();
     // `descend`: the walk also enters the `modules` folder of each kept Git directory.
-    // `known`: the Git directories that the row reads printed. Git accepted each of them, so the walk starts no read there (contract Δ12 "Kept-directory walk").
+    // `known`: the row Git directories of the same observation. Git accepted each of them, so such a folder counts as its row and gets no read (contract Δ12 "Kept-directory walk").
+    // A name folder is on the way to a row Git directory. It counts only when Git accepts it. At most SUBMODULE_TREE_FOLDERS of them get a read.
     const keptBelow = async (folders: readonly string[], descend: boolean, known: ReadonlySet<string>): Promise<string[]> => {
       const keptDirs: string[] = [];
       const visited = new Set<string>();
+      const prefixes = new Set<string>();
+      for (const dir of known) for (let at = dir.indexOf("/"); at >= 0; at = dir.indexOf("/", at + 1)) prefixes.add(dir.slice(0, at));
       // Contract §11 "Paths and file access": a walk folder without an exact UNC form is a `path` refusal, and the walk skips it.
       const uncOf = (folder: string): string | null => {
         const at = forms.native(folder);
@@ -1372,15 +1381,24 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         for (const entry of names.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
           if (!entry.isDirectory()) continue;
           const child = forms.join(folder, entry.name);
-          if (visited.has(fold(child))) continue;
+          const key = gitFormOf(child);
+          if (visited.has(key)) continue;
+          visited.add(key);
           // A UNC name with a character of U+F000 to U+F0FF stands for another Linux name (contract §11 "Route").
-          if (uncOf(child) === null) {
-            visited.add(fold(child));
-            continue;
+          if (uncOf(child) === null) continue;
+          let accepted = true;
+          if (!known.has(key)) {
+            const name = prefixes.has(key);
+            if (name) {
+              nameFolders.add(key);
+              if (nameFolders.size > SUBMODULE_TREE_FOLDERS) {
+                refuseLimit();
+                return;
+              }
+            } else if (!count(`dir ${key}`)) return;
+            accepted = (await git(submoduleGitDirArgs({ gitDir: child }))).code === 0;
+            if (name && accepted && !count(`dir ${key}`)) return;
           }
-          visited.add(fold(child));
-          if (!count(`dir ${fold(child)}`)) return;
-          const accepted = known.has(fold(child)) || (await git(submoduleGitDirArgs({ gitDir: child }))).code === 0;
           observed.push({ walk: child, accepted });
           if (accepted) {
             keptDirs.push(child);
@@ -1399,10 +1417,10 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const rowlessOf = async (keptDirs: readonly string[], known: Set<string>): Promise<Repo[]> => {
       const rowless: Repo[] = [];
       for (const dir of keptDirs) {
-        if (known.has(fold(dir))) continue;
+        if (known.has(gitFormOf(dir))) continue;
         const repo = await readRepo({ gitDir: dir });
-        if (known.has(fold(repo.gitDir))) continue;
-        known.add(fold(repo.gitDir));
+        if (known.has(repo.gitDir)) continue;
+        known.add(repo.gitDir);
         rowless.push(repo);
         // Contract §11 "Paths and file access": a refusal path names a Git-resolved directory in its native form.
         const path = nativeOf(dir);
@@ -1515,23 +1533,29 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const outer = superListing.entries.filter((e) => OUTER_SCOPES.has(e.scope));
       return listPrograms(superListing, { rowId: p.row.rowId }, owner, { entries: outer, hooks: null, gitDir: null }, p.worktree, true, true);
     };
-    // `bind`: the entries enter the binding inputs.
+    // `bind`: the entries enter the binding inputs. The listings read ahead and apply in row order (contract Δ12 "Parallel reads").
     const programsOfAll = async (superListing: TrustListing, list: readonly ObservedRow[], rowless: readonly Repo[], bind: boolean): Promise<ProgramEntry[]> => {
+      const reads = [
+        ...list.filter((p) => p.repo !== null || p.row.action === "clone").map((p) => ahead(() => rowPrograms(superListing, p, p.repo))),
+        ...rowless.map((repo) => ahead(() => listPrograms(superListing, { gitDirectory: repo.gitDir }, programDirOwner(repo.gitDir), repo, null, false, false))),
+      ];
       const lists = [];
-      for (const p of list) if (p.repo !== null || p.row.action === "clone") lists.push(await rowPrograms(superListing, p, p.repo));
-      for (const repo of rowless) lists.push(await listPrograms(superListing, { gitDirectory: repo.gitDir }, programDirOwner(repo.gitDir), repo, null, false, false));
+      for (const read of reads) lists.push(await read());
       if (bind) for (const l of lists) programInputs.push([l.owner, l.fingerprint], ...l.entries.map((e) => [e.owner, e.identity, e.program.digest]));
       return lists.flatMap((l) => l.entries);
     };
 
+    // Only the outer `attempt` settles. `programsOf` in `beforeActive` runs inside `level`, and it must not drop or await the read-ahead of `level`.
+    let attempts = 0;
     const attempt = async <T>(read: () => Promise<T>): Promise<SubmoduleFact<T>> => {
+      attempts++;
       try {
         return { value: await read() };
       } catch (error) {
         if (error instanceof Halt) return error.fact;
         throw error;
       } finally {
-        await settle();
+        if (--attempts === 0) await settle();
       }
     };
 

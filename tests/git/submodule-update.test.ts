@@ -10,11 +10,11 @@ import { join, relative, resolve } from "node:path";
 import policyFile from "../../src/contracts/git-environment.json";
 import { SUBMODULE_PROGRESS_PHASES, SubmoduleProgress } from "../../src/contracts/submodules";
 import { printOrigin } from "../origin";
-import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
+import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { fixtureGitPath } from "./git-binary";
 import { buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, submoduleState, workingFileDigests, type SubmoduleUpdateResult } from "./git-oracle";
-import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf } from "./hunk-harness";
+import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService } from "./hunk-harness";
 import { caseTest, once, withFsCalls, withKeptWorkspaces, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
 import {
   callsSince,
@@ -51,10 +51,12 @@ import {
   updateSteps,
   updateSubmodules,
   sendUpdate,
+  treeGit,
   withFixture,
   type MiniWorld,
   type SubmoduleReview,
 } from "./submodule-harness";
+import { nestedFlat } from "./submodule-count-fixture";
 
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
@@ -1431,5 +1433,34 @@ describe("lifecycle (contract §12 \"Environment and console\", §6, §2)", () =
       expect({ operationId: again.operationId, calls: service.runner.calls.length - from }).toEqual({ operationId: first.operationId, calls: 0 });
     });
   });
+});
+
+// ---- Feature 004 FR-114: each submodule counts once (T156, contract Δ12 "Submodule count") ----
+
+describe("submodule count (004 FR-114, contract Δ12 \"Submodule count\")", () => {
+  // Before FR-114, 129 rows and their 129 kept Git directories went above the bound of 256. A level read that counts the 128 nested Git directories also goes above it.
+  caseTest(
+    "T156",
+    "case 4: one row with 128 nested rows with flat names updates, and the level read of that row adds no count",
+    SHELL,
+    async () => {
+      const w = nestedFlat("t156-nested", 128);
+      // git-submodule(1) `status`: a leading space means that the checked-out commit equals the recorded commit.
+      const status = () => treeGit(w, w.sup, ["submodule", "status", "--recursive"]).split("\n").filter((line) => line !== "");
+      const before = status();
+      // The one-lane preflight of 129 rows can outlast the 60-second lifetime at consume until T160 (FR-115). The case holds the approval clock.
+      await withService({ name: "t156-nested", environment: serviceEnv(w.env), approvalClock: () => 0 }, async (service) => {
+        await update();
+        const { repositoryId } = await service.register(w.sup);
+        const r = await reviewSubmodules(service, repositoryId);
+        expect({ outcome: outcome(r.response), rows: r.rows.length, refusals: r.refusals.map((x) => [x.reason, x.path]), token: typeof r.token }).toEqual({ outcome: SUCCEEDED, rows: 129, refusals: [], token: "string" });
+        const response = await service.response(sendUpdate(service, repositoryId, r), 15 * 60_000);
+        const states = resultsOf(response).map((row) => [row.path, row.state, row.reason ?? null]);
+        expect({ outcome: outcome(response), rows: states.length, changed: states.filter(([, state]) => state !== "unchanged") }).toEqual({ outcome: SUCCEEDED, rows: 129, changed: [] });
+      });
+      expect({ rows: before.length, moved: before.filter((line) => !line.startsWith(" ")), after: status() }).toEqual({ rows: 129, moved: [], after: before });
+    },
+    25 * 60_000,
+  );
 });
 

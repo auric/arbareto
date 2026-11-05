@@ -5,13 +5,15 @@
 // `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T229 registers `reviewSubmodules`, and T230 registers `updateSubmodules`.
 
 import { describe, expect, spyOn } from "bun:test";
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES, UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { redactUrlUserInfo, type SubmoduleAction, type SubmodulePlanRow } from "../../src/contracts/submodules";
 import * as approvalsModule from "../../src/git-service/approvals";
+import * as trustModule from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
-import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { FIXTURE_ROOT, ownedGit, removeTree, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { countPath, deepWorld, flatName, flatWorld, folderWorld } from "./submodule-count-fixture";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
 import { gitPath, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService } from "./hunk-harness";
@@ -35,8 +37,10 @@ import {
   ranCanaries,
   resultsOf,
   reviewSubmodules,
+  refusalsOf,
   rowOf,
   saveCommand,
+  sendUpdate,
   shortUpstream,
   statusBranchMark,
   submoduleCalls,
@@ -1589,6 +1593,329 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
           programs: true,
           refusals: [["unsaved-commits", ""], ["gitdir-config", ""]],
         });
+      });
+    });
+  });
+});
+
+// ---- Feature 004 FR-114: each submodule counts once (T156, contract Δ12 "Submodule count", "Kept-directory walk") ----
+
+describe("submodule count (004 FR-114, contract Δ12 \"Submodule count\", \"Kept-directory walk\")", () => {
+  const MINUTE_MS = 60_000;
+  const countCase = (name: string, fn: () => Promise<void>, minutes = 10) => caseTest("T156", name, SHELL, fn, minutes * MINUTE_MS);
+  // Contract §5 "Ordinary read deadline": `updateSubmodules` has no total read deadline. This wait is a test budget.
+  const UPDATE_WAIT_MS = 15 * MINUTE_MS;
+  let flatShared: TreeWorld | null = null;
+  let folderShared: TreeWorld | null = null;
+  const flat = () => (flatShared ??= flatWorld("t156-flat", 256));
+  const folders = () => (folderShared ??= folderWorld("t156-folders", 256));
+  const modulesOf = (w: TreeWorld) => join(w.sup, ".git", "modules");
+  const leafUrl = (w: TreeWorld) => join(w.root, "leaf.git").replaceAll("\\", "/");
+  // The walk read of contract §12 "Review reads": `--git-dir=<folder> --work-tree=<folder> rev-parse --absolute-git-dir`, as [folder below `modules`, accepted].
+  const walkReads = (service: Service, from: number, modules: string) =>
+    callsSince(service, from)
+      .filter((c) => commandOf(c.arguments).join(" ") === "rev-parse --absolute-git-dir")
+      .map((c): [string, boolean] => [relative(modules, resolve(modules, gitLocation(c.arguments)!)).replaceAll("\\", "/"), c.exit?.exitCode === 0]);
+  // git-submodule(1) `status`: a leading space means that the checked-out commit equals the recorded commit.
+  const statusLines = (w: TreeWorld) => treeGit(w, w.sup, ["submodule", "status", "--recursive"]).split("\n").filter((line) => line !== "");
+  const limitTexts = (r: SubmoduleReview) => r.refusals.filter((x) => x.reason === "limit").map((x) => x.text);
+  async function scopedReview(service: Service, repositoryId: string, path: string): Promise<SubmoduleReview> {
+    const read = await readOk(service, repositoryId);
+    const response = await service.request("reviewSubmodules", { snapshotId: read.snapshotId, scope: { path } }, { repositoryId, repositoryGeneration: read.generation });
+    return {
+      read,
+      response,
+      token: valuesOf(response.result, "submoduleReviewToken")[0] as string | undefined,
+      rows: objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"]),
+      programs: [],
+      refusals: refusalsOf(response.result),
+    };
+  }
+
+  countCase(
+    "case 1: 256 cloned rows with flat names give no refusal and a token, and the update leaves every row unchanged",
+    async () => {
+      const w = flat();
+      const before = statusLines(w);
+      // The one-lane preflight of 256 rows outlasts the 60-second lifetime at consume until T160 (FR-115). The case holds the approval clock.
+      await withService({ name: "t156-flat-update", environment: serviceEnv(w.env), approvalClock: () => 0 }, async (service) => {
+        const { repositoryId, r } = await reviewedTree(service, w);
+        expect({ outcome: outcome(r.response), rows: r.rows.length, refusals: r.refusals.map((x) => [x.reason, x.path]), token: typeof r.token, actions: [...new Set(r.rows.map((row) => row.action))] }).toEqual({
+          outcome: SUCCEEDED,
+          rows: 256,
+          refusals: [],
+          token: "string",
+          actions: ["none"],
+        });
+        await underTestSubmodule("submodule-update");
+        const updated = await service.response(sendUpdate(service, repositoryId, r), UPDATE_WAIT_MS);
+        const states = resultsOf(updated).map((row) => row.state);
+        expect({ outcome: outcome(updated), rows: states.length, changed: states.filter((s) => s !== "unchanged") }).toEqual({ outcome: SUCCEEDED, rows: 256, changed: [] });
+      });
+      const after = statusLines(w);
+      expect({ rows: before.length, moved: before.filter((line) => !line.startsWith(" ")), after }).toEqual({ rows: 256, moved: [], after: before });
+    },
+    25,
+  );
+
+  // C2: a prefix match takes `modules/s0001` for the Git directory of row `s000`.
+  for (const rowless of ["old", "s0001"]) {
+    countCase(`case 2a: 256 cloned flat rows and the kept Git directory modules/${rowless} without a row give limit`, async () => {
+      const w = flat();
+      const kept = join(modulesOf(w), rowless);
+      if (rowless === "s0001") expect(flatName(0)).toBe("s000");
+      treeGit(w, w.root, ["clone", "-q", "--bare", leafUrl(w), kept]);
+      try {
+        await withTree(w, `t156-rowless-${rowless}`, async (service) => {
+          const { r } = await reviewedTree(service, w);
+          expect({ outcome: outcome(r.response), rows: r.rows.length, limit: limitTexts(r) }).toEqual({ outcome: SUCCEEDED, rows: 256, limit: [TEXTS.limit] });
+        });
+      } finally {
+        removeTree(kept);
+      }
+    });
+  }
+
+  countCase("case 2b: 257 flat rows give limit", async () => {
+    const w = flat();
+    const path = countPath(256);
+    const gitmodules = join(w.sup, ".gitmodules");
+    appendFileSync(gitmodules, `[submodule "${flatName(256)}"]\n\tpath = ${path}\n\turl = ../leaf.git\n`);
+    treeGit(w, w.sup, ["update-index", "--add", "--cacheinfo", `160000,${w.leaf.second},${path}`]);
+    try {
+      await withTree(w, "t156-flat-257", async (service) => {
+        const { r } = await reviewedTree(service, w);
+        expect({ outcome: outcome(r.response), rows: r.rows.length, limit: limitTexts(r) }).toEqual({ outcome: SUCCEEDED, rows: 257, limit: [TEXTS.limit] });
+      });
+    } finally {
+      treeGit(w, w.sup, ["update-index", "--force-remove", "--", path]);
+      treeGit(w, w.sup, ["checkout", "-q", "--", ".gitmodules"]);
+    }
+  });
+
+  countCase("case 2c: 256 cloned rows whose names equal their paths give no refusal: the 17 name folders that Git does not accept do not count", async () => {
+    const w = folders();
+    await withTree(w, "t156-folders", async (service) => {
+      const { r } = await reviewedTree(service, w);
+      expect({ outcome: outcome(r.response), rows: r.rows.length, refusals: r.refusals.map((x) => [x.reason, x.path]), token: typeof r.token }).toEqual({ outcome: SUCCEEDED, rows: 256, refusals: [], token: "string" });
+    });
+  });
+
+  countCase("case 2d: a name folder that Git accepts as a Git directory counts, so 256 rows with names equal to their paths give limit", async () => {
+    const w = folders();
+    const name = join(modulesOf(w), "m", "00");
+    const had = new Set(readdirSync(name));
+    treeGit(w, w.root, ["init", "-q", "--bare", "-b", "main", name]);
+    try {
+      await withTree(w, "t156-folders-accepted", async (service) => {
+        const from = callsSince(service).length;
+        const { r } = await reviewedTree(service, w);
+        expect({ outcome: outcome(r.response), rows: r.rows.length, limit: limitTexts(r), read: walkReads(service, from, modulesOf(w)).filter(([folder]) => folder === "m/00") }).toEqual({
+          outcome: SUCCEEDED,
+          rows: 256,
+          limit: [TEXTS.limit],
+          read: [["m/00", true]],
+        });
+      });
+    } finally {
+      for (const entry of readdirSync(name)) if (!had.has(entry)) removeTree(join(name, entry));
+    }
+  });
+
+  countCase("case 3: the walk reads no row Git directory, and it reads each name folder and the kept Git directory without a row; the update takes the token", async () => {
+    const w = folderWorld("t156-walk", 20);
+    treeGit(w, w.root, ["clone", "-q", "--bare", leafUrl(w), join(modulesOf(w), "old")]);
+    // The review lists the rows in index order, which sorts the path bytes.
+    const paths = Array.from({ length: 20 }, (_, i) => countPath(i)).sort();
+    const groups = Array.from({ length: 16 }, (_, g) => `m/${String(g).padStart(2, "0")}`);
+    await withTree(w, "t156-walk", async (service) => {
+      const from = callsSince(service).length;
+      const { repositoryId, r } = await reviewedTree(service, w);
+      const reads = walkReads(service, from, modulesOf(w));
+      expect({ outcome: outcome(r.response), rows: r.rows.map((row) => [row.path, row.action]), refusals: r.refusals.map((x) => [x.reason, x.path]), reads }).toEqual({
+        outcome: SUCCEEDED,
+        rows: paths.map((path) => [path, "none"]),
+        refusals: [],
+        reads: [["m", false], ...groups.map((g): [string, boolean] => [g, false]), ["old", true]],
+      });
+      // The preflight observer walks again, so another walk value gives STALE_REVIEW.
+      await underTestSubmodule("submodule-update");
+      const updated = await updateSubmodules(service, repositoryId, r);
+      expect({ outcome: outcome(updated), rows: resultsOf(updated).map((row) => [row.path, row.state]) }).toEqual({ outcome: SUCCEEDED, rows: paths.map((path) => [path, "unchanged"]) });
+    });
+  });
+
+  // C3: a match by the folded key takes `modules/S000` for the Git directory of row `s000`.
+  countCase("case 3b: a kept Git directory without a row, whose name differs from a row Git directory only in letter case, gets its read and its refusal", async () => {
+    let sensitive = false;
+    const w = flatWorld("t156-case", 1, {
+      beforeInit: (sup) => {
+        const modules = join(sup, ".git", "modules");
+        mkdirSync(modules);
+        if (process.platform === "win32") Bun.spawnSync(["fsutil", "file", "setCaseSensitiveInfo", modules, "enable"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+        // OS fact: a folder that ignores letter case refuses a second name that differs only in letter case with EEXIST.
+        mkdirSync(join(modules, "probe"));
+        try {
+          mkdirSync(join(modules, "PROBE"));
+          sensitive = true;
+          rmdirSync(join(modules, "PROBE"));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        }
+        rmdirSync(join(modules, "probe"));
+      },
+    });
+    if (!sensitive) {
+      console.log("SKIP T156 case 3b: fsutil file setCaseSensitiveInfo did not make the modules folder case-sensitive");
+      return;
+    }
+    const kept = join(modulesOf(w), flatName(0).toUpperCase());
+    treeGit(w, w.root, ["clone", "-q", "--bare", leafUrl(w), kept]);
+    treeGit(w, w.root, [`--git-dir=${kept}`, "config", "submodule.z.gitdir", "elsewhere"]);
+    expect(readdirSync(modulesOf(w)).sort()).toEqual(["S000", "s000"]);
+    await withTree(w, "t156-case", async (service) => {
+      const from = callsSince(service).length;
+      const { r } = await reviewedTree(service, w);
+      expect({
+        outcome: outcome(r.response),
+        refusals: r.refusals.map((x) => [x.reason, relative(modulesOf(w), dirname(x.path)), basename(x.path)]),
+        reads: walkReads(service, from, modulesOf(w)).map(([folder, accepted]) => [basename(folder), accepted]),
+      }).toEqual({ outcome: SUCCEEDED, refusals: [["gitdir-config", "", "S000"]], reads: [["S000", true]] });
+    });
+  });
+
+  countCase("case 5: a scoped review of one row of 256 cloned flat rows gives that row without a refusal, and its update leaves it unchanged", async () => {
+    const w = flat();
+    const path = countPath(100);
+    await withTree(w, "t156-scoped", async (service) => {
+      await review();
+      const { repositoryId } = await service.register(w.sup);
+      const r = await scopedReview(service, repositoryId, path);
+      expect({ outcome: outcome(r.response), rows: r.rows.map((row) => [row.path, row.action]), refusals: r.refusals.map((x) => x.reason), token: typeof r.token }).toEqual({
+        outcome: SUCCEEDED,
+        rows: [[path, "none"]],
+        refusals: [],
+        token: "string",
+      });
+      await underTestSubmodule("submodule-update");
+      const updated = await updateSubmodules(service, repositoryId, r);
+      expect({ outcome: outcome(updated), rows: resultsOf(updated).map((row) => [row.path, row.state]) }).toEqual({ outcome: SUCCEEDED, rows: [[path, "unchanged"]] });
+    });
+  });
+
+  // FR-112, contract Δ12 "Parallel reads": the shell walks of the program listing (001 §6 "Walks") start no Git process, so the case counts `listSubmoduleTrust` calls.
+  countCase("case 6: the program listing of the list review runs at most 8 rows at once and applies in row order; the programs and their digest equal those of one row at a time", async () => {
+    const w = flatWorld("t156-listing", 20);
+    // The review lists the rows in index order, which sorts the path bytes.
+    const paths = Array.from({ length: 20 }, (_, i) => countPath(i)).sort();
+    for (const path of paths) treeGit(w, join(w.sup, ...path.split("/")), ["config", "arbareto.row", path]);
+    const real = trustModule.listSubmoduleTrust;
+    let serial = false;
+    let started = 0;
+    let live = 0;
+    let peak = 0;
+    let turn: Promise<void> = Promise.resolve();
+    const listing = spyOn(trustModule, "listSubmoduleTrust").mockImplementation(async (...args: Parameters<typeof real>) => {
+      const index = started++;
+      let release = () => {};
+      const prior = turn;
+      if (serial) {
+        turn = new Promise((resolve) => (release = resolve));
+        await prior;
+      }
+      live++;
+      peak = Math.max(peak, live);
+      try {
+        // A later listing ends first, so only the apply order keeps the row order.
+        if (!serial) await Bun.sleep(4 * (24 - (index % 24)));
+        return await real(...args);
+      } finally {
+        live--;
+        release();
+      }
+    });
+    const bindings: approvalsModule.SubmoduleBinding[] = [];
+    const create = approvalsModule.createApprovals;
+    const approvals = spyOn(approvalsModule, "createApprovals").mockImplementation((now) => {
+      const store = create(now);
+      const issue = store.issue;
+      store.issue = (approval) => {
+        if (approval.kind === "submodule") bindings.push(approval.binding);
+        return issue(approval);
+      };
+      return store;
+    });
+    try {
+      await withTree(w, "t156-listing", async (service) => {
+        await review();
+        const { repositoryId } = await service.register(w.sup);
+        const listed = async () => {
+          started = 0;
+          peak = 0;
+          const r = await reviewSubmodules(service, repositoryId);
+          const pathOf = new Map(r.rows.map((row) => [row.rowId, row.path]));
+          return { r, calls: started, peak, programs: r.programs.map((p) => ({ ...p, rowId: "rowId" in p ? pathOf.get(p.rowId) : undefined })) };
+        };
+        const ahead = await listed();
+        serial = true;
+        const oneByOne = await listed();
+        console.log(`OBSERVATION T156: listing peak ${ahead.peak}, one by one ${oneByOne.peak}`);
+        expect({
+          outcome: outcome(ahead.r.response),
+          calls: ahead.calls,
+          atLeast2: ahead.peak >= 2,
+          atMost8: ahead.peak <= 8,
+          oneByOne: oneByOne.peak,
+          order: ahead.programs.map((p) => [p.rowId, p.key]),
+          programs: ahead.programs,
+          digests: bindings.map((b) => b.programs),
+        }).toEqual({
+          outcome: SUCCEEDED,
+          calls: 20,
+          atLeast2: true,
+          atMost8: true,
+          oneByOne: 1,
+          order: paths.map((path) => [path, "arbareto.row"]),
+          programs: oneByOne.programs,
+          digests: [bindings[0]!.programs, bindings[0]!.programs],
+        });
+        // The preflight observer lists one row at a time, so another program digest gives STALE_REVIEW.
+        await underTestSubmodule("submodule-update");
+        const updated = await updateSubmodules(service, repositoryId, ahead.r);
+        expect({ outcome: outcome(updated), rows: resultsOf(updated).map((row) => [row.path, row.state]) }).toEqual({ outcome: SUCCEEDED, rows: paths.map((path) => [path, "unchanged"]) });
+      });
+    } finally {
+      listing.mockRestore();
+      approvals.mockRestore();
+    }
+  });
+
+  countCase("case 7: deep names give 1,025 name folders; the review refuses with limit, and no walk read starts past the 1,024th name folder", async () => {
+    const { world: w, names } = deepWorld("t156-deep");
+    const folderOf = (name: string, levels: number) => name.split("/").slice(0, levels).join("/");
+    await withTree(w, "t156-deep", async (service) => {
+      const from = callsSince(service).length;
+      const { r } = await reviewedTree(service, w);
+      const reads = walkReads(service, from, modulesOf(w));
+      const last = names[63]!;
+      expect({
+        outcome: outcome(r.response),
+        rows: r.rows.length,
+        refusals: r.refusals.map((x) => [x.reason, x.text]),
+        reads: reads.length,
+        accepted: reads.filter(([, accepted]) => accepted),
+        first: reads[0],
+        lastRead: reads.at(-1),
+        past: reads.some(([folder]) => folder === folderOf(last, 17)),
+      }).toEqual({
+        outcome: SUCCEEDED,
+        rows: 64,
+        refusals: [["limit", TEXTS.limit]],
+        reads: 1_024,
+        accepted: [],
+        first: ["n00", false],
+        lastRead: [folderOf(last, 16), false],
+        past: false,
       });
     });
   });

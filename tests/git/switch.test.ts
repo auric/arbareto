@@ -5,7 +5,7 @@
 // The oracle is a second build of the same fixture with Git's own commands. Fresh Git reads decide every expectation, never message text.
 
 import { expect, spyOn } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { syncRefsArgs } from "../../src/git-service/sync-commands";
@@ -17,7 +17,7 @@ import { useFixtureRoot } from "./fixture-root";
 import { sha256, workingFileDigests } from "./git-oracle";
 import { caseTest, siblingDeadline, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
-import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
+import { buildWorkbench, hookEvents, logHooks, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
 
 for (const module of ["switch", "workbench-review", "session"]) {
   printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -690,6 +690,86 @@ caseTest("T034", "a track target and a detach target that name an annotated tag 
   const branch = (x: WbFixture) => ({ anno: oid(x, "refs/heads/anno"), config: git(x, ["config", "--get-regexp", "^branch\\.anno\\."]) });
   expect(branch(f)).toEqual(branch(o));
   expect(branch(f).anno).toBe(commit);
+}, TIMEOUT_MS);
+
+// ---- Feature 010 plan.md D2: Check out this commit (T023) ----
+// The payload is `{ detach: <oid> }`. The oracle is the 004 SC-001 oracle: a second build with Git's own commands.
+// Control: send a branch target in place of `detach`; the detached-HEAD assertion must fail.
+
+const detach = (f: WbFixture, choice: string) => switchTo(choice, { detach: f.oids.target! });
+const DETACH = (oid: string) => ["checkout", "-q", "--no-recurse-submodules", "--detach", oid, "--"];
+
+caseTest("T023", "010 FR-020 and SC-005: Check out this commit on a clean tree and with Keep, Stash, and Discard on a dirty tree gives a detached HEAD and equals Git's own commands on a copy", SHELL, async () => {
+  for (const [fixture, choice] of [["switch-clean", "keep"], ["switch-dirty", "keep"], ["switch-dirty", "stash"], ["switch-dirty", "discard"]] as const) {
+    const f = build(fixture);
+    const o = build(fixture);
+    const target = f.oids.target!;
+    const message = `Arbareto: switch to ${target}`;
+    const oracle: Record<string, string[][]> = {
+      keep: [DETACH(target)],
+      stash: [["stash", "push", "--quiet", "-m", message], DETACH(target), ["stash", "apply", "--index"], ["stash", "drop", "--quiet"]],
+      discard: [["stash", "push", "--quiet", "-m", message], DETACH(target), ["stash", "drop", "--quiet"]],
+    };
+    await withSync(`t023-${fixture}-${choice}`, async (service) => {
+      const r = await open(service, f.repo);
+      const rv = await reviewed(service, r, detach(f, choice));
+      expect({ fixture, choice, plan: rv.plan }).toEqual({ fixture, choice, plan: { target: { detach: target }, trackedChanges: fixture === "switch-clean" ? 0 : 4, unreachable: null, heldBy: null, choice, inTheWay: null } });
+      const from = service.runner.calls.length;
+      const response = await service.response<SwitchResult>(sendRun(service, r, rv.workbenchToken));
+      expect({ fixture, choice, ...outcome(response), head: response.result!.head }).toEqual({ fixture, choice, ...SUCCEEDED, head: { state: "detached", oid: target } });
+      expect({ fixture, choice, checkout: steps(service, from).filter((a) => a[1] === "checkout") }).toEqual({ fixture, choice, checkout: [["--no-lazy-fetch", "checkout", "--no-recurse-submodules", "--detach", target, "--"]] });
+    });
+    for (const args of oracle[choice]!) git(o, args);
+    expect({ fixture, choice, state: stateOf(f) }).toEqual({ fixture, choice, state: stateOf(o) });
+    expect(stateOf(f).head).toBe("");
+  }
+}, TIMEOUT_MS);
+
+caseTest("T023", "010 FR-020: from a detached commit that no ref holds the plan names it; an untracked file in the way refuses Discard with UNTRACKED_IN_WAY, and Keep fails as Git's own checkout; every untracked byte stays", SHELL, async () => {
+  const f = build("switch-clean");
+  const unreachable = git(f, ["commit-tree", "-p", f.oids.base!, "-m", "unreachable", `${f.oids.base}^{tree}`]).trim();
+  git(f, ["checkout", "-q", "--detach", unreachable]);
+  await withSync("t023-unreachable", async (service) => {
+    const r = await open(service, f.repo);
+    expect((await reviewed(service, r, detach(f, "keep"))).plan.unreachable).toBe(unreachable);
+  });
+  const u = build("switch-untracked");
+  const o = build("switch-untracked");
+  for (const x of [u, o]) put(x, "b.txt", "b changed\n");
+  const before = stateOf(u);
+  await withSync("t023-in-the-way", async (service) => {
+    const r = await open(service, u.repo);
+    const from = service.runner.calls.length;
+    expect(refusalOf(await review(service, r, detach(u, "discard")))).toEqual({ state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths: ["new.txt"], more: 0 } });
+    expect(steps(service, from)).toEqual([]);
+    const keep = await run(service, r, detach(u, "keep"));
+    expect({ ...outcome(keep), head: keep.result!.head }).toEqual({ state: "failed", code: "GIT_FAILED", head: { state: "branch", target: "refs/heads/main", oid: u.oids.base } });
+  });
+  expect(wb(repoOf(o), DETACH(u.oids.target!), { allowExit: [1] }).exitCode).toBe(1);
+  expect(stateOf(u)).toEqual(before);
+  expect(stateOf(u)).toEqual(stateOf(o));
+  expect(readFileSync(join(u.repo, "new.txt"), "utf8")).toBe("new local\n");
+}, TIMEOUT_MS);
+
+caseTest("T023", "010 SC-007: the hooks of a detached checkout run only after the workbench approval, with the event set of research.md R2 P3b and the log of Git's own checkout on a copy", SHELL, async () => {
+  const f = build("switch-clean");
+  const o = build("switch-clean");
+  const [log, oracleLog] = [join(f.root, "hooks.log"), join(o.root, "hooks-oracle.log")];
+  logHooks(join(f.repo, ".git", "hooks"), log);
+  logHooks(join(o.repo, ".git", "hooks"), oracleLog);
+  await withSync("t023-hooks", async (service) => {
+    const r = await service.register(native(f.repo));
+    expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.workbench).toBe(true);
+    expect(refusalOf(await review(service, r, detach(f, "keep")))).toEqual({ state: "failed", code: "TRUST_REQUIRED", result: { trustGate: "repository" } });
+    expect({ steps: steps(service), log: existsSync(log) }).toEqual({ steps: [], log: false });
+    expect((await service.approveTrust(r.repositoryId, "switch")).state).toBe("succeeded");
+    const response = await run(service, r, detach(f, "keep"));
+    expect({ ...outcome(response), head: response.result!.head }).toEqual({ ...SUCCEEDED, head: { state: "detached", oid: f.oids.target! } });
+  });
+  git(o, DETACH(o.oids.target!));
+  expect(hookEvents(log)).toEqual(["post-checkout", "post-index-change", "reference-transaction"]);
+  expect(readFileSync(log, "utf8")).toBe(readFileSync(oracleLog, "utf8"));
+  expect(stateOf(f)).toEqual(stateOf(o));
 }, TIMEOUT_MS);
 
 // T399, 001 contract §5 "Deadline outcomes": a reconciliation read at its deadline closes the operation Job, so the sibling read ends with `exitCode` null and no `deadline`.

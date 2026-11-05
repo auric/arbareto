@@ -119,7 +119,7 @@ function backendOf(entries: readonly ConfigEntry[], autosquash: boolean): "merge
 // ---- Review reads ----
 
 // Plan.md D6 and research.md R21 F14: Git refuses a rebase with a tracked change unless `--autostash`.
-async function trackedChanges(ctx: ObserveContext): Promise<Fact<boolean>> {
+export async function trackedChanges(ctx: ObserveContext): Promise<Fact<boolean>> {
   const out = await readOut(ctx, rebaseStatusArgs(), STATUS_LISTING_BYTES);
   if ("limited" in out) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
   if (!("value" in out)) return out;
@@ -128,7 +128,7 @@ async function trackedChanges(ctx: ObserveContext): Promise<Fact<boolean>> {
 }
 
 // FR-024 and plan.md D6: the tracking ref of the 003 push destination (003 D4). The note shows when it holds a rewritten commit.
-async function forceNoteOf(ctx: ObserveContext, head: Branch, onto: string, rewritten: number, entries: readonly ConfigEntry[]): Promise<Fact<RebasePlan["forceNote"]> | Refused> {
+export async function forceNoteOf(ctx: ObserveContext, head: Branch, onto: string, rewritten: number, entries: readonly ConfigEntry[]): Promise<Fact<RebasePlan["forceNote"]> | Refused> {
   // Feature 003 research R16 m: Git stops every `%(push)` read on such a value, so no destination exists to check.
   if (invalidRemoteValue(entries)) return unavailable("invalid-config");
   const branch = head.target.slice(HEADS.length);

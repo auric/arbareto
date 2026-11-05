@@ -12,6 +12,7 @@ import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { compare } from "./hunk-harness";
 import { buildMergeConflict, buildPull, buildRebaseConflict, buildRebaseSkip, fc, gitOut, gitPaths, gitRun, importStream, markers, pullRowCopy, refMap, revParse, type GitHost } from "./remote-fixtures";
+import { hookEvents, logHooks } from "./workbench-fixtures";
 import { caseTest, siblingDeadline, type Service } from "./service-harness";
 import type { RegistrationResult } from "./service-harness";
 import {
@@ -467,6 +468,184 @@ describeGit("conflict actions abort, continue, and skip (T045)", () => {
 
   // T399, 001 contract §5 "Deadline outcomes": a read at its deadline closes the operation Job, so the sibling read ends with `exitCode` null and no `deadline`.
   // The reads before the step refuse with DEADLINE, and no step starts.
+  // ---- Feature 010 plan.md D6: a stopped cherry-pick or revert (T010) ----
+  // Control: map `cherry-picking` to `merge`; the Abort case must fail.
+
+  type PickKind = "cherry-pick" | "revert";
+  const STATE: Record<PickKind, string> = { "cherry-pick": "cherry-picking", revert: "reverting" };
+  const PHASE: Record<PickKind, string> = { "cherry-pick": "sync-cherry-pick", revert: "sync-revert" };
+  const KINDS: PickKind[] = ["cherry-pick", "revert"];
+
+  // main: base → m1 → m2 (f.txt each). side: s1 and s2. dup adds the e.txt of m2 outside main (research.md R2 P6).
+  // `conflict` stops on f.txt. `empty` stops with no unmerged entry. `sequence` stops in the first of two commits, so `.git/sequencer` exists.
+  function pickStop(h: GitHost, name: string, kind: PickKind, variant: "conflict" | "empty" | "sequence"): string {
+    const repo = initRepo(h, `${h.root}/${name}`);
+    const marks = importStream(h, repo, [
+      fc({ mark: 1, message: "base\n", files: { "f.txt": "base\n", "g.txt": "g\n" } }),
+      fc({ mark: 2, message: "m1\n", from: 1, files: { "f.txt": "main\n" } }),
+      fc({ mark: 3, message: "m2\n", from: 2, files: { "f.txt": "main2\n", "e.txt": "e\n" } }),
+      fc({ mark: 4, ref: "refs/heads/side", message: "s1\n", from: 1, files: { "f.txt": "side\n" } }),
+      fc({ mark: 5, ref: "refs/heads/side", message: "s2\n", from: 4, files: { "h.txt": "h\n" } }),
+      fc({ mark: 6, ref: "refs/heads/dup", message: "dup\n", from: 1, files: { "e.txt": "e\n" } }),
+    ]);
+    gitRun(h, repo, ["reset", "-q", "--hard", "main"]);
+    const [m1, m2, s1, s2, dup] = [2, 3, 4, 5, 6].map((m) => marks.get(m)!);
+    const args = kind === "cherry-pick" ? (variant === "empty" ? [dup] : variant === "sequence" ? [s1!, s2!] : [s1!]) : ["--no-edit", ...(variant === "sequence" ? [m1!, m2!] : [m1!])];
+    gitRun(h, repo, [kind, ...args], { allowExit: [1], env: INTEGRATE_ENV });
+    expect({ kind, variant, markers: markers(h, repo) }).toEqual({ kind, variant, markers: [kind === "cherry-pick" ? "CHERRY_PICK_HEAD" : "REVERT_HEAD", ...(variant === "sequence" ? ["sequencer"] : [])] });
+    expect({ kind, variant, unmerged: unmergedPaths(h, repo) }).toEqual({ kind, variant, unmerged: variant === "empty" ? [] : ["f.txt"] });
+    return repo;
+  }
+  const phasesOf = (service: Service, requestId: string) => (service.progress as { requestId?: string; phase?: string }[]).filter((p) => p.requestId === requestId).map((p) => p.phase);
+
+  caseTest("T010", "010 SC-006 and FR-061: Abort of a stopped cherry-pick and revert runs <kind> --abort in its own phase and equals Git's own --abort on a copy", SHELL, async () => {
+    const h = host("pick-abort");
+    for (const kind of KINDS) {
+      const repo = pickStop(h, `abort-${kind}`, kind, "conflict");
+      const oracle = copyOf(h, repo);
+      await withSync(`t010-abort-${kind}`, async (service) => {
+        const r = await approved(service, repo);
+        const review = await reviewed(service, r, { action: "abort" });
+        expect({ kind, plan: review.plan as object }).toEqual({ kind, plan: { remotes: [], operationState: STATE[kind] } });
+        const from = service.runner.calls.length;
+        const requestId = sendSync(service, r, review.syncReviewToken);
+        const response = await service.response<SyncResult>(requestId);
+        expect({ kind, ...outcome(response), integration: response.result!.integration }).toEqual({ kind, ...SUCCEEDED, integration: { state: "done" } });
+        expect({ kind, calls: integrateCalls(service, from).map((c) => c.arguments) }).toEqual({ kind, calls: [["--no-lazy-fetch", kind, "--abort"]] });
+        expect({ kind, phases: [...new Set(phasesOf(service, requestId))].filter((p) => p?.startsWith("sync-")) }).toEqual({ kind, phases: [PHASE[kind]] });
+      });
+      gitRun(h, oracle, [kind, "--abort"], { env: INTEGRATE_ENV });
+      expect({ kind, state: stateOf(h, repo) }).toEqual({ kind, state: stateOf(h, oracle) });
+    }
+  }, TIMEOUT_MS);
+
+  caseTest("T010", "010 SC-006, FR-062, and FR-063: Continue refuses CONFLICTED while unmerged; Mark resolved works in both states; Continue then runs <kind> --continue and equals Git's own --continue on a copy", SHELL, async () => {
+    const h = host("pick-continue");
+    for (const kind of KINDS) {
+      const repo = pickStop(h, `continue-${kind}`, kind, "conflict");
+      let oracle = "";
+      await withSync(`t010-continue-${kind}`, async (service) => {
+        const r = await approved(service, repo);
+        const from = service.runner.calls.length;
+        expect({ kind, ...refusalOf(await reviewSync(service, r, { action: "continue" })) }).toEqual({ kind, state: "failed", code: "CONFLICTED", result: { unmerged: 1 } });
+        expect(integrateCalls(service, from)).toEqual([]);
+        oracle = copyOf(h, repo);
+        for (const at of [repo, oracle]) h.write(`${at}/f.txt`, "resolved\n");
+        const c = await compare(service, r.repositoryId, "f.txt", "conflicted");
+        expect({ kind, ...outcome(await service.request("applyFile", { comparisonId: c.comparisonId, snapshotId: c.read.snapshotId, direction: "resolve" }, { repositoryId: r.repositoryId, repositoryGeneration: c.read.generation })) }).toEqual({ kind, ...SUCCEEDED });
+        gitRun(h, oracle, ["--literal-pathspecs", "add", "--", "f.txt"]);
+        expect(unmergedPaths(h, repo)).toEqual([]);
+        const review = await reviewed(service, r, { action: "continue" });
+        expect({ kind, plan: review.plan as object }).toEqual({ kind, plan: { remotes: [], operationState: STATE[kind] } });
+        const at = service.runner.calls.length;
+        const requestId = sendSync(service, r, review.syncReviewToken);
+        const response = await service.response<SyncResult>(requestId);
+        expect({ kind, ...outcome(response), integration: response.result!.integration }).toEqual({ kind, ...SUCCEEDED, integration: { state: "done" } });
+        expect({ kind, calls: integrateCalls(service, at).map((c) => c.arguments) }).toEqual({ kind, calls: [["--no-lazy-fetch", kind, "--continue"]] });
+        expect({ kind, phases: [...new Set(phasesOf(service, requestId))].filter((p) => p?.startsWith("sync-")) }).toEqual({ kind, phases: ["sync-continue"] });
+      });
+      gitRun(h, oracle, [kind, "--continue"], { env: INTEGRATE_ENV });
+      expect({ kind, state: stateOf(h, repo) }).toEqual({ kind, state: stateOf(h, oracle) });
+      expect(markers(h, repo)).toEqual([]);
+    }
+  }, TIMEOUT_MS);
+
+  caseTest("T010", "010 FR-060 and FR-062: Skip gives not-rebasing; an index equal to HEAD gives nothing-to-commit (P6, P13); a .git/sequencer folder gives sequence for Abort and Continue; no process starts and Git's state stays", SHELL, async () => {
+    const h = host("pick-refusals");
+    for (const kind of KINDS) {
+      // A resolution that keeps HEAD's content leaves the index equal to HEAD (git-commit(1) `--allow-empty`).
+      const resolved = pickStop(h, `head-${kind}`, kind, "conflict");
+      h.write(`${resolved}/f.txt`, "main2\n");
+      gitRun(h, resolved, ["add", "--", "f.txt"]);
+      const repos: [string, string, Record<string, ReturnType<typeof unavailable>>][] = [
+        ["conflict", pickStop(h, `skip-${kind}`, kind, "conflict"), { skip: unavailable("not-rebasing") }],
+        ["resolved to HEAD", resolved, { continue: unavailable("nothing-to-commit"), skip: unavailable("not-rebasing") }],
+        ["sequence", pickStop(h, `sequence-${kind}`, kind, "sequence"), { abort: unavailable("sequence"), continue: unavailable("sequence"), skip: unavailable("not-rebasing") }],
+        ...(kind === "cherry-pick" ? [["empty pick", pickStop(h, "empty-pick", kind, "empty"), { continue: unavailable("nothing-to-commit"), skip: unavailable("not-rebasing") }] as [string, string, Record<string, ReturnType<typeof unavailable>>]] : []),
+      ];
+      for (const [name, repo, refusals] of repos) {
+        const before = stateOf(h, repo);
+        await withSync(`t010-refusals-${++copies}`, async (service) => {
+          const r = await approved(service, repo);
+          for (const [action, expected] of Object.entries(refusals)) expect({ kind, name, action, ...refusalOf(await reviewSync(service, r, { action })) }).toEqual({ kind, name, action, ...expected });
+          expect(integrateCalls(service)).toEqual([]);
+          // Abort stays available without a sequence (research.md R2 P1b).
+          if (name !== "sequence") expect({ kind, name, ...outcome(await reviewSync(service, r, { action: "abort" })) }).toEqual({ kind, name, ...SUCCEEDED });
+        });
+        expect({ kind, name, state: stateOf(h, repo) }).toEqual({ kind, name, state: before });
+      }
+    }
+  }, TIMEOUT_MS);
+
+  caseTest("T010", "010 SC-007 and FR-004: the pre-commit hook of Continue runs only after the sync approval, with the event set of research.md R2 P1 and P2c and the log of Git's own --continue on a copy", SHELL, async () => {
+    const h = host("pick-hooks");
+    const P1 = ["commit-msg", "post-commit", "post-index-change", "pre-commit", "prepare-commit-msg", "reference-transaction"];
+    for (const kind of KINDS) {
+      const repo = pickStop(h, `hooks-${kind}`, kind, "conflict");
+      h.write(`${repo}/f.txt`, "resolved\n");
+      gitRun(h, repo, ["add", "--", "f.txt"]);
+      const oracle = copyOf(h, repo);
+      const [log, oracleLog] = [`${h.root}/hooks-${kind}.log`, `${h.root}/hooks-${kind}-oracle.log`];
+      logHooks(gitPaths(h, repo, ["hooks"])[0]!, log);
+      logHooks(gitPaths(h, oracle, ["hooks"])[0]!, oracleLog);
+      await withSync(`t010-hooks-${kind}`, async (service) => {
+        const r = await register(service, repo);
+        expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.sync).toBe(true);
+        expect({ kind, ...refusalOf(await reviewSync(service, r, { action: "continue" })) }).toEqual({ kind, state: "failed", code: "TRUST_REQUIRED", result: undefined });
+        expect({ kind, calls: integrateCalls(service), log: existsSync(native(log)) }).toEqual({ kind, calls: [], log: false });
+        expect((await service.approveTrust(r.repositoryId, kind)).state).toBe("succeeded");
+        const response = await run(service, r, { action: "continue" });
+        expect({ kind, ...outcome(response), integration: response.result!.integration }).toEqual({ kind, ...SUCCEEDED, integration: { state: "done" } });
+      });
+      gitRun(h, oracle, [kind, "--continue"], { env: INTEGRATE_ENV });
+      expect({ kind, events: hookEvents(native(log)) }).toEqual({ kind, events: P1 });
+      expect({ kind, log: h.read(log)?.toString() }).toEqual({ kind, log: h.read(oracleLog)?.toString() });
+      expect({ kind, state: stateOf(h, repo) }).toEqual({ kind, state: stateOf(h, oracle) });
+    }
+  }, TIMEOUT_MS);
+
+  caseTest("T010", "010 FR-003 and FR-007: an external git add after the Continue review gives STALE_REVIEW and no process; a Continue killed while index.lock exists gives failed-with-effects", SHELL, async () => {
+    const h = host("pick-stale");
+    for (const kind of KINDS) {
+      const repo = pickStop(h, `stale-${kind}`, kind, "conflict");
+      h.write(`${repo}/f.txt`, "resolved\n");
+      gitRun(h, repo, ["add", "--", "f.txt"]);
+      await withSync(`t010-stale-${kind}`, async (service) => {
+        const r = await approved(service, repo);
+        const review = await reviewed(service, r, { action: "continue" });
+        h.write(`${repo}/g.txt`, "g external\n");
+        gitRun(h, repo, ["add", "--", "g.txt"]);
+        const before = stateOf(h, repo);
+        expect({ kind, ...outcome(await sync(service, r, review.syncReviewToken)) }).toEqual({ kind, state: "failed", code: "STALE_REVIEW" });
+        expect(integrateCalls(service)).toEqual([]);
+        expect({ kind, state: stateOf(h, repo) }).toEqual({ kind, state: before });
+      });
+    }
+    const repo = pickStop(h, "killed", "cherry-pick", "conflict");
+    h.write(`${repo}/f.txt`, "resolved\n");
+    gitRun(h, repo, ["add", "--", "f.txt"]);
+    const lock = native(gitPaths(h, repo, ["index.lock"])[0]!);
+    const started = `${h.root}/killed.started`;
+    const release = `${h.root}/killed.release`;
+    // The hook runs in the process tree of `git cherry-pick --continue`, so the kill ends it with the lock in place. It waits at most 30 seconds.
+    h.write(`${gitPaths(h, repo, ["hooks"])[0]!}/pre-commit`, `#!/bin/sh\n: > '${lock}'\n: > '${started}'\ni=0\nwhile [ ! -f '${release}' ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done\nexit 0\n`);
+    try {
+      await withSync("t010-killed", async (service) => {
+        const r = await approved(service, repo);
+        const requestId = sendSync(service, r, (await reviewed(service, r, { action: "continue" })).syncReviewToken);
+        await until(() => existsSync(native(started)), "pre-commit hook start", 30_000);
+        await service.cancel(await service.operationId(requestId));
+        const response = await service.response<SyncResult>(requestId);
+        expect(integrateCalls(service).map((c) => c.exit?.exitCode)).toEqual([null]);
+        expect(outcome(response)).toEqual(WITH_EFFECTS);
+        expect(markers(h, repo)).toContain("index.lock");
+      });
+    } finally {
+      h.write(release, "");
+      rmSync(lock, { force: true });
+    }
+  }, TIMEOUT_MS);
+
   caseTest("T399", "T399: an Abort gives DEADLINE when its index read before the step expires and the Job close ends the refs listing first; no step starts", SHELL, async () => {
     const h = host("t399-abort");
     const repo = buildMergeConflict(h, "t399-merge").repo;

@@ -3,7 +3,7 @@
 
 // Contract Δ3 and plan.md D2 to D11: the argument arrays of the workbench reads and steps.
 
-import { REFLOG_SCAN_ENTRIES } from "../contracts/limits";
+import { HISTORY_PARENTS_PER_COMMIT, REFLOG_SCAN_ENTRIES } from "../contracts/limits";
 import { isObjectId, isOneLevelRefName, isRefName, type ObjectFormat } from "./commands";
 
 // Contract §7 "Missing objects": every app Git command starts with this option.
@@ -226,6 +226,44 @@ export function upstreamOfArgs(headRef: string): string[] {
   return read("for-each-ref", "--format=%(upstream)", under("refs/heads/", headRef));
 }
 
+// ---- Feature 010 reads (contract Δ3) ----
+
+// Plan.md D4 read 7 and research.md R2 P15: the index-to-target listing also names a path that `git rm --cached` removed. `diff-tree HEAD <target>` misses it.
+export function resetCandidatesArgs(target: string, objectFormat: ObjectFormat): string[] {
+  return read("diff-index", "--cached", "-R", "-z", "--no-renames", "--name-status", oid(target, objectFormat), "--");
+}
+
+// Plan.md D4 read 4: the commits that arrive. `rewrittenCountArgs` gives the commits that leave.
+export function gainCountArgs(target: string, objectFormat: ObjectFormat): string[] {
+  return read("rev-list", "--count", `HEAD..${oid(target, objectFormat)}`);
+}
+
+// Plan.md D4 read 4: the commits that leave and that no other branch, tag, or remote-tracking ref holds. The `--exclude` pattern is literal, as in `unmergedCountArgs`.
+export function reflogOnlyCountArgs(target: string, branch: string, objectFormat: ObjectFormat): string[] {
+  branchRef(branch);
+  return read("rev-list", "--count", "HEAD", "--not", oid(target, objectFormat), `--exclude=${branch}`, "--branches", "--tags", "--remotes");
+}
+
+// git-diff-index(1) `--quiet`: exit 0 when the index equals the tree, exit 1 when it differs.
+export function indexMatchArgs(rev: string, objectFormat: ObjectFormat): string[] {
+  return read("diff-index", "--cached", "--quiet", rev === "HEAD" ? rev : oid(rev, objectFormat), "--");
+}
+
+// git-check-ref-format(1): exit 0 when Git accepts the full tag ref.
+export function tagNameCheckArgs(name: string): string[] {
+  return read("check-ref-format", `refs/tags/${item(name)}`);
+}
+
+// git-merge-base(1) `--is-ancestor`: exit 0 when the commit is an ancestor of HEAD, exit 1 when it is not.
+export function commitIsAncestorArgs(commit: string, objectFormat: ObjectFormat): string[] {
+  return read("merge-base", "--is-ancestor", oid(commit, objectFormat), "HEAD");
+}
+
+// Plan.md D5 read 4: grafts, replace refs, and the shallow boundary apply, as in the sequencer.
+export function parentsArgs(commit: string, objectFormat: ObjectFormat): string[] {
+  return read("rev-list", "--parents", "-n", "1", oid(commit, objectFormat), "--");
+}
+
 // ---- Steps ----
 
 // Contract Δ3: this argv has no end-of-options marker, so a name that starts with `-` would be an option.
@@ -341,4 +379,36 @@ export function configUnsetArgs(target: ConfigWriteScope, key: string): string[]
 // Contract Δ3 `commit` with `amend`: the message comes on stdin.
 export function amendArgs(): string[] {
   return [L, "commit", "--quiet", "--amend", "--file=-"];
+}
+
+// ---- Feature 010 steps (contract Δ3 `runWorkbench`) ----
+
+const RESET_MODES: readonly string[] = ["soft", "mixed", "hard"];
+
+// Research.md R2 P3: `--` ends the revision, and no path follows. `--no-recurse-submodules` keeps `submodule.recurse` from a reset of submodule worktrees.
+export function resetArgs(target: string, mode: "soft" | "mixed" | "hard", objectFormat: ObjectFormat): string[] {
+  if (!RESET_MODES.includes(mode)) throw new TypeError("reset mode refused");
+  return [L, "reset", "--quiet", "--no-recurse-submodules", `--${mode}`, oid(target, objectFormat), "--"];
+}
+
+// Plan.md D3 and research.md R2 P8: `-m` without `-a`, so `tag.forceSignAnnotated` applies. Without `-f`, Git refuses an existing name.
+export function tagArgs(name: string, target: string, message: string | null, objectFormat: ObjectFormat): string[] {
+  ref(`refs/tags/${name}`);
+  return [L, "tag", ...(message === null ? [] : ["-m", item(message)]), "--end-of-options", name, oid(target, objectFormat)];
+}
+
+function mainlineOf(mainline: number | null): string[] {
+  if (mainline === null) return [];
+  if (!Number.isInteger(mainline) || mainline < 1 || mainline > HISTORY_PARENTS_PER_COMMIT) throw new TypeError("mainline refused");
+  return ["-m", String(mainline)];
+}
+
+// Research.md R4: no `--` after the object ID, because Git reads later items as paths.
+export function cherryPickArgs(commit: string, mainline: number | null, objectFormat: ObjectFormat): string[] {
+  return [L, "cherry-pick", ...mainlineOf(mainline), oid(commit, objectFormat)];
+}
+
+// git-revert(1): `--edit` is the default from a terminal, so `--no-edit` keeps Git's own message.
+export function revertCommitArgs(commit: string, mainline: number | null, objectFormat: ObjectFormat): string[] {
+  return [L, "revert", "--no-edit", ...mainlineOf(mainline), oid(commit, objectFormat)];
 }

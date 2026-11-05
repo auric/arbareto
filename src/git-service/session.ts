@@ -56,6 +56,7 @@ import "./revert";
 import "./switch";
 import "./branch-ops";
 import "./merge-rebase";
+import "./commit-actions";
 import "./resolve";
 import { readGitSettings as readSettings } from "./git-settings";
 import { openWorktreeTarget, readWorktreeList } from "./worktrees";

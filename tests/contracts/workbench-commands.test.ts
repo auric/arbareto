@@ -4,9 +4,11 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import * as commands from "../../src/git-service/commands";
+import * as sc from "../../src/git-service/sync-commands";
 import * as wb from "../../src/git-service/workbench-commands";
 
 printOrigin("../../src/git-service/workbench-commands.ts", import.meta.dir);
+printOrigin("../../src/git-service/sync-commands.ts", import.meta.dir);
 
 // Contract Δ3, Δ10, and plan.md D2 to D11: the argv vectors of `workbench-commands.ts` (T007).
 
@@ -272,5 +274,86 @@ describe("refused inputs", () => {
     throws(() => wb.mergeArgs("refs/heads/topic", { result: "octopus" } as unknown as { result: "squash" }));
     throws(() => wb.stashDropArgs(-1));
     throws(() => wb.stashDropArgs(1.5));
+  });
+});
+
+// Feature 010 contract Δ3 and plan.md D3 to D6 (T006). Control: drop `--no-recurse-submodules` from the reset arguments; the reset case must fail.
+describe("commit menu argv (feature 010 plan.md D3 to D6)", () => {
+  const throws = (f: () => unknown) => expect(f).toThrow(TypeError);
+  const COMMIT_READS: [string, string[], string[]][] = [
+    ["reset Hard in-the-way candidates (P15)", wb.resetCandidatesArgs(A, "sha1"), [...R, "diff-index", "--cached", "-R", "-z", "--no-renames", "--name-status", A, "--"]],
+    ["reset commits that leave", wb.rewrittenCountArgs(A, "sha1"), [...R, "rev-list", "--count", `${A}..HEAD`]],
+    ["reset commits that arrive", wb.gainCountArgs(A, "sha1"), [...R, "rev-list", "--count", `HEAD..${A}`]],
+    ["reset reflog-only count", wb.reflogOnlyCountArgs(A, "main", "sha1"), [...R, "rev-list", "--count", "HEAD", "--not", A, "--exclude=main", "--branches", "--tags", "--remotes"]],
+    ["reset reflog-only count of a slash branch", wb.reflogOnlyCountArgs(S, "team/x", "sha256"), [...R, "rev-list", "--count", "HEAD", "--not", S, "--exclude=team/x", "--branches", "--tags", "--remotes"]],
+    ["reset Mixed and Hard index match", wb.indexMatchArgs(A, "sha1"), [...R, "diff-index", "--cached", "--quiet", A, "--"]],
+    ["Continue nothing-to-commit index match", wb.indexMatchArgs("HEAD", "sha1"), [...R, "diff-index", "--cached", "--quiet", "HEAD", "--"]],
+    ["tag name check", wb.tagNameCheckArgs("v1.0"), [...R, "check-ref-format", "refs/tags/v1.0"]],
+    ["tag name check of a slash name", wb.tagNameCheckArgs("a/b"), [...R, "check-ref-format", "refs/tags/a/b"]],
+    ["tag exists", commands.headRefExistsArgs("refs/tags/v1.0"), [...R, "show-ref", "--exists", "refs/tags/v1.0"]],
+    ["cherry-pick already on the branch", wb.commitIsAncestorArgs(A, "sha1"), [...R, "merge-base", "--is-ancestor", A, "HEAD"]],
+    ["cherry-pick and revert parents", wb.parentsArgs(A, "sha1"), [...R, "rev-list", "--parents", "-n", "1", A, "--"]],
+  ];
+  const COMMIT_STEPS: [string, string[], string[]][] = [
+    ["reset soft", wb.resetArgs(A, "soft", "sha1"), [L, "reset", "--quiet", "--no-recurse-submodules", "--soft", A, "--"]],
+    ["reset mixed", wb.resetArgs(A, "mixed", "sha1"), [L, "reset", "--quiet", "--no-recurse-submodules", "--mixed", A, "--"]],
+    ["reset hard", wb.resetArgs(S, "hard", "sha256"), [L, "reset", "--quiet", "--no-recurse-submodules", "--hard", S, "--"]],
+    ["lightweight tag", wb.tagArgs("v1.0", A, null, "sha1"), [L, "tag", "--end-of-options", "v1.0", A]],
+    ["annotated tag", wb.tagArgs("v1.0", A, "Release 1.0\n\nNotes", "sha1"), [L, "tag", "-m", "Release 1.0\n\nNotes", "--end-of-options", "v1.0", A]],
+    ["cherry-pick", wb.cherryPickArgs(A, null, "sha1"), [L, "cherry-pick", A]],
+    ["cherry-pick a merge with -m 2", wb.cherryPickArgs(A, 2, "sha1"), [L, "cherry-pick", "-m", "2", A]],
+    ["revert", wb.revertCommitArgs(A, null, "sha1"), [L, "revert", "--no-edit", A]],
+    ["revert a merge with -m 1", wb.revertCommitArgs(S, 1, "sha256"), [L, "revert", "--no-edit", "-m", "1", S]],
+    ["abort a cherry-pick", sc.abortArgs("cherry-picking"), [L, "cherry-pick", "--abort"]],
+    ["abort a revert", sc.abortArgs("reverting"), [L, "revert", "--abort"]],
+    ["continue a cherry-pick", sc.continueArgs("cherry-picking"), [L, "cherry-pick", "--continue"]],
+    ["continue a revert", sc.continueArgs("reverting"), [L, "revert", "--continue"]],
+    ["abort a merge stays", sc.abortArgs("merging"), [L, "merge", "--abort"]],
+    ["continue a rebase stays", sc.continueArgs("rebasing"), [L, "rebase", "--continue"]],
+    ["continue a merge stays", sc.continueArgs("merging"), [L, "commit", "--quiet"]],
+  ];
+
+  for (const [name, actual, expected] of [...COMMIT_READS, ...COMMIT_STEPS]) test(name, () => expect(actual).toEqual(expected));
+
+  test("every array starts with --no-lazy-fetch, and every read has --no-optional-locks and --literal-pathspecs", () => {
+    for (const [, args] of [...COMMIT_READS, ...COMMIT_STEPS]) expect(args[0]).toBe(L);
+    for (const [, args] of COMMIT_READS) expect(args.slice(0, 3)).toEqual(R);
+  });
+
+  // Research.md R4: cherry-pick and revert pass no `--`, and no option changes Git's own message, signing, or empty-commit rule.
+  test("cherry-pick and revert pass no --, no hook bypass, and no signing or empty-commit option", () => {
+    for (const [, args] of COMMIT_STEPS.filter(([, a]) => a[1] === "cherry-pick" || a[1] === "revert").filter(([, a]) => !a.includes("--abort") && !a.includes("--continue"))) {
+      for (const item of ["--", "-x", "-s", "-n", "--no-gpg-sign", "--allow-empty", "--empty", "--no-verify", "--edit"]) expect(args).not.toContain(item);
+    }
+  });
+
+  // Research.md R2 P8 and R4: the annotated tag passes `-m` without `-a`, so `tag.forceSignAnnotated` applies. No step replaces a tag or skips signing.
+  test("a tag step passes no -a, no -f, and no --no-sign; a name that starts with '-' stays after --end-of-options", () => {
+    for (const args of [wb.tagArgs("v1", A, null, "sha1"), wb.tagArgs("v1", A, "m", "sha1")]) for (const item of ["-a", "-f", "--force", "--no-sign", "-s"]) expect(args).not.toContain(item);
+    expect(wb.tagArgs("-x", A, "-m", "sha1").slice(-5)).toEqual(["-m", "-m", "--end-of-options", "-x", A]);
+  });
+
+  test("refused inputs", () => {
+    throws(() => wb.resetArgs("HEAD~1", "soft", "sha1"));
+    throws(() => wb.resetArgs(A, "keep" as "soft", "sha1"));
+    throws(() => wb.resetArgs(A, "merge" as "soft", "sha1"));
+    throws(() => wb.resetCandidatesArgs(S, "sha1"));
+    throws(() => wb.reflogOnlyCountArgs(A, "a..b", "sha1"));
+    throws(() => wb.indexMatchArgs("HEAD~1", "sha1"));
+    throws(() => wb.tagArgs("a..b", A, null, "sha1"));
+    throws(() => wb.tagArgs("v1", A, "a\0b", "sha1"));
+    throws(() => wb.tagArgs("v1", A, "", "sha1"));
+    throws(() => wb.tagArgs("v1", "HEAD", null, "sha1"));
+    throws(() => wb.tagNameCheckArgs(""));
+    throws(() => wb.tagNameCheckArgs("a\0b"));
+    for (const mainline of [0, 65, 1.5, -1]) {
+      throws(() => wb.cherryPickArgs(A, mainline, "sha1"));
+      throws(() => wb.revertCommitArgs(A, mainline, "sha1"));
+    }
+    throws(() => wb.cherryPickArgs("HEAD", null, "sha1"));
+    throws(() => wb.parentsArgs("-x", "sha1"));
+    throws(() => wb.commitIsAncestorArgs("main", "sha1"));
+    throws(() => sc.abortArgs("sequencer-active" as "merging"));
+    throws(() => sc.continueArgs("conflicted" as "merging"));
   });
 });

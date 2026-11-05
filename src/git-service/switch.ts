@@ -40,7 +40,7 @@ interface SwitchBound {
 type Kept = "conflicts" | "failed-apply" | "failed-checkout" | "not-found";
 
 // `parseTrackedStatus` skips the `# ` header lines, such as `# stash <n>` of `status.showStash` (git-status(1)).
-async function trackedStatus(ctx: ObserveContext): Promise<Fact<{ digest: string; count: number; unmerged: number }>> {
+export async function trackedStatus(ctx: ObserveContext): Promise<Fact<{ digest: string; count: number; unmerged: number }>> {
   const out = createCollector({ maxBytes: STATUS_LISTING_BYTES, maxRecords: STATUS_LISTING_RECORDS, separator: 0 });
   const step = await stepOf(ctx, trackedStatusArgs(), out);
   if (!("exit" in step)) return step;
@@ -133,7 +133,7 @@ export async function refCommit(ctx: ObserveContext, ref: string): Promise<Fact<
 
 // Contract Δ3 `switch` `detach`: `info <oid>^{commit}` names the commit, also through an annotated tag (git-cat-file(1), gitrevisions(7)).
 // Git prints `<object> missing` for a missing object and for an object that peels to no commit, so both give UNKNOWN_TARGET.
-async function detachCommit(ctx: ObserveContext, oid: string): Promise<Fact<string> | Refused> {
+export async function detachCommit(ctx: ObserveContext, oid: string): Promise<Fact<string> | Refused> {
   const input = `${oid}^{commit}`;
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   const step = await stepOf(ctx, batchCommandArgs(), out, new TextEncoder().encode(`info ${input}\0`));
@@ -157,15 +157,17 @@ function batches(paths: readonly string[], ctx: ObserveContext): string[][] {
 }
 
 // Plan.md D3 and research.md R4: the untracked-in-the-way check of Discard. Paths stay byte strings (`latin1`) until an argv or a `fileFacts` entry needs text.
-async function inTheWayCheck(ctx: ObserveContext, head: string, target: string): Promise<Fact<null> | Refused> {
+// `listing` reads the candidates in the `--name-status -z` form. Feature 010 plan.md D4 read 7: a Hard reset reads them from the index.
+// `ignored` counts the ignored candidates in the way, which Git replaces (feature 010 research.md R2 P4c).
+export async function inTheWayCheck(ctx: ObserveContext, listing: string[]): Promise<Fact<{ ignored: number }> | Refused> {
   const w = ctx.workspace;
-  const diff = await readOut(ctx, changedPathsArgs(head, target, w.objectFormat), STATUS_LISTING_BYTES);
+  const diff = await readOut(ctx, listing, STATUS_LISTING_BYTES);
   if ("limited" in diff) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
   if (!("value" in diff)) return diff;
   const c = discardCandidates(diff.value);
   if (c === "malformed") return MALFORMED;
   if (c === "limit") return unavailable("limit");
-  if (c.paths.length === 0) return { value: null };
+  if (c.paths.length === 0) return { value: { ignored: 0 } };
   // Contract §6 "File facts": a candidate that the channel cannot carry as worktree components refuses with reason `path`.
   const texts = new Map<string, string>();
   for (const path of c.paths) {
@@ -192,7 +194,7 @@ async function inTheWayCheck(ctx: ObserveContext, head: string, target: string):
     for (const path of left) counted.add(path);
   }
   const ordered = c.paths.filter((path) => counted.has(path));
-  if (ordered.length === 0) return { value: null };
+  if (ordered.length === 0) return { value: { ignored: 0 } };
   const read = ignoreRead(ordered);
   if (read === "path") return unavailable("path");
   const out = createCollector({ maxBytes: STATUS_LISTING_BYTES });
@@ -202,7 +204,7 @@ async function inTheWayCheck(ctx: ObserveContext, head: string, target: string):
   const verdict = inTheWay(ordered, { exitCode: step.exit.exitCode, stdout: out.take() });
   if (verdict === "malformed") return MALFORMED;
   if (verdict === "failed") return { code: "GIT_FAILED" };
-  return verdict === null ? { value: null } : { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...verdict } };
+  return verdict === null ? { value: { ignored: ordered.length } } : { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...verdict } };
 }
 
 registerWorkbenchAction("switch", {
@@ -254,7 +256,7 @@ registerWorkbenchAction("switch", {
     const stash = await stashValue(ctx);
     if (!("value" in stash)) return stash;
     if (p.choice === "discard" && head.state !== "unborn") {
-      const way = await inTheWayCheck(ctx, head.oid, target.value);
+      const way = await inTheWayCheck(ctx, changedPathsArgs(head.oid, target.value, ctx.workspace.objectFormat));
       if (!("value" in way)) return way;
     }
     const bound: SwitchBound = { target: target.value, tracked: { digest: status.value.digest, count: status.value.count }, stash: stash.value, unreachable };

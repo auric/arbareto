@@ -506,6 +506,17 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     return { present, steps };
   }
 
+  // The marker facts of one operation, or the end of one of its steps.
+  async function markerState(t: ProcessTarget): Promise<Record<OperationMarker, boolean | null> | { refused: ErrorCode } | "canceled" | "deadline"> {
+    const { present, steps } = await markerFacts(t, stateOfWorkspace(t.workspace.repositoryId));
+    if (t.signal.aborted) return "canceled";
+    for (const step of steps) if ("refused" in step) return { refused: step.refused };
+    const exits = steps.map((step) => (step as { exit: GitExit }).exit);
+    if (exits.some((exit) => exit.deadline !== undefined)) return "deadline";
+    if (exits.some((exit) => exit.diagnosticLimit)) return { refused: "OUTPUT_LIMIT" };
+    return present;
+  }
+
   // Contract §7 "Missing objects": `cat-file --batch-check` on the object IDs that the read needed. Git prints `<object> missing` for an absent object.
   async function objectCheck(t: ReadWorkspaceTarget, oids: readonly string[]): Promise<"missing" | "present" | "failed" | "canceled" | "deadline"> {
     if (oids.length === 0) return "failed";
@@ -1154,14 +1165,12 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
 
     // Data-model §2 `operationState` from the marker facts. `unmerged`: the index holds an entry above stage 0.
     async operationState(t: ProcessTarget, unmerged: boolean): Promise<OperationState | { refused: ErrorCode } | "canceled" | "deadline"> {
-      const { present, steps } = await markerFacts(t, stateOfWorkspace(t.workspace.repositoryId));
-      if (t.signal.aborted) return "canceled";
-      for (const step of steps) if ("refused" in step) return { refused: step.refused };
-      const exits = steps.map((step) => (step as { exit: GitExit }).exit);
-      if (exits.some((exit) => exit.deadline !== undefined)) return "deadline";
-      if (exits.some((exit) => exit.diagnosticLimit)) return { refused: "OUTPUT_LIMIT" };
-      return stateOf(present, unmerged);
+      const facts = await markerState(t);
+      return typeof facts === "string" || "refused" in facts ? facts : stateOf(facts, unmerged);
     },
+
+    // Feature 010 plan.md D6: the marker facts of `operationState`, for the `sequence` refusal. A null fact is unknown.
+    markers: (t: ProcessTarget) => markerState(t),
 
     // Data-model §7: the re-read after a canceled or failed read. Contract §6 "Registration bootstrap": every nonzero exit of the first discovery call gives REPOSITORY_UNAVAILABLE.
     // Null: the call exited 0, or it ended without an exit status of Git.

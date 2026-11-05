@@ -5,7 +5,7 @@
 // `src/git-service/submodule-update.ts` comes with T230, which registers the operation in the session. T231 turns the cases into real tests.
 
 import { describe, expect } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import policyFile from "../../src/contracts/git-environment.json";
 import { APPROVAL_LIFETIME_MS } from "../../src/contracts/limits";
@@ -1460,25 +1460,36 @@ describe("lifecycle (contract §12 \"Environment and console\", §6, §2)", () =
 
 // ---- Feature 004 FR-114: each submodule counts once (T156, contract Δ12 "Submodule count") ----
 
+// Adds `n` gitlinks `x/x<i>` without a clone. Each has `update = none` and a registered URL, so it counts once, and the update does not visit it (contract §12 "Update protocol" step 4).
+function addSkipped(w: TreeWorld, n: number): void {
+  const names = Array.from({ length: n }, (_, i) => `x${String(i).padStart(3, "0")}`);
+  const g = (args: string[], input?: string) => ownedGit(gitPath(), FIXTURE_ROOT, w.sup, args, { env: w.env, ...(input === undefined ? {} : { input: Buffer.from(input) }) });
+  appendFileSync(join(w.sup, ".gitmodules"), names.map((name) => `[submodule "${name}"]\n\tpath = x/${name}\n\turl = ../leaf.git\n\tupdate = none\n`).join(""));
+  appendFileSync(join(w.sup, ".git", "config"), names.map((name) => `[submodule "${name}"]\n\turl = ${join(w.root, "leaf.git").replaceAll("\\", "/")}\n`).join(""));
+  g(["update-index", "--add", "--", ".gitmodules"]);
+  g(["update-index", "-z", "--index-info"], names.map((name) => `160000 ${w.leaf.second} 0\tx/${name}\0`).join(""));
+}
+
 describe("submodule count (004 FR-114, contract Δ12 \"Submodule count\")", () => {
-  // Before FR-114, 129 rows and their 129 kept Git directories went above the bound of 256. A level read that counts the 128 nested Git directories also goes above it.
+  // Before FR-114, a level read counted the 128 nested Git directories again. T160 (FR-115): 895 skipped rows fill the bound of 1,024, so one more count gives limit.
   caseTest(
     "T156",
-    "case 4: one row with 128 nested rows with flat names updates, and the level read of that row adds no count",
+    "case 4: one row with 128 nested rows with flat names and 895 skipped rows fill the bound of 1,024; the update succeeds, so the level read of that row adds no count",
     SHELL,
     async () => {
       const w = nestedFlat("t156-nested", 128);
+      addSkipped(w, 895);
       // git-submodule(1) `status`: a leading space means that the checked-out commit equals the recorded commit.
-      const status = () => treeGit(w, w.sup, ["submodule", "status", "--recursive"]).split("\n").filter((line) => line !== "");
+      const status = () => treeGit(w, w.sup, ["submodule", "status", "--recursive", "--", "p"]).split("\n").filter((line) => line !== "");
       const before = status();
       await withService({ name: "t156-nested", environment: serviceEnv(w.env) }, async (service) => {
         await update();
         const { repositoryId } = await service.register(w.sup);
         const r = await reviewSubmodules(service, repositoryId);
-        expect({ outcome: outcome(r.response), rows: r.rows.length, refusals: r.refusals.map((x) => [x.reason, x.path]), token: typeof r.token }).toEqual({ outcome: SUCCEEDED, rows: 129, refusals: [], token: "string" });
+        expect({ outcome: outcome(r.response), rows: r.rows.length, refusals: r.refusals.map((x) => [x.reason, x.path]), token: typeof r.token }).toEqual({ outcome: SUCCEEDED, rows: 1_024, refusals: [], token: "string" });
         const response = await service.response(sendUpdate(service, repositoryId, r), 15 * 60_000);
         const states = resultsOf(response).map((row) => [row.path, row.state, row.reason ?? null]);
-        expect({ outcome: outcome(response), rows: states.length, changed: states.filter(([, state]) => state !== "unchanged") }).toEqual({ outcome: SUCCEEDED, rows: 129, changed: [] });
+        expect({ outcome: outcome(response), rows: states.length, changed: states.filter(([, state]) => state !== "unchanged") }).toEqual({ outcome: SUCCEEDED, rows: 1_024, changed: [] });
       });
       expect({ rows: before.length, moved: before.filter((line) => !line.startsWith(" ")), after: status() }).toEqual({ rows: 129, moved: [], after: before });
     },

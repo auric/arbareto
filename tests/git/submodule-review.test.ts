@@ -2000,3 +2000,78 @@ describe("submodule bound (004 FR-115, contract Δ12 \"Submodule bound\")", () =
     });
   });
 });
+
+// ---- Feature 004 FR-112, FR-115: the config total applies in row order (contract Δ12 "Parallel reads", "Submodule bound") ----
+
+describe("config total in row order (004 FR-112, FR-115)", () => {
+  const RUNS = 5;
+  const orderCase = (name: string, fn: () => Promise<void>) => caseTest("T159", name, SHELL, fn, 30 * 60_000);
+  // Each listing then holds about 3.5 MB, so 20 rows pass 64 MiB and 19 rows do not (case f).
+  const BLOCK = `[arbareto]\n${Array.from({ length: 35 }, (_, j) => `\tk${j} = ${"a".repeat(100_000)}\n`).join("")}`;
+  const CONFIG_LIST = "config list --show-scope --show-origin -z";
+  let shared: { w: TreeWorld; rows: { path: string; name: string }[] } | null = null;
+  // 21 cloned rows. `rows` holds them in index order, which sorts the path bytes.
+  const world = () => (shared ??= { w: flatWorld("t159-order", 21), rows: Array.from({ length: 21 }, (_, i) => ({ path: countPath(i), name: flatName(i) })).sort((a, b) => (a.path < b.path ? -1 : 1)) });
+  // The `config list` review read of the row at `path`.
+  const listing = (w: TreeWorld, path: string) => (c: { arguments: readonly string[] }) => {
+    const at = gitLocation(c.arguments);
+    return at !== null && commandOf(c.arguments).join(" ") === CONFIG_LIST && relative(join(w.sup, ...path.split("/")), resolve(w.sup, at)) === "";
+  };
+
+  // `big`: the rows whose listing grows. `failing`: the row whose `config list` exits 128 (runner seam `exit`).
+  // `held`: in the 8-lane review, the listing of this row starts only after every other listing exited (runner seam `holdStart`).
+  // Each run: a review with small listings gives the token, then the update preflight reads one row at a time, then the list review reads 8 rows at once.
+  async function ordered(name: string, big: readonly number[], failing: number, held: number, code: string): Promise<void> {
+    const { w, rows } = world();
+    const files = big.map((i) => join(w.sup, ".git", "modules", rows[i]!.name, "config"));
+    const kept = files.map((file) => readFileSync(file));
+    const restore = () => files.forEach((file, i) => writeFileSync(file, kept[i]!));
+    const fails = listing(w, rows[failing]!.path);
+    const others = rows.filter((_, i) => i !== held).map((row) => listing(w, row.path));
+    const results: unknown[] = [];
+    try {
+      await withTree(w, name, async (service) => {
+        await review();
+        await underTestSubmodule("submodule-update");
+        const { repositoryId } = await service.register(w.sup);
+        for (let run = 0; run < RUNS; run++) {
+          const r = await reviewSubmodules(service, repositoryId);
+          expect({ run, outcome: outcome(r.response), token: typeof r.token }).toEqual({ run, outcome: SUCCEEDED, token: "string" });
+          for (const file of files) appendFileSync(file, BLOCK);
+          service.runner.inject.exit = (c) => (fails(c) ? 128 : undefined);
+          try {
+            const one = await updateSubmodules(service, repositoryId, r);
+            const read = await readOk(service, repositoryId);
+            const from = service.runner.calls.length;
+            const release = service.runner.holdStart(once(listing(w, rows[held]!.path)));
+            let eight: ServiceResponse;
+            try {
+              const id = service.send("reviewSubmodules", { snapshotId: read.snapshotId }, { repositoryId, repositoryGeneration: read.generation });
+              await until(() => others.every((m) => callsSince(service, from).some((c) => m(c) && c.exit !== undefined)), "every other listing", NO_TOTAL_DEADLINE_WAIT_MS);
+              release();
+              eight = await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS);
+            } finally {
+              release();
+            }
+            results.push({ one: { state: one.state, code: one.code }, eight: { state: eight.state, code: eight.code, result: eight.result } });
+          } finally {
+            service.runner.inject.exit = undefined;
+            restore();
+          }
+        }
+      });
+    } finally {
+      restore();
+    }
+    console.log(`OBSERVATION T159 order ${name}: ${JSON.stringify(results)}`);
+    expect(results).toEqual(Array.from({ length: RUNS }, () => ({ one: { state: "failed", code }, eight: { state: "failed", code, result: undefined } })));
+  }
+
+  orderCase("rows 0 to 19 pass 64 MiB at row 19, and row 20 fails first: OUTPUT_LIMIT with 1 lane and with 8 lanes, in each of 5 runs", () =>
+    ordered("t159-order-limit", Array.from({ length: 20 }, (_, i) => i), 20, 19, "OUTPUT_LIMIT"),
+  );
+
+  orderCase("row 17 fails before the rows pass 64 MiB, and the listing of row 16 ends last: GIT_FAILED with 1 lane and with 8 lanes, in each of 5 runs", () =>
+    ordered("t159-order-failed", Array.from({ length: 21 }, (_, i) => i).filter((i) => i !== 17), 17, 16, "GIT_FAILED"),
+  );
+});

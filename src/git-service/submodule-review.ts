@@ -427,6 +427,8 @@ function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: {
 
 // The Git directory, the hooks folder, and the `config list` entries of one submodule Git directory.
 type RepoConfig = Pick<Repo, "gitDir" | "hooks" | "entries">;
+// The reads of one row before `commitRepo` applies them. `bytes`: the size of its `config list` output.
+type Fetched = { repo: Repo; mark: SubmoduleBranch | null; bytes: number };
 
 // One submodule Git directory that the review reads.
 export interface Repo {
@@ -594,7 +596,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     // The branch marks by row ID. They stay out of `observed`, `programInputs`, and the binding.
     const marks = new Map<string, SubmoduleBranch>();
     let cachedListing: TrustListing | null = null;
-    // Feature 004 contract Δ12 "Submodule bound": the `config list` bytes that `top` reads for the binding, across all rows. Null outside `top`.
+    // Feature 004 contract Δ12 "Submodule bound": the `config list` bytes that `top` binds, across all rows, in row order (FR-112). Null outside `top`.
     let boundConfig: number | null = null;
 
     // Contract §3: trust gating follows the read rule of §7, before any Git process inside a submodule.
@@ -703,7 +705,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       return parsed;
     };
 
-    const readConfig = async (location: SubmoduleLocation): Promise<RepoConfig> => {
+    // `bytes`: the size of the `config list` output.
+    const readConfig = async (location: SubmoduleLocation): Promise<RepoConfig & { bytes: number }> => {
       // Contract Δ12 "Review reads": the first line is the Git directory, the second line the hooks path.
       const paths = await git(submoduleGitPathsArgs(location));
       const lf = paths.out.indexOf(NEWLINE);
@@ -715,10 +718,9 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const config = await git(submoduleConfigListArgs(location), { max: TRUST_INPUT_BYTES });
       if (config.limited) throw failed("OUTPUT_LIMIT");
       if (config.code !== 0) throw failed("GIT_FAILED");
-      if (boundConfig !== null && (boundConfig += config.out.length) > REVIEW_CONFIG_BYTES) throw failed("OUTPUT_LIMIT");
       const entries = parseConfigListing(config.out, false);
       if (entries === null) throw failed("MALFORMED_GIT_OUTPUT");
-      return { gitDir, hooks, entries };
+      return { gitDir, hooks, entries, bytes: config.out.length };
     };
 
     // `rev-parse --verify -q HEAD`. After a nonzero exit, HEAD names no commit only when `show-ref --exists` exits 2, or when the HEAD target fails the ref-name rules.
@@ -773,9 +775,9 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
 
     // `markRow`: the row ID of a checked-out row whose branch mark this read adds (contract Δ12 "Branch marks").
     // `fetchRepo` only reads, so it can run ahead of its row. `commitRepo` applies its result in row order.
-    const fetchRepo = async (location: SubmoduleLocation, markRow: string | null = null): Promise<{ repo: Repo; mark: SubmoduleBranch | null }> => {
+    const fetchRepo = async (location: SubmoduleLocation, markRow: string | null = null): Promise<Fetched> => {
       const { head, headRef } = await readHead(location);
-      const { gitDir, hooks, entries } = await readConfig(location);
+      const { gitDir, hooks, entries, bytes } = await readConfig(location);
       let refHeld: boolean | null = null;
       let mark: SubmoduleBranch | null = null;
       if (head !== null) {
@@ -790,9 +792,10 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           refHeld = held.out.length > 0;
         }
       }
-      return { repo: { location, head, headRef, gitDir, hooks, entries, refHeld }, mark };
+      return { repo: { location, head, headRef, gitDir, hooks, entries, refHeld }, mark, bytes };
     };
-    const commitRepo = ({ repo, mark }: { repo: Repo; mark: SubmoduleBranch | null }): Repo => {
+    const commitRepo = ({ repo, mark, bytes }: Fetched): Repo => {
+      if (boundConfig !== null && (boundConfig += bytes) > REVIEW_CONFIG_BYTES) throw failed("OUTPUT_LIMIT");
       if (mark !== null) marks.set(mark.rowId, mark);
       observed.push({ repo: { ...repo, entries: repo.entries.map((e) => Buffer.from(e.keyValueBytes).toString("base64")) } });
       return repo;
@@ -976,6 +979,24 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       // The nested reads of a row start when the row has its action (contract Δ12 "Parallel reads").
       const nest = (pending: ObservedRow, repo: Repo) => {
         nested.push({ pending, repo, read: pending.row.action === "skip" ? null : ahead(() => nestedRead(pending, repo, recurse)) });
+      };
+      // Contract Δ12 "Submodule bound": a row read keeps its config listing until pass B applies it, so at most `lanes` row reads of this level run ahead of pass B.
+      // Pass B takes the row reads in the order of their start, so each read that it takes has started.
+      const later: (() => void)[] = [];
+      let open = 0;
+      const rowRead = <T>(work: () => Promise<T>): (() => Promise<T>) => {
+        let read: (() => Promise<T>) | null = null;
+        const start = () => {
+          open++;
+          read = ahead(work);
+        };
+        if (open < lanes) start();
+        else later.push(start);
+        return () => {
+          open--;
+          later.shift()?.();
+          return read!();
+        };
       };
 
       // Pass A, in row order: the checks of each row that await nothing. A checked-out row starts its reads here.
@@ -1168,7 +1189,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
             continue;
           }
 
-          const fetched = ahead(() => fetchRepo({ worktree }, row.rowId));
+          const fetched = rowRead(() => fetchRepo({ worktree }, row.rowId));
           step.tail = async () => {
             const repo = commitRepo(await fetched());
             pending.repo = repo;

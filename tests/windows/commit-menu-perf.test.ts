@@ -40,7 +40,8 @@ const OPEN_WAIT_MS = 300_000;
 const IDLE_POLL_MS = 10;
 // Spec SC-011: at least 20 inputs per run. The probe sends one input to the history filter every PROBE_INTERVAL_MS.
 const MIN_INPUTS = 20;
-const PROBE_INTERVAL_MS = 10;
+// The wait between probe inputs. The 20-input minimum must also hold for runs near 400 ms.
+const PROBE_INTERVAL_MS = 2;
 // The Event Timing API reports no entry below its 16 ms minimum `durationThreshold`, so such an input counts as 16 ms.
 const EVENT_THRESHOLD_MS = 16;
 // One keyboard walk ends after this many presses. Target row 100 of M-R lies about 104 rows down.

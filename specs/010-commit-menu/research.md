@@ -96,7 +96,38 @@ Done on 2026-11-04 with Git 2.56.0.windows.2. Scripts `probe.sh`, `probe2.sh`, `
 
 ### Packaged and perf runs (T019)
 
-Pending. T019 records the build identity, the OS version, each SC-009 to SC-011 result, and the records.
+Run 2026-11-05, packaged NSIS build, warm, in the foreground, alone, under the test gate and the full-run lock. No Kernel-Power 42 event occurred in any step.
+
+- Build: commit `bba51aca`. Installed `arbareto.exe` SHA-256 `44f1270664da40ec005d5104832085f61d5194199fbde4415f18858823e0b73b`. It equals the built exe after the NSIS marker patch (`__TAURI_BUNDLE_TYPE_VAR_UNK` to `__TAURI_BUNDLE_TYPE_VAR_NSS`, 1 hit). The T017 and T018 `ORIGIN` lines name this hash.
+- OS: Windows 11 Pro 10.0.26300 (build 26300). Git: 2.56.0.windows.2.
+- T017 (SC-009): 5 pass, 2 skip, 0 fail. The 150% and 225% text-scale cases skip, because the OS text size is 100%. These two cases stay unverified.
+- T018: 4 pass, 1 fail. All time budgets pass. SC-011 fails (see below).
+
+| Measure | Median (budget) | Every-run max (budget) | Cold (budget) |
+|---|---|---|---|
+| SC-010a menu paint, 40 opens | every open 9.5 to 23.7 ms (p95 100 ms) | 23.7 ms (500 ms) | 30.5 ms (200 ms) |
+| SC-010b Reset | 254.6 ms (300 ms) | 397.4 ms (500 ms) | 274.5 ms (600 ms) |
+| SC-010b Check out | 226.6 ms (300 ms) | 237.6 ms (500 ms) | - |
+| SC-010b Create tag | 20 ms (300 ms) | 24.2 ms (500 ms) | - |
+| SC-010b Cherry-pick | 243.3 ms (300 ms) | 381.8 ms (500 ms) | - |
+| SC-010b Revert | 234.8 ms (300 ms) | 385.9 ms (500 ms) | - |
+| SC-010c Hard review (M-R) | 701.5 ms (1 s) | 823.7 ms (2 s) | 775.8 ms (2 s) |
+| SC-010d Soft | 632.1 ms (1 s) | 789.8 ms (2 s) | 748 ms (2 s) |
+| SC-010d Mixed | 784.2 ms (2 s) | 807.5 ms (4 s) | - |
+| SC-010d Create tag | 684.6 ms (1 s) | 908.3 ms (2 s) | - |
+| SC-010d Hard (M-R) | 3,259.2 ms (4 s) | 3,700.1 ms (8 s) | 3,395.8 ms (8 s) |
+| SC-010d Cherry-pick | 714.1 ms (2 s) | 1,108.1 ms (4 s) | - |
+| SC-010d Revert | 771.5 ms (2 s) | 842.9 ms (4 s) | - |
+| SC-010d Abort | 450 ms (2 s) | 660.5 ms (4 s) | - |
+| SC-010d Continue | 828.5 ms (2 s) | 992.7 ms (4 s) | - |
+| SC-010d Detached checkout (M-R) | 2,463 ms (4 s) | 2,893.1 ms (8 s) | - |
+
+- Cold runs: the test measures one cold run per SC-010 measure (SC-010a, SC-010b Reset, SC-010c, SC-010d Soft and Hard). All are within 2 times the warm budget.
+- Records, no budget: CPU 0.078 s to 10.2 s per run (165 runs). Process-tree private bytes 669 MB to 1,254 MB. The bytes increase across the series.
+- SC-011 counts (inputs per run, 11 runs per action): Abort 15 to 31, Revert 31 to 45, Continue 34 to 55, Cherry-pick 37 to 67, Soft 38 to 54, Mixed 44 to 64, Create tag 48 to 69, Detached checkout 166 to 229, Hard 229 to 289. Input p95 is at most 40 ms and max is at most 48 ms.
+- Finding for `/speckit-converge`: SC-011 fails. Abort runs 1 to 6 got 18, 15, 19, 18, 18, and 18 inputs, below the minimum of 20. The response times pass. The Abort runs are short (median 450 ms), so the probe does not reach 20 inputs.
+- Control: a scratch build let `AlertConfirm` focus the danger button first (installed SHA-256 `add5319c...1030964`, `ORIGIN` line matches). The FR-044 Cancel focus case failed (0 pass, 1 fail). `RevertConfirm.tsx` was restored byte-equal (SHA-256 `688895e6...24f33d8`). A clean rebuild and reinstall matched its own built exe after the marker patch. The worktree status was clean.
+- WSL record: gap. `tests/windows/commit-menu-perf.test.ts` has no WSL route, so the SC-010b and SC-010d WSL times on `Ubuntu-26.04` are not measured.
 
 - SC-011 probe (decision 2026-11-05): the probe waits 2 ms between inputs. Thus a run of about 400 ms still gets the minimum of 20 inputs. The 001 SC-005 targets do not change.
 

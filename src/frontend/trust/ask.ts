@@ -32,6 +32,15 @@ export const SYNC_TRUST: Record<(typeof SYNC_ACTIONS)[number], TrustAction> = {
   skip: "pull",
 };
 
+/** Feature 010 plan.md D6: Abort and Continue of a stopped cherry-pick or revert ask with that action. Every other sync action keeps `SYNC_TRUST`. */
+export function syncTrust(action: (typeof SYNC_ACTIONS)[number], operationState: string | undefined): TrustAction {
+  if (action === "abort" || action === "continue") {
+    if (operationState === "cherry-picking") return "cherry-pick";
+    if (operationState === "reverting") return "revert";
+  }
+  return SYNC_TRUST[action];
+}
+
 /** Contract Δ7 "Mutation trust": `config-save` uses no class, so it never asks. Feature 005 contract Δ7: `delete` and `ignore-save` too. Feature 008 contract Δ7: the three revert actions too. */
 export const WORKBENCH_TRUST: Record<(typeof WORKBENCH_ACTIONS)[number], TrustAction | null> = {
   switch: "switch",

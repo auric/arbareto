@@ -297,6 +297,96 @@ describe("Continue while the status read loads", () => {
   });
 });
 
+// tasks.md T014 (feature 010, WP5). Spec FR-060 to FR-063. Plan D6, D11 "Band". Data-model §5.
+describe("a stopped cherry-pick or revert (feature 010 FR-060 to FR-063)", () => {
+  const KINDS = [
+    { state: "cherry-picking", kind: "cherry-pick", noun: "A cherry-pick", abort: "Abort cherry-pick…", button: "Abort cherry-pick", nothing: "The cherry-pick makes no change. Select Abort to end it.", trust: "cherry-pick" },
+    { state: "reverting", kind: "revert", noun: "A revert", abort: "Abort revert…", button: "Abort revert", nothing: "The revert makes no change. Select Abort to end it.", trust: "revert" },
+  ] as const;
+  const SEQUENCE = "A cherry-pick or revert sequence is in progress. Finish it in a terminal.";
+
+  for (const k of KINDS) {
+    test(`${k.state} shows the conflict row with Resolve conflicts and ${k.abort} while a file is unmerged, and no Skip`, async () => {
+      await open(k.state, [conflicted("a.txt")]);
+      expect(row()).not.toBeNull();
+      expect(text(band())).toContain(`${k.noun} is in progress, with 1 conflicted file.`);
+      expect(text(band())).not.toContain(OUTSIDE);
+      expect(actions()).toEqual(["Resolve conflicts", k.abort]);
+    });
+
+    test(`${k.state}: Continue shows after the last Mark resolved`, async () => {
+      const { w } = await open(k.state, [conflicted("a.txt")]);
+      w.entries = [];
+      await press(document.body, "F5");
+      await settle();
+      expect(text(band())).toContain(`${k.noun} is in progress.`);
+      expect(actions()).toEqual([k.abort, "Continue"]);
+    });
+
+    test(`${k.state}: ${k.abort} opens its confirmation with Cancel focused and the kind texts`, async () => {
+      const { double } = await open(k.state);
+      await click(button(k.abort, row()!));
+      expect(double.pending("reviewSync")!.args[1]).toEqual({ action: "abort" });
+      await answer(double.pending("reviewSync"), succeeded({ action: "abort", plan: { remotes: [], operationState: k.state }, syncReviewToken: TOKEN }));
+      const d = dialog()!;
+      expect(text(d)).toContain(`Abort the ${k.kind}?`);
+      expect(text(d)).toContain(RESTORE(k.kind));
+      expect(text(d)).not.toContain(MERGE_LIMIT);
+      expect(document.activeElement).toBe(button("Cancel", d));
+      await click(button(k.button, d));
+      expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: TOKEN, start: true });
+    });
+
+    test(`${k.state}: a nothing-to-commit refusal of Continue states its text and keeps Abort`, async () => {
+      const { double } = await open(k.state);
+      await click(button("Continue", row()!));
+      await answer(double.pending("reviewSync"), refused("nothing-to-commit"));
+      expect(text(row()!)).toContain(k.nothing);
+      expect(text(row()!)).not.toContain("nothing-to-commit");
+      expect(actions()).toEqual([k.abort]);
+    });
+
+    test(`${k.state}: a sequence refusal states its text`, async () => {
+      const { double } = await open(k.state);
+      await click(button(k.abort, row()!));
+      await answer(double.pending("reviewSync"), refused("sequence"));
+      expect(text(row()!)).toContain(SEQUENCE);
+      expect(text(row()!)).not.toContain("is unavailable");
+    });
+
+    test(`${k.state}: Abort and Continue ask trust with the ${k.trust} action`, async () => {
+      for (const action of ["abort", "continue"] as const) {
+        const { double } = await open(k.state);
+        await click(button(action === "abort" ? k.abort : "Continue", row()!));
+        await answer(double.pending("reviewSync"), { requestId: "r", state: "rejected", code: "TRUST_REQUIRED" });
+        expect(double.pending("approveTrust")!.args[1]).toEqual({ action: k.trust });
+        await unmountAll();
+      }
+    });
+
+    test(`${k.state}: Mark resolved stays available, and Amend last commit is blocked with the operation reason`, async () => {
+      const { operationBlock, BLOCKED_TEXT } = await import("../../src/frontend/changes/HunkControls");
+      const { amendReason } = await import("../../src/frontend/commit/CommitTray");
+      expect(operationBlock(k.state)).toBe("operation");
+      expect(BLOCKED_TEXT.operation).toBe("A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.");
+      expect(amendReason({ state: "branch", target: "refs/heads/main", oid: oid(1) }, k.state)).toBe(BLOCKED_TEXT.operation);
+    });
+  }
+
+  test("a rebase still asks trust with the pull action", async () => {
+    const { double } = await open("rebasing");
+    await click(button("Continue", row()!));
+    await answer(double.pending("reviewSync"), { requestId: "r", state: "rejected", code: "TRUST_REQUIRED" });
+    expect(double.pending("approveTrust")!.args[1]).toEqual({ action: "pull" });
+  });
+
+  test("sequencer-active keeps the 001 outside text and offers no action", async () => {
+    await open("sequencer-active");
+    expect(row()).toBeNull();
+    expect(text(band())).toContain(OUTSIDE);
+  });
+});
+
 describe("conflict row while an operation runs (plan D12)", () => {
   const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
   const describedText = (control: Element) => document.getElementById(control.getAttribute("aria-describedby") ?? "")?.textContent ?? null;

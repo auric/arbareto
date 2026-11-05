@@ -16,9 +16,10 @@ import { KEYS, type ScopedAction } from "../keyboard/shortcuts";
 import { SHOW_BRANCH_HISTORY, shortRef } from "../refs/ReferencesSidebar";
 import { isObject } from "../lib/utils";
 import type { BranchEntry, Workbench } from "../state/workbench";
-import { trackOperation, type StatusOperation } from "../status/OperationStatus";
+import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
 import type { AddSelection } from "../worktrees/AddWorktreePanel";
+import { CHECKOUT_BUTTON, CHECKOUT_DISCARD_BUTTON, CHECKOUT_TITLE } from "../history/commit-texts";
 import { OUTCOME, refusalText, STASH, T } from "./texts";
 
 // Feature 004 spec FR-009 to FR-020, plan.md D3, D4, D15, D16, data-model §3 and §4, contract Δ3 and Δ14.
@@ -36,7 +37,7 @@ type DeletePlan = { oid: string; onlyHere: number; reflogKeeps: boolean };
 type Preset = { choice: Choice; known: boolean };
 
 type Overlay =
-  | { kind: "switch"; anchor: Element | null; display: string; target: SwitchTarget; heldBy: string | null; preset: Choice | null; choice: Choice; plan: SwitchPlan | null; token: string | null; error: string | null }
+  | { kind: "switch"; anchor: Element | null; display: string; target: SwitchTarget; heldBy: string | null; preset: Choice | null; choice: Choice; plan: SwitchPlan | null; token: string | null; error: string | null; commit?: true }
   | { kind: "remote"; anchor: Element | null; entry: BranchEntry; mode: "track" | "detach"; name: string; error: string | null; existing?: string }
   | { kind: "create"; anchor: Element | null; start: string; name: string; switchTo: boolean; error: string | null }
   | { kind: "rename"; anchor: Element | null; entry: BranchEntry; name: string; error: string | null }
@@ -130,14 +131,24 @@ export function useBranchActions(options: BranchActionsOptions) {
     return t === null ? null : reviewWithTrust(() => bridge.reviewWorkbench(target() ?? t, payload), WORKBENCH_TRUST[payload.action], askTrust);
   }
 
-  async function run(token: string, action: string, display: string) {
+  async function run(token: string, action: string, display: string, detached = false) {
     const t = target();
     if (t === null) return;
     onNotice(null);
     const texts = RUN_TEXTS[action]!;
     const response = await trackOperation("runWorkbench", undefined, (onProgress) => bridge.runWorkbench({ repositoryId: t.repositoryId }, { workbenchToken: token, start: true }, onProgress), (op) => onOperation({ ...op, texts }));
     workbench.ended("runWorkbench", response);
-    onNotice(outcomeText(action, display, response));
+    onNotice(outcomeText(action, display, response, detached));
+  }
+
+  /** Feature 010 plan.md D2: Check out this commit. The confirmation always shows. */
+  function startCheckout(oid: string, anchor: Element | null) {
+    if (blockedReason !== null) return onNotice(blockedReason);
+    const display = shortId(oid);
+    void once(async () => {
+      setOverlay({ kind: "switch", anchor, display, target: { detach: oid }, heldBy: null, preset: null, choice: "keep", plan: null, token: null, error: null, commit: true });
+      await reviewSwitch({ detach: oid }, display, anchor, true, await preset());
+    });
   }
 
   /** Runs `step` once at a time. A second request while one runs does nothing. */
@@ -179,7 +190,7 @@ export function useBranchActions(options: BranchActionsOptions) {
     if (!confirm && plan.trackedChanges === 0 && plan.unreachable === null) return run(reviewed.token, "switch", display);
     const shown: Overlay = { kind: "switch", anchor, display, target: switchTarget, heldBy: null, preset: known ? choice : null, choice, plan, token: reviewed.token, error: null };
     // A confirmation that the user closed during the review stays closed.
-    setOverlay((o) => (!confirm || (o?.kind === "switch" && o.display === display) ? shown : o));
+    setOverlay((o) => (!confirm || (o?.kind === "switch" && o.display === display) ? { ...shown, ...(o?.kind === "switch" && o.commit ? { commit: true as const } : {}) } : o));
   }
 
   function confirmSwitch(o: Extract<Overlay, { kind: "switch" }>) {
@@ -201,7 +212,7 @@ export function useBranchActions(options: BranchActionsOptions) {
         token = reviewed.token;
       }
       setOverlay(null);
-      await run(token, "switch", o.display);
+      await run(token, "switch", o.display, o.commit === true);
     });
   }
 
@@ -481,6 +492,8 @@ export function useBranchActions(options: BranchActionsOptions) {
     },
     /** New branch… in the list, and Ctrl+B on a history row. */
     create: startCreate,
+    /** Feature 010: Check out this commit (detached HEAD) of the History commit menu. */
+    checkout: startCheckout,
     overlays,
   };
 }
@@ -491,7 +504,7 @@ function BranchMenu({ label, groups, anchor, byKey, handoff, onClose }: { label:
   return <ActionMenu label={label} groups={groups(copy)} open anchor={anchor} byKey={byKey} finalFocus={() => (handoff.current ? false : (anchor as HTMLElement))} onOpenChange={(next) => void (next || onClose())} />;
 }
 
-function outcomeText(action: string, display: string, response: BridgeResponse): ReactNode {
+function outcomeText(action: string, display: string, response: BridgeResponse, detached: boolean): ReactNode {
   const r = isObject(response.result) ? response.result : {};
   const stash = isObject(r.stash) && typeof r.stash.state === "string" && r.stash.state in STASH ? STASH[r.stash.state]!(typeof r.stash.oid === "string" ? r.stash.oid : "") : null;
   const remedy = isObject(r.remedy) ? r.remedy : null;
@@ -499,7 +512,9 @@ function outcomeText(action: string, display: string, response: BridgeResponse):
     response.state !== "succeeded"
       ? OUTCOME.failed(ACTION_NAMES[action] ?? action, response.code ?? response.state)
       : action === "switch"
-        ? OUTCOME.switched(display)
+        ? detached
+          ? OUTCOME.detached(display)
+          : OUTCOME.switched(display)
         : action === "create-branch"
           ? OUTCOME.created(display)
           : action === "rename-branch"
@@ -532,12 +547,13 @@ function SwitchConfirm({ overlay: o, unborn, onChange, onConfirm, onCancel }: { 
     <ConfirmPopover
       open
       anchor={o.anchor}
-      title={T.switchTitle(o.display)}
-      confirmLabel={o.heldBy !== null ? T.open(o.heldBy) : o.choice === "discard" ? T.discardSwitch : T.switch}
+      title={o.commit ? CHECKOUT_TITLE(o.display) : T.switchTitle(o.display)}
+      confirmLabel={o.heldBy !== null ? T.open(o.heldBy) : o.commit ? (o.choice === "discard" ? CHECKOUT_DISCARD_BUTTON : CHECKOUT_BUTTON) : o.choice === "discard" ? T.discardSwitch : T.switch}
       danger={o.heldBy === null && o.choice === "discard"}
       onConfirm={ready ? onConfirm : undefined}
       onCancel={onCancel}
     >
+      {o.commit ? <p>{T.detachNote}</p> : null}
       {o.heldBy !== null ? <p>{T.otherWorktree(o.heldBy)}</p> : null}
       {o.error !== null ? <p role="alert">{o.error}</p> : null}
       {o.error === null && o.heldBy === null && plan === null ? <p className="text-muted-text">Loading…</p> : null}

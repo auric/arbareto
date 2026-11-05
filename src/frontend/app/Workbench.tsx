@@ -1295,9 +1295,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   }
   // Plan.md D8 triggers: each new `readRefs.refsDigest` and each focus return. Each sync outcome runs one too.
   const refsDigest = state.refs?.refsDigest ?? null;
+  // `refsDigest` covers only `refname NUL objectname`, so a new `%(upstream)` of a local branch keeps it (FR-020, FR-021).
+  const upstreams = useMemo(() => JSON.stringify(state.refs?.refs.map((r) => (r.kind === "branch" ? r.upstream : null)) ?? null), [state.refs]);
   useEffect(() => {
     if (refsDigest !== null) readTracking();
-  }, [repositoryId, refsDigest]);
+  }, [repositoryId, refsDigest, upstreams]);
   useEffect(() => {
     if (repositoryId === null) return;
     const onFocus = () => readTracking();

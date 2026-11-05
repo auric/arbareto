@@ -239,6 +239,18 @@ describeGit("create tag here (T008)", () => {
     expect(stateOf(h, f.repo)).toEqual(before);
   }, TIMEOUT_MS);
 
+  caseTest(TASK, "contract §5: a check-ref-format exit code null gives GIT_FAILED, not invalid-name, and the review issues no token", SHELL, async () => {
+    const h = hostFor("t008-name-null-exit");
+    const f = build(h, "name-null-exit");
+    await withSync("t008-name-null-exit", async (service) => {
+      const r = await approved(service, f.repo);
+      service.runner.inject.exit = (call) => (call.arguments.includes("check-ref-format") ? null : undefined);
+      const response = await review(service, r, TAG("v1", f.base));
+      service.runner.inject.exit = undefined;
+      expect({ ...outcome(response), token: response.result?.workbenchToken }).toEqual({ state: "failed", code: "GIT_FAILED", token: undefined });
+    });
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "SC-007 and FR-004: the reference-transaction hook runs only after the workbench approval, and its log equals Git's own git tag on a copy (research.md R2 P3c)", SHELL, async () => {
     const h = hostFor("t008-hooks");
     const f = build(h, "hooks");

@@ -331,6 +331,24 @@ describeGit("reset current branch to here (T007)", () => {
     expect(h.read(`${f.repo}/build.log`)?.toString()).toBe("log target\n");
   }, TIMEOUT_MS);
 
+  caseTest(TASK, "FR-044 and P4c: an ignored folder where the target has a file counts each ignored file in it, as git ls-files --others --ignored lists them, and Hard replaces it as Git's own reset --hard on a copy", SHELL, async () => {
+    const h = hostFor("t007-ignored-folder");
+    const f = build(h, "ignored-folder");
+    for (const name of ["x.txt", "y.txt", "z/w.txt"]) h.write(`${f.repo}/build.log/${name}`, `${name} local\n`);
+    const o = copyOf(h, f.repo);
+    const listed = gitOut(h, o, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", "build.log"]).split("\0").filter((p) => p !== "");
+    expect(listed.sort()).toEqual(["build.log/x.txt", "build.log/y.txt", "build.log/z/w.txt"]);
+    await withSync("t007-ignored-folder", async (service) => {
+      const r = await approved(service, f.repo);
+      const rv = await reviewed(service, r, RESET(f.c.m2, "hard"));
+      expect(rv.plan.ignoredReplaced).toBe(listed.length);
+      expect(outcome(await service.response<ResetRun>(sendRun(service, r, rv.workbenchToken)))).toEqual(SUCCEEDED);
+    });
+    gitRun(h, o, ["reset", "--quiet", "--hard", f.c.m2, "--"]);
+    expect(stateOf(h, f.repo)).toEqual(stateOf(h, o));
+    expect(h.read(`${f.repo}/build.log`)?.toString()).toBe("log target\n");
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "FR-003: a new untracked file in the way after the Hard review gives STALE_REVIEW; a moved branch gives STALE_REVIEW; the 60 s expiry gives APPROVAL_EXPIRED; no step starts", SHELL, async () => {
     const h = hostFor("t007-stale");
     const f = build(h, "stale");

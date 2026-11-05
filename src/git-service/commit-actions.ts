@@ -11,14 +11,14 @@ import { batchCommandArgs, isObjectId, isRefName } from "./commands";
 import { createCollector, firstEnd, isDeadlineStop, stepUnits } from "./git-runner";
 import { objectStream } from "./history-view";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
-import { forceNoteOf, trackedChanges } from "./merge-rebase";
+import { forceNoteOf, lastBool, trackedChanges } from "./merge-rebase";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
 import { detachCommit, inTheWayCheck, trackedStatus } from "./switch";
 import { changedRefs, changes } from "./sync";
 import { observe, parentsOf } from "./sync-integrate";
 import { indexMatches, indexState, readOut, refKey } from "./sync-review";
-import { parseMaybeBool, type ConfigEntry } from "./trust";
+import type { ConfigEntry } from "./trust";
 import { cherryPickArgs, commitIsAncestorArgs, gainCountArgs, parentsArgs, reflogOnlyCountArgs, resetArgs, resetCandidatesArgs, revertCommitArgs, rewrittenCountArgs, tagArgs, tagNameCheckArgs } from "./workbench-commands";
 import { conclude, killed, registerWorkbenchAction, revCount, unavailable, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
 
@@ -82,7 +82,7 @@ registerWorkbenchAction<"reset", ResetBound>("reset", {
     // Research.md R2 P4 and P15: Git overwrites an untracked file in the way, and the index listing also names a path that `git rm --cached` removed.
     let ignoredReplaced = 0;
     if (p.mode === "hard") {
-      const way = await inTheWayCheck(ctx, resetCandidatesArgs(t, of));
+      const way = await inTheWayCheck(ctx, resetCandidatesArgs(t, of), true);
       if (!("value" in way)) return way;
       ignoredReplaced = way.value.ignored;
     }
@@ -134,19 +134,9 @@ interface TagBound {
 // builtin/tag.c `git_tag_config` reads both keys with `git_config_bool`, which stops Git on a value that is no boolean. Null: such a value.
 // Research.md R2 P8: `tag.gpgSign` signs both kinds, and `tag.forceSignAnnotated` signs a `-m` tag without `-a`.
 function signsOf(entries: readonly ConfigEntry[]): Signs | null {
-  const last = (key: string): boolean | null => {
-    let value = false;
-    for (const e of entries) {
-      if (e.key !== key) continue;
-      const bool = parseMaybeBool(e.value);
-      if (bool < 0) return null;
-      value = bool === 1;
-    }
-    return value;
-  };
-  const sign = last("tag.gpgsign");
-  const force = last("tag.forcesignannotated");
-  return sign === null || force === null ? null : { light: sign, annotated: sign || force };
+  const sign = lastBool(entries, "tag.gpgsign");
+  const force = lastBool(entries, "tag.forcesignannotated");
+  return sign === null || force === null ? null : { light: sign.value, annotated: sign.value || force.value };
 }
 
 registerWorkbenchAction<"create-tag", TagBound>("create-tag", {
@@ -163,7 +153,8 @@ registerWorkbenchAction<"create-tag", TagBound>("create-tag", {
       const ref = `${TAGS}${p.name}`;
       const check = await stepOf(ctx, tagNameCheckArgs(p.name), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }));
       if (!("exit" in check)) return check;
-      // git-check-ref-format(1): another exit than 0 refuses the name. The argv builders also need the `commands.ts` ref rule.
+      // git-check-ref-format(1): another exit than 0 refuses the name. A null exit is a Job close. The argv builders also need the `commands.ts` ref rule.
+      if (check.exit.exitCode === null) return { code: "GIT_FAILED" };
       if (check.exit.exitCode !== 0 || !isRefName(ref)) return unavailable("invalid-name");
       const exists = await refExists(ctx, ref);
       if (!("value" in exists)) return exists;

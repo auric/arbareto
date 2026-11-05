@@ -42,7 +42,7 @@ The dispatcher binds HEAD, the operation state, and the trust listing (`workbenc
 - `leave`, `gain`, `reflogOnly`: the counts of `rev-list --count` (plan D4 read 4).
 - `forceNote`: `null`, or the tracking ref that holds a commit that leaves.
 - `trackedChanges`: the count of `trackedStatus`.
-- `ignoredReplaced`: the count of ignored candidates in the way. It is 0 for Soft and Mixed.
+- `ignoredReplaced`: the count of ignored files that Hard reset replaces. An ignored folder counts its files. It is 0 for Soft and Mixed.
 - `parents`: the parents of `rev-list --parents -n 1`, each with its short ID and subject for the popover.
 
 ## 4. Run results and the outcome mapping

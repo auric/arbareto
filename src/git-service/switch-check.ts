@@ -78,6 +78,13 @@ export function untrackedOf(entries: readonly string[], stdout: Uint8Array, obje
   return entries.filter((path) => !tracked.has(path));
 }
 
+// `ls-files -z --others --ignored` below `folders`: one NUL-ended path per file. Each path must lie below one of `folders`.
+export function ignoredFilesOf(folders: readonly string[], stdout: Uint8Array): number | "malformed" {
+  const records = fields(stdout);
+  if (records === null || !records.every((path) => folders.some((folder) => path.startsWith(`${folder}/`) && path.length > folder.length + 1))) return "malformed";
+  return records.length;
+}
+
 // Research.md R21 F1: the read has no `--literal-pathspecs`. Each path goes on stdin with NUL.
 // Without that flag, Git can read a leading `:` as pathspec magic. Plan D3 refuses such a path with reason `path` until T081 shows a literal read.
 export function ignoreRead(counted: readonly string[]): { args: string[]; input: Uint8Array } | "path" {

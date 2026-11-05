@@ -8,22 +8,27 @@
 // Run 0 of each series is the warm-up run. It counts for the every-run bound, never for the median (001 spec.md:95).
 // The cold run is the first sample of a new app session. Its budget is 2 times the median (SC-010a: p95) budget of its measure (plan.md D9 "cold").
 // CPU seconds and private bytes are records without a budget. They sum the live processes of the app tree before and after each run.
+// The per-process private bytes and the renderer heap figures are also records without a budget.
 // shortcut: a Git child that ends during the run leaves the CPU sum; read the Job accounting of installed-app.ts when the record needs it.
+// The WSL cases are records without a budget (spec SC-010 "WSL times"). They run only when `ARBARETO_WSL_DISTRO` names `Ubuntu-26.04`. `Local: WSL`, alone.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, relative } from "node:path";
+import { copyFileSync, existsSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { sha256 } from "../git/git-oracle";
+import type { GitHost } from "../git/remote-fixtures";
 import { printOrigin } from "../origin";
+import { distroGitHost, sh } from "../wsl/fixtures";
+import { missingCapability, uncPath, useWslFolder, wslExec, wslHost, type WslHost } from "../wsl/wsl-host";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { copyMr, ensureMr, MR_CHANGED_PATHS, MR_FILES_PER_COMMIT, type MrFacts } from "./commit-menu-fixture";
 import { appEnv, descendants, findInstalledApp, HISTORY_VIEW, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { copyPerfFixture, ensurePerfFixture, PERF_CACHE_ROOT, PERF_L, PERF_M, type CachedPerfFixture } from "./perf-fixtures";
-import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, showContextMenu, type Element } from "./uia";
+import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, showContextMenu, UiaError, type Element } from "./uia";
 
-for (const helper of ["./cdp.ts", "./installed-app.ts", "./uia.ts", "./perf-fixtures.ts", "./commit-menu-fixture.ts"]) printOrigin(helper, import.meta.dir);
+for (const helper of ["./cdp.ts", "./installed-app.ts", "./uia.ts", "./perf-fixtures.ts", "./commit-menu-fixture.ts", "../wsl/wsl-host.ts", "../wsl/fixtures.ts"]) printOrigin(helper, import.meta.dir);
 // The package under test holds these sources. The `ORIGIN` line of `findInstalledApp` names the installed binary and its SHA-256.
 for (const source of ["../../src/frontend/history/CommitActions.tsx", "../../src/frontend/history/commit-texts.ts", "../../src/frontend/history/HistoryList.tsx", "../../src/git-service/commit-actions.ts"]) printOrigin(source, import.meta.dir);
 
@@ -163,6 +168,8 @@ const filterField = `document.querySelector(${js(`input[aria-label="${FILTER_LAB
 // The time is `performance.now()` in the callback (as T048). A check that holds at `arm`, an event before `arm`, or a negative time gives `ok: false`.
 // `changed` holds each `role=status` cell of the status region that changed after `arm`, so an outcome text equal to the last one still needs a new render of its cell.
 // The key log of SC-011 holds each probe keydown whose target is the history filter.
+// With `probe`, the first `click` after `arm` (the run button activation) moves the focus to the filter in a later task.
+// The later task lets the default action of the click (a form submit) run first. `probeFocus` then keeps the focus on the filter.
 const PAGE = `(() => {
   if (window.__t018 !== undefined) return true;
   window.__t018Keys = [];
@@ -172,11 +179,22 @@ const PAGE = `(() => {
   window.__t018 = {
     changed: new Set(),
     observer: null,
-    arm(checks, limit, kind) {
+    clicked: false,
+    probeFocus() {
+      const f = ${filterField};
+      if (this.clicked && f !== null && document.activeElement !== f) f.focus();
+      return this.value !== null;
+    },
+    arm(checks, limit, kind, probe) {
       const armed = performance.now();
       let start = null;
       const onInput = (e) => { if (start === null) start = e.timeStamp; };
       addEventListener(kind, onInput, { capture: true });
+      this.clicked = false;
+      if (probe) {
+        const onClick = () => { removeEventListener('click', onClick, { capture: true }); setTimeout(() => { this.clicked = true; this.probeFocus(); }, 0); };
+        addEventListener('click', onClick, { capture: true });
+      }
       this.changed = new Set();
       this.observer?.disconnect();
       const region = document.querySelector('[data-slot=status-region]');
@@ -250,18 +268,35 @@ const step = (name: string) => console.log(`STEP ${TASK} ${name} ${new Date().to
 
 type Timed = { ok: boolean; why: string | null; armed: number; start: number | null; times: (number | null)[] };
 // Arms the page, runs `act`, and calls `during` until the page holds the result. `kind` is the DOM event that starts the time.
+// `during` starts together with `act`. CDP sends its input events in order, so each probe input reaches the page after the run press.
+// The key loop never waits for a page evaluation, so an input also waits in the queue of a main-thread task. Event Timing then holds that wait.
 async function timed(c: Cdp, name: string, checks: string[], act: () => Promise<void>, kind: "keydown" | "contextmenu" = "keydown", during?: () => Promise<void>): Promise<number> {
   step(name);
   checks.forEach(parses);
-  await c.evaluate(`window.__t018.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${STEP_LIMIT_MS}, ${js(kind)})`);
-  await act();
+  await c.evaluate(`(window.__t018Keys = [], window.__t018Events = [], window.__t018.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${STEP_LIMIT_MS}, ${js(kind)}, ${during !== undefined}))`);
+  let ended = false;
+  const acting = act();
+  acting.catch(() => (ended = true));
   if (during !== undefined) {
-    await c.evaluate("(window.__t018Keys = [], window.__t018Events = [], true)");
-    for (const end = Date.now() + STEP_LIMIT_MS + 5_000; (await c.evaluate<Timed | null>("window.__t018.value")) === null && Date.now() < end; ) {
-      await during();
-      await Bun.sleep(PROBE_INTERVAL_MS);
+    const end = Date.now() + STEP_LIMIT_MS + 5_000;
+    const focusing = (async () => {
+      while (!ended && Date.now() < end) {
+        if (await c.evaluate<boolean>("window.__t018.probeFocus()")) break;
+        await Bun.sleep(PROBE_INTERVAL_MS);
+      }
+      ended = true;
+    })();
+    try {
+      while (!ended && Date.now() < end) {
+        await during();
+        await Bun.sleep(PROBE_INTERVAL_MS);
+      }
+    } finally {
+      ended = true;
+      await focusing;
     }
   }
+  await acting;
   const r = (await until<Timed | null>(c, "the timed step", "window.__t018.value", (v) => v !== null, STEP_LIMIT_MS + 5_000))!;
   if (!r.ok || r.start === null || !r.times.every((t) => t !== null && t >= 0)) throw new Error(`a timed step is not valid: ${js(r)} ${js(await c.evaluate<unknown>(FACTS))}`);
   return Math.max(...(r.times as number[]));
@@ -277,25 +312,49 @@ const r1 = (x: number) => Math.round(x * 10) / 10;
 
 // ---- Records: CPU seconds and process-tree private bytes (no budget) ----
 
-type Usage = { cpu: number; privateBytes: number; processes: number };
+// `type` is the Chromium `--type=` switch of a `msedgewebview2.exe` command line, or `none` without it (the browser process). Other images have null.
+type ProcessUsage = { pid: number; name: string; privateBytes: number; type: string | null };
+type Usage = { cpu: number; privateBytes: number; processes: number; list: ProcessUsage[] };
 // The tree rule of tests/windows/measure-ram-split.ps1: a child starts after its parent. Get-Process gives TotalProcessorTime and PrivateMemorySize64.
 function usage(rootPid: number): Usage {
   return powershellJson(`$all = Get-CimInstance Win32_Process
 $tree = [System.Collections.Generic.List[object]]::new(); $root = $all | Where-Object ProcessId -eq ${rootPid}
 if ($root) { $tree.Add($root) }
 for ($i = 0; $i -lt $tree.Count; $i++) { $p = $tree[$i]; $all | Where-Object { $_.ParentProcessId -eq $p.ProcessId -and $_.ProcessId -ne $p.ProcessId -and $_.CreationDate -ge $p.CreationDate } | ForEach-Object { $tree.Add($_) } }
-$cpu = 0.0; $bytes = [int64]0
-foreach ($p in $tree) { $gp = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue; if ($gp) { $cpu += $gp.TotalProcessorTime.TotalSeconds; $bytes += [int64]$gp.PrivateMemorySize64 } }
-ConvertTo-Json -Compress -InputObject ([ordered]@{ cpu = $cpu; privateBytes = $bytes; processes = $tree.Count })`) as Usage;
+$cpu = 0.0; $bytes = [int64]0; $list = [System.Collections.Generic.List[object]]::new()
+foreach ($p in $tree) {
+  $gp = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+  if ($gp) {
+    $cpu += $gp.TotalProcessorTime.TotalSeconds; $bytes += [int64]$gp.PrivateMemorySize64
+    $type = $null
+    if ($p.Name -eq 'msedgewebview2.exe') { $type = if ("$($p.CommandLine)" -match '(?:^|\\s)--type=([^\\s"]+)') { $Matches[1] } else { 'none' } }
+    $list.Add([ordered]@{ pid = [int]$p.ProcessId; name = $p.Name; privateBytes = [int64]$gp.PrivateMemorySize64; type = $type })
+  }
+}
+ConvertTo-Json -Compress -Depth 4 -InputObject ([ordered]@{ cpu = $cpu; privateBytes = $bytes; processes = $tree.Count; list = @($list) })`) as Usage;
+}
+const processLine = (u: Usage) => u.list.map((p) => `${p.pid} ${p.name}${p.type === null ? "" : `(${p.type})`} ${p.privateBytes}`).join("; ");
+
+// CDP `Runtime.getHeapUsage` after each run, and `Performance.getMetrics` at the start and the end of each series. Records, no budget.
+async function heap(c: Cdp, label: string): Promise<void> {
+  const h = (await c.send("Runtime.getHeapUsage")) as { usedSize: number; totalSize: number };
+  console.log(`HEAP ${TASK}: ${label}: usedSize ${h.usedSize}, totalSize ${h.totalSize}`);
+}
+const METRICS = ["JSHeapUsedSize", "Nodes", "JSEventListeners"];
+async function metrics(c: Cdp, label: string): Promise<void> {
+  const { metrics: all } = (await c.send("Performance.getMetrics")) as { metrics: { name: string; value: number }[] };
+  console.log(`METRICS ${TASK}: ${label}: ${METRICS.map((name) => `${name} ${all.find((m) => m.name === name)?.value ?? "absent"}`).join(", ")}`);
 }
 
 type Series = { name: string; runs: number[]; cpu: number[]; bytes: number[] };
 const newSeries = (name: string): Series => ({ name, runs: [], cpu: [], bytes: [] });
-function recordRun(s: Series, run: number, ms: number, before: Usage, after: Usage): void {
+async function recordRun(c: Cdp, s: Series, run: number, ms: number, before: Usage, after: Usage): Promise<void> {
   s.runs.push(ms);
   s.cpu.push(after.cpu - before.cpu);
   s.bytes.push(after.privateBytes);
   console.log(`RUN ${TASK}: ${s.name} run ${run}${run === 0 ? " (warm-up)" : ""}: ${r1(ms)} ms, CPU ${(after.cpu - before.cpu).toFixed(3)} s, private bytes ${after.privateBytes} (${after.processes} processes)`);
+  console.log(`PROCESSES ${TASK}: ${s.name} run ${run}: ${processLine(after)}`);
+  await heap(c, `${s.name} run ${run}`);
 }
 // Run 0 is the warm-up run: in the every-run bound, never in the median.
 function verdict(s: Series, medianBudget: number, maxBudget: number): { name: string; median: boolean; every: boolean } {
@@ -315,10 +374,14 @@ function cold(name: string, ms: number, budget: number): { name: string; cold: b
 type Inputs = { label: string; count: number; p95: number; max: number };
 async function inputs(c: Cdp, label: string): Promise<Inputs> {
   await c.evaluate("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => done(true), 50))))");
-  const { keys, events } = await c.evaluate<{ keys: number[]; events: { start: number; duration: number }[] }>("({ keys: window.__t018Keys, events: window.__t018Events })");
+  const { keys, events, start } = await c.evaluate<{ keys: number[]; events: { start: number; duration: number }[]; start: number }>("({ keys: window.__t018Keys, events: window.__t018Events, start: window.__t018.value.start })");
   const durations = keys.map((k) => events.find((e) => e.start === k)?.duration ?? EVENT_THRESHOLD_MS);
   const r = { label, count: durations.length, p95: durations.length === 0 ? 0 : p95(durations), max: durations.length === 0 ? 0 : Math.max(...durations) };
-  console.log(`OBSERVATION ${TASK}: SC-011 ${label}: ${r.count} inputs, p95 ${r.p95} ms, max ${r.max} ms`);
+  // Offsets count from the `timeStamp` of the run press. `measured` lists each input at or above the Event Timing threshold as [offset, duration].
+  const offset = (k: number) => r1(k - start);
+  const spacing = keys.length < 2 ? null : r1(median(keys.slice(1).map((k, i) => k - keys[i]!)));
+  const measured = keys.flatMap((k) => events.filter((e) => e.start === k).map((e) => [offset(k), e.duration]));
+  console.log(`OBSERVATION ${TASK}: SC-011 ${label}: ${r.count} inputs, p95 ${r.p95} ms, max ${r.max} ms; first input at ${keys.length === 0 ? null : offset(keys[0]!)} ms, median spacing ${spacing} ms, measured ${js(measured)}`);
   return r;
 }
 
@@ -341,10 +404,82 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     installed === null ? (discovery as { skip: string }).skip : GIT === null ? "Git executable absent" : others.length > 0 ? `another-instance: ${installed.mainBinaryName} runs as PID ${others.map((r) => r.pid).join(", ")}` : null;
   if (reason !== null) console.log(`SKIP installed app: ${reason}`);
 
-  const git = (repo: string, args: string[], allowExit = [0]) => ownedGit(GIT!, FIXTURE_ROOT, repo, args, { allowExit }).toString("utf8");
-  const rev = (repo: string, name: string) => git(repo, ["rev-parse", "--verify", "--end-of-options", `${name}^{commit}`]).trim();
-  const tree = (repo: string, name: string) => git(repo, ["rev-parse", "--verify", "--end-of-options", `${name}^{tree}`]).trim();
+  // WSL detection starts the distro, so it runs only for a WSL run. The cases use the distro of spec SC-010 "WSL times".
+  const WSL_DISTRO = "Ubuntu-26.04";
+  const wslWanted = process.env.ARBARETO_WSL_DISTRO;
+  const host = reason === null && wslWanted !== undefined && wslWanted !== "" ? wslHost() : null;
+  const wslReason =
+    reason ?? (host === null ? "ARBARETO_WSL_DISTRO unset" : (missingCapability(["wsl-fixture-fs-id", "distro-git-2.55"]) ?? (host.distro === WSL_DISTRO ? null : `ubuntu-26.04: the test distro is ${host.distro}`)));
+  if (wslReason === null) useWslFolder();
+  else console.log(`SKIP ${TASK} WSL: ${wslReason}`);
+
   const under = (root: string, repo: string) => !relative(root, repo).startsWith("..") && !isAbsolute(relative(root, repo));
+  // One repository of the cases: `folder` is the path that the folder dialog gets. Each Git call runs on the side of the repository.
+  type Repo = {
+    folder: string;
+    wsl: boolean;
+    git(args: string[], allowExit?: number[], input?: Uint8Array): string;
+    // The SHA-256 of the Git output. A distro repository computes it in the distro.
+    digest(args: string[]): string;
+    exists(path: string): boolean;
+    write(path: string, text: string): void;
+    copy(from: string, to: string): void;
+  };
+  function winRepo(dir: string): Repo {
+    if (!under(FIXTURE_ROOT, dir)) throw new Error(`the repository is outside the fixture root: ${dir}`);
+    const git = (args: string[], allowExit = [0], input?: Uint8Array) => ownedGit(GIT!, FIXTURE_ROOT, dir, args, { allowExit, ...(input === undefined ? {} : { input }) }).toString("utf8");
+    return { folder: dir, wsl: false, git, digest: (args) => sha256(Buffer.from(git(args), "utf8")), exists: existsSync, write: (path, text) => writeFileSync(join(dir, ...path.split("/")), text), copy: copyFileSync };
+  }
+  const rev = (repo: Repo, name: string) => repo.git(["rev-parse", "--verify", "--end-of-options", `${name}^{commit}`]).trim();
+  const tree = (repo: Repo, name: string) => repo.git(["rev-parse", "--verify", "--end-of-options", `${name}^{tree}`]).trim();
+
+  // ---- WSL repositories (as tests/windows/revert-perf.test.ts: a Windows tar stream to tar in the distro) ----
+
+  const WSL_GLOBAL = "[user]\n\tname = Arbareto Fixture\n\temail = fixture@arbareto.invalid\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n";
+  const WSL_CALL_MS = 300_000;
+  let wslGit: GitHost | null = null;
+  const TAR = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+  function toDistro(w: WslHost, from: string, entry: string, linuxDir: string): void {
+    const tar = Bun.spawnSync([TAR, "--no-acls", "--no-xattrs", "--no-fflags", "-c", "-f", "-", "-C", from, entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: WSL_CALL_MS });
+    if (tar.exitCode !== 0) throw new Error(`tar -c of ${from} exited ${tar.exitCode}: ${tar.stderr.toString()}`);
+    const x = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", "/usr/bin/tar", "-x", "-f", "-", "-C", linuxDir], { input: new Uint8Array(tar.stdout), timeoutMs: WSL_CALL_MS });
+    if (x.exitCode !== 0) throw new Error(`tar -x into ${linuxDir} exited ${x.exitCode}: ${x.stderr}`);
+  }
+  // A distro copy of the cached repository `cachedRepo` (read only). Its refs and status must equal those of the cache, computed with Windows Git.
+  function distroRepo(cachedRepo: string, name: string): Repo {
+    const w = host!;
+    wslGit ??= distroGitHost(w, "t018", WSL_GLOBAL);
+    const h = wslGit;
+    const root = `${h.root}/${name}`;
+    const dir = `${root}/${basename(cachedRepo)}`;
+    sh(w, 'mkdir -- "$1"', [root]);
+    toDistro(w, dirname(cachedRepo), basename(cachedRepo), root);
+    const git = (args: string[], allowExit = [0], input?: Uint8Array) => {
+      const r = h.run(dir, args, { timeoutMs: WSL_CALL_MS, ...(input === undefined ? {} : { input }) });
+      if (!allowExit.includes(r.exitCode)) throw new Error(`distro git ${args.join(" ")} exited ${r.exitCode}: ${r.stderr.toString()}`);
+      return r.stdout.toString("utf8");
+    };
+    // The same environment as `distroGitHost` `run`. GNU sha256sum prints the digest first.
+    const vars = [`HOME=${w.folder}/home`, "PATH=/usr/local/bin:/usr/bin:/bin", `GIT_CONFIG_GLOBAL=${h.globalConfig}`, `GIT_CONFIG_SYSTEM=${h.systemConfig}`, "GIT_CONFIG_NOSYSTEM=1"];
+    const digest = (args: string[]) => {
+      const out = `${root}/digest.out`;
+      const r = sh(w, 'o="$1"; shift; /usr/bin/env -i "$@" > "$o" && sha256sum < "$o"; s=$?; rm -f -- "$o"; exit $s', [out, ...vars, w.probe.paths.git!, "-C", dir, ...args]);
+      const m = /^([0-9a-f]{64}) /.exec(r.stdout);
+      if (m === null) throw new Error(`sha256sum output refused: ${js(r.stdout)}`);
+      return m[1]!;
+    };
+    const repo: Repo = { folder: uncPath(w, dir), wsl: true, git, digest, exists: (path) => h.existing([path]).length === 1, write: (path, text) => h.write(`${dir}/${path}`, text), copy: (from, to) => h.copy(from, to) };
+    // Git for Windows writes these keys at `init`, so the distro copy drops them (as revert-perf.test.ts).
+    for (const key of ["core.symlinks", "core.ignorecase", "core.filemode"]) git(["config", "--local", "--unset", key], [0, 5]);
+    git(["update-index", "-q", "--refresh"], [0, 1]);
+    const shape = [
+      ["for-each-ref", "--format=%(objectname) %(refname)"],
+      ["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+    ].map((args) => ({ args: args.join(" "), windows: sha256(ownedGit(GIT!, PERF_CACHE_ROOT, cachedRepo, ["--no-optional-locks", ...args])), distro: digest(args) }));
+    console.log(`WSL ${TASK}: distro=${w.distro} folder=${repo.folder} shape=${js(shape)}`);
+    expect(shape.every((x) => x.windows === x.distro)).toBe(true);
+    return repo;
+  }
 
   async function use<T>(element: Promise<Element>, body: (element: Element) => T): Promise<T> {
     const found = await element;
@@ -355,11 +490,22 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     }
   }
   const uia = <T>(pid: number, name: string, type: number | undefined, body: (element: Element) => T) => use(find(pid, name, MAX_WAIT_MS, type), body);
+  // `uia.ts` `find` waits at most MAX_WAIT_MS, so a longer wait repeats it until `ms` passes (as revert-packaged.test.ts).
+  async function findWithin(pid: number, name: string, ms: number): Promise<Element> {
+    for (const end = performance.now() + ms; ; ) {
+      try {
+        return await find(pid, name, Math.max(0, Math.min(MAX_WAIT_MS, Math.ceil(end - performance.now()))));
+      } catch (error) {
+        if (!(error instanceof UiaError && error.code === "TIMEOUT") || performance.now() >= end) throw error;
+      }
+    }
+  }
 
-  type Session = { app: OwnedProcess; c: Cdp; ipc: IpcLog; repo: string };
-  async function session(label: string, repo: string): Promise<Session> {
-    if (!under(FIXTURE_ROOT, repo)) throw new Error(`the repository is outside the fixture root: ${repo}`);
-    const top = git(repo, ["rev-parse", "--show-toplevel"]).trim();
+  type Session = { app: OwnedProcess; c: Cdp; ipc: IpcLog; repo: Repo };
+  async function session(label: string, repo: Repo): Promise<Session> {
+    const top = repo.git(["rev-parse", "--show-toplevel"]).trim();
+    // The switcher label of a distro repository is not fixed by a 001 text, so a WSL session waits for a label that names the folder (as revert-perf.test.ts).
+    const shown = (v: string | null) => (repo.wsl ? v !== null && v.startsWith(`${basename(top)}, `) : v === `${basename(top)}, ${top}`);
     // Each start has a new profile folder (appEnv sets ARBARETO_PROFILE_ROOT below it).
     const env = appEnv(fixtureDir(`${label}-app`), false);
     const port = freePort();
@@ -367,27 +513,38 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     const app = startInstalledApp(installed!, env);
     owned.add(app);
     console.log(`STARTED ${TASK}: ${app.pid} ${label} port=${port} profile=${env.set.ARBARETO_PROFILE_ROOT}`);
-    await uia(app.pid, "Select Git", ControlType.Button, invoke);
-    await uia(app.pid, "Use this Git", undefined, invoke);
-    const c = await connectPage(port, MAX_WAIT_MS);
-    sockets.add(c);
-    const ipc = await watchIpc(c);
-    await uia(app.pid, OPEN_FOLDER, undefined, invoke);
-    await uia(app.pid, "Folder:", ControlType.Edit, (field) => setValue(field, repo));
-    await uia(app.pid, "Select Folder", ControlType.Button, invoke);
+    // A failed start stops its app, so the next case can start one.
     try {
-      await until<string | null>(c, "the open repository", `document.querySelector('button[aria-keyshortcuts="Control+R"]')?.getAttribute('aria-label') ?? null`, (v) => v === `${basename(top)}, ${top}`, OPEN_WAIT_MS);
+      await uia(app.pid, "Select Git", ControlType.Button, invoke);
+      await uia(app.pid, "Use this Git", undefined, invoke);
+      const c = await connectPage(port, MAX_WAIT_MS);
+      sockets.add(c);
+      const ipc = await watchIpc(c);
+      await uia(app.pid, OPEN_FOLDER, undefined, invoke);
+      await uia(app.pid, "Folder:", ControlType.Edit, (field) => setValue(field, repo.folder));
+      await uia(app.pid, "Select Folder", ControlType.Button, invoke);
+      // A WSL folder asks for its distro Git in a native confirmation with Use this Git and Cancel (src-tauri/src/dialogs.rs `wsl_git_confirmation`). The first open can start the distro.
+      if (repo.wsl) await use(findWithin(app.pid, "Use this Git", OPEN_WAIT_MS), invoke);
+      try {
+        await until<string | null>(c, "the open repository", `document.querySelector('button[aria-keyshortcuts="Control+R"]')?.getAttribute('aria-label') ?? null`, shown, OPEN_WAIT_MS);
+      } catch (e) {
+        const tree = descendants(app.pid).map((r) => `${r.pid} ${r.name} ${(r.commandLine ?? "").slice(0, 160)}`);
+        throw new Error(`${(e as Error).message} tree=${js(tree)}`);
+      }
+      expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
+      expect(await c.evaluate<boolean>(PAGE)).toBe(true);
+      if (await c.evaluate<boolean>(`document.querySelector('[data-view="history"]')?.hidden !== false`)) await uia(app.pid, HISTORY_VIEW, ControlType.Button, invoke);
+      await until<boolean>(c, "the History view", `document.querySelector('[data-view="history"]')?.hidden === false`, (v) => v);
+      await c.send("Performance.enable");
+      const s = { app, c, ipc, repo };
+      await refreshed(s, rev(repo, "HEAD"));
+      return s;
     } catch (e) {
-      const tree = descendants(app.pid).map((r) => `${r.pid} ${r.name} ${(r.commandLine ?? "").slice(0, 160)}`);
-      throw new Error(`${(e as Error).message} tree=${js(tree)}`);
+      app.stop();
+      owned.delete(app);
+      await waitExit(app);
+      throw e;
     }
-    expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
-    expect(await c.evaluate<boolean>(PAGE)).toBe(true);
-    if (await c.evaluate<boolean>(`document.querySelector('[data-view="history"]')?.hidden !== false`)) await uia(app.pid, HISTORY_VIEW, ControlType.Button, invoke);
-    await until<boolean>(c, "the History view", `document.querySelector('[data-view="history"]')?.hidden === false`, (v) => v);
-    const s = { app, c, ipc, repo };
-    await refreshed(s, rev(repo, "HEAD"));
-    return s;
   }
   async function end(s: Session): Promise<void> {
     s.c.close();
@@ -439,13 +596,10 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     await until<boolean>(s.c, "no open menu, popover, or dialog", `!(${anyMenu}) && !(${anyPopover}) && !(${anyDialog})`, (v) => v);
     await idle(s);
   }
-  // One SC-011 probe: an x or a Backspace in the history filter. The pair keeps the field short.
+  // One SC-011 probe: an x or a Backspace in the history filter. The pair keeps the field short. The page moves the focus (`probeFocus`).
   const probe = (c: Cdp) => {
     let n = 0;
-    return async () => {
-      if (!(await c.evaluate<boolean>(`document.activeElement === ${filterField}`))) await c.evaluate(`${filterField}?.focus(); true`);
-      await press(c, n++ % 2 === 0 ? "x" : "Backspace");
-    };
+    return () => press(c, n++ % 2 === 0 ? "x" : "Backspace");
   };
   const clearFilter = (c: Cdp) => c.evaluate(`(() => { const f = ${filterField}; if (f && f.value !== '') { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(f, ''); f.dispatchEvent(new Event('input', { bubbles: true })); } return true; })()`);
 
@@ -470,7 +624,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     async () => {
       const cached = ensurePerfFixture(GIT!, PERF_L);
       checkShape(cached, PERF_L);
-      const repo = copyPerfFixture(GIT!, cached, "t018-l");
+      const repo = winRepo(copyPerfFixture(GIT!, cached, "t018-l"));
       const s = await session("sc010a", repo);
       try {
         // Commit row k is the option with data-item k + 2 (HistoryList.tsx: the Working directory and Index rows come first).
@@ -529,49 +683,57 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
 
   // ---- SC-010b: item activation to the popover with its plan or refusal on M ----
 
+  // The SC-010b series on `repo` (a copy of M). It gives the verdicts; a WSL case records them only.
+  async function sc010b(label: string, repo: Repo): Promise<unknown[]> {
+    const target = rev(repo, "HEAD~1");
+    const s = await session(label, repo);
+    const tag = repo.wsl ? "SC-010b WSL" : "SC-010b";
+    try {
+      // Pick and Revert of an ancestor on M give a refusal; Reset, Check out, and Create tag give the popover with its plan.
+      const actions = [
+        { name: "Reset", item: ITEM.reset, done: reviewed(RESET_TITLE(target), RESET_BUTTON) },
+        { name: "Check out", item: ITEM.checkout, done: reviewed(CHECKOUT_TITLE(target), CHECKOUT_BUTTON) },
+        // The Tag popover shows no plan, so its end is the shown popover with the focused name field (CommitActions.tsx `TagPopover`).
+        { name: "Create tag", item: ITEM.tag, done: `!!(${popover(TAG_TITLE(target))}) && document.activeElement === (${popover(TAG_TITLE(target))}).querySelector('input')` },
+        { name: "Cherry-pick", item: ITEM.pick, done: reviewed(PICK_TITLE(true, target), PICK_BUTTON(true)) },
+        { name: "Revert", item: ITEM.revert, done: reviewed(PICK_TITLE(false, target), PICK_BUTTON(false)) },
+      ];
+      const sample = async (a: (typeof actions)[number], label: string) => {
+        await toItem(s, target, a.item);
+        const before = usage(s.app.pid);
+        const ms = await timed(s.c, label, [a.done], () => press(s.c, "Enter"));
+        const after = usage(s.app.pid);
+        const reply = await s.ipc.body<{ state?: string; code?: string; result?: { reason?: string } }>(s.ipc.finished("review_workbench").at(-1)!).catch(() => null);
+        console.log(`REVIEW ${TASK}: ${label}: ${js({ state: reply?.state, code: reply?.code, reason: reply?.result?.reason })}`);
+        await closeAll(s);
+        return { ms, before, after };
+      };
+      const results: unknown[] = [];
+      const first = await sample(actions[0]!, "cold Reset");
+      results.push(cold(`${tag} Reset`, first.ms, COLD_FACTOR * POPOVER_MEDIAN_MS));
+      for (const a of actions) {
+        const series = newSeries(`${tag} ${a.name}`);
+        await metrics(s.c, `${series.name} start`);
+        for (let run = 0; run <= RUNS; run++) {
+          const r = await sample(a, `${a.name} run ${run}`);
+          await recordRun(s.c, series, run, r.ms, r.before, r.after);
+        }
+        await metrics(s.c, `${series.name} end`);
+        results.push(verdict(series, POPOVER_MEDIAN_MS, POPOVER_MAX_MS));
+      }
+      return results;
+    } finally {
+      await end(s);
+    }
+  }
+
   test.skipIf(reason !== null)(
     "SC-010b, U3: on M (5,000 commits, 10,000 files) each item activation shows its popover with the plan or the refusal with a median of at most 300 ms and each run at most 500 ms; the cold run at most 600 ms",
     async () => {
       const cached = ensurePerfFixture(GIT!, PERF_M);
       checkShape(cached, PERF_M);
-      const repo = copyPerfFixture(GIT!, cached, "t018-m-b");
-      const target = rev(repo, "HEAD~1");
-      const s = await session("sc010b", repo);
-      try {
-        // Pick and Revert of an ancestor on M give a refusal; Reset, Check out, and Create tag give the popover with its plan.
-        const actions = [
-          { name: "Reset", item: ITEM.reset, done: reviewed(RESET_TITLE(target), RESET_BUTTON) },
-          { name: "Check out", item: ITEM.checkout, done: reviewed(CHECKOUT_TITLE(target), CHECKOUT_BUTTON) },
-          // The Tag popover shows no plan, so its end is the shown popover with the focused name field (CommitActions.tsx `TagPopover`).
-          { name: "Create tag", item: ITEM.tag, done: `!!(${popover(TAG_TITLE(target))}) && document.activeElement === (${popover(TAG_TITLE(target))}).querySelector('input')` },
-          { name: "Cherry-pick", item: ITEM.pick, done: reviewed(PICK_TITLE(true, target), PICK_BUTTON(true)) },
-          { name: "Revert", item: ITEM.revert, done: reviewed(PICK_TITLE(false, target), PICK_BUTTON(false)) },
-        ];
-        const sample = async (a: (typeof actions)[number], label: string) => {
-          await toItem(s, target, a.item);
-          const before = usage(s.app.pid);
-          const ms = await timed(s.c, label, [a.done], () => press(s.c, "Enter"));
-          const after = usage(s.app.pid);
-          const reply = await s.ipc.body<{ state?: string; code?: string; result?: { reason?: string } }>(s.ipc.finished("review_workbench").at(-1)!).catch(() => null);
-          console.log(`REVIEW ${TASK}: ${label}: ${js({ state: reply?.state, code: reply?.code, reason: reply?.result?.reason })}`);
-          await closeAll(s);
-          return { ms, before, after };
-        };
-        const results: unknown[] = [];
-        const first = await sample(actions[0]!, "cold Reset");
-        results.push(cold("SC-010b Reset", first.ms, COLD_FACTOR * POPOVER_MEDIAN_MS));
-        for (const a of actions) {
-          const series = newSeries(`SC-010b ${a.name}`);
-          for (let run = 0; run <= RUNS; run++) {
-            const r = await sample(a, `${a.name} run ${run}`);
-            recordRun(series, run, r.ms, r.before, r.after);
-          }
-          results.push(verdict(series, POPOVER_MEDIAN_MS, POPOVER_MAX_MS));
-        }
-        expect(results).toEqual([{ name: "SC-010b Reset", cold: true }, ...actions.map((a) => ({ name: `SC-010b ${a.name}`, median: true, every: true }))]);
-      } finally {
-        await end(s);
-      }
+      const results = await sc010b("sc010b", winRepo(copyPerfFixture(GIT!, cached, "t018-m-b")));
+      expect(results).toEqual([{ name: "SC-010b Reset", cold: true }, ...["Reset", "Check out", "Create tag", "Cherry-pick", "Revert"].map((a) => ({ name: `SC-010b ${a}`, median: true, every: true }))]);
     },
     caseTimeout(30 + 12 * 6 * (RUNS + 1), OPEN_WAIT_MS + 60 * 60_000),
   );
@@ -583,9 +745,9 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     async () => {
       const cached = ensureMr(GIT!);
       console.log(`OBSERVATION ${TASK}: fixture M-R ${cached.reused ? "reused" : "built"} ${js(cached.facts)}`);
-      const repo = copyMr(GIT!, cached, "t018-mr-c");
+      const repo = winRepo(copyMr(GIT!, cached, "t018-mr-c"));
       const f = cached.facts;
-      expect(git(repo, ["diff", "--no-renames", "--name-only", "-z", f.target, f.tip, "--"]).split("\0").filter((p) => p !== "").length).toBe(MR_CHANGED_PATHS);
+      expect(repo.git(["diff", "--no-renames", "--name-only", "-z", f.target, f.tip, "--"]).split("\0").filter((p) => p !== "").length).toBe(MR_CHANGED_PATHS);
       const s = await session("sc010c", repo);
       try {
         const title = RESET_TITLE(f.target);
@@ -608,10 +770,12 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
         const first = await sample("cold Hard review");
         const results: unknown[] = [cold("SC-010c", first.ms, COLD_FACTOR * HARD_REVIEW_MEDIAN_MS)];
         const series = newSeries("SC-010c Hard review");
+        await metrics(s.c, `${series.name} start`);
         for (let run = 0; run <= RUNS; run++) {
           const r = await sample(`Hard review run ${run}`);
-          recordRun(series, run, r.ms, r.before, r.after);
+          await recordRun(s.c, series, run, r.ms, r.before, r.after);
         }
+        await metrics(s.c, `${series.name} end`);
         results.push(verdict(series, HARD_REVIEW_MEDIAN_MS, HARD_REVIEW_MAX_MS));
         expect(results).toEqual([{ name: "SC-010c", cold: true }, { name: "SC-010c Hard review", median: true, every: true }]);
       } finally {
@@ -626,26 +790,31 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
   type Run = { name: keyof typeof RUN_MEDIAN_MS; label: string; setup(run: number): Promise<{ done: string; check(): void }>; trigger(): Promise<void>; restore(): Promise<void> };
   // One run: the setup up to the focused run button, then the timed Enter with the SC-011 probe, then the Git oracle and the restore.
   async function runSeries(s: Session, r: Run, results: unknown[], coldFirst: boolean): Promise<void> {
-    const series = newSeries(`SC-010d ${r.label}`);
+    const sc = s.repo.wsl ? "WSL " : "";
+    const series = newSeries(`SC-010d ${sc}${r.label}`);
     const sc011: Inputs[] = [];
+    await metrics(s.c, `${series.name} start`);
     for (let run = coldFirst ? -1 : 0; run <= RUNS; run++) {
       const tag = run < 0 ? "cold" : `run ${run}`;
       await clearFilter(s.c);
       const { done, check } = await r.setup(run);
       const before = usage(s.app.pid);
-      const ms = await timed(s.c, `${r.label} ${tag}`, [outcomeShown(done, true)], r.trigger, "keydown", probe(s.c));
+      const ms = await timed(s.c, `${sc}${r.label} ${tag}`, [outcomeShown(done, true)], r.trigger, "keydown", probe(s.c));
       const after = usage(s.app.pid);
-      sc011.push(await inputs(s.c, `${r.label} ${tag}`));
+      sc011.push(await inputs(s.c, `${sc}${r.label} ${tag}`));
       check();
       await idle(s);
       await r.restore();
       if (run < 0) {
-        console.log(`RUN ${TASK}: SC-010d ${r.label} cold: ${r1(ms)} ms, CPU ${(after.cpu - before.cpu).toFixed(3)} s, private bytes ${after.privateBytes}`);
-        results.push(cold(`SC-010d ${r.label}`, ms, COLD_FACTOR * RUN_MEDIAN_MS[r.name]));
-      } else recordRun(series, run, ms, before, after);
+        console.log(`RUN ${TASK}: ${series.name} cold: ${r1(ms)} ms, CPU ${(after.cpu - before.cpu).toFixed(3)} s, private bytes ${after.privateBytes}`);
+        console.log(`PROCESSES ${TASK}: ${series.name} cold: ${processLine(after)}`);
+        await heap(s.c, `${series.name} cold`);
+        results.push(cold(series.name, ms, COLD_FACTOR * RUN_MEDIAN_MS[r.name]));
+      } else await recordRun(s.c, series, run, ms, before, after);
     }
+    await metrics(s.c, `${series.name} end`);
     results.push(verdict(series, RUN_MEDIAN_MS[r.name], RUN_MAX_FACTOR * RUN_MEDIAN_MS[r.name]));
-    results.push({ name: `SC-011 ${r.label}`, inputs: sc011.every((x) => x.count >= MIN_INPUTS), p95: sc011.every((x) => x.p95 <= INPUT_P95_MS), max: sc011.every((x) => x.max <= INPUT_MAX_MS) });
+    results.push({ name: `SC-011 ${sc}${r.label}`, inputs: sc011.every((x) => x.count >= MIN_INPUTS), p95: sc011.every((x) => x.p95 <= INPUT_P95_MS), max: sc011.every((x) => x.max <= INPUT_MAX_MS) });
   }
   const expectedRuns = (runs: Run[], coldLabel: string) => [
     ...runs.flatMap((r) => [
@@ -661,212 +830,257 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     await focusOn(s.c, button, `the ${text} button`);
   }
 
+  // The SC-010d series on `repo` (a copy of M). It gives the verdicts; a WSL case records them only.
+  async function sc010dM(label: string, repo: Repo): Promise<{ runs: Run[]; results: unknown[] }> {
+    const git = repo.git;
+    const tip = rev(repo, "HEAD");
+    const target = rev(repo, "HEAD~1");
+    const indexPath = git(["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim();
+    const saved = `${indexPath}.t018`;
+    repo.copy(indexPath, saved);
+    const indexHash = () => repo.digest(["ls-files", "-s", "-z"]);
+    const indexBefore = indexHash();
+    const s = await session(label, repo);
+    // The reset moves main only. The restore moves it back and writes the saved index; the refresh then gives fresh stat data.
+    const restoreReset = async () => {
+      git(["update-ref", "refs/heads/main", tip]);
+      repo.copy(saved, indexPath);
+      git(["update-index", "-q", "--refresh"], [0, 1]);
+      expect({ tip: rev(repo, "HEAD"), index: indexHash() }).toEqual({ tip, index: indexBefore });
+      await refreshed(s, tip);
+    };
+    const reset = (mode: "soft" | "mixed"): Run => ({
+      name: mode,
+      label: mode === "soft" ? "Soft" : "Mixed",
+      async setup() {
+        await toItem(s, target, ITEM.reset);
+        await press(s.c, "Enter");
+        await until<boolean>(s.c, "the Mixed plan", reviewed(RESET_TITLE(target), RESET_BUTTON), (v) => v);
+        if (mode === "soft") {
+          await press(s.c, "ArrowUp");
+          await until<boolean>(s.c, "the Soft plan", `(${popover(RESET_TITLE(target))})?.querySelector('input[type=radio]')?.checked === true && ${reviewed(RESET_TITLE(target), RESET_BUTTON)}`, (v) => v);
+        }
+        await focusButton(s, popover(RESET_TITLE(target)), RESET_BUTTON);
+        return {
+          done: RESET_DONE(target),
+          check: () => {
+            expect(rev(repo, "refs/heads/main")).toBe(target);
+            // Git-reset(1): Soft keeps the index; Mixed sets it to the target tree.
+            if (mode === "soft") expect(indexHash()).toBe(indexBefore);
+            else expect(git(["diff-index", "--cached", "--name-only", "-z", "HEAD", "--"])).toBe("");
+          },
+        };
+      },
+      trigger: () => press(s.c, "Enter"),
+      restore: restoreReset,
+    });
+    let name = "";
+    const createTag: Run = {
+      name: "tag",
+      label: "Create tag",
+      async setup(run) {
+        name = `t018-${run < 0 ? "cold" : run}`;
+        await toItem(s, target, ITEM.tag);
+        await press(s.c, "Enter");
+        const field = `(${popover(TAG_TITLE(target))})?.querySelector('input')`;
+        await until<boolean>(s.c, "the tag name field", `document.activeElement === ${field}`, (v) => v);
+        await s.c.send("Input.insertText", { text: name });
+        await until<string | null>(s.c, "the typed tag name", `${field}?.value ?? null`, (v) => v === name);
+        await focusButton(s, popover(TAG_TITLE(target)), TAG_BUTTON);
+        return { done: TAG_DONE(name, target), check: () => expect(rev(repo, `refs/tags/${name}`)).toBe(target) };
+      },
+      trigger: () => press(s.c, "Enter"),
+      async restore() {
+        git(["update-ref", "-d", `refs/tags/${name}`]);
+        await refreshed(s, tip, `!document.querySelector('[data-history-list] [data-chip-name]') || ![...document.querySelectorAll('[data-history-list] [data-chip-name]')].some((e) => e.textContent === ${js(name)})`);
+      },
+    };
+    const runs = [reset("soft"), reset("mixed"), createTag];
+    try {
+      const results: unknown[] = [];
+      for (const [i, r] of runs.entries()) await runSeries(s, r, results, i === 0);
+      return { runs, results };
+    } finally {
+      await end(s);
+    }
+  }
+
   test.skipIf(reason !== null)(
     "SC-010d, SC-011 on M: Soft, Mixed, and Create tag end within their medians (1 s, 2 s, 1 s) and each run within 2 times; typing in the history filter keeps p95 100 ms and max 500 ms with at least 20 inputs per run",
     async () => {
-      const repo = copyPerfFixture(GIT!, ensurePerfFixture(GIT!, PERF_M), "t018-m-d");
-      const tip = rev(repo, "HEAD");
-      const target = rev(repo, "HEAD~1");
-      const indexPath = git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim();
-      const saved = readFileSync(indexPath);
-      const indexHash = () => sha256(Buffer.from(git(repo, ["ls-files", "-s", "-z"]), "utf8"));
-      const indexBefore = indexHash();
-      const s = await session("sc010d-m", repo);
-      // The reset moves main only. The restore moves it back and writes the saved index; the refresh then gives fresh stat data.
-      const restoreReset = async () => {
-        git(repo, ["update-ref", "refs/heads/main", tip]);
-        writeFileSync(indexPath, saved);
-        git(repo, ["update-index", "-q", "--refresh"], [0, 1]);
-        expect({ tip: rev(repo, "HEAD"), index: indexHash() }).toEqual({ tip, index: indexBefore });
-        await refreshed(s, tip);
-      };
-      const reset = (mode: "soft" | "mixed"): Run => ({
-        name: mode,
-        label: mode === "soft" ? "Soft" : "Mixed",
+      const { runs, results } = await sc010dM("sc010d-m", winRepo(copyPerfFixture(GIT!, ensurePerfFixture(GIT!, PERF_M), "t018-m-d")));
+      expect(results).toEqual(expectedRuns(runs, "Soft"));
+    },
+    caseTimeout(40 + 25 * 3 * (RUNS + 2), OPEN_WAIT_MS + 90 * 60_000),
+  );
+
+  // The SC-010d series on `repo` (a copy of M-R with the facts `f`). It gives the verdicts; a WSL case records them only.
+  async function sc010dMr(label: string, repo: Repo, f: MrFacts): Promise<{ runs: Run[]; results: unknown[] }> {
+    const git = repo.git;
+    const s = await session(label, repo);
+    const cherryHead = () => git(["rev-parse", "--path-format=absolute", "--git-path", "CHERRY_PICK_HEAD"]).trim();
+    const clean = () => git(["diff-index", "--name-only", "-z", "HEAD", "--"]) === "" && git(["ls-files", "-u", "-z"]) === "";
+    const resetToTip = async () => {
+      git(["reset", "-q", "--hard", f.tip]);
+      expect({ head: rev(repo, "HEAD"), clean: clean() }).toEqual({ head: f.tip, clean: true });
+      await refreshed(s, f.tip);
+    };
+    // A cherry-pick of `conflict` stops with one conflicted path (commit-menu-fixture.ts). The state, not the exit code, proves the stop.
+    const stopped = () => {
+      git(["cherry-pick", f.conflict], [0, 1]);
+      expect({ head: rev(repo, "HEAD"), stopped: repo.exists(cherryHead()), unmerged: git(["ls-files", "-u", "-z", "--", f.conflictPath]) !== "" }).toEqual({ head: f.tip, stopped: true, unmerged: true });
+    };
+    const resolved = "resolved\n";
+    const reset: Run = {
+      name: "hard",
+      label: "Hard",
+      async setup() {
+        await toItem(s, f.target, ITEM.reset);
+        await press(s.c, "Enter");
+        await until<boolean>(s.c, "the Mixed plan", reviewed(RESET_TITLE(f.target), RESET_BUTTON), (v) => v);
+        await press(s.c, "ArrowDown");
+        await until<boolean>(s.c, "the Hard plan", reviewed(RESET_TITLE(f.target), HARD_BUTTON), (v) => v);
+        await focusButton(s, popover(RESET_TITLE(f.target)), HARD_BUTTON);
+        await press(s.c, "Enter");
+        const dialog = dialogWith(`Reset main hard to ${short(f.target)}?`);
+        await until<boolean>(s.c, "the Hard dialog", `!!(${dialog})`, (v) => v);
+        await focusButton(s, dialog, HARD_CONFIRM);
+        return { done: RESET_DONE(f.target), check: () => expect({ head: rev(repo, "HEAD"), clean: clean() }).toEqual({ head: f.target, clean: true }) };
+      },
+      trigger: () => press(s.c, "Enter"),
+      restore: resetToTip,
+    };
+    const pick = (isPick: boolean): Run => {
+      const commit = isPick ? f.pick : f.tip;
+      return {
+        name: isPick ? "pick" : "revert",
+        label: isPick ? "Cherry-pick" : "Revert",
         async setup() {
-          await toItem(s, target, ITEM.reset);
+          await toItem(s, commit, isPick ? ITEM.pick : ITEM.revert);
           await press(s.c, "Enter");
-          await until<boolean>(s.c, "the Mixed plan", reviewed(RESET_TITLE(target), RESET_BUTTON), (v) => v);
-          if (mode === "soft") {
-            await press(s.c, "ArrowUp");
-            await until<boolean>(s.c, "the Soft plan", `(${popover(RESET_TITLE(target))})?.querySelector('input[type=radio]')?.checked === true && ${reviewed(RESET_TITLE(target), RESET_BUTTON)}`, (v) => v);
-          }
-          await focusButton(s, popover(RESET_TITLE(target)), RESET_BUTTON);
+          await until<boolean>(s.c, "the pick plan", reviewed(PICK_TITLE(isPick, commit), PICK_BUTTON(isPick)), (v) => v);
+          await focusButton(s, popover(PICK_TITLE(isPick, commit)), PICK_BUTTON(isPick));
           return {
-            done: RESET_DONE(target),
+            done: PICK_DONE(isPick, commit),
             check: () => {
-              expect(rev(repo, "refs/heads/main")).toBe(target);
-              // Git-reset(1): Soft keeps the index; Mixed sets it to the target tree.
-              if (mode === "soft") expect(indexHash()).toBe(indexBefore);
-              else expect(git(repo, ["diff-index", "--cached", "--name-only", "-z", "HEAD", "--"])).toBe("");
+              // Git's own trees are the oracle: the pick of a child of the tip gives its tree, and the revert of the tip gives the tree of its parent.
+              expect({ parent: rev(repo, "HEAD~1"), tree: tree(repo, "HEAD"), files: git(["diff", "--no-renames", "--name-only", "-z", f.tip, "HEAD", "--"]).split("\0").filter((p) => p !== "").length }).toEqual({
+                parent: f.tip,
+                tree: tree(repo, isPick ? f.pick : `${f.tip}~1`),
+                files: MR_FILES_PER_COMMIT,
+              });
             },
           };
         },
         trigger: () => press(s.c, "Enter"),
-        restore: restoreReset,
-      });
-      let name = "";
-      const createTag: Run = {
-        name: "tag",
-        label: "Create tag",
-        async setup(run) {
-          name = `t018-${run < 0 ? "cold" : run}`;
-          await toItem(s, target, ITEM.tag);
-          await press(s.c, "Enter");
-          const field = `(${popover(TAG_TITLE(target))})?.querySelector('input')`;
-          await until<boolean>(s.c, "the tag name field", `document.activeElement === ${field}`, (v) => v);
-          await s.c.send("Input.insertText", { text: name });
-          await until<string | null>(s.c, "the typed tag name", `${field}?.value ?? null`, (v) => v === name);
-          await focusButton(s, popover(TAG_TITLE(target)), TAG_BUTTON);
-          return { done: TAG_DONE(name, target), check: () => expect(rev(repo, `refs/tags/${name}`)).toBe(target) };
-        },
-        trigger: () => press(s.c, "Enter"),
-        async restore() {
-          git(repo, ["update-ref", "-d", `refs/tags/${name}`]);
-          await refreshed(s, tip, `!document.querySelector('[data-history-list] [data-chip-name]') || ![...document.querySelectorAll('[data-history-list] [data-chip-name]')].some((e) => e.textContent === ${js(name)})`);
-        },
+        restore: resetToTip,
       };
-      const runs = [reset("soft"), reset("mixed"), createTag];
-      try {
-        const results: unknown[] = [];
-        for (const [i, r] of runs.entries()) await runSeries(s, r, results, i === 0);
-        expect(results).toEqual(expectedRuns(runs, "Soft"));
-      } finally {
-        await end(s);
-      }
-    },
-    caseTimeout(40 + 25 * 3 * (RUNS + 2), OPEN_WAIT_MS + 90 * 60_000),
-  );
+    };
+    const abort: Run = {
+      name: "abort",
+      label: "Abort",
+      async setup() {
+        stopped();
+        await refreshed(s, f.tip, `!!(${bandButton(ABORT_ITEM)})`);
+        await focusOn(s.c, bandButton(ABORT_ITEM), ABORT_ITEM);
+        await press(s.c, "Enter");
+        const dialog = dialogWith(ABORT_BUTTON);
+        await until<boolean>(s.c, "the Abort dialog", `!!(${dialog})`, (v) => v);
+        await focusButton(s, dialog, ABORT_BUTTON);
+        return { done: ABORT_DONE, check: () => expect({ head: rev(repo, "HEAD"), stopped: repo.exists(cherryHead()), clean: clean() }).toEqual({ head: f.tip, stopped: false, clean: true }) };
+      },
+      trigger: () => press(s.c, "Enter"),
+      restore: () => refreshed(s, f.tip, `document.querySelectorAll('[data-slot="conflict-row"]').length === 0`),
+    };
+    const continued: Run = {
+      name: "continue",
+      label: "Continue",
+      async setup() {
+        stopped();
+        repo.write(f.conflictPath, resolved);
+        git(["add", "--", f.conflictPath]);
+        await refreshed(s, f.tip, `!!(${bandButton(CONTINUE_BUTTON)})`);
+        await focusOn(s.c, bandButton(CONTINUE_BUTTON), CONTINUE_BUTTON);
+        return {
+          done: CONTINUE_DONE,
+          check: () => {
+            // The fixture sets `* -text`, so the blob holds the resolved bytes.
+            const expected = git(["hash-object", "--stdin"], [0], Buffer.from(resolved)).trim();
+            expect({ parent: rev(repo, "HEAD~1"), stopped: repo.exists(cherryHead()), blob: git(["rev-parse", "--verify", `HEAD:${f.conflictPath}`]).trim() }).toEqual({ parent: f.tip, stopped: false, blob: expected });
+          },
+        };
+      },
+      trigger: () => press(s.c, "Enter"),
+      restore: resetToTip,
+    };
+    const checkout: Run = {
+      name: "checkout",
+      label: "Detached checkout",
+      async setup() {
+        await toItem(s, f.target, ITEM.checkout);
+        await press(s.c, "Enter");
+        await until<boolean>(s.c, "the checkout plan", reviewed(CHECKOUT_TITLE(f.target), CHECKOUT_BUTTON), (v) => v);
+        await focusButton(s, popover(CHECKOUT_TITLE(f.target)), CHECKOUT_BUTTON);
+        // Git-symbolic-ref(1) `-q`: no output for a detached HEAD.
+        return { done: CHECKOUT_DONE(f.target), check: () => expect({ head: rev(repo, "HEAD"), symbolic: git(["symbolic-ref", "-q", "HEAD"], [0, 1]), clean: clean() }).toEqual({ head: f.target, symbolic: "", clean: true }) };
+      },
+      trigger: () => press(s.c, "Enter"),
+      async restore() {
+        git(["switch", "-q", "main"]);
+        expect({ symbolic: git(["symbolic-ref", "-q", "HEAD"]).trim(), head: rev(repo, "HEAD"), clean: clean() }).toEqual({ symbolic: "refs/heads/main", head: f.tip, clean: true });
+        await refreshed(s, f.tip);
+      },
+    };
+    const runs = [reset, pick(true), pick(false), abort, continued, checkout];
+    try {
+      const results: unknown[] = [];
+      for (const [i, r] of runs.entries()) await runSeries(s, r, results, i === 0);
+      return { runs, results };
+    } finally {
+      await end(s);
+    }
+  }
 
   test.skipIf(reason !== null)(
     "SC-010d, SC-011 on M-R: Hard (4 s), Cherry-pick and Revert of a 10-file commit (2 s), Abort and Continue (2 s), and the detached checkout (4 s) end within their medians and each run within 2 times; typing in the history filter keeps p95 100 ms and max 500 ms with at least 20 inputs per run",
     async () => {
       const cached = ensureMr(GIT!);
-      const f: MrFacts = cached.facts;
-      const repo = copyMr(GIT!, cached, "t018-mr-d");
-      const s = await session("sc010d-mr", repo);
-      const cherryHead = () => git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "CHERRY_PICK_HEAD"]).trim();
-      const clean = () => git(repo, ["diff-index", "--name-only", "-z", "HEAD", "--"]) === "" && git(repo, ["ls-files", "-u", "-z"]) === "";
-      const resetToTip = async () => {
-        git(repo, ["reset", "-q", "--hard", f.tip]);
-        expect({ head: rev(repo, "HEAD"), clean: clean() }).toEqual({ head: f.tip, clean: true });
-        await refreshed(s, f.tip);
-      };
-      // A cherry-pick of `conflict` stops with one conflicted path (commit-menu-fixture.ts). The state, not the exit code, proves the stop.
-      const stopped = () => {
-        git(repo, ["cherry-pick", f.conflict], [0, 1]);
-        expect({ head: rev(repo, "HEAD"), stopped: existsSync(cherryHead()), unmerged: git(repo, ["ls-files", "-u", "-z", "--", f.conflictPath]) !== "" }).toEqual({ head: f.tip, stopped: true, unmerged: true });
-      };
-      const resolved = "resolved\n";
-      const reset: Run = {
-        name: "hard",
-        label: "Hard",
-        async setup() {
-          await toItem(s, f.target, ITEM.reset);
-          await press(s.c, "Enter");
-          await until<boolean>(s.c, "the Mixed plan", reviewed(RESET_TITLE(f.target), RESET_BUTTON), (v) => v);
-          await press(s.c, "ArrowDown");
-          await until<boolean>(s.c, "the Hard plan", reviewed(RESET_TITLE(f.target), HARD_BUTTON), (v) => v);
-          await focusButton(s, popover(RESET_TITLE(f.target)), HARD_BUTTON);
-          await press(s.c, "Enter");
-          const dialog = dialogWith(`Reset main hard to ${short(f.target)}?`);
-          await until<boolean>(s.c, "the Hard dialog", `!!(${dialog})`, (v) => v);
-          await focusButton(s, dialog, HARD_CONFIRM);
-          return { done: RESET_DONE(f.target), check: () => expect({ head: rev(repo, "HEAD"), clean: clean() }).toEqual({ head: f.target, clean: true }) };
-        },
-        trigger: () => press(s.c, "Enter"),
-        restore: resetToTip,
-      };
-      const pick = (isPick: boolean): Run => {
-        const commit = isPick ? f.pick : f.tip;
-        return {
-          name: isPick ? "pick" : "revert",
-          label: isPick ? "Cherry-pick" : "Revert",
-          async setup() {
-            await toItem(s, commit, isPick ? ITEM.pick : ITEM.revert);
-            await press(s.c, "Enter");
-            await until<boolean>(s.c, "the pick plan", reviewed(PICK_TITLE(isPick, commit), PICK_BUTTON(isPick)), (v) => v);
-            await focusButton(s, popover(PICK_TITLE(isPick, commit)), PICK_BUTTON(isPick));
-            return {
-              done: PICK_DONE(isPick, commit),
-              check: () => {
-                // Git's own trees are the oracle: the pick of a child of the tip gives its tree, and the revert of the tip gives the tree of its parent.
-                expect({ parent: rev(repo, "HEAD~1"), tree: tree(repo, "HEAD"), files: git(repo, ["diff", "--no-renames", "--name-only", "-z", f.tip, "HEAD", "--"]).split("\0").filter((p) => p !== "").length }).toEqual({
-                  parent: f.tip,
-                  tree: tree(repo, isPick ? f.pick : `${f.tip}~1`),
-                  files: MR_FILES_PER_COMMIT,
-                });
-              },
-            };
-          },
-          trigger: () => press(s.c, "Enter"),
-          restore: resetToTip,
-        };
-      };
-      const abort: Run = {
-        name: "abort",
-        label: "Abort",
-        async setup() {
-          stopped();
-          await refreshed(s, f.tip, `!!(${bandButton(ABORT_ITEM)})`);
-          await focusOn(s.c, bandButton(ABORT_ITEM), ABORT_ITEM);
-          await press(s.c, "Enter");
-          const dialog = dialogWith(ABORT_BUTTON);
-          await until<boolean>(s.c, "the Abort dialog", `!!(${dialog})`, (v) => v);
-          await focusButton(s, dialog, ABORT_BUTTON);
-          return { done: ABORT_DONE, check: () => expect({ head: rev(repo, "HEAD"), stopped: existsSync(cherryHead()), clean: clean() }).toEqual({ head: f.tip, stopped: false, clean: true }) };
-        },
-        trigger: () => press(s.c, "Enter"),
-        restore: () => refreshed(s, f.tip, `document.querySelectorAll('[data-slot="conflict-row"]').length === 0`),
-      };
-      const continued: Run = {
-        name: "continue",
-        label: "Continue",
-        async setup() {
-          stopped();
-          writeFileSync(join(repo, ...f.conflictPath.split("/")), resolved);
-          git(repo, ["add", "--", f.conflictPath]);
-          await refreshed(s, f.tip, `!!(${bandButton(CONTINUE_BUTTON)})`);
-          await focusOn(s.c, bandButton(CONTINUE_BUTTON), CONTINUE_BUTTON);
-          return {
-            done: CONTINUE_DONE,
-            check: () => {
-              // The fixture sets `* -text`, so the blob holds the resolved bytes.
-              const expected = ownedGit(GIT!, FIXTURE_ROOT, repo, ["hash-object", "--stdin"], { input: Buffer.from(resolved) }).toString("utf8").trim();
-              expect({ parent: rev(repo, "HEAD~1"), stopped: existsSync(cherryHead()), blob: git(repo, ["rev-parse", "--verify", `HEAD:${f.conflictPath}`]).trim() }).toEqual({ parent: f.tip, stopped: false, blob: expected });
-            },
-          };
-        },
-        trigger: () => press(s.c, "Enter"),
-        restore: resetToTip,
-      };
-      const checkout: Run = {
-        name: "checkout",
-        label: "Detached checkout",
-        async setup() {
-          await toItem(s, f.target, ITEM.checkout);
-          await press(s.c, "Enter");
-          await until<boolean>(s.c, "the checkout plan", reviewed(CHECKOUT_TITLE(f.target), CHECKOUT_BUTTON), (v) => v);
-          await focusButton(s, popover(CHECKOUT_TITLE(f.target)), CHECKOUT_BUTTON);
-          // Git-symbolic-ref(1) `-q`: no output for a detached HEAD.
-          return { done: CHECKOUT_DONE(f.target), check: () => expect({ head: rev(repo, "HEAD"), symbolic: git(repo, ["symbolic-ref", "-q", "HEAD"], [0, 1]), clean: clean() }).toEqual({ head: f.target, symbolic: "", clean: true }) };
-        },
-        trigger: () => press(s.c, "Enter"),
-        async restore() {
-          git(repo, ["switch", "-q", "main"]);
-          expect({ symbolic: git(repo, ["symbolic-ref", "-q", "HEAD"]).trim(), head: rev(repo, "HEAD"), clean: clean() }).toEqual({ symbolic: "refs/heads/main", head: f.tip, clean: true });
-          await refreshed(s, f.tip);
-        },
-      };
-      const runs = [reset, pick(true), pick(false), abort, continued, checkout];
-      try {
-        const results: unknown[] = [];
-        for (const [i, r] of runs.entries()) await runSeries(s, r, results, i === 0);
-        expect(results).toEqual(expectedRuns(runs, "Hard"));
-      } finally {
-        await end(s);
-      }
+      const { runs, results } = await sc010dMr("sc010d-mr", winRepo(copyMr(GIT!, cached, "t018-mr-d")), cached.facts);
+      expect(results).toEqual(expectedRuns(runs, "Hard"));
     },
     caseTimeout(40 + 25 * 6 * (RUNS + 2), OPEN_WAIT_MS + 180 * 60_000),
+  );
+
+  // ---- WSL records (spec SC-010 "WSL times"): the same series in the owned folder of Ubuntu-26.04, from the Windows package. No budget. ----
+
+  const record = (name: string, results: unknown[]) => console.log(`RECORD ${TASK}: ${name}: ${js(results)}`);
+
+  test.skipIf(wslReason !== null)(
+    "WSL record SC-010b: on a distro copy of M, the SC-010b series (10 + 1 runs per action), no budget",
+    async () => {
+      const cached = ensurePerfFixture(GIT!, PERF_M);
+      checkShape(cached, PERF_M);
+      record("SC-010b WSL", await sc010b("wsl-sc010b", distroRepo(cached.repo, "m-b")));
+    },
+    caseTimeout(30 + 12 * 6 * (RUNS + 1), 2 * OPEN_WAIT_MS + 120 * 60_000),
+  );
+
+  test.skipIf(wslReason !== null)(
+    "WSL record SC-010d, SC-011 on M: Soft, Mixed, and Create tag (10 + 1 runs each), no budget",
+    async () => {
+      const cached = ensurePerfFixture(GIT!, PERF_M);
+      checkShape(cached, PERF_M);
+      record("SC-010d WSL M", (await sc010dM("wsl-sc010d-m", distroRepo(cached.repo, "m-d"))).results);
+    },
+    caseTimeout(40 + 25 * 3 * (RUNS + 2), 2 * OPEN_WAIT_MS + 180 * 60_000),
+  );
+
+  test.skipIf(wslReason !== null)(
+    "WSL record SC-010d, SC-011 on M-R: Hard, Cherry-pick, Revert, Abort, Continue, and the detached checkout (10 + 1 runs each), no budget",
+    async () => {
+      const cached = ensureMr(GIT!);
+      record("SC-010d WSL M-R", (await sc010dMr("wsl-sc010d-mr", distroRepo(cached.repo, "mr-d"), cached.facts)).results);
+    },
+    caseTimeout(40 + 25 * 6 * (RUNS + 2), 2 * OPEN_WAIT_MS + 360 * 60_000),
   );
 });

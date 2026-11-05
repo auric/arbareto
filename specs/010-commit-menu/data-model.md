@@ -40,19 +40,24 @@ The dispatcher binds HEAD, the operation state, and the trust listing (`workbenc
 - `TagMessage`: strict UTF-8, not blank, at most `MERGE_MESSAGE_BYTES` (8 KiB). `null` gives a lightweight tag.
 - `mainline`: an integer from 1 to 64 (`HISTORY_PARENTS_PER_COMMIT`). It must not exceed the parent count.
 - `leave`, `gain`, `reflogOnly`: the counts of `rev-list --count` (plan D4 read 4).
-- `forceNote`: `null`, or the tracking ref that holds a commit that leaves.
+- `forceNote`: `null`, or `{ trackingRef }` with the full name of the tracking ref that holds a commit that leaves.
 - `trackedChanges`: the count of `trackedStatus`.
 - `ignoredReplaced`: the count of ignored files that Hard reset replaces. An ignored folder counts its files. It is 0 for Soft and Mixed.
-- `parents`: the parents of `rev-list --parents -n 1`, each with its short ID and subject for the popover.
+- `branch`: the full ref of the current branch, for example `refs/heads/main`. The cherry-pick and revert plans use the same form.
+- `from`: the object ID of the branch before the reset.
+- `parents`: the parents of `rev-list --parents -n 1` in Git's order, each as `{ oid, subject }`. `oid` is the full object ID. The popover shows its short form. `subject` is `null` for a commit object above `HISTORY_COMMIT_OBJECT_BYTES`.
 
 ## 4. Run results and the outcome mapping
 
 | Action | Run result |
 | --- | --- |
-| `reset` | `ResetRun { action, mode, head, refs, trackedChanges }` |
-| `create-tag` | `CreateTagRun { action, head, refs, tag: { name, oid, annotated } }` |
-| `cherry-pick` | `CherryPickRun { action, head, refs, operationState, unmerged, outputTail? }` |
-| `revert-commit` | `RevertCommitRun { action, head, refs, operationState, unmerged, outputTail? }` |
+| `reset` | `ResetRun { action, mode, head, refs, trackedChanges, outputTail? }` |
+| `create-tag` | `CreateTagRun { action, head, refs, tag: { name, oid, annotated } \| null, outputTail? }` |
+| `cherry-pick`, `revert-commit` | `PickRun { action, head, refs, operationState, unmerged, outputTail? }` |
+
+- `tag` is `null` when the fresh read finds no `refs/tags/<name>`. Otherwise `oid` is the value of the new ref.
+- `outputTail` is optional, not nullable. It is present only when a failed step gives its output tail (`conclude`, `workbench-review.ts`). A stop with unmerged entries gives no tail.
+- One schema `PickRun` serves both pick actions. Its `action` is `cherry-pick` or `revert-commit`.
 
 Outcome mapping. Each row uses a fresh `observe`. The first row that matches decides.
 

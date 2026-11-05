@@ -287,7 +287,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **SC-011**: During each SC-010d run, typing in the history filter keeps the 001 SC-005 targets. Each run has at least 20 inputs.
 - **SC-012**: A review of the requirement-to-test map finds no outcome that message text or timing decides. Retry counts and name patterns decide no outcome either.
 
-The SC-010 and SC-011 runs use the packaged build, warm, on the agreed hardware. The warm-up run counts for the every-run bound, never for the median (001 spec.md:95). The same runs record CPU seconds and process-tree private bytes, with no budget. Each SC-010 measure also measures one cold run after a new app start. Each cold run has a budget of 2 times its warm budget. The budget was set before any run (user decision, 2026-11-04). The WSL times of SC-010b and SC-010d on Ubuntu-26.04 (10 + 1 runs) are recorded, with no budget.
+The SC-010 and SC-011 runs use the packaged build, warm, on the agreed hardware. The warm-up run counts for the every-run bound, never for the median (001 spec.md:95). The same runs record CPU seconds and process-tree private bytes, with no budget. Each SC-010 measure also measures one cold run after a new app start. Each cold run has a budget of 2 times its warm budget. The budget was set before any run (user decision, 2026-11-04). The warm budget of a cold run is the median budget of its measure, and the p95 budget for SC-010a (decision 2026-11-05). The WSL times of SC-010b and SC-010d on Ubuntu-26.04 (10 + 1 runs) are recorded, with no budget.
 
 ## Assumptions
 

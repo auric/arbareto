@@ -63,7 +63,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - `cherry-pick`: `[L, "cherry-pick", ("-m", n)?, oid]`.
   - `revert-commit`: `[L, "revert", "--no-edit", ("-m", n)?, oid]`.
   - No `--` after the object ID of cherry-pick and revert. No `-x`, `-s`, `-n`, `--no-gpg-sign`, `--allow-empty`, or `--empty`.
-- Run results: `ResetRun { action, mode, head, refs, trackedChanges }`, `CreateTagRun { action, head, refs, tag: { name, oid, annotated } }`, `CherryPickRun` and `RevertCommitRun { action, head, refs, operationState, unmerged, outputTail? }`.
+- Run results: `ResetRun { action, mode, head, refs, trackedChanges, outputTail? }`, `CreateTagRun { action, head, refs, tag: { name, oid, annotated } | null, outputTail? }`, and `PickRun { action, head, refs, operationState, unmerged, outputTail? }` for both pick actions.
+- Stop state: Git can stop a cherry-pick or a revert. The fresh `observe` then gives `operationState` `cherry-picking` (marker `CHERRY_PICK_HEAD`) or `reverting` (marker `REVERT_HEAD`), with the `unmerged` count. The outcome is `failed-with-effects`. With unmerged > 0, the result has no `outputTail`. With unmerged 0, for example an empty pick, the result has the `outputTail` of the step. A `.git/sequencer` marker without either pseudoref gives `sequencer-active`, not a stop state.
 - `RUN_ACTIONS` (`envelope.ts:1897`) gains the four actions.
 
 ### `reviewSync` and `sync` (003 Δ3)
@@ -74,6 +75,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Skip refuses with `not-rebasing` in both states.
 - A `.git/sequencer` marker refuses Abort and Continue with `sequence`. The fact comes from the status reader marker facts.
 - Continue refuses with `CONFLICTED` while unmerged > 0, and with `nothing-to-commit` when `diff-index --cached --quiet HEAD --` gives exit 0.
+- An Abort or a Continue that ends with the stop still in place gives `integration: { state: "stopped", operation, unmerged }` with `operation` `cherry-picking` or `reverting`. Only the actions `abort` and `continue` carry a pick stop in `integration`. A pull or an integrate stops only in a merge or a rebase.
+- A pick state with an unreadable sequencer fact refuses Abort and Continue with `unknown-operation`.
 - The Abort phase is `sync-cherry-pick` or `sync-revert`. The outcome follows the 003 rule of `runConflictAction` (`sync-integrate.ts:347-351`).
 
 ## Δ5 Finite bounds (001 §5)

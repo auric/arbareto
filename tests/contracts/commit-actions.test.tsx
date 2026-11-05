@@ -75,6 +75,29 @@ describe("Check out (FR-020, plan D2)", () => {
     expect(text(popover()!)).toContain(`Check out commit ${short(B)}?`);
     expect(double.count("runWorkbench")).toBe(0);
   });
+
+  test("Escape on the confirmation closes it, runs nothing, and returns the focus to the list (plan D1)", async () => {
+    const double = await mountWorkbench(workbench, menuWorld());
+    await keyMenu(B);
+    await click(menuItem("Check out this commit (detached HEAD)…"));
+    await answer(double.pending("reviewWorkbench"), reviewed("switch", switchPlan()));
+    expect(popover()).not.toBeNull();
+    await pressKey(document.activeElement!, "Escape");
+    expect(popover()).toBeNull();
+    expect(double.count("runWorkbench")).toBe(0);
+    expect(document.activeElement).toBe(historyList());
+  });
+
+  test("Escape on the Create branch popover of the commit menu returns the focus to the list (plan D1)", async () => {
+    const double = await mountWorkbench(workbench, menuWorld());
+    await keyMenu(B);
+    await click(menuItem("Create branch here…"));
+    expect(text(popover()!)).toContain(`Create branch at ${short(B)}`);
+    await pressKey(document.activeElement!, "Escape");
+    expect(popover()).toBeNull();
+    expect(double.count("reviewWorkbench")).toBe(0);
+    expect(document.activeElement).toBe(historyList());
+  });
 });
 
 describe("Create tag (FR-030 to FR-034, plan D3)", () => {
@@ -115,6 +138,21 @@ describe("Create tag (FR-030 to FR-034, plan D3)", () => {
     expect(text(t.p)).not.toContain("Select Annotated tag.");
     expect(unavailable(t.create())).toBe(false);
     expect(double.count("reviewWorkbench")).toBe(1);
+  });
+
+  test("the unavailable reason sits in a polite live region that exists before the reason shows", async () => {
+    const double = await mountWorkbench(workbench, menuWorld());
+    const t = await openTag(double, { light: true, annotated: true });
+    await click(radio("Annotated tag", t.p));
+    await type(t.message, "Release");
+    await type(t.name, "v1.0");
+    const region = t.p.querySelector('[role="status"]')!;
+    expect(region).not.toBeNull();
+    expect(text(region)).toBe("");
+    await click(radio("Lightweight tag", t.p));
+    expect(t.p.querySelector('[role="status"]')).toBe(region);
+    expect(text(region)).toBe("Your Git configuration signs every tag, and a signed tag needs a message. Select Annotated tag.");
+    expect(t.create().getAttribute("aria-describedby")).toBe(region.id);
   });
 
   test("no signing line shows when the configuration does not sign", async () => {
@@ -287,6 +325,39 @@ describe("Reset (FR-040 to FR-044, plan D4)", () => {
     expect(text(alertDialog()!)).toContain(`Git sets the index and the working files to ${short(B)}.`);
   });
 
+  for (const close of ["Cancel", "Escape"] as const)
+    test(`${close} on the Hard dialog runs nothing and returns the focus to the list (plan D1)`, async () => {
+      const double = await mountWorkbench(workbench, menuWorld());
+      const p = await hardReview(double, await openReset(double), reviewed("reset", resetPlan({ mode: "hard", trackedChanges: 1 }), TOKEN_2));
+      await click(button("Reset hard…", p));
+      const d = alertDialog()!;
+      if (close === "Cancel") await click(button("Cancel", d));
+      else await pressKey(document.activeElement ?? d, "Escape");
+      await settle();
+      expect(alertDialog()).toBeNull();
+      expect(double.count("runWorkbench")).toBe(0);
+      expect(document.activeElement).toBe(historyList());
+    });
+
+  test("the popover states Loading… while its review runs, and Reset stays unavailable", async () => {
+    const double = await mountWorkbench(workbench, menuWorld());
+    await keyMenu(B);
+    await click(menuItem("Reset current branch (main) to here…"));
+    const p = popover()!;
+    expect(text(p)).toContain("Loading…");
+    expect(unavailable(button("Reset", p))).toBe(true);
+    await answer(double.pending("reviewWorkbench"), reviewed("reset", resetPlan()));
+    expect(text(popover()!)).not.toContain("Loading…");
+    expect(unavailable(button("Reset", popover()!))).toBe(false);
+  });
+
+  test("a running reset shows its running text in the status bar (plan D11)", async () => {
+    const double = await mountWorkbench(workbench, menuWorld());
+    await click(button("Reset", await openReset(double)));
+    expect(run(double)).toBeDefined();
+    expect(statusBar()).toContain("Resetting in ");
+  });
+
   for (const [more, tail] of [
     [0, "Move or delete them first."],
     [3, "3 more paths do not show. Move or delete them first."],
@@ -429,6 +500,21 @@ describe("Cherry-pick and Revert (FR-050 to FR-053, plan D5)", () => {
       expect(statusBar()).toContain(`The review expired. Arbareto changed nothing. Select ${name} again.`);
     });
   }
+
+  for (const [item, confirm] of [
+    ["Cherry-pick commit…", "Cherry-pick"],
+    ["Revert commit…", "Revert"],
+  ] as const)
+    test(`the ${confirm} popover states Loading… while its review runs`, async () => {
+      const double = await mountWorkbench(workbench, menuWorld());
+      await keyMenu(B);
+      await click(menuItem(item));
+      expect(text(popover()!)).toContain("Loading…");
+      expect(unavailable(button(confirm, popover()!))).toBe(true);
+      await answer(double.pending("reviewWorkbench"), reviewed(item === "Revert commit…" ? "revert-commit" : "cherry-pick", pickPlan()));
+      expect(text(popover()!)).not.toContain("Loading…");
+      expect(unavailable(button(confirm, popover()!))).toBe(false);
+    });
 
   test("Cancel closes the popover, runs nothing, and returns the focus to the list", async () => {
     const double = await mountWorkbench(workbench, menuWorld());

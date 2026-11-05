@@ -20,7 +20,7 @@ import { shortRef } from "../refs/ReferencesSidebar";
 import type { Workbench } from "../state/workbench";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
-import { AT_COMMIT, CLOSE_NAMES, EXPIRED, ITEM_BRANCH, ITEM_CHECKOUT, ITEM_COPY, ITEM_PICK, ITEM_RESET, ITEM_REVERT, ITEM_TAG, MENU_NAME, PICK, RESET, TAG, TAG_REASON } from "./commit-texts";
+import { AT_COMMIT, CLOSE_NAMES, EXPIRED, ITEM_BRANCH, ITEM_CHECKOUT, ITEM_COPY, ITEM_PICK, ITEM_RESET, ITEM_REVERT, ITEM_TAG, MENU_NAME, PICK, RESET, REVIEW_PENDING, RUNNING, TAG, TAG_REASON } from "./commit-texts";
 import { branchName } from "./HistoryView";
 
 // Feature 010 spec FR-010 to FR-015, FR-020 to FR-022, FR-030, FR-040, FR-044, FR-050. Plan D1 to D5, D11, D13 "Actions hook" and "Hard dialog". Data-model §1, §3, §4.
@@ -56,7 +56,7 @@ export type CommitActionsOptions = {
   onNotice(text: ReactNode): void;
   workbench: Pick<Workbench, "ended">;
   /** The 004 actions that the menu reuses (plan D2). */
-  branches: { checkout(oid: string, anchor: Element | null): void; create(start: string | null, anchor: Element | null): void };
+  branches: { checkout(oid: string, anchor: Element | null): void; create(start: string | null, anchor: Element | null, commit: boolean): void };
   askTrust?: AskTrust;
 };
 
@@ -108,7 +108,7 @@ export function useCommitActions({ bridge, target, repositoryId, head, blockedRe
     try {
       onNotice(null);
       const name = CLOSE_NAMES[action];
-      const texts: [string, string, string] = [name, name, `${name} details`];
+      const texts: [string, string, string] = [name, RUNNING[action], `${name} details`];
       const response = await trackOperation(
         "runWorkbench",
         undefined,
@@ -152,7 +152,7 @@ export function useCommitActions({ bridge, target, repositoryId, head, blockedRe
     return [
       [
         item(ITEM_CHECKOUT, GitCommitIcon, r.checkout, () => branches.checkout(m.oid, m.anchor)),
-        item(ITEM_BRANCH, GitBranchIcon, r.branch, () => branches.create(m.oid, m.anchor), { aria: KEYS.createBranch.aria, text: KEYS.createBranch.text }),
+        item(ITEM_BRANCH, GitBranchIcon, r.branch, () => branches.create(m.oid, m.anchor, true), { aria: KEYS.createBranch.aria, text: KEYS.createBranch.text }),
         item(ITEM_TAG, Tag01Icon, r.tag, () => startTag(m.oid, m.anchor)),
       ],
       [item(ITEM_PICK, CherryIcon, r.pick, () => startPick("cherry-pick", m.oid, m.anchor, m.merge)), item(ITEM_REVERT, Undo03Icon, r.revert, () => startPick("revert-commit", m.oid, m.anchor, m.merge))],
@@ -450,6 +450,7 @@ function ResetPopover({ o, branch, field, fieldRef, finalFocus, onMode, onConfir
       {notes.map((note) => (
         <p key={note}>{note}</p>
       ))}
+      {plan === null && !refused ? <p className="text-muted-text">{REVIEW_PENDING}</p> : null}
       {o.inTheWay === null ? null : (
         <div role="alert" className="flex flex-col gap-1">
           <p className="flex items-start gap-2">
@@ -500,6 +501,7 @@ function PickPopover({ o, field, fieldRef, finalFocus, onParent, onConfirm, onCa
           ))}
         </fieldset>
       ) : null}
+      {o.pending ? <p className="text-muted-text">{REVIEW_PENDING}</p> : null}
       {o.error === null ? null : <p role="alert">{o.error}</p>}
     </ConfirmPopover>
   );

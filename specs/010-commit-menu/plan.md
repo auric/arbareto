@@ -462,6 +462,20 @@ Expiry:
 
 `<action>` is the close-prompt name of the action (`CLOSE_*` below). Abort and Continue keep their 003 expiry texts.
 
+Status bar (the 004 `RUN_TEXTS` form, `BranchActions.tsx:80-85`). The status bar shows "<running text> in <folder>…" while a run is in progress:
+
+| Key | Text |
+|---|---|
+| `RUNNING_RESET` | "Resetting" |
+| `RUNNING_TAG` | "Creating tag" |
+| `RUNNING_PICK` | "Cherry-picking" |
+| `RUNNING_REVERT` | "Reverting" |
+| `RUN_HEADING` (area heading) | "<action> details" |
+
+`<action>` is the close-prompt name of the action (`CLOSE_*` below).
+
+Review in progress: the Reset, Cherry-pick, and Revert popovers reuse the 004 `SwitchConfirm` pending text "Loading…" (`BranchActions.tsx:559`) while their review runs. The confirm button stays unavailable.
+
 Trust sentences and close-prompt names (Rust, D7):
 
 | Key | Text |

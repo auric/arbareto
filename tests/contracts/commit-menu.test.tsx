@@ -117,6 +117,23 @@ describe("opening the commit menu (FR-010, FR-011, FR-015)", () => {
       expect(menu()).toBeNull();
     }
   });
+
+  test("the More commits row and a Loading row open no menu (plan D1)", async () => {
+    const world = menuWorld();
+    // One load answers with a count that is not final. Later loads and all row reads stay pending, so each commit row stays a Loading row.
+    world.answers.loadHistory = () => ((world.answers.loadHistory = undefined), succeeded({ rows: 3, complete: false }));
+    world.answers.readHistoryRows = undefined;
+    await mountWorkbench(workbench, world);
+    const rows = [...historyList().querySelectorAll<HTMLElement>('[role="option"]')];
+    const more = rows.find((o) => o.hasAttribute("data-more"));
+    const loading = rows.find((o) => o.getAttribute("aria-label") === "Loading…");
+    expect(more).toBeDefined();
+    expect(loading).toBeDefined();
+    for (const row of [more!, loading!]) {
+      await rightClick(row);
+      expect(menu()).toBeNull();
+    }
+  });
 });
 
 describe("items (FR-012, FR-013, FR-021, FR-022)", () => {

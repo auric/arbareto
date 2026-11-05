@@ -103,3 +103,7 @@ export const CLOSE_NAMES: Record<"reset" | "create-tag" | "cherry-pick" | "rever
   "cherry-pick": PICK.button(true),
   "revert-commit": "Revert commit",
 };
+/** D11 "Status bar": the running text of each action, in the 004 `RUN_TEXTS` form. */
+export const RUNNING: Record<keyof typeof CLOSE_NAMES, string> = { reset: "Resetting", "create-tag": "Creating tag", "cherry-pick": "Cherry-picking", "revert-commit": "Reverting" };
+/** D11 "Review in progress": the 004 `SwitchConfirm` pending text. */
+export const REVIEW_PENDING = "Loading…";

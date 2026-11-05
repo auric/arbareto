@@ -71,7 +71,7 @@
 
 ## R5 Unverified assumptions
 
-- U1 `gitPathExists` (`sync-review.ts:253-262`) does not map WSL paths. The plan avoids it for the sequencer marker. No WSL run checked it.
+- U1 (corrected): `gitPathExists` (`sync-review.ts:265-274`) maps WSL paths. It reads the path through `gitPathOf` (`:247-263`), and a WSL path takes its UNC form (contract §11). The sequencer marker still comes from the status reader marker facts. Those facts are the chosen source.
 - U2 Base UI places a row-anchored menu inside the window for a full-width history row. The 005 Changes rows show this behavior. 004 `research.md:673` records "Not checked: a row menu beside a full-width row". T017 checks it in the package.
 - U3 Fixtures L and M of 001 `plan.md:1134-1135` exist in the perf fixture cache in the shape that SC-010 needs. M-R is new. T018 checks both.
 - U4 The history row `parents` field can differ from Git's view under grafts or replace refs. The review reads the parents again, so the popover shows the review result.

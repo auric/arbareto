@@ -39,7 +39,7 @@ type Preset = { choice: Choice; known: boolean };
 type Overlay =
   | { kind: "switch"; anchor: Element | null; display: string; target: SwitchTarget; heldBy: string | null; preset: Choice | null; choice: Choice; plan: SwitchPlan | null; token: string | null; error: string | null; commit?: true }
   | { kind: "remote"; anchor: Element | null; entry: BranchEntry; mode: "track" | "detach"; name: string; error: string | null; existing?: string }
-  | { kind: "create"; anchor: Element | null; start: string; name: string; switchTo: boolean; error: string | null }
+  | { kind: "create"; anchor: Element | null; start: string; name: string; switchTo: boolean; error: string | null; commit?: true }
   | { kind: "rename"; anchor: Element | null; entry: BranchEntry; name: string; error: string | null }
   | { kind: "delete"; entry: BranchEntry; plan: DeletePlan | null; token: string | null; error: string | null };
 
@@ -244,11 +244,11 @@ export function useBranchActions(options: BranchActionsOptions) {
     void once(async () => reviewSwitch({ ref }, shortRef(ref), o.anchor, false, await preset()));
   }
 
-  /** `start` is null on an unborn branch, which has no commit to start from. */
-  function startCreate(start: string | null, anchor: Element | null) {
+  /** `start` is null on an unborn branch, which has no commit to start from. `commit` marks the History commit menu (feature 010). */
+  function startCreate(start: string | null, anchor: Element | null, commit = false) {
     if (blockedReason !== null) return onNotice(blockedReason);
     if (start === null) return onNotice(T.noCommit);
-    setOverlay({ kind: "create", anchor, start, name: "", switchTo: true, error: null });
+    setOverlay({ kind: "create", anchor, start, name: "", switchTo: true, error: null, ...(commit ? { commit: true as const } : {}) });
   }
 
   function confirmName(o: Extract<Overlay, { kind: "create" | "rename" }>) {
@@ -427,6 +427,7 @@ export function useBranchActions(options: BranchActionsOptions) {
           title={overlay.kind === "create" ? T.createTitle(overlay.start) : T.renameTitle(overlay.entry.name)}
           confirmLabel={overlay.kind === "create" ? T.create : T.renameButton}
           initialFocus={field}
+          finalFocus={overlay.kind === "create" && overlay.commit ? listFocus(overlay.anchor) : undefined}
           onConfirm={overlay.name === "" ? undefined : () => confirmName(overlay)}
           onCancel={() => setOverlay(null)}
         >
@@ -490,7 +491,7 @@ export function useBranchActions(options: BranchActionsOptions) {
       else if (action === "confirm") startSwitch(entry, anchor, true);
       else act(entry, action, anchor);
     },
-    /** New branch… in the list, and Ctrl+B on a history row. */
+    /** New branch… in the list, Ctrl+B on a history row, and Create branch here of the History commit menu (`commit` true). */
     create: startCreate,
     /** Feature 010: Check out this commit (detached HEAD) of the History commit menu. */
     checkout: startCheckout,
@@ -533,6 +534,9 @@ function outcomeText(action: string, display: string, response: BridgeResponse, 
   );
 }
 
+// Feature 010 plan.md D1: a commit row under `aria-activedescendant` is no focus target, so its list takes the focus.
+const listFocus = (anchor: Element | null) => () => anchor?.closest<HTMLElement>('[role="listbox"]') ?? true;
+
 const CHOICES: { value: Choice; label: string }[] = [
   { value: "keep", label: T.keep },
   { value: "stash", label: T.stash },
@@ -550,6 +554,7 @@ function SwitchConfirm({ overlay: o, unborn, onChange, onConfirm, onCancel }: { 
       title={o.commit ? CHECKOUT_TITLE(o.display) : T.switchTitle(o.display)}
       confirmLabel={o.heldBy !== null ? T.open(o.heldBy) : o.commit ? (o.choice === "discard" ? CHECKOUT_DISCARD_BUTTON : CHECKOUT_BUTTON) : o.choice === "discard" ? T.discardSwitch : T.switch}
       danger={o.heldBy === null && o.choice === "discard"}
+      finalFocus={o.commit ? listFocus(o.anchor) : undefined}
       onConfirm={ready ? onConfirm : undefined}
       onCancel={onCancel}
     >

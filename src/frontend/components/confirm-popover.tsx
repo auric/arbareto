@@ -50,11 +50,10 @@ export function ConfirmPopover({ open, anchor, title, children, confirmLabel, ca
           >
             <PopoverPrimitive.Title className="font-semibold">{title}</PopoverPrimitive.Title>
             {children}
-            {reason === null ? null : (
-              <p id={reasonId} className="text-muted-text">
-                {reason}
-              </p>
-            )}
+            {/* The live region stays mounted, so a reason that appears later is announced. */}
+            <p id={reasonId} role="status" className={reason === null ? "sr-only" : "text-muted-text"}>
+              {reason}
+            </p>
             <div className="flex items-center justify-end gap-2">
               <Button ref={cancel} variant="outline" onClick={onCancel}>
                 {cancelLabel}

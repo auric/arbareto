@@ -4,7 +4,7 @@
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Alert02Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRef } from "react";
+import { useRef, type ReactNode } from "react";
 import { Button } from "../components/ui/button";
 import { DialogContent, DialogDescription, DialogTitle } from "../components/ui/dialog";
 import type { RevertFilesPlan } from "../../contracts/envelope";
@@ -40,7 +40,9 @@ export function RevertConfirm({ plan, hidden = 0, onConfirm, onCancel, finalFocu
 
 export type AlertConfirmProps = {
   title: string;
-  body: string;
+  body: ReactNode;
+  /** Feature 011 plan.md D2: content after the body, such as a commit list. */
+  children?: ReactNode;
   /** The paths in a scrolled list, or null for no list. */
   paths: readonly string[] | null;
   /** The line after the list, or null. */
@@ -50,13 +52,15 @@ export type AlertConfirmProps = {
   /** The danger button. */
   button: string;
   cancel?: string;
+  /** False omits the 008 no-undo line. */
+  noUndo?: boolean;
   onConfirm(): void;
   onCancel(): void;
   finalFocus?: () => HTMLElement | boolean | null;
 };
 
 /** The 008 alert dialog (FR-008, FR-047): Cancel has the first focus, the danger button is no default button and has no access key. Feature 010 plan.md D13 "Hard dialog" reuses it. */
-export function AlertConfirm({ title, body, paths, more, notices, button, cancel: cancelLabel = "Cancel", onConfirm, onCancel, finalFocus }: AlertConfirmProps) {
+export function AlertConfirm({ title, body, children, paths, more, notices, button, cancel: cancelLabel = "Cancel", noUndo = true, onConfirm, onCancel, finalFocus }: AlertConfirmProps) {
   const cancel = useRef<HTMLButtonElement>(null);
   return (
     <AlertDialog.Root open onOpenChange={(next) => void (next || onCancel())}>
@@ -67,6 +71,7 @@ export function AlertConfirm({ title, body, paths, more, notices, button, cancel
         </div>
         <div className="flex flex-col gap-2 px-4 pb-3">
           <DialogDescription className="text-xs/relaxed text-foreground">{body}</DialogDescription>
+          {children}
           {paths === null ? null : (
             <ul className="max-h-[360px] overflow-y-auto rounded-sm border border-divider bg-canvas px-2 py-1.5 font-mono leading-[18px] select-text">
               {paths.map((path) => (
@@ -83,10 +88,12 @@ export function AlertConfirm({ title, body, paths, more, notices, button, cancel
               <span>{notice}</span>
             </p>
           ))}
-          <p className="flex items-start gap-2 rounded-sm bg-removed-fill p-2">
-            <HugeiconsIcon icon={AlertCircleIcon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-removed" />
-            <span>{NO_UNDO}</span>
-          </p>
+          {noUndo ? (
+            <p className="flex items-start gap-2 rounded-sm bg-removed-fill p-2">
+              <HugeiconsIcon icon={AlertCircleIcon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-removed" />
+              <span>{NO_UNDO}</span>
+            </p>
+          ) : null}
         </div>
         <div className="flex justify-end gap-2 border-t border-divider px-3 py-2">
           <Button ref={cancel} variant="outline" onClick={onCancel}>

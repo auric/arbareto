@@ -117,6 +117,7 @@
     "tests/contracts/read-scheduler.test.ts",
     "tests/contracts/remedy-command.test.ts",
     "tests/contracts/remote-delete-contract.test.ts",
+    "tests/contracts/remote-delete.test.tsx",
     "tests/contracts/references-sidebar.test.tsx",
     "tests/contracts/renderer-freshness.test.ts",
     "tests/contracts/repository-states.test.tsx",

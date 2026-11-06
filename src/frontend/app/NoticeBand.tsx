@@ -20,9 +20,9 @@ const OPERATION: Partial<Record<OperationState, string>> = {
   "sequencer-active": "A cherry-pick or revert sequence is in progress",
   unknown: "Arbareto cannot identify the Git operation in progress",
 };
-/** The 001 second sentence. Feature 003 FR-030 removes it for `merging` and `rebasing`, which get the conflict actions. */
+/** The 001 second sentence. Feature 003 FR-030 removes it for `merging` and `rebasing`, and feature 010 plan.md D6 for `cherry-picking` and `reverting`. These states get the conflict actions. */
 export const FINISH_OUTSIDE = "Arbareto blocks changes until you finish it outside Arbareto and select Refresh (F5).";
-const ACTIONS_IN_APP: readonly OperationState[] = ["merging", "rebasing"];
+const ACTIONS_IN_APP: readonly OperationState[] = ["merging", "rebasing", "cherry-picking", "reverting"];
 
 const files = (n: number) => (n === 1 ? "1 conflicted file" : `${n} conflicted files`);
 

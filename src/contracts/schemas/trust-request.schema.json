@@ -48,7 +48,11 @@
             "mergetool",
             "worktree",
             "submodules",
-            "repository"
+            "repository",
+            "reset",
+            "tag",
+            "cherry-pick",
+            "revert"
           ]
         },
         "details": {

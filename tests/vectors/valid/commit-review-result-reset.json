@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"reset\",\"plan\":{\"target\":\"89abcdef0123456789abcdef0123456789abcdef\",\"mode\":\"hard\",\"branch\":\"refs/heads/main\",\"from\":\"0123456789abcdef0123456789abcdef01234567\",\"leave\":2,\"gain\":1,\"reflogOnly\":1,\"forceNote\":{\"trackingRef\":\"refs/remotes/origin/main\"},\"trackedChanges\":3,\"ignoredReplaced\":1},\"workbenchToken\":\"0f0f0f0f-0000-4000-8000-00000000000e\"}"
+}

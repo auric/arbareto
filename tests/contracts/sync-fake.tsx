@@ -28,6 +28,8 @@ export type World = {
   /** `refs/remotes/<name>` entries of `readRefs`. */
   remotes: { name: string; objectId: string }[];
   refsDigest: string;
+  /** Feature 010: the parents of a history commit by object ID. A commit without an entry has the next commit as its only parent. */
+  parents?: Record<string, string[]>;
   defaultPullAction: "pull" | "pull-merge" | "pull-rebase" | "fetch" | "fetch-all";
   /** Overrides of the automatic answers. `undefined` keeps the call pending. */
   answers: Record<string, ((args: unknown[]) => unknown) | undefined>;
@@ -120,7 +122,7 @@ function history(world: World, operation: string, args: unknown[]): unknown {
   const viewRow = (i: number, text: string) => ({
     index: i,
     oid: oids[i]!,
-    parents: i + 1 < oids.length ? [oids[i + 1]!] : [],
+    parents: world.parents?.[oids[i]!] ?? (i + 1 < oids.length ? [oids[i + 1]!] : []),
     cell: { node: 0, color: 0, merge: false, limited: false, segments: [], marks: i + 1 < oids.length ? [] : ["root"] },
     labels: world.branches.filter((b) => b.objectId === oids[i]).map((b) => ({ kind: "branch", name: b.name, invalidUtf8: false })),
     checkout: i === 0,

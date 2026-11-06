@@ -63,7 +63,8 @@ export interface Common {
 
 // A refusal before any token. `result` holds the reason and its facts.
 export type Refused = { refused: ErrorCode; result?: Record<string, unknown> };
-export type Observation<B> = { bound: B; plan: Record<string, unknown> } | Refused | Failure | Stop;
+// `token: false`: the review gives the plan and issues no token (feature 010 plan.md D3 open review).
+export type Observation<B> = { bound: B; plan: Record<string, unknown>; token?: false } | Refused | Failure | Stop;
 
 export const unavailable = (reason: WorkbenchUnavailableReason, extra: Record<string, unknown> = {}): Refused => ({ refused: "WORKBENCH_UNAVAILABLE", result: { reason, ...extra } });
 
@@ -245,7 +246,7 @@ interface Issued {
 
 type Accepted = { ok: true; entry: Issued } | { ok: false; code: "UNKNOWN_TARGET" | "APPROVAL_EXPIRED" } | { ok: false; consumed: string };
 
-type Full = { common: Common; bound: unknown; plan: Record<string, unknown> };
+type Full = { common: Common; bound: unknown; plan: Record<string, unknown>; token?: false };
 
 export interface WorkbenchOptions extends Pick<HistoryReaderOptions, "listingTuple"> {
   runner: PublishContext["runner"];
@@ -304,7 +305,7 @@ export function createWorkbench(o: WorkbenchOptions) {
     if (state !== "normal" && !IN_PROGRESS_ALLOWED.has(payload.action)) return { refused: "OPERATION_IN_PROGRESS" };
     const common: Common = { head, operationState: state, listing: listed.listing };
     const observed = await handler.observe(ctx, payload, common);
-    return "bound" in observed ? { common, bound: observed.bound, plan: observed.plan } : observed;
+    return "bound" in observed ? { common, bound: observed.bound, plan: observed.plan, ...(observed.token === false ? { token: false as const } : {}) } : observed;
   }
 
   // Data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, and any other difference STALE_REVIEW. A trust code keeps its gate (plan.md O-20).
@@ -435,6 +436,7 @@ export function createWorkbench(o: WorkbenchOptions) {
       if (isStop(observed)) return { result: observed.stop };
       if ("code" in observed) return { result: "failed", code: observed.code };
       if ("refused" in observed) return { result: "failed", code: observed.refused, ...(observed.result === undefined ? {} : { value: observed.result }) };
+      if (observed.token === false) return { result: "succeeded", value: { action: payload.action, plan: observed.plan } };
       const at = now();
       for (const [key, old] of tokens) if (old.consumed === null && at - old.issuedAt > APPROVAL_LIFETIME_MS) tokens.delete(key);
       const workbenchToken = crypto.randomUUID();

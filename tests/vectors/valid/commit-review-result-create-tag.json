@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"create-tag\",\"plan\":{\"name\":\"v1.0\",\"target\":\"0123456789abcdef0123456789abcdef01234567\",\"annotated\":true,\"signs\":{\"light\":false,\"annotated\":true}},\"workbenchToken\":\"0f0f0f0f-0000-4000-8000-00000000000e\"}"
+}

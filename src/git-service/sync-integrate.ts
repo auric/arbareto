@@ -13,7 +13,7 @@ import { captureHead } from "./history";
 import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
 import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import type { Head, OperationState } from "./snapshot";
-import { abortArgs, aheadBehindArgs, continueArgs, fastForwardArgs, mergeArgs, mergeMessageArgs, rebaseArgs, skipArgs } from "./sync-commands";
+import { abortArgs, aheadBehindArgs, continueArgs, fastForwardArgs, mergeArgs, mergeMessageArgs, rebaseArgs, skipArgs, type IntegrationKind } from "./sync-commands";
 import { decidePull, parseAheadBehind, type FetchUpdate, type ModeSource, type PullDecision } from "./sync-parsers";
 import { gitPathExists, indexState, listRefs, refKey, type IndexState, type SyncBinding } from "./sync-review";
 import { mergeMessageInput } from "./workbench-commands";
@@ -21,7 +21,8 @@ import type { changes, FetchRemote, fetchObserved, FetchStep, fetchVerdict, notS
 import type { ConfigEntry } from "./trust";
 
 type Refs = Map<string, string>;
-export type StepPhase = "sync-fetch" | "sync-merge" | "sync-rebase" | "sync-push" | "sync-continue";
+// Feature 010 contract Δ2: Abort of a cherry-pick or a revert runs in its own phase.
+export type StepPhase = "sync-fetch" | "sync-merge" | "sync-rebase" | "sync-push" | "sync-continue" | "sync-cherry-pick" | "sync-revert";
 
 // The step helpers of one `sync` operation (`sync.ts` `execute`). `q` reads with a signal that never aborts (contract §8).
 export interface SyncSteps {
@@ -56,7 +57,7 @@ const exact = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 // Data-model §7.
 type Integration =
   | { state: "none" | "up-to-date" | "mode-required" | "done" }
-  | { state: "stopped"; operation: "merging" | "rebasing"; unmerged: number }
+  | { state: "stopped"; operation: IntegrationKind; unmerged: number }
   | { state: "refused"; outputTail: string };
 
 export interface Observed {
@@ -162,7 +163,7 @@ export function stepRemedy(s: Pick<SyncSteps, "remedyOf">, args: readonly string
 
 // Data-model §7: the state after an integrate process. Null: Git was stopped, and no merge or rebase is in progress.
 function integrationOf(end: StepEnd, o: Observed): Integration | null {
-  if (o.state === "merging" || o.state === "rebasing") return { state: "stopped", operation: o.state, unmerged: o.index.unmerged };
+  if (o.state === "merging" || o.state === "rebasing" || o.state === "cherry-picking" || o.state === "reverting") return { state: "stopped", operation: o.state, unmerged: o.index.unmerged };
   const exitCode = end.exit?.exitCode ?? null;
   if (exitCode === 0) return { state: "done" };
   return exitCode === null ? null : { state: "refused", outputTail: end.outputTail };
@@ -321,17 +322,20 @@ async function runPull(s: SyncSteps): Promise<void> {
   return s.finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, resultOf(integration, failedRemedy));
 }
 
+// The Abort phase of each kind. Skip runs only in a rebase.
+const ABORT_PHASES: Record<IntegrationKind, StepPhase> = { merging: "sync-merge", rebasing: "sync-rebase", "cherry-picking": "sync-cherry-pick", reverting: "sync-revert" };
+
 // Contract Δ3 `sync` for `abort`, `continue`, and `skip`, plan.md D7. The kind comes from the bound 001 markers.
 async function runConflictAction(s: SyncSteps): Promise<void> {
   const { ctx, q, binding: b } = s;
   const action = b.payload.action as "abort" | "continue" | "skip";
-  const kind = b.operationState as "merging" | "rebasing";
+  const kind = b.operationState as IntegrationKind;
   const [listed, index] = await Promise.all([listRefs(ctx), indexState(ctx)]);
   // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other read.
   if (!("value" in listed) || !("value" in index)) return s.refuse(firstEnd([listed, index].map((f) => ("value" in f ? null : f)), isDeadlineStop)!);
   if (ctx.signal.aborted) return s.refuse({ stop: "canceled" });
   const args = action === "abort" ? abortArgs(kind) : action === "continue" ? continueArgs(kind) : skipArgs();
-  const phase: StepPhase = action === "continue" ? "sync-continue" : kind === "merging" ? "sync-merge" : "sync-rebase";
+  const phase: StepPhase = action === "continue" ? "sync-continue" : ABORT_PHASES[kind];
   const remedy = stepRemedy(s, args);
   const end = await s.step(args, phase, {}, remedy, createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), "integrate");
 

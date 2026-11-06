@@ -90,6 +90,7 @@ import {
 import { ATTRIBUTION_REASONS, OPERATION_STATES } from "./outcome";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "./strict-json";
 import { StallRemedy, SubmoduleRowResult } from "./submodules";
+import { tagNameRefusal } from "./tag-name";
 
 const ErrorCodeSchema = z.enum(ERROR_CODES as [ErrorCode, ...ErrorCode[]]);
 
@@ -320,6 +321,18 @@ const IgnoreExpected = z.union([z.literal("absent"), z.strictObject({ size: Coun
 const DeleteMode = z.enum(["recycle", "permanent"]);
 const uniqueIds = (ids: unknown) => Array.isArray(ids) && new Set(ids).size === ids.length;
 
+// ---- Feature 010 payload parts (contract Δ3, data-model §3) ----
+
+const RESET_MODES = ["soft", "mixed", "hard"] as const;
+// Data-model §3 `TagName`: the schema refuses only the INVALID_REQUEST names of `tagNameRefusal`. The service refuses the rest with a reason.
+const TagName = z
+  .string()
+  .min(1)
+  .max(BRANCH_NAME_BYTES)
+  .refine((name) => tagNameRefusal(name)?.code !== "INVALID_REQUEST");
+// Data-model §3 `mainline`: a parent number up to HISTORY_PARENTS_PER_COMMIT. The service checks it against the parent count.
+const Mainline = z.int().min(1).max(HISTORY_PARENTS_PER_COMMIT).nullable();
+
 const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
   z.discriminatedUnion("action", [
     z.strictObject({ action: z.literal("switch"), target: SwitchTarget, choice: z.enum(["keep", "stash", "discard"]) }).meta({ title: "ReviewSwitch" }),
@@ -352,6 +365,12 @@ const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
       .refine((p) => uniqueIds(p.entryIds))
       .meta({ title: "ReviewRevertFiles" }),
     z.strictObject({ action: z.literal("revert-unstaged"), snapshotId: Identifier }).meta({ title: "ReviewRevertUnstaged" }),
+    // Feature 010 data-model §3. `name: null` is the open review of the Create tag popover. A null message gives a lightweight tag.
+    // Data-model §3 `TagMessage` is the merge message rule.
+    z.strictObject({ action: z.literal("reset"), target: ObjectId, mode: z.enum(RESET_MODES) }).meta({ title: "ReviewReset" }),
+    z.strictObject({ action: z.literal("create-tag"), name: TagName.nullable(), target: ObjectId, message: MergeMessage.nullable() }).meta({ title: "ReviewCreateTag" }),
+    z.strictObject({ action: z.literal("cherry-pick"), commit: ObjectId, mainline: Mainline }).meta({ title: "ReviewCherryPick" }),
+    z.strictObject({ action: z.literal("revert-commit"), commit: ObjectId, mainline: Mainline }).meta({ title: "ReviewRevertCommit" }),
   ]);
 // Data-model §6 and plan D8: Stage all untracked and Stage all changes stage, and Unstage all unstages. `folder` holds the folder path bytes in base64.
 const STAGE_KINDS: readonly string[] = ["all-untracked", "all-changes"];
@@ -1307,6 +1326,9 @@ const NeedsDestination = z
     upstreamRebase: z.boolean(),
   })
   .meta({ title: "NeedsDestination" });
+// Feature 010 contract Δ3: Abort and Continue also act on a stopped cherry-pick or revert.
+const STOPPED_STATES = ["merging", "rebasing", "cherry-picking", "reverting"] as const;
+const PICK_STOPS: readonly string[] = ["cherry-picking", "reverting"];
 // Data-model §2: the bound values for display.
 export const SyncPlan = z
   .strictObject({
@@ -1315,7 +1337,7 @@ export const SyncPlan = z
     destination: PushDestination.optional(),
     lease: Lease.optional(),
     mode: SyncMode.nullable().optional(),
-    operationState: z.enum(["merging", "rebasing"]).optional(),
+    operationState: z.enum(STOPPED_STATES).optional(),
     // Contract Δ3 read 8. `subject` is null for a commit object above `HISTORY_COMMIT_OBJECT_BYTES`.
     skippedCommit: z.strictObject({ objectId: ObjectId, subject: z.string().nullable() }).meta({ title: "SkippedCommit" }).optional(),
     needsDestination: NeedsDestination.optional(),
@@ -1380,7 +1402,7 @@ export const Integration = z
     z.strictObject({ state: z.literal("up-to-date") }).meta({ title: "IntegrationUpToDate" }),
     z.strictObject({ state: z.literal("mode-required") }).meta({ title: "IntegrationModeRequired" }),
     z.strictObject({ state: z.literal("done") }).meta({ title: "IntegrationDone" }),
-    z.strictObject({ state: z.literal("stopped"), operation: z.enum(["merging", "rebasing"]), unmerged: Count }).meta({ title: "IntegrationStopped" }),
+    z.strictObject({ state: z.literal("stopped"), operation: z.enum(STOPPED_STATES), unmerged: Count }).meta({ title: "IntegrationStopped" }),
     z.strictObject({ state: z.literal("refused"), outputTail: OutputTail }).meta({ title: "IntegrationRefused" }),
   ])
   .meta({ title: "Integration" });
@@ -1417,7 +1439,9 @@ export const SyncResult = z
       (!(PULL_REFUSAL_REASONS as readonly string[]).includes(r.reason ?? "") || r.action === "pull" || r.action === "integrate") &&
       (!(PUSH_REJECTED_REASONS as readonly string[]).includes(r.reason ?? "") || PUSHING.includes(r.action)) &&
       ((r.program !== undefined && r.path !== undefined) === (PUTTY_UNAVAILABLE_REASONS as readonly string[]).includes(r.reason ?? "")) &&
-      ((r.program === undefined) === (r.path === undefined)),
+      ((r.program === undefined) === (r.path === undefined)) &&
+      // Feature 010 plan.md D6: only Abort and Continue act on a cherry-pick or a revert. A pull stops only in a merge or a rebase.
+      (r.integration?.state !== "stopped" || !PICK_STOPS.includes(r.integration.operation) || r.action === "abort" || r.action === "continue"),
   )
   .meta({ title: "SyncResult" });
 
@@ -1569,13 +1593,14 @@ const MergePlan = z
     facts: z.strictObject({ ahead: Count, behind: Count, fastForward: z.boolean(), mergeFf: z.strictObject({ value: z.enum(["true", "false", "only"]), source: ConfigSource }) }).meta({ title: "MergeFacts" }),
   })
   .meta({ title: "MergePlan" });
+const ForceNote = z.strictObject({ trackingRef: FullRef }).meta({ title: "ForceNote" });
 const RebasePlan = z
   .strictObject({
     onto: RefObject,
     moved: Count,
     rewritten: Count,
     held: Count,
-    forceNote: z.strictObject({ trackingRef: FullRef }).meta({ title: "ForceNote" }).nullable(),
+    forceNote: ForceNote.nullable(),
     movedBranches: z.strictObject({ refs: z.array(FullRef).max(MOVED_BRANCHES_LISTED), more: Count }).meta({ title: "MovedBranches" }).nullable(),
     autostash: z.strictObject({ value: z.boolean(), source: ConfigSource }),
     autosquash: z.literal(false),
@@ -1691,6 +1716,41 @@ const RevertUnstagedPlan = z
   .strictObject({ ...confirmationPaths, submodules: Count })
   .refine(firstPaths)
   .meta({ title: "RevertUnstagedPlan" });
+// Feature 010 data-model §3. The counts come from `rev-list --count`. `reflogOnly` counts commits that leave, and only a commit that leaves gives a force note.
+// Git replaces ignored files in the way only on Hard (research.md R2 P4c).
+const ResetPlan = z
+  .strictObject({
+    target: ObjectId,
+    mode: z.enum(RESET_MODES),
+    branch: FullRef,
+    from: ObjectId,
+    leave: Count,
+    gain: Count,
+    reflogOnly: Count,
+    forceNote: ForceNote.nullable(),
+    trackedChanges: Count,
+    ignoredReplaced: Count,
+  })
+  .refine((p) => p.reflogOnly <= p.leave && (p.forceNote === null || p.leave > 0) && (p.mode === "hard" || p.ignoredReplaced === 0))
+  .meta({ title: "ResetPlan" });
+// `light` is the effective `tag.gpgSign`. `tag.gpgSign` or `tag.forceSignAnnotated` signs an annotated tag (research.md R2 P8).
+const TagSigns = z
+  .strictObject({ light: z.boolean(), annotated: z.boolean() })
+  .refine((s) => !s.light || s.annotated)
+  .meta({ title: "TagSigns" });
+// A named lightweight review that signs refuses with `tag-signing` (plan.md D3 read 5).
+const CreateTagPlan = z
+  .strictObject({ name: Text.min(1).nullable(), target: ObjectId, annotated: z.boolean(), signs: TagSigns })
+  .refine((p) => p.name === null || p.annotated || !p.signs?.light)
+  .meta({ title: "CreateTagPlan" });
+// The parents of `rev-list --parents -n 1` in Git's order. `subject` is null for a commit object above HISTORY_COMMIT_OBJECT_BYTES.
+const CommitParent = z.strictObject({ oid: ObjectId, subject: z.string().nullable() }).meta({ title: "CommitParent" });
+// Data-model §6: a merge names a mainline up to its parent count. A commit with one or no parent names none.
+const pickPlan = (title: string) =>
+  z
+    .strictObject({ commit: ObjectId, parents: z.array(CommitParent).max(HISTORY_PARENTS_PER_COMMIT), mainline: Mainline, branch: FullRef })
+    .refine((p) => Array.isArray(p.parents) && (p.parents.length < 2 ? p.mainline === null : p.mainline !== null && p.mainline <= p.parents.length))
+    .meta({ title });
 // Feature 008 data-model §7: a revert review refuses with UNSUPPORTED_COMPARISON and a support or line reason, or with UNSUPPORTED_HUNK_PROFILE
 // and an eligibility reason and its remedy. The service never gives `several-hunks` (`line-patch.ts`).
 const UNAVAILABLE: readonly string[] = WORKBENCH_UNAVAILABLE_REASONS;
@@ -1727,6 +1787,14 @@ export const ReviewWorkbenchResult = z
       reviewed("revert-lines", RevertLinesPlan, "RevertLinesReviewed"),
       reviewed("revert-files", RevertFilesPlan, "RevertFilesReviewed"),
       reviewed("revert-unstaged", RevertUnstagedPlan, "RevertUnstagedReviewed"),
+      reviewed("reset", ResetPlan, "ResetReviewed"),
+      // Feature 010 plan.md D3: the open review (`name: null`) gives the plan with no token.
+      z
+        .strictObject({ action: z.literal("create-tag"), plan: CreateTagPlan, workbenchToken: Identifier.optional() })
+        .refine((r) => (r.workbenchToken === undefined) === (r.plan?.name === null))
+        .meta({ title: "CreateTagReviewed" }),
+      reviewed("cherry-pick", pickPlan("CherryPickPlan"), "CherryPickReviewed"),
+      reviewed("revert-commit", pickPlan("RevertCommitPlan"), "RevertCommitReviewed"),
     ]),
     z
       .strictObject({
@@ -1747,6 +1815,8 @@ export const ReviewWorkbenchResult = z
         names: SideNames.optional(),
         remedy: WorkbenchRemedy.optional(),
         files: z.array(RevertRefusedFile).min(1).max(DELETE_CONFIRMATION_PATHS).optional(),
+        // Feature 010 plan.md D5 read 5: a merge without a mainline names its parents, so the popover shows the choice.
+        parents: z.array(CommitParent).min(2).max(HISTORY_PARENTS_PER_COMMIT).optional(),
       })
       .refine(
         (r) =>
@@ -1761,7 +1831,8 @@ export const ReviewWorkbenchResult = z
           (r.unmerged === undefined || r.reason === undefined) &&
           (r.path === undefined || r.reason === undefined) &&
           (r.trustGate === undefined || Object.keys(r).length === 1) &&
-          (r.names === undefined || (r.reason !== undefined && SIDE_REFUSALS.includes(r.reason))),
+          (r.names === undefined || (r.reason !== undefined && SIDE_REFUSALS.includes(r.reason))) &&
+          (r.parents !== undefined) === (r.reason === "mainline-needed"),
       )
       .meta({ title: "WorkbenchRefused" }),
   ])
@@ -1902,7 +1973,8 @@ const BRANCH_ACTIONS = ["create-branch", "rename-branch", "delete-branch"] as co
 const WORKTREE_ACTIONS = ["worktree-add", "worktree-remove", "worktree-prune"] as const;
 const RESOLVE_ACTIONS = ["choose-side", "mergetool"] as const;
 const REVERT_ACTIONS = ["revert-lines", "revert-files", "revert-unstaged"] as const;
-const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS, "config-save", "delete", "ignore-save", ...REVERT_ACTIONS] as const;
+const PICK_ACTIONS = ["cherry-pick", "revert-commit"] as const;
+const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS, "config-save", "delete", "ignore-save", ...REVERT_ACTIONS, "reset", "create-tag", ...PICK_ACTIONS] as const;
 // Data-model §5: the outcome of each path and each candidate folder. Only `error` carries `code`, and only `recycled` carries `recycledPath`.
 const DeleteFileOutcome = z
   .strictObject({
@@ -2008,6 +2080,22 @@ export const RunWorkbenchResult = z
       .refine((r) => (r.code !== undefined) === (r.outcome === "error"))
       .meta({ title: "IgnoreSaveRun" }),
     RevertRun,
+    // Feature 010 data-model §4. `tag` is null when the fresh read finds no `refs/tags/<name>`.
+    z
+      .strictObject({ action: z.literal("reset"), mode: z.enum(RESET_MODES), head: Head, refs: RefChanges, trackedChanges: Count, outputTail: OutputTail.optional() })
+      .meta({ title: "ResetRun" }),
+    z
+      .strictObject({
+        action: z.literal("create-tag"),
+        head: Head,
+        refs: RefChanges,
+        tag: z.strictObject({ name: Text.min(1), oid: ObjectId, annotated: z.boolean() }).meta({ title: "CreatedTag" }).nullable(),
+        outputTail: OutputTail.optional(),
+      })
+      .meta({ title: "CreateTagRun" }),
+    z
+      .strictObject({ action: z.enum(PICK_ACTIONS), head: Head, refs: RefChanges, operationState: WorkspaceOperationState, unmerged: Count, outputTail: OutputTail.optional() })
+      .meta({ title: "PickRun" }),
     // Feature 005 contract Δ3: a fact that changed after the review gives STALE_REVIEW with the reason of its action.
     z
       .strictObject({ action: z.enum(["delete", "ignore-save", ...REVERT_ACTIONS]), reason: z.enum(STALE_REVIEW_REASONS) })

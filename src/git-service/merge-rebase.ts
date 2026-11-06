@@ -78,8 +78,8 @@ function mergeFfOf(entries: readonly ConfigEntry[]): MergePlan["facts"]["mergeFf
   return found;
 }
 
-// builtin/rebase.c `rebase_config` reads the key with `git_config_bool`, which stops Git on a value that is no boolean. Null: such a value.
-function rebaseBool(entries: readonly ConfigEntry[], key: string): { value: boolean; source: ConfigSource } | null {
+// The last value of a key that Git reads with `git_config_bool` (builtin/rebase.c `rebase_config`, builtin/tag.c `git_tag_config`). Git stops on a value that is no boolean. Null: such a value.
+export function lastBool(entries: readonly ConfigEntry[], key: string): { value: boolean; source: ConfigSource } | null {
   let found: { value: boolean; source: ConfigSource } = { value: false, source: "default" };
   for (const e of entries) {
     if (e.key !== key) continue;
@@ -119,7 +119,7 @@ function backendOf(entries: readonly ConfigEntry[], autosquash: boolean): "merge
 // ---- Review reads ----
 
 // Plan.md D6 and research.md R21 F14: Git refuses a rebase with a tracked change unless `--autostash`.
-async function trackedChanges(ctx: ObserveContext): Promise<Fact<boolean>> {
+export async function trackedChanges(ctx: ObserveContext): Promise<Fact<boolean>> {
   const out = await readOut(ctx, rebaseStatusArgs(), STATUS_LISTING_BYTES);
   if ("limited" in out) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
   if (!("value" in out)) return out;
@@ -128,7 +128,17 @@ async function trackedChanges(ctx: ObserveContext): Promise<Fact<boolean>> {
 }
 
 // FR-024 and plan.md D6: the tracking ref of the 003 push destination (003 D4). The note shows when it holds a rewritten commit.
-async function forceNoteOf(ctx: ObserveContext, head: Branch, onto: string, rewritten: number, entries: readonly ConfigEntry[]): Promise<Fact<RebasePlan["forceNote"]> | Refused> {
+export async function forceNoteOf(ctx: ObserveContext, head: Branch, onto: string, rewritten: number, entries: readonly ConfigEntry[]): Promise<Fact<RebasePlan["forceNote"]> | Refused> {
+  const tracking = await trackingRefOf(ctx, head, entries);
+  if (!("value" in tracking)) return tracking;
+  if (tracking.value === null) return { value: null };
+  const kept = await revCount(ctx, forceNoteCountArgs(onto, tracking.value, ctx.workspace.objectFormat));
+  if (!("value" in kept)) return kept;
+  return { value: kept.value < rewritten ? { trackingRef: tracking.value } : null };
+}
+
+// The tracking ref of the 003 push destination when the ref exists. Null: no such ref.
+export async function trackingRefOf(ctx: ObserveContext, head: Branch, entries: readonly ConfigEntry[]): Promise<Fact<string | null> | Refused> {
   // Feature 003 research R16 m: Git stops every `%(push)` read on such a value, so no destination exists to check.
   if (invalidRemoteValue(entries)) return unavailable("invalid-config");
   const branch = head.target.slice(HEADS.length);
@@ -146,10 +156,7 @@ async function forceNoteOf(ctx: ObserveContext, head: Branch, onto: string, rewr
   if (tracking === null) return { value: null };
   const refs = await listRefs(ctx, tracking);
   if (!("value" in refs)) return refs;
-  if (!refs.value.has(refKey(tracking))) return { value: null };
-  const kept = await revCount(ctx, forceNoteCountArgs(onto, tracking, ctx.workspace.objectFormat));
-  if (!("value" in kept)) return kept;
-  return { value: kept.value < rewritten ? { trackingRef: tracking } : null };
+  return { value: refs.value.has(refKey(tracking)) ? tracking : null };
 }
 
 // The empty tree of each object format (Git hash.c `empty_tree_oid`).
@@ -241,8 +248,8 @@ async function reviewMerge(ctx: ObserveContext, p: MergePayload, head: Branch, s
 // Contract Δ3 `rebase` reads and plan.md D6.
 async function reviewRebase(ctx: ObserveContext, p: RebasePayload, head: Branch, onto: RebasePlan["onto"], entries: readonly ConfigEntry[], bind: Bind): Promise<Observation<MergeRebaseBound>> {
   const objectFormat = ctx.workspace.objectFormat;
-  const autostash = rebaseBool(entries, "rebase.autostash");
-  const updateRefs = rebaseBool(entries, "rebase.updaterefs");
+  const autostash = lastBool(entries, "rebase.autostash");
+  const updateRefs = lastBool(entries, "rebase.updaterefs");
   const rebaseMerges = rebaseMergesOf(entries);
   const backend = backendOf(entries, p.autosquash);
   if (autostash === null || updateRefs === null || rebaseMerges === null || backend === null) return unavailable("invalid-config");

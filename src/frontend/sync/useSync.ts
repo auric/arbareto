@@ -12,7 +12,7 @@ import { SYNC_NAMES, type StatusOperation } from "../status/OperationStatus";
 import type { ConflictPlan } from "./ConflictActions";
 import type { ForcePlan } from "./ForcePushConfirm";
 import type { ReviewPayload } from "./PullSplitButton";
-import { reviewWithTrust, SYNC_TRUST, type AskTrust } from "../trust/ask";
+import { reviewWithTrust, syncTrust, type AskTrust } from "../trust/ask";
 import type { NeedsDestination, PushChoice } from "./PushPanel";
 
 type SyncAction = (typeof SYNC_ACTIONS)[number];
@@ -35,6 +35,7 @@ type Result = { push?: { status: string; lease: boolean }; integration?: { state
 const isReviewed = (value: unknown): value is Reviewed => isObject(value) && isObject(value.plan) && Array.isArray(value.plan.remotes);
 const PUSHING: readonly SyncAction[] = ["push", "force-push"];
 type Confirmed = "abort" | "skip";
+type Stopped = NonNullable<ConflictPlan["operationState"]>;
 const CLEARS_MODE: readonly SyncAction[] = ["pull", "integrate", "abort", "continue", "skip"];
 
 export type UseSyncOptions = {
@@ -55,10 +56,12 @@ export type UseSyncOptions = {
   onEnded(response: BridgeResponse): void;
   /** Feature 004 plan.md D12 "Ask": a review that needs trust asks once, then runs again. */
   askTrust?: AskTrust;
+  /** The operation state of the newest `readWorkspace`. Feature 010 plan.md D6: it picks the trust action of Abort and Continue. */
+  operationState?: string;
 };
 
 /** The renderer side of the sync flow: review, then the push panel, the force-push confirmation, or the start. */
-export function useSync({ bridge, target, repositoryId, headTarget, headOid, onOperation, onRefused, onEnded, askTrust }: UseSyncOptions) {
+export function useSync({ bridge, target, repositoryId, headTarget, headOid, onOperation, onRefused, onEnded, askTrust, operationState }: UseSyncOptions) {
   const [panel, setPanel] = useState<NeedsDestination | null>(null);
   const [confirm, setConfirm] = useState<{ plan: Plan & ForcePlan; token: string } | null>(null);
   // FR-023: the notice and the HEAD target that it belongs to.
@@ -66,7 +69,7 @@ export function useSync({ bridge, target, repositoryId, headTarget, headOid, onO
   // FR-027: a pull that needs a mode, with the HEAD commit that it belongs to.
   const [modeChoice, setModeChoice] = useState<{ oid: string | null } | null>(null);
   // FR-042, FR-044: the reviewed Abort or Skip that waits for its confirmation.
-  const [conflictConfirm, setConflictConfirm] = useState<{ action: Confirmed; plan: Plan & { operationState: "merging" | "rebasing" }; token: string } | null>(null);
+  const [conflictConfirm, setConflictConfirm] = useState<{ action: Confirmed; plan: Plan & { operationState: Stopped }; token: string } | null>(null);
   const busy = useRef(false);
   const [shownFor, setShownFor] = useState(repositoryId);
   if (shownFor !== repositoryId) {
@@ -121,7 +124,7 @@ export function useSync({ bridge, target, repositoryId, headTarget, headOid, onO
     if (CLEARS_MODE.includes(payload.action)) setModeChoice(null);
     try {
       // The second review takes the generation of the full read after the approval.
-      const review = await reviewWithTrust(() => bridge.reviewSync(target() ?? t, payload), SYNC_TRUST[payload.action], askTrust);
+      const review = await reviewWithTrust(() => bridge.reviewSync(target() ?? t, payload), syncTrust(payload.action, operationState), askTrust);
       const result = review.result;
       if (review.state !== "succeeded" || !isReviewed(result)) {
         // A refused review starts nothing. The status bar shows its code and reason.
@@ -151,7 +154,7 @@ export function useSync({ bridge, target, repositoryId, headTarget, headOid, onO
         return null;
       }
       if (confirmed !== null) {
-        setConflictConfirm({ action: confirmed, plan: plan as Plan & { operationState: "merging" | "rebasing" }, token });
+        setConflictConfirm({ action: confirmed, plan: plan as Plan & { operationState: Stopped }, token });
         return null;
       }
       await start(payload.action, plan, token, fromNotice);

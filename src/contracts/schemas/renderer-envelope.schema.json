@@ -1049,7 +1049,11 @@
                 "mergetool",
                 "worktree",
                 "submodules",
-                "repository"
+                "repository",
+                "reset",
+                "tag",
+                "cherry-pick",
+                "revert"
               ]
             }
           },
@@ -3388,6 +3392,142 @@
               ],
               "additionalProperties": false,
               "title": "ReviewRevertUnstaged"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "reset"
+                },
+                "target": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "soft",
+                    "mixed",
+                    "hard"
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "target",
+                "mode"
+              ],
+              "additionalProperties": false,
+              "title": "ReviewReset"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "create-tag"
+                },
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "target": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 8192
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "name",
+                "target",
+                "message"
+              ],
+              "additionalProperties": false,
+              "title": "ReviewCreateTag"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "cherry-pick"
+                },
+                "commit": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "mainline": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "commit",
+                "mainline"
+              ],
+              "additionalProperties": false,
+              "title": "ReviewCherryPick"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "revert-commit"
+                },
+                "commit": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "mainline": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "commit",
+                "mainline"
+              ],
+              "additionalProperties": false,
+              "title": "ReviewRevertCommit"
             }
           ],
           "title": "ReviewWorkbenchPayload"

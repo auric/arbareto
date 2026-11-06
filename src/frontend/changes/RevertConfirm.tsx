@@ -34,28 +34,50 @@ function textsOf(plan: RevertConfirmProps["plan"], hidden: number) {
 
 /** The alert dialog of a revert. Cancel has the first focus. The revert button is no default button and has no access key (FR-008). */
 export function RevertConfirm({ plan, hidden = 0, onConfirm, onCancel, finalFocus }: RevertConfirmProps) {
-  const cancel = useRef<HTMLButtonElement>(null);
   const texts = textsOf(plan, hidden);
+  return <AlertConfirm title={texts.title} body={texts.body} paths={texts.paths} more={texts.more > 0 ? MORE_FILES(texts.more) : null} notices={texts.notices} button={texts.button} onConfirm={onConfirm} onCancel={onCancel} finalFocus={finalFocus} />;
+}
+
+export type AlertConfirmProps = {
+  title: string;
+  body: string;
+  /** The paths in a scrolled list, or null for no list. */
+  paths: readonly string[] | null;
+  /** The line after the list, or null. */
+  more: string | null;
+  /** Warning notices before the no-undo line. */
+  notices: readonly string[];
+  /** The danger button. */
+  button: string;
+  cancel?: string;
+  onConfirm(): void;
+  onCancel(): void;
+  finalFocus?: () => HTMLElement | boolean | null;
+};
+
+/** The 008 alert dialog (FR-008, FR-047): Cancel has the first focus, the danger button is no default button and has no access key. Feature 010 plan.md D13 "Hard dialog" reuses it. */
+export function AlertConfirm({ title, body, paths, more, notices, button, cancel: cancelLabel = "Cancel", onConfirm, onCancel, finalFocus }: AlertConfirmProps) {
+  const cancel = useRef<HTMLButtonElement>(null);
   return (
     <AlertDialog.Root open onOpenChange={(next) => void (next || onCancel())}>
       <DialogContent showCloseButton={false} initialFocus={cancel} finalFocus={finalFocus ?? true} className="flex flex-col gap-0 p-0 sm:max-w-lg">
         <div className="flex items-start gap-2 px-4 pt-4 pb-2">
           <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-0.5 size-(--icon-size) shrink-0 text-removed" />
-          <DialogTitle className="text-sm/5 font-semibold [overflow-wrap:anywhere]">{texts.title}</DialogTitle>
+          <DialogTitle className="text-sm/5 font-semibold [overflow-wrap:anywhere]">{title}</DialogTitle>
         </div>
         <div className="flex flex-col gap-2 px-4 pb-3">
-          <DialogDescription className="text-xs/relaxed text-foreground">{texts.body}</DialogDescription>
-          {texts.paths === null ? null : (
+          <DialogDescription className="text-xs/relaxed text-foreground">{body}</DialogDescription>
+          {paths === null ? null : (
             <ul className="max-h-[360px] overflow-y-auto rounded-sm border border-divider bg-canvas px-2 py-1.5 font-mono leading-[18px] select-text">
-              {texts.paths.map((path) => (
+              {paths.map((path) => (
                 <li key={path} className="break-all">
                   {pathText(path)}
                 </li>
               ))}
             </ul>
           )}
-          {texts.more > 0 ? <p>{MORE_FILES(texts.more)}</p> : null}
-          {texts.notices.map((notice) => (
+          {more === null ? null : <p>{more}</p>}
+          {notices.map((notice) => (
             <p key={notice} className="flex items-start gap-2 rounded-sm bg-warning-fill p-2">
               <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-warning" />
               <span>{notice}</span>
@@ -68,10 +90,10 @@ export function RevertConfirm({ plan, hidden = 0, onConfirm, onCancel, finalFocu
         </div>
         <div className="flex justify-end gap-2 border-t border-divider px-3 py-2">
           <Button ref={cancel} variant="outline" onClick={onCancel}>
-            Cancel
+            {cancelLabel}
           </Button>
           <Button data-danger="true" className="bg-removed text-surface hover:bg-removed/80" onClick={onConfirm}>
-            {texts.button}
+            {button}
           </Button>
         </div>
       </DialogContent>

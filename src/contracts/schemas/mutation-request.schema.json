@@ -73,7 +73,11 @@
             "ignore-save-exclude",
             "revert-lines",
             "revert-files",
-            "revert-unstaged"
+            "revert-unstaged",
+            "reset",
+            "create-tag",
+            "cherry-pick",
+            "revert-commit"
           ]
         },
         "worktreeRoot": {

@@ -50,7 +50,7 @@ const b64 = (text: string) => Buffer.from(text).toString("base64");
 
 const NEW_RENDERER = ["readBranches", "readWorktrees", "readGitSettings", "reviewWorkbench", "runWorkbench", "applyFiles", "openWorktree", "revealPath"];
 const NEW_SHELL = ["setSwitchChoice", "chooseWorktreeFolder"];
-// Feature 005 T057 removes the action `ignore` and its markers `ignore-gitignore` and `ignore-exclude`. Feature 008 T006 adds the revert actions.
+// Feature 005 T057 removes the action `ignore` and its markers `ignore-gitignore` and `ignore-exclude`. Feature 008 T006 adds the revert actions. Feature 010 T003 adds the commit actions.
 const WORKBENCH_ACTIONS = [
   "switch",
   "create-branch",
@@ -69,6 +69,10 @@ const WORKBENCH_ACTIONS = [
   "revert-lines",
   "revert-files",
   "revert-unstaged",
+  "reset",
+  "create-tag",
+  "cherry-pick",
+  "revert-commit",
 ];
 // Contract Δ6: the close prompt names each of these.
 const STARTED_ACTIONS = [
@@ -93,6 +97,11 @@ const STARTED_ACTIONS = [
   "revert-lines",
   "revert-files",
   "revert-unstaged",
+  // Feature 010 contract Δ1.
+  "reset",
+  "create-tag",
+  "cherry-pick",
+  "revert-commit",
 ];
 const WORKBENCH_PHASES = ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "config", "stage-files"];
 
@@ -214,6 +223,11 @@ describe("contract Δ9 codes", () => {
       "file-attributes",
       "xattr",
       "nothing-to-revert",
+      // Feature 010 contract Δ9.
+      "tag-signing",
+      "already-on-branch",
+      "mainline-needed",
+      "not-merge",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);
     expect([...(E.STASH_KEPT_REASONS ?? [])]).toEqual(["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"]);
@@ -346,6 +360,11 @@ describe("contract Δ3 payloads", () => {
     { action: "revert-lines", snapshotId: id(), comparisonId: id(), hunkId: id(), lines: [1, 2] },
     { action: "revert-files", snapshotId: id(), entryIds: [id(), id()] },
     { action: "revert-unstaged", snapshotId: id() },
+    // Feature 010 contract Δ3.
+    { action: "reset", target: OID, mode: "mixed" },
+    { action: "create-tag", name: "v1.0", target: OID, message: null },
+    { action: "cherry-pick", commit: OID, mainline: null },
+    { action: "revert-commit", commit: OID, mainline: 1 },
     { action: "switch", target: { ref: "refs/heads/feature/x" }, choice: "keep" },
     { action: "switch", target: { ref: "refs/heads/main" }, choice: "stash" },
     { action: "switch", target: { track: { ref: "refs/remotes/origin/topic", name: "topic" } }, choice: "discard" },
@@ -719,7 +738,8 @@ describe("contract Δ6 private requests", () => {
 
     test("the frame names the folders, the Git, the action, and the details", () => {
       expect(confirm(v2)).toBe(true);
-      const actions = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules", "repository"];
+      // Feature 010 contract Δ6 adds reset, tag, cherry-pick, and revert.
+      const actions = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules", "repository", "reset", "tag", "cherry-pick", "revert"];
       expect<string[]>([...(P.TRUST_ACTIONS ?? [])]).toEqual(actions);
       for (const action of actions) expect(confirm({ ...v2, action })).toBe(true);
       expect(confirm({ ...v2, action: "clone" })).toBe(false);

@@ -3,12 +3,12 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, type ReactNode } from "react";
-import type { ChangeEntry } from "../../src/contracts/envelope";
+import { ReviewWorkbenchResult, RunWorkbenchResult, type ChangeEntry } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { fixtureId } from "./bridge-contract";
-import { answer, button, buttons, click, createWorld, keyboardFocus, mountWorkbench, oid, press, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, keyboardFocus, mountWorkbench, oid, press, REGISTRATION, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T068 (feature 003). Spec FR-030, FR-042 to FR-045. Plan D7, D12. Data-model §7, §8. Contract Δ3 `reviewSync` and `sync` abort, continue, skip.
 
@@ -297,6 +297,167 @@ describe("Continue while the status read loads", () => {
   });
 });
 
+// tasks.md T014 (feature 010, WP5). Spec FR-060 to FR-063. Plan D6, D11 "Band". Data-model §5.
+describe("a stopped cherry-pick or revert (feature 010 FR-060 to FR-063)", () => {
+  const KINDS = [
+    { state: "cherry-picking", kind: "cherry-pick", noun: "A cherry-pick", abort: "Abort cherry-pick…", button: "Abort cherry-pick", nothing: "The cherry-pick makes no change. Select Abort to end it.", trust: "cherry-pick" },
+    { state: "reverting", kind: "revert", noun: "A revert", abort: "Abort revert…", button: "Abort revert", nothing: "The revert makes no change. Select Abort to end it.", trust: "revert" },
+  ] as const;
+  const SEQUENCE = "A cherry-pick or revert sequence is in progress. Finish it in a terminal.";
+
+  for (const k of KINDS) {
+    test(`${k.state} shows the conflict row with Resolve conflicts and ${k.abort} while a file is unmerged, and no Skip`, async () => {
+      await open(k.state, [conflicted("a.txt")]);
+      expect(row()).not.toBeNull();
+      expect(text(band())).toContain(`${k.noun} is in progress, with 1 conflicted file.`);
+      expect(text(band())).not.toContain(OUTSIDE);
+      expect(actions()).toEqual(["Resolve conflicts", k.abort]);
+    });
+
+    test(`${k.state}: Continue shows after the last Mark resolved`, async () => {
+      const { w } = await open(k.state, [conflicted("a.txt")]);
+      w.entries = [];
+      await press(document.body, "F5");
+      await settle();
+      expect(text(band())).toContain(`${k.noun} is in progress.`);
+      expect(actions()).toEqual([k.abort, "Continue"]);
+    });
+
+    test(`${k.state}: ${k.abort} opens its confirmation with Cancel focused and the kind texts`, async () => {
+      const { double } = await open(k.state);
+      await click(button(k.abort, row()!));
+      expect(double.pending("reviewSync")!.args[1]).toEqual({ action: "abort" });
+      await answer(double.pending("reviewSync"), succeeded({ action: "abort", plan: { remotes: [], operationState: k.state }, syncReviewToken: TOKEN }));
+      const d = dialog()!;
+      expect(text(d)).toContain(`Abort the ${k.kind}?`);
+      expect(text(d)).toContain(RESTORE(k.kind));
+      expect(text(d)).not.toContain(MERGE_LIMIT);
+      expect(document.activeElement).toBe(button("Cancel", d));
+      await click(button(k.button, d));
+      expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: TOKEN, start: true });
+    });
+
+    test(`${k.state}: a nothing-to-commit refusal of Continue states its text and keeps Abort`, async () => {
+      const { double } = await open(k.state);
+      await click(button("Continue", row()!));
+      await answer(double.pending("reviewSync"), refused("nothing-to-commit"));
+      expect(text(row()!)).toContain(k.nothing);
+      expect(text(row()!)).not.toContain("nothing-to-commit");
+      expect(actions()).toEqual([k.abort]);
+    });
+
+    test(`${k.state}: a sequence refusal states its text`, async () => {
+      const { double } = await open(k.state);
+      await click(button(k.abort, row()!));
+      await answer(double.pending("reviewSync"), refused("sequence"));
+      expect(text(row()!)).toContain(SEQUENCE);
+      expect(text(row()!)).not.toContain("is unavailable");
+    });
+
+    test(`${k.state}: Abort and Continue ask trust with the ${k.trust} action`, async () => {
+      for (const action of ["abort", "continue"] as const) {
+        const { double } = await open(k.state);
+        await click(button(action === "abort" ? k.abort : "Continue", row()!));
+        await answer(double.pending("reviewSync"), { requestId: "r", state: "rejected", code: "TRUST_REQUIRED" });
+        expect(double.pending("approveTrust")!.args[1]).toEqual({ action: k.trust });
+        await unmountAll();
+      }
+    });
+
+    test(`${k.state}: Mark resolved stays available, and Amend last commit is blocked with the operation reason`, async () => {
+      const { operationBlock, BLOCKED_TEXT } = await import("../../src/frontend/changes/HunkControls");
+      const { amendReason } = await import("../../src/frontend/commit/CommitTray");
+      expect(operationBlock(k.state)).toBe("operation");
+      expect(BLOCKED_TEXT.operation).toBe("A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.");
+      expect(amendReason({ state: "branch", target: "refs/heads/main", oid: oid(1) }, k.state)).toBe(BLOCKED_TEXT.operation);
+    });
+  }
+
+  test("a rebase still asks trust with the pull action", async () => {
+    const { double } = await open("rebasing");
+    await click(button("Continue", row()!));
+    await answer(double.pending("reviewSync"), { requestId: "r", state: "rejected", code: "TRUST_REQUIRED" });
+    expect(double.pending("approveTrust")!.args[1]).toEqual({ action: "pull" });
+  });
+
+  test("sequencer-active keeps the 001 outside text and offers no action", async () => {
+    await open("sequencer-active");
+    expect(row()).toBeNull();
+    expect(text(band())).toContain(OUTSIDE);
+  });
+
+  // Spec FR-063: the resolve tools of 004 FR-089 to FR-097 send the requests of a merge. Plan D6: the review gives no theirs name in these states.
+  // Control: hide Open in merge tool while the review plan names cherry-picking or reverting; both pick cases must fail.
+  describe("the resolve tools of a conflicted file (FR-063)", () => {
+    const PATH = "src/app.ts";
+    const B64 = Buffer.from(PATH).toString("base64");
+    const NAMES = { ours: { oid: oid(1), refs: ["refs/heads/main"] }, theirs: null };
+    const file = (): ChangeEntry => ({ entryId: fixtureId(30), category: "conflicted", path: PATH, pathBytes: B64, xy: "UU", modes: ["100644", "100644", "100644", "100644"], oids: [oid(5), oid(6), oid(7)] }) as ChangeEntry;
+    const plan = (operation: string) => ({ path: B64, kind: { xy: "UU", text: "Both modified" }, stages: [1, 2, 3].map((stage) => ({ stage, mode: "100644", oid: oid(4 + stage) })), names: NAMES, operation });
+    const tools = (operation: World["operationState"]): Record<string, (args: unknown[]) => unknown> => ({
+      readComparison: (args) => {
+        const p = args[1] as { snapshotId: string; entryId: string };
+        const comparison = { comparisonId: crypto.randomUUID(), snapshotId: p.snapshotId, entryId: p.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: Buffer.from("diff --cc src/app.ts\n").toString("base64"), hunks: [], support: "state", fileAction: "resolve", remedy: null };
+        return { ...succeeded(comparison), entryId: p.entryId };
+      },
+      reviewWorkbench: (args) => {
+        const p = args[1] as { action: "choose-side" | "mergetool"; side?: "ours" | "theirs" };
+        const shown = p.action === "mergetool" ? { ...plan(operation), tool: { name: "vscode", scope: "global", origin: "file:C:/Users/me/.gitconfig" } } : { ...plan(operation), side: p.side };
+        return succeeded(ReviewWorkbenchResult.parse({ action: p.action, plan: shown, workbenchToken: TOKEN }));
+      },
+      runWorkbench: () => succeeded(RunWorkbenchResult.parse({ action: "choose-side", staged: false, operationState: operation })),
+    });
+
+    /** The review and the run that each tool click sends, without the random snapshot ID. */
+    async function sent(operation: World["operationState"]) {
+      const entry = file();
+      const w = createWorld({ operationState: operation, entries: [entry], ...(operation === "rebasing" ? { head: DETACHED } : {}) });
+      Object.assign(w.answers, tools(operation));
+      const double = await mountWorkbench(workbench, w);
+      await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
+      await click(document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${entry.entryId}"]`)!);
+      await settle();
+      const view = () => document.querySelector(`[data-section="comparison"] section[aria-label="Resolve ${PATH}"]`)!;
+      const out: unknown[] = [];
+      for (const [label, confirm] of [["Choose ours (main)", "Choose ours"], ["Choose theirs", "Choose theirs"], ["Open in merge tool", null]] as const) {
+        const from = double.calls.length;
+        await click(button(label, view()));
+        if (confirm !== null) await click(button(confirm, dialog()!));
+        await settle();
+        const own = double.calls.slice(from);
+        for (const kind of ["reviewWorkbench", "runWorkbench"]) {
+          const call = own.find((c) => c.operation === kind);
+          const payload = call?.args[1] as Record<string, unknown> | undefined;
+          out.push({ label, kind, target: call?.args[0], payload: payload === undefined ? undefined : { ...payload, ...("snapshotId" in payload ? { snapshotId: typeof payload.snapshotId } : {}) } });
+        }
+        await settle();
+      }
+      await unmountAll();
+      return out;
+    }
+
+    const target = { repositoryId: REGISTRATION.repositoryId, repositoryGeneration: 1 };
+    const MERGE = [
+      { label: "Choose ours (main)", kind: "reviewWorkbench", target, payload: { action: "choose-side", snapshotId: "string", entryId: fixtureId(30), side: "ours" } },
+      { label: "Choose ours (main)", kind: "runWorkbench", target: { repositoryId: REGISTRATION.repositoryId }, payload: { workbenchToken: TOKEN, start: true } },
+      { label: "Choose theirs", kind: "reviewWorkbench", target, payload: { action: "choose-side", snapshotId: "string", entryId: fixtureId(30), side: "theirs" } },
+      { label: "Choose theirs", kind: "runWorkbench", target: { repositoryId: REGISTRATION.repositoryId }, payload: { workbenchToken: TOKEN, start: true } },
+      { label: "Open in merge tool", kind: "reviewWorkbench", target, payload: { action: "mergetool", snapshotId: "string", entryId: fixtureId(30) } },
+      { label: "Open in merge tool", kind: "runWorkbench", target: { repositoryId: REGISTRATION.repositoryId }, payload: { workbenchToken: TOKEN, start: true } },
+    ];
+
+    test("during a merge, Choose ours, Choose theirs, and Open in merge tool each send their review and then the run of its token", async () => {
+      expect(await sent("merging")).toEqual(MERGE);
+    });
+
+    for (const k of KINDS) {
+      test(`${k.state}: Choose ours, Choose theirs, and Open in merge tool send the same requests as during a merge`, async () => {
+        expect(await sent(k.state)).toEqual(MERGE);
+      });
+    }
+  });
+});
+
 describe("conflict row while an operation runs (plan D12)", () => {
   const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
   const describedText = (control: Element) => document.getElementById(control.getAttribute("aria-describedby") ?? "")?.textContent ?? null;
@@ -353,6 +514,50 @@ describe("conflict row while an operation runs (plan D12)", () => {
       expect(describedText(control)).toBe(BLOCKED_TEXT.unknown);
       expect(visuallyHidden(control)).toBe(false);
     }
+    await act(async () => root.unmount());
+    host.remove();
+  });
+});
+
+// Mockup board 7 (feature 010): the last Mark resolved removes its row button, and the focus goes to Continue.
+describe("the focus after the last conflicted file is resolved", () => {
+  for (const kind of ["merging", "rebasing", "cherry-picking", "reverting"] as const) {
+    test(`a ${kind} row moves the lost focus to Continue`, async () => {
+      const { ConflictRow } = await import("../../src/frontend/sync/ConflictActions");
+      const { createRoot } = await import("react-dom/client");
+      const host = document.body.appendChild(document.createElement("div"));
+      const root = createRoot(host);
+      const view = (conflicted: number) => (
+        <>
+          <ConflictRow operationState={kind} conflicted={conflicted} reason={null} onAction={async () => null} onResolve={() => {}} />
+          {conflicted > 0 ? <button type="button">Mark resolved a.txt</button> : null}
+        </>
+      );
+      await act(async () => root.render(view(1)));
+      await act(async () => button("Mark resolved a.txt", host).focus());
+      await act(async () => root.render(view(0)));
+      expect(document.activeElement).toBe(button("Continue", host));
+      await act(async () => root.unmount());
+      host.remove();
+    });
+  }
+
+  test("a focus outside the row stays where it is", async () => {
+    const { ConflictRow } = await import("../../src/frontend/sync/ConflictActions");
+    const { createRoot } = await import("react-dom/client");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const view = (conflicted: number) => (
+      <>
+        <ConflictRow operationState="cherry-picking" conflicted={conflicted} reason={null} onAction={async () => null} onResolve={() => {}} />
+        <input aria-label="Commit message" />
+      </>
+    );
+    await act(async () => root.render(view(1)));
+    const field = host.querySelector("input")!;
+    await act(async () => field.focus());
+    await act(async () => root.render(view(0)));
+    expect(document.activeElement).toBe(field);
     await act(async () => root.unmount());
     host.remove();
   });

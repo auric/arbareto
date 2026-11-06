@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
-import { useRef, type ReactNode, type RefObject } from "react";
+import { useId, useRef, type ComponentProps, type ReactNode, type RefObject } from "react";
 import { Button } from "./ui/button";
 
 // Feature 004 plan.md D15 "Confirm popover" and D16 danger rules.
@@ -24,11 +24,20 @@ export type ConfirmPopoverProps = {
   initialFocus?: RefObject<HTMLElement | null>;
   /** Cancel, Escape, and an outside press. */
   onCancel(): void;
+  /** The focus target after the popover closes. A row under `aria-activedescendant` is no focus target, so its list takes the focus. */
+  finalFocus?: ComponentProps<typeof PopoverPrimitive.Popup>["finalFocus"];
+  /**
+   * Feature 010 plan.md D3: the confirm button stays focusable but runs nothing. A non-null reason shows above the buttons and describes the button.
+   * Omit it while the action can run.
+   */
+  unavailable?: { reason: string | null };
 };
 
 /** A modal Base UI popover next to its row. Cancel has the first focus. */
-export function ConfirmPopover({ open, anchor, title, children, confirmLabel, cancelLabel = "Cancel", danger = false, onConfirm, onCancel, initialFocus }: ConfirmPopoverProps) {
+export function ConfirmPopover({ open, anchor, title, children, confirmLabel, cancelLabel = "Cancel", danger = false, onConfirm, onCancel, initialFocus, finalFocus, unavailable }: ConfirmPopoverProps) {
   const cancel = useRef<HTMLButtonElement>(null);
+  const reasonId = useId();
+  const reason = unavailable?.reason ?? null;
   return (
     <PopoverPrimitive.Root open={open} modal onOpenChange={(next) => !next && onCancel()}>
       <PopoverPrimitive.Portal>
@@ -36,16 +45,30 @@ export function ConfirmPopover({ open, anchor, title, children, confirmLabel, ca
           <PopoverPrimitive.Popup
             data-slot="popover-content"
             initialFocus={initialFocus ?? cancel}
-            className="flex w-[min(480px,calc(100vw-32px))] flex-col gap-3 rounded-lg bg-popover p-3 text-xs text-popover-foreground ring-1 ring-control-border outline-hidden"
+            finalFocus={finalFocus}
+            className="flex max-h-(--available-height) w-[min(480px,calc(100vw-32px))] flex-col gap-3 rounded-lg bg-popover p-3 text-xs text-popover-foreground ring-1 ring-control-border outline-hidden"
           >
-            <PopoverPrimitive.Title className="font-semibold">{title}</PopoverPrimitive.Title>
-            {children}
-            <div className="flex items-center justify-end gap-2">
+            <PopoverPrimitive.Title className="shrink-0 font-semibold">{title}</PopoverPrimitive.Title>
+            {/* The popover never passes the window: only the body scrolls, and the title and the buttons stay visible. */}
+            <div data-slot="popover-body" className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+              {children}
+            </div>
+            {/* The live region stays mounted, so a reason that appears later is announced. */}
+            <p id={reasonId} role="status" className={reason === null ? "sr-only" : "text-muted-text"}>
+              {reason}
+            </p>
+            <div className="flex shrink-0 items-center justify-end gap-2">
               <Button ref={cancel} variant="outline" onClick={onCancel}>
                 {cancelLabel}
               </Button>
               {onConfirm === undefined ? null : (
-                <Button className={danger ? "danger-button" : undefined} onClick={onConfirm}>
+                <Button
+                  className={danger ? "danger-button" : undefined}
+                  disabled={unavailable !== undefined}
+                  focusableWhenDisabled
+                  aria-describedby={reason === null ? undefined : reasonId}
+                  onClick={unavailable === undefined ? onConfirm : undefined}
+                >
                   {confirmLabel}
                 </Button>
               )}

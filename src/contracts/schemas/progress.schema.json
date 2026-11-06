@@ -60,7 +60,13 @@
         "preview",
         "dictionary",
         "revert-index",
-        "revert-files"
+        "revert-files",
+        "reset",
+        "tag",
+        "cherry-pick",
+        "revert-commit",
+        "sync-cherry-pick",
+        "sync-revert"
       ]
     },
     "counters": {

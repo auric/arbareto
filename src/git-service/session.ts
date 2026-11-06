@@ -4,6 +4,7 @@
 import { Handshake } from "../contracts/channel";
 import { validateRequest, type ChangeEntry, type Response, type ServiceRequest } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
+import { movedGitlink } from "../contracts/file-action";
 import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, READ_DEADLINE_MS, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
@@ -20,7 +21,7 @@ import { createDictionaries, type DictionaryFetch, type DictionaryTimer } from "
 import catalogFile from "../contracts/dictionaries.json";
 import { Catalog } from "../contracts/dictionaries";
 import { createCommitReviewer } from "./commit-review";
-import { createComparisonReader } from "./comparison";
+import { createComparisonReader, rawRecord } from "./comparison";
 import { getEnvironment } from "./environment";
 import { createExclusion } from "./exclusion";
 import { createFilePublisher, fileApproval } from "./file-publish";
@@ -56,6 +57,7 @@ import "./revert";
 import "./switch";
 import "./branch-ops";
 import "./merge-rebase";
+import "./commit-actions";
 import "./resolve";
 import { readGitSettings as readSettings } from "./git-settings";
 import { openWorktreeTarget, readWorktreeList } from "./worktrees";
@@ -1012,7 +1014,14 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       }
       const ids = workspaceIds(found.entry);
       if (ids === null) return reject(request.requestId, "INVALID_REQUEST");
-      target = { path: new Uint8Array(Buffer.from(found.entry.pathBytes, "base64")), ...ids, index: found.snapshot.indexEntries, ...(found.snapshot.indexCut ? { indexCut: true as const } : {}) };
+      const path = new Uint8Array(Buffer.from(found.entry.pathBytes, "base64"));
+      target = {
+        path,
+        ...ids,
+        index: found.snapshot.indexEntries,
+        ...(found.snapshot.indexCut ? { indexCut: true as const } : {}),
+        ...(movedGitlink(found.entry.category, rawRecord(found.entry, path)) ? { moved: true as const } : {}),
+      };
     } else {
       const entry = commitChanges.submoduleRecord(request.repositoryId, source.viewId, source.oid, source.parent, source.record);
       if ("refused" in entry) return reject(request.requestId, entry.refused);
@@ -1031,7 +1040,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const { operationId } = registry.start("readSubmoduleWork", request.requestId);
       return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
     }
-    scheduleRead(request, (t) => submoduleReads.readSubmoduleWork({ ...t, workspace, installation }, found.snapshot), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleWork");
+    // `movedGitlink` accepts only an Unstaged record with mode 160000, so the other entries skip the record bytes.
+    const moved = new Set(
+      found.snapshot.entries.filter((e) => e.category === "unstaged" && e.modes?.includes("160000") && movedGitlink(e.category, rawRecord(e, Buffer.from(e.pathBytes, "base64")))).map((e) => e.pathBytes),
+    );
+    scheduleRead(request, (t) => submoduleReads.readSubmoduleWork({ ...t, workspace, installation }, found.snapshot, moved), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleWork");
   };
 
   // Feature 005 contract Δ3 `openSubmodule`, plan.md D11: the checks in the parent, then the 001 registration of the bound folder.

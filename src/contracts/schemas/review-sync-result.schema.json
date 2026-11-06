@@ -177,7 +177,9 @@
               "type": "string",
               "enum": [
                 "merging",
-                "rebasing"
+                "rebasing",
+                "cherry-picking",
+                "reverting"
               ]
             },
             "skippedCommit": {
@@ -305,6 +307,8 @@
             "not-rebasing",
             "no-skip-commit",
             "rebase-exec",
+            "nothing-to-commit",
+            "sequence",
             "SYNC_REMOTES"
           ]
         },

@@ -13,7 +13,7 @@ import { deleteBlock, fileActions } from "../changes/file-actions";
 import { conflictedRows, countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, gitlinkReason, runFileAction } from "../changes/FileControls";
 import { changeOf, EXTRA_ID, extraEntries, indexGitlink, SubmodulePreview, useSubmoduleChangeRead, useSubmoduleWork, workOf, type ChangeRead, type SubmoduleReader, type WorkRead } from "../changes/SubmodulePreview";
-import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, ReasonLine, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, HunkButton, HunkControls, IN_APP_STATES, operationBlock, ReasonLine, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
 import { RevertConfirm } from "../changes/RevertConfirm";
 import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, revertUnstagedRefusal, reviewRefusal, type RevertLinesPlan, type RevertUnstagedPlan } from "../changes/revert-text";
 import { CommitTray } from "../commit/CommitTray";
@@ -83,8 +83,8 @@ import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, failureText, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, unknownReadText, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
-import { COUNTS_TOOLTIP, isTrackingList, NO_BRANCH, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
-import { ConflictConfirm, ConflictRow } from "../sync/ConflictActions";
+import { COUNTS_TOOLTIP, isTrackingList, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
+import { ConflictConfirm, ConflictRow, type ConflictRowProps } from "../sync/ConflictActions";
 import { ForcePushConfirm } from "../sync/ForcePushConfirm";
 import { PullModeChoice } from "../sync/PullModeChoice";
 import { pullAction, type DefaultPullAction } from "../sync/PullSplitButton";
@@ -107,6 +107,7 @@ import { WorktreeButton } from "../worktrees/WorktreeButton";
 import { WorktreesGroup } from "../worktrees/WorktreesGroup";
 import { W } from "../worktrees/texts";
 import { useBranchActions } from "../branches/BranchActions";
+import { useCommitActions } from "../history/CommitActions";
 import { CommitView } from "../views/CommitView";
 import { HistoryView as HistoryFrame, HistoryListSlot } from "../views/HistoryView";
 import { shortRef } from "../refs/ReferencesSidebar";
@@ -236,6 +237,8 @@ export type WorkbenchPaneProps = {
   askTrust?: AskTrust;
   /** The feature 004 branch actions (spec FR-014): the history labels and Create branch here on a history row. */
   branches?: ReturnType<typeof useBranchActions>;
+  /** Feature 010: the History commit menu. */
+  commitMenu?: ReturnType<typeof useCommitActions>;
   /** Feature 005 plan.md P8: the ignore editor, Blame, and Open submodule of the Commit view row menu. */
   commitActions?: CommitActions;
   /** Feature 005 plan.md D19: the preview reads, the work state of the shown snapshot, the change of the selected row, and the selected row with only local edits. */
@@ -772,7 +775,7 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
 }
 
 /** The feature 002 history list with the Working directory and Index rows (plan.md D6). */
-export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef, tracking, branches, submodules }: WorkbenchPaneProps) {
+export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef, tracking, branches, commitMenu, submodules }: WorkbenchPaneProps) {
   // Plan D19 "Rows": the Working directory count adds the rows with only local edits.
   const complete = state.workspace?.completeness.state === "complete" ? state.entries : null;
   const work = workOf(submodules?.work ?? null);
@@ -783,6 +786,7 @@ export function HistoryViewMount({ state, history, density, profile, textScale, 
   const onScope = useLatest((scope: Parameters<HistoryListProps["onScope"]>[0]) => void history.setScope(scope));
   const onLabelMenu = useLatest((label: Parameters<NonNullable<HistoryListProps["onLabelMenu"]>>[0], anchor: HTMLElement, byKey?: boolean) => branches?.onRef(label.kind as "branch" | "remote", label.name, "menu", anchor, byKey));
   const onCreateBranch = useLatest((oid: string, anchor: HTMLElement) => branches?.create(oid, anchor));
+  const onCommitMenu = useLatest((oid: string, anchor: HTMLElement, byKey: boolean, merge: boolean, pointerX?: number) => commitMenu?.openMenu(oid, anchor, byKey, merge, pointerX));
   return (
     <HistoryListMemo
       unread={state.readFailure !== null && needsTrust(state.readFailure) ? READS_TRUST_TEXT : null}
@@ -797,6 +801,7 @@ export function HistoryViewMount({ state, history, density, profile, textScale, 
       tracking={tracking}
       onLabelMenu={branches === undefined ? undefined : onLabelMenu}
       onCreateBranch={branches === undefined ? undefined : onCreateBranch}
+      onCommitMenu={commitMenu === undefined ? undefined : onCommitMenu}
     />
   );
 }
@@ -1088,6 +1093,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     repositoryId: state.repository?.repositoryId ?? null,
     headTarget: state.workspace === null ? undefined : state.workspace.head.state === "detached" ? null : state.workspace.head.target,
     headOid: state.workspace === null ? undefined : state.workspace.head.state === "unborn" ? null : state.workspace.head.oid,
+    operationState: state.workspace?.operationState,
     onOperation: (op) => {
       setOperation(op);
       const response = op.response;
@@ -1295,9 +1301,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   }
   // Plan.md D8 triggers: each new `readRefs.refsDigest` and each focus return. Each sync outcome runs one too.
   const refsDigest = state.refs?.refsDigest ?? null;
+  // `refsDigest` covers only `refname NUL objectname`, so a new `%(upstream)` of a local branch keeps it (FR-020, FR-021).
+  const upstreams = useMemo(() => JSON.stringify(state.refs?.refs.map((r) => (r.kind === "branch" ? r.upstream : null)) ?? null), [state.refs]);
   useEffect(() => {
     if (refsDigest !== null) readTracking();
-  }, [repositoryId, refsDigest]);
+  }, [repositoryId, refsDigest, upstreams]);
   useEffect(() => {
     if (repositoryId === null) return;
     const onFocus = () => readTracking();
@@ -1734,8 +1742,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The states that block mutations (plan.md "Required visible states": Busy, State unknown, Conflicted/unfinished operation, Limited output).
   const running = operation !== null && operation.response === null;
   const loading = workspace === null || state.entries.length < workspace.entryCount;
-  // Spec FR-103 and SC-017: the dock names the conflicted count only during a merge or a rebase, and only from a complete read.
-  const conflictCount = loading || (workspace.operationState !== "merging" && workspace.operationState !== "rebasing") ? 0 : conflicted;
+  // Spec FR-103 and SC-017: the dock names the conflicted count only in the states of the conflict row, and only from a complete read. Feature 010 plan.md D6 adds a cherry-pick and a revert.
+  const conflictCount = loading || !IN_APP_STATES.includes(workspace.operationState) ? 0 : conflicted;
   // Data-model 001 §2: `refreshing` means a refresh read runs, so the block ends without a user action.
   const stateBlocked: Blocked = state.blocked ? (workspace?.recoveryState === "refreshing" ? "refreshing" : "unknown") : workspace !== null ? operationBlock(workspace.operationState) : null;
   const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;
@@ -1790,6 +1798,20 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     push: { reason: quietSync ?? reasons.pushReason, quiet: quietSync !== null, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
   });
+  // Feature 010 plan.md D1 and D13: the History commit menu. It blocks with the reason of the 004 actions.
+  const commitMenu = useCommitActions({
+    bridge,
+    askTrust,
+    target: requests.target,
+    repositoryId,
+    head: currentHead,
+    blockedReason: mutationReason,
+    blockedRunning: running,
+    onOperation: setOperation,
+    onNotice: setNotice,
+    workbench: store,
+    branches,
+  });
   // Feature 004 WP21 (spec FR-049 to FR-057): the worktree button, the sidebar Worktrees group, and the Add worktree panel.
   const worktrees = useWorktreeActions({
     bridge,
@@ -1811,9 +1833,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     },
   });
   const trackingCount =
-    currentHead === null ? null : currentHead.state === "detached" || trackingFailure !== null ? (
+    // Feature 004 plan "Top bar row": on a detached HEAD, the branch button and the sync reason line state it.
+    currentHead === null || currentHead.state === "detached" ? null : trackingFailure !== null ? (
       <span data-slot="tracking-count" className="shrink-0 text-muted-text">
-        {currentHead.state === "detached" ? NO_BRANCH : trackingFailure}
+        {trackingFailure}
       </span>
     ) : (
       <TrackingCount label={currentLabel} upstream={currentEntry?.upstream ?? null} />
@@ -1869,6 +1892,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     tracking: labels,
     workbench: store,
     branches,
+    commitMenu,
     onTrustReads: () => void approveTrust("read"),
     askTrust,
     commitActions: {
@@ -2397,11 +2421,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 }
                 pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} running={running} reconciling={reconciling} bindControl={bindBandControl} /> : undefined}
                 conflictRow={
-                  workspace.operationState === "merging" || workspace.operationState === "rebasing" ? (
+                  IN_APP_STATES.includes(workspace.operationState) ? (
                     // A new operation state or HEAD is a new stop, so the row forgets the refusals of the last stop.
                     <ConflictRow
                       key={`${workspace.operationState}:${workspace.head.state === "unborn" ? "" : workspace.head.oid}`}
-                      operationState={workspace.operationState}
+                      operationState={workspace.operationState as ConflictRowProps["operationState"]}
                       conflicted={conflicted}
                       reason={syncBlock}
                       running={running}
@@ -2539,6 +2563,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </AboutBoundary>
         ) : null}
         {branches.overlays}
+        {commitMenu.overlays}
         {worktrees.overlays}
         {ignoreState.discard === null ? null : <DiscardConfirm file={ignoreState.discard.file} onKeep={ignore.keepEditing} onDiscard={ignore.discard} />}
         {keepPool ? (

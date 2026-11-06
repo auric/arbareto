@@ -452,6 +452,10 @@ fn action_sentence(action: &str) -> Option<&'static str> {
         "worktree" => "Git runs them when you add or remove a worktree.",
         "submodules" => "Git runs them when you update submodules.",
         "repository" => "Git runs them for the actions that need them.",
+        "reset" => "Git runs them when you reset a branch.",
+        "tag" => "Git runs them when you create a tag.",
+        "cherry-pick" => "Git runs them when you cherry-pick a commit.",
+        "revert" => "Git runs them when you revert a commit.",
         _ => return None,
     })
 }
@@ -1694,6 +1698,14 @@ pub(crate) mod tests {
                 "repository",
                 "Git runs them for the actions that need them.",
             ),
+            // Feature 010 contract Δ6 and plan.md D11.
+            ("reset", "Git runs them when you reset a branch."),
+            ("tag", "Git runs them when you create a tag."),
+            (
+                "cherry-pick",
+                "Git runs them when you cherry-pick a commit.",
+            ),
+            ("revert", "Git runs them when you revert a commit."),
         ] {
             let confirmation = trust_confirmation(&trust_request("C:\\repo", action, no_details()));
             assert!(

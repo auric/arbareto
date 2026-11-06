@@ -87,8 +87,8 @@ describe("closed reason list (contract §4 'File staging')", () => {
   // Feature 003 contract Δ4 adds `missing`. Feature 004 contract Δ9 adds the five line refusals.
   test("FILE_ACTION_REASONS holds exactly the contract reasons", () => {
     const lines = ["context-only", "several-hunks", "deleted-file", "new-file", "eof-newline"];
-    // Feature 005 contract Δ4 adds `submodule-unborn`.
-    expect<string[]>([...FILE_ACTION_REASONS].sort()).toEqual(["LFS", "blob-proof", "filter", "index-flag", "path", "rename", "size", "submodule", "submodule-unborn", "symlink", "type", "missing", ...lines].sort());
+    // Feature 005 contract Δ4 adds `submodule-unborn` and `submodule-not-located`.
+    expect<string[]>([...FILE_ACTION_REASONS].sort()).toEqual(["LFS", "blob-proof", "filter", "index-flag", "path", "rename", "size", "submodule", "submodule-not-located", "submodule-unborn", "symlink", "type", "missing", ...lines].sort());
   });
 });
 
@@ -332,7 +332,8 @@ describe("gitlink rows (feature 005 contract Δ4, plan.md D20)", () => {
 
   test("gitlink {refused} gives its reason, and a missing or malformed gitlink fact gives MALFORMED_GIT_OUTPUT", () => {
     expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "submodule-unborn" } }))).toEqual(refused("submodule-unborn"));
-    expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "submodule" } }))).toEqual(refused("submodule"));
+    expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "submodule-not-located" } }))).toEqual(refused("submodule-not-located"));
+    expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink: { refused: "path" } }))).toEqual(refused("path"));
     for (const gitlink of [null, undefined, { head: "4".repeat(64) }, { head: "X".repeat(40) }]) {
       expect(decide(input("unstaged", moved, "vendor/lib", { ...folder("vendor/lib"), gitlink }))).toEqual({ direction: null, code: "MALFORMED_GIT_OUTPUT" });
     }

@@ -5,11 +5,12 @@
 // Spec FR-069 to FR-076, SC-012. The oracle is Git's own `rev-list`, `log`, and `status` inside the submodule, and the parent status with `--ignore-submodules=none` on a copy.
 
 import { describe, expect } from "bun:test";
-import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ReadSubmoduleChangeResult, ReadSubmoduleWorkResult } from "../../src/contracts/envelope";
 import { FILE_FACT_COMPONENT_UNITS, STATUS_LISTING_RECORDS, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
 import { statusArgs } from "../../src/git-service/commands";
+import { submoduleHead } from "../../src/git-service/submodule-change";
 import { printOrigin } from "../origin";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { git, gitPath, gitText, readOk, withService } from "./hunk-harness";
@@ -35,12 +36,13 @@ interface Change {
   kind: "submodule" | "nested";
   old: string | null;
   new: string | null;
-  state: { state: "commits"; added: number; removed: number; addedCommits: Commit[]; removedCommits: Commit[] } | { state: "missing"; which: string } | { state: "not-initialized" } | { state: "single" };
+  state: { state: "commits"; added: number; removed: number; addedCommits: Commit[]; removedCommits: Commit[] } | { state: "missing"; which: string } | { state: "not-initialized" } | { state: "not-located" } | { state: "single" };
   limited: boolean;
 }
 type WorkEntry =
   | { pathBytes: string; path: string; state: "checked"; modified: boolean; untracked: boolean }
   | { pathBytes: string; path: string; state: "not-initialized" }
+  | { pathBytes: string; path: string; state: "not-located" }
   | { pathBytes: string; path: string; state: "unchecked"; reason: string; code?: string };
 interface Work {
   snapshotId: string;
@@ -426,7 +428,7 @@ function parentOracle(root: string, sup: string): Record<string, { modified: boo
   return out;
 }
 const states = (work: Work) =>
-  Object.fromEntries(work.entries.map((e) => [e.path, e.state === "checked" ? { modified: e.modified, untracked: e.untracked } : e.state === "not-initialized" ? { state: e.state } : { reason: e.reason, code: e.code }]));
+  Object.fromEntries(work.entries.map((e) => [e.path, e.state === "checked" ? { modified: e.modified, untracked: e.untracked } : e.state === "not-initialized" || e.state === "not-located" ? { state: e.state } : { reason: e.reason, code: e.code }]));
 
 describe("readSubmoduleWork (contract Δ3, plan.md D19)", () => {
   caseTest("T107", "(1)(2) each state equals the <m> and <u> fields of the parent status with none; extraRows holds only unchanged commits with local edits", SHELL, () =>
@@ -570,6 +572,138 @@ describe("readSubmoduleWork (contract Δ3, plan.md D19)", () => {
     }),
     TIMEOUT_MS,
   );
+});
+
+// ---- T121: a moved gitlink that plan.md D11 check 3, 4, or 5 does not locate (spec FR-078) ----
+
+const MOVED_RECORD = "1 .M SC.. 160000 160000 160000";
+// The first six fields of the parent status record of `path`.
+const parentRecord = (sup: string, path: string) =>
+  gitText(sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=dirty"])
+    .split("\0")
+    .find((r) => r.endsWith(` ${path}`))
+    ?.split(" ")
+    .slice(0, 6)
+    .join(" ");
+// The real `ls-files -z --stage -v` records of `sup`, without the records of `path` when `drop` is set.
+const indexListing = (sup: string, path: string, drop: boolean) =>
+  Buffer.from(
+    git(sup, ["ls-files", "-z", "--stage", "-v"])
+      .toString("latin1")
+      .split("\0")
+      .filter((r) => r !== "" && !(drop && r.endsWith(`\t${path}`)))
+      .map((r) => `${r}\0`)
+      .join(""),
+    "latin1",
+  );
+
+// Both reads of the unstaged `lib` row of one snapshot. `listing` replaces the snapshot index listing.
+async function bothReads(service: Service, sup: string, listing?: Buffer): Promise<{ change: Change; lib: WorkEntry | undefined; work: Work }> {
+  const { repositoryId } = await service.register(sup);
+  if (listing !== undefined) service.runner.inject.stdout = (call) => (call.arguments.includes("ls-files") && call.arguments.includes("-v") ? listing : undefined);
+  const read = await readOk(service, repositoryId).finally(() => (service.runner.inject.stdout = undefined));
+  const entry = read.entries.find((e) => e.path === "lib" && e.category === "unstaged");
+  expect({ listed: entry !== undefined }).toEqual({ listed: true });
+  const change = changed(await service.request<Change>("readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.snapshotId, entryId: entry!.entryId } }, envelope(read, repositoryId)));
+  const work = await service.request<Work>("readSubmoduleWork", { snapshotId: read.snapshotId }, envelope(read, repositoryId));
+  expect({ state: work.state, code: work.code, parsed: ReadSubmoduleWorkResult.safeParse(work.result).success }).toEqual({ state: "succeeded", code: undefined, parsed: true });
+  return { change, lib: work.result!.entries.find((e) => e.path === "lib"), work: work.result! };
+}
+const NOT_LOCATED = { change: { state: "not-located" }, kind: "submodule", lib: "not-located" };
+const shape = (r: Pick<Awaited<ReturnType<typeof bothReads>>, "change" | "lib">): unknown => ({ change: r.change.state.state === "commits" ? { state: "commits" } : r.change.state, kind: r.change.kind, lib: r.lib?.state });
+
+describe("a moved gitlink that the D11 checks do not locate (spec FR-078, contract Δ3)", () => {
+  caseTest("T121", "check 4: a junction at the submodule path gives not-located for both reads; the real folder gives commits and checked", ["shell-double", "ntfs-junction"], () =>
+    withService({ name: "t121-junction" }, async (service) => {
+      const w = world("junction");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      const real = join(w.sup, "lib-real");
+      renameSync(inLib(w), real);
+      symlinkSync(real, inLib(w), "junction");
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      expect(shape(await bothReads(service, w.sup))).toEqual(NOT_LOCATED);
+      unlinkSync(inLib(w));
+      renameSync(real, inLib(w));
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      expect(shape(await bothReads(service, w.sup))).toEqual({ change: { state: "commits" }, kind: "submodule", lib: "checked" });
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T121", "check 5: core.worktree of the submodule names a folder inside it, so both reads give not-located; without it they give commits and checked", SHELL, () =>
+    withService({ name: "t121-worktree" }, async (service) => {
+      const w = world("worktree");
+      const sub = inLib(w);
+      git(sub, ["checkout", "-q", "--detach", w.c[2]!]);
+      const inner = join(sub, "inner");
+      mkdirSync(inner);
+      git(sub, ["config", "core.worktree", inner.replaceAll(BACKSLASH, "/")]);
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      expect(shape(await bothReads(service, w.sup))).toEqual(NOT_LOCATED);
+      git(sub, ["config", "--unset", "core.worktree"]);
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      expect(shape(await bothReads(service, w.sup))).toEqual({ change: { state: "commits" }, kind: "submodule", lib: "checked" });
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T121", "check 3: a snapshot index listing without the gitlink entry gives not-located for both reads; the unchanged listing gives commits and checked", SHELL, () =>
+    withService({ name: "t121-index" }, async (service) => {
+      const w = world("index");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      expect(shape(await bothReads(service, w.sup, indexListing(w.sup, "lib", true)))).toEqual(NOT_LOCATED);
+      expect(shape(await bothReads(service, w.sup, indexListing(w.sup, "lib", false)))).toEqual({ change: { state: "commits" }, kind: "submodule", lib: "checked" });
+    }),
+    TIMEOUT_MS,
+  );
+});
+
+// T121 analyze finding T1: the place and the bound of the entries of unlisted moved gitlinks (contract Δ3, data-model §16).
+describe("readSubmoduleWork entries of unlisted moved gitlinks (contract Δ3 step 1, data-model §16)", () => {
+  // `<path>` as a copy of the library and a stage-0 gitlink at its first commit, without a `.gitmodules` entry.
+  const addGitlinks = (w: { sup: string; lib: string; c: string[] }, paths: readonly string[]) => {
+    for (const path of paths) cpSync(w.lib, join(w.sup, ...path.split("/")), { recursive: true });
+    git(w.sup, ["update-index", "--add", "--index-info"], { input: Buffer.from(paths.map((p) => `160000 ${w.c[0]!}\t${p}\n`).join("")) });
+  };
+
+  caseTest("T121", "an unlisted moved gitlink comes after the index entries; with its index entry it keeps its index place", SHELL, () =>
+    withService({ name: "t121-order" }, async (service) => {
+      const w = world("order");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      addGitlinks(w, ["z"]);
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      const dropped = await bothReads(service, w.sup, indexListing(w.sup, "lib", true));
+      expect(dropped.work.entries.map((e) => `${e.path} ${e.state}`)).toEqual(["z checked", "lib not-located"]);
+      const kept = await bothReads(service, w.sup, indexListing(w.sup, "lib", false));
+      expect(kept.work.entries.map((e) => `${e.path} ${e.state}`)).toEqual(["lib checked", "z checked"]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T121", "256 targets and one unlisted moved gitlink give limited 1 and no entry for it; with its index entry it is the first target", SHELL, () =>
+    withService({ name: "t121-bound" }, async (service) => {
+      const w = world("bound");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      addGitlinks(w, Array.from({ length: SUBMODULE_WORK_TARGETS }, (_, i) => `m/${String(i).padStart(3, "0")}`));
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      const dropped = await bothReads(service, w.sup, indexListing(w.sup, "lib", true));
+      expect({ entries: dropped.work.entries.length, limited: dropped.work.limited, lib: dropped.lib }).toEqual({ entries: SUBMODULE_WORK_TARGETS, limited: 1, lib: undefined });
+      // Control: `lib` sorts before `m/`, so it is a target, and the last `m/` gitlink is past the bound.
+      const kept = await bothReads(service, w.sup, indexListing(w.sup, "lib", false));
+      expect({ entries: kept.work.entries.length, limited: kept.work.limited, lib: kept.lib?.state }).toEqual({ entries: SUBMODULE_WORK_TARGETS, limited: 1, lib: "checked" });
+    }),
+    TIMEOUT_MS,
+  );
+});
+
+// T121 analyze finding U1: `workingParts` passes a path that is no valid UTF-8 (WSL), so rule 2 refuses it with reason `path`.
+describe("submoduleHead of a path without components (contract §6 \"File facts\", plan.md D20 rule 2)", () => {
+  caseTest("T121", "a path that is no valid UTF-8 gives {refused: path} before any Git process", [], async () => {
+    const runner = { run: () => { throw new Error("no Git process may start"); } };
+    const t = { operationId: "o", signal: new AbortController().signal, workspace: {}, installation: { selectedPath: "git" } };
+    expect(await submoduleHead(runner as never, t as never, Uint8Array.of(0x6c, 0xff))).toEqual({ value: { refused: "path" } });
+  });
 });
 
 // ---- T108: SC-012 cost on the service ----

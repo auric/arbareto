@@ -35,6 +35,7 @@
 - Ignored files: `check-ignore -z --stdin --no-index` removes ignored candidates. Git treats ignored files as replaceable, and the spec Assumptions accept that. The read has no `--literal-pathspecs` (R21 F1).
 - Bound: 20,000 candidate paths (`DISCARD_CHECK_PATHS`). Above it, Discard is unavailable with the limit.
 - Case folding on Windows can make the check refuse a case that Git allows. A case that the check misses loses nothing, because Git's own plain checkout refuses it (R3).
+- Note (2026-11-06): the last sentence is wrong for the `stash push` step. Its rollback to HEAD deletes untracked bytes at a path that HEAD and the target share, and the plain checkout never sees them (010 research R2 P17). Git's checkout also deletes a nested repository in an ignored folder in the way (P18). Plan D3 adds the `diff-index -R <HEAD>` listing and the nested-repository refusal, for Stash and reapply and for Discard changes.
 
 ## R5 Branch create, rename, delete
 

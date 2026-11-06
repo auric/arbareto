@@ -159,6 +159,20 @@
               "properties": {
                 "state": {
                   "type": "string",
+                  "const": "not-located"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "additionalProperties": false,
+              "title": "SubmoduleNotLocatedState"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
                   "const": "single"
                 }
               },

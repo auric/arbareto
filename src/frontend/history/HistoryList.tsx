@@ -3,7 +3,7 @@
 
 import { Archive01Icon, Cancel01Icon, CloudIcon, GitBranchIcon, Search01Icon, Tag01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type Ref } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
 import { HISTORY_VIEW_COMMITS } from "../../contracts/limits";
 import { CopyButton, unknownFormText, unknownReadText } from "../app/RepositoryStates";
 import { WarningIcon } from "../app/NoticeBand";
@@ -16,6 +16,7 @@ import { scopedAction } from "../keyboard/shortcuts";
 import { SPECIAL_ROWS, type Head, type HistoryView, type Scope, type SearchState, type ViewRow } from "../state/history-view";
 import { BOUNDARY_TEXT, columnWidth, LANE_SPACING, ViewCell, WorkingLineCell } from "./AncestryCell";
 import { INVALID_UTF8_TEXT, LOCAL_DATE } from "./CommitDetails";
+import { COMMIT_ANNOUNCE } from "./commit-texts";
 import { countText, HistoryFilter } from "./HistoryFilter";
 import { branchName, INDEX_ROW, LIMIT_TEXT, specialParts, WORKING_ROW, type Counted } from "./HistoryView";
 
@@ -276,12 +277,15 @@ export type HistoryListProps = {
   onLabelMenu?: LabelMenu;
   /** Feature 004 plan.md D15: Ctrl+B on the selected commit row opens Create branch here. */
   onCreateBranch?: (oid: string, anchor: HTMLElement) => void;
+  /** Feature 010 plan.md D13 "Menu": a right-click, Shift+F10, or the Menu key on a commit row. `merge` is true for a row with two or more parents. */
+  /** `pointerX` is the client x of a right-click, or undefined for a key. */
+  onCommitMenu?: (oid: string, anchor: HTMLElement, byKey: boolean, merge: boolean, pointerX?: number) => void;
   /** Feature 004 spec FR-072: the reason that no workspace read ran, in place of Loading…, or null. */
   unread?: string | null;
 };
 
 /** The feature 002 history list: a fixed-height window over the service view (plan.md D6). One listbox, one Tab stop, focus on the list. */
-export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking, onLabelMenu, onCreateBranch, unread = null }: HistoryListProps) {
+export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking, onLabelMenu, onCreateBranch, onCommitMenu, unread = null }: HistoryListProps) {
   const state = useSyncExternalStore(view.subscribe, view.getState);
   const ids = { heading: useId(), count: useId(), notes: useId(), list: useId() };
   const list = useRef<HTMLDivElement>(null);
@@ -308,7 +312,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   const written = useRef<number | null>(null);
   const [active, setActive] = useState(0);
   const [focused, setFocused] = useState(false);
-  // Plan D15 "History labels": the label that Left or Right moved to, for the row `oid`.
+  // Plan D15 "History labels": the label that Left or Right moved to, for the row `oid`. Feature 010 plan.md D1: index -1 is the commit after Left on the first label.
   const [labelAt, setLabelAt] = useState<{ oid: string; index: number } | null>(null);
 
   const scrollTo = (top: number) => {
@@ -411,19 +415,27 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
       return onCreateBranch(selectedOid, event.currentTarget);
     }
     // Feature 004 spec FR-014, plan D15 "History labels": Shift+F10 and the Menu key open the branch menu of the active label of the selected row.
+    // Feature 010 plan.md D1: with no active label, they open the commit menu.
     const menuKey = (event.key === "F10" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) || (event.key === "ContextMenu" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey);
-    if (menuKey && onLabelMenu !== undefined && selectedOid !== undefined && !event.nativeEvent.isComposing) {
-      const label = menuLabels[labelIndex];
-      if (label === undefined) return;
-      event.preventDefault();
+    if (menuKey && selectedOid !== undefined && !event.nativeEvent.isComposing) {
       const option = document.getElementById(optionId(selection!.index! + SPECIAL_ROWS));
+      const label = activeLabel;
+      if (label === null) {
+        if (onCommitMenu === undefined || selectedRow === undefined) return;
+        event.preventDefault();
+        return onCommitMenu(selectedOid, option ?? event.currentTarget, true, selectedRow.parents.length >= 2);
+      }
+      if (onLabelMenu === undefined) return;
+      event.preventDefault();
       const chip = [...(option?.querySelectorAll<HTMLElement>(".chip[data-kind]") ?? [])].find((c) => c.dataset.kind === label.kind && c.querySelector("[data-chip-name]")?.textContent === label.name);
       return onLabelMenu(label, chip ?? option ?? event.currentTarget, true);
     }
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
     if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && onLabelMenu !== undefined && selectedRow !== undefined && menuLabels.length > 0) {
       event.preventDefault();
-      const index = Math.max(0, Math.min(menuLabels.length - 1, labelIndex + (event.key === "ArrowRight" ? 1 : -1)));
+      // Left on the first label makes no label active (index -1). Right from no label goes to the first label.
+      const index = Math.max(-1, Math.min(menuLabels.length - 1, labelIndex + (event.key === "ArrowRight" ? 1 : -1)));
+      if (index === -1 && !moved) return;
       return setLabelAt({ oid: selectedRow.oid, index });
     }
     const page = Math.max(1, Math.floor(height / rowHeight));
@@ -469,10 +481,13 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   const selectedRow = state.selection?.mode === listMode && state.selection.index !== null ? view.row(state.selection.index) : undefined;
   const menuLabels = selectedRow?.labels.filter(hasMenu) ?? [];
   const moved = labelAt !== null && labelAt.oid === selectedRow?.oid;
-  const labelIndex = moved ? Math.min(labelAt.index, menuLabels.length - 1) : 0;
-  // The active label shows only after Left or Right, and only while the list has focus.
+  const labelIndex = moved ? Math.min(labelAt.index, menuLabels.length - 1) : -1;
+  // The active label shows only after Right, and only while the list has focus.
   const activeLabel = moved && focused ? (menuLabels[labelIndex] ?? null) : null;
-  const labelText = activeLabel === null ? null : `${activeLabel.name}, ${activeLabel.kind === "branch" ? "branch" : "remote-tracking"} label ${labelIndex + 1} of ${menuLabels.length}.`;
+  const labelText =
+    activeLabel !== null ? `${activeLabel.name}, ${activeLabel.kind === "branch" ? "branch" : "remote-tracking"} label ${labelIndex + 1} of ${menuLabels.length}.`
+    : moved && focused && labelIndex === -1 ? COMMIT_ANNOUNCE(selectedRow!.oid)
+    : null;
   const isSelected = (item: number) =>
     item < SPECIAL_ROWS ? selectedId === (item === 0 ? WORKING_ROW : INDEX_ROW) : state.selection?.index === item - SPECIAL_ROWS && state.selection.mode === listMode;
 
@@ -582,7 +597,19 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           </>
         ) : null}
       </>,
-      { "data-row-id": row.oid },
+      {
+        "data-row-id": row.oid,
+        // Feature 010 plan.md D1: a right-click selects the row as a click does, then opens the commit menu at it. A label chip stops the event first.
+        onContextMenu:
+          onCommitMenu === undefined
+            ? undefined
+            : (event: ReactMouseEvent<HTMLDivElement>) => {
+                event.preventDefault();
+                go(item);
+                list.current?.focus();
+                onCommitMenu(row.oid, event.currentTarget, false, row.parents.length >= 2, event.clientX);
+              },
+      },
     );
   };
 

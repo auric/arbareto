@@ -1777,6 +1777,343 @@
           ],
           "additionalProperties": false,
           "title": "RevertUnstagedReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "reset"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "soft",
+                    "mixed",
+                    "hard"
+                  ]
+                },
+                "branch": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "from": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "leave": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "gain": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "reflogOnly": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "forceNote": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "trackingRef": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        }
+                      },
+                      "required": [
+                        "trackingRef"
+                      ],
+                      "additionalProperties": false,
+                      "title": "ForceNote"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "trackedChanges": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "ignoredReplaced": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "target",
+                "mode",
+                "branch",
+                "from",
+                "leave",
+                "gain",
+                "reflogOnly",
+                "forceNote",
+                "trackedChanges",
+                "ignoredReplaced"
+              ],
+              "additionalProperties": false,
+              "title": "ResetPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "ResetReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "create-tag"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "target": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "annotated": {
+                  "type": "boolean"
+                },
+                "signs": {
+                  "type": "object",
+                  "properties": {
+                    "light": {
+                      "type": "boolean"
+                    },
+                    "annotated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "light",
+                    "annotated"
+                  ],
+                  "additionalProperties": false,
+                  "title": "TagSigns"
+                }
+              },
+              "required": [
+                "name",
+                "target",
+                "annotated",
+                "signs"
+              ],
+              "additionalProperties": false,
+              "title": "CreateTagPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan"
+          ],
+          "additionalProperties": false,
+          "title": "CreateTagReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "cherry-pick"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "commit": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "parents": {
+                  "maxItems": 64,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "oid": {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      },
+                      "subject": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "oid",
+                      "subject"
+                    ],
+                    "additionalProperties": false,
+                    "title": "CommitParent"
+                  }
+                },
+                "mainline": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "branch": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                }
+              },
+              "required": [
+                "commit",
+                "parents",
+                "mainline",
+                "branch"
+              ],
+              "additionalProperties": false,
+              "title": "CherryPickPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "CherryPickReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "revert-commit"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "commit": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "parents": {
+                  "maxItems": 64,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "oid": {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      },
+                      "subject": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "oid",
+                      "subject"
+                    ],
+                    "additionalProperties": false,
+                    "title": "CommitParent"
+                  }
+                },
+                "mainline": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "branch": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                }
+              },
+              "required": [
+                "commit",
+                "parents",
+                "mainline",
+                "branch"
+              ],
+              "additionalProperties": false,
+              "title": "RevertCommitPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "RevertCommitReviewed"
         }
       ]
     },
@@ -1851,6 +2188,10 @@
             "file-attributes",
             "xattr",
             "nothing-to-revert",
+            "tag-signing",
+            "already-on-branch",
+            "mainline-needed",
+            "not-merge",
             "untracked-in-way",
             "not-empty",
             "file",
@@ -2477,6 +2818,32 @@
             ],
             "additionalProperties": false,
             "title": "RevertRefusedFile"
+          }
+        },
+        "parents": {
+          "minItems": 2,
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "oid": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "oid",
+              "subject"
+            ],
+            "additionalProperties": false,
+            "title": "CommitParent"
           }
         }
       },

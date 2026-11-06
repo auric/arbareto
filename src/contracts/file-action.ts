@@ -9,8 +9,8 @@ import { WHOLE_FILE_STAGE_INPUT_BYTES } from "./limits";
 
 // Feature 004 contract Δ4 and Δ9: the refusals of a line selection. Data-model §6: no file decision gives them.
 export const LINE_ACTION_REASONS = ["context-only", "several-hunks", "deleted-file", "new-file", "eof-newline"] as const;
-// Feature 003 contract Δ4: only `resolve` gives `missing`. Feature 005 contract Δ4: only a moved gitlink gives `submodule-unborn`.
-export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "submodule-unborn", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing", ...LINE_ACTION_REASONS] as const;
+// Feature 003 contract Δ4: only `resolve` gives `missing`. Feature 005 contract Δ4: only a moved gitlink gives `submodule-not-located` and `submodule-unborn`.
+export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "submodule-not-located", "submodule-unborn", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing", ...LINE_ACTION_REASONS] as const;
 export type FileActionReason = (typeof FILE_ACTION_REASONS)[number];
 export type LineActionReason = (typeof LINE_ACTION_REASONS)[number];
 
@@ -40,7 +40,7 @@ export interface FileActionInput {
 }
 
 // Feature 005 data-model §17: `head` is the full object ID of the submodule HEAD.
-export type GitlinkFact = { head: string } | { refused: "submodule" | "submodule-unborn" };
+export type GitlinkFact = { head: string } | { refused: "path" | "submodule-not-located" | "submodule-unborn" };
 
 // A moved gitlink stages as an `--index-info` line (feature 005 contract Δ4). Every other path goes to `update-index --add --remove --stdin`.
 export type StagePath = { path: Uint8Array; mode?: undefined; objectId?: undefined } | UnstagePath;
@@ -217,7 +217,7 @@ export function decideFileAction(input: FileActionInput): FileActionDecision {
 }
 
 // Contract Δ4 and data-model §9: Mark resolved.
-export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof" | "submodule-unborn" | LineActionReason>;
+export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof" | "submodule-not-located" | "submodule-unborn" | LineActionReason>;
 
 // `mode` is the `mW` of the `u` record: the `update-index --index-info` mode of the stage-0 entry (research R16 i).
 export interface ResolvePath {

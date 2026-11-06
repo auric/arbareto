@@ -9,7 +9,7 @@ import type { TerminalState } from "../../contracts/errors";
 import { COMMIT_MESSAGE_BYTES } from "../../contracts/limits";
 import { codeText, failureText, unknownFormText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
-import { BLOCKED_TEXT, STALE_TEXT, type Blocked, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, IN_APP_STATES, STALE_TEXT, type Blocked, type StagingTarget } from "../changes/HunkControls";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
@@ -104,10 +104,10 @@ export const rewriteText = (a: AmendReview) =>
   a.rewritesUpstream === true
     ? `Amend rewrites commit ${shortId(a.headOid)}, which ${upstreamName(a.upstream)} already has. The next push needs Force push with lease.`
     : `Arbareto cannot check whether ${upstreamName(a.upstream)} holds this commit. Amend rewrites it if it was pushed.`;
-/** FR-098: the box is unavailable for an unborn branch and while a merge or a rebase is in progress. The second reason is quiet (FR-105). */
+/** FR-098: the box is unavailable for an unborn branch and while a merge, a rebase, a cherry-pick, or a revert is in progress (feature 010 plan.md D6). The second reason is quiet (FR-105). */
 export function amendReason(head: Head | null, operationState: WorkspaceSnapshot["operationState"] | undefined): string | null {
   if (head?.state === "unborn") return AMEND_UNBORN;
-  return operationState === "merging" || operationState === "rebasing" ? BLOCKED_TEXT.operation : null;
+  return operationState !== undefined && IN_APP_STATES.includes(operationState) ? BLOCKED_TEXT.operation : null;
 }
 
 

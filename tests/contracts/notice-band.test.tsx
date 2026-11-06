@@ -49,8 +49,8 @@ describe("notice band", () => {
     test(`${operationState} with ${conflicted} conflicted files gives one blocking row: "${first}"`, () => {
       const text = plain(band({ operationState, conflicted }));
       expect(count(text, first)).toBe(1);
-      // Feature 003 FR-030: a merge or a rebase in progress gets the conflict actions, so the 001 second sentence goes.
-      if (operationState === "merging" || operationState === "rebasing") return expect(count(text, SECOND)).toBe(0);
+      // Feature 003 FR-030 and feature 010 plan.md D6: these states get the conflict actions, so the 001 second sentence goes.
+      if (operationState === "merging" || operationState === "rebasing" || operationState === "cherry-picking" || operationState === "reverting") return expect(count(text, SECOND)).toBe(0);
       expect(count(text, SECOND)).toBe(1);
       expect(text.indexOf(SECOND)).toBeGreaterThan(text.indexOf(first));
     });

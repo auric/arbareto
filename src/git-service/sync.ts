@@ -21,12 +21,11 @@ import { contextOf } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
 import { trackStall } from "./stall";
-import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
 import { fetchArgs, pushArgs, upstreamArgs } from "./sync-commands";
 import { runIntegration, type StepPhase } from "./sync-integrate";
 import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, type FetchFlag, type FetchList, type FetchUpdate, type PushStatus } from "./sync-parsers";
-import { lastValue, listRefs, observeSync, refKey, refText, type Observation, type SyncBinding } from "./sync-review";
+import { lastValue, listRefs, observeSync, refKey, refText, type Observation, type SyncBinding, type SyncContext } from "./sync-review";
 import type { ConfigEntry, Trust } from "./trust";
 import { processEnd } from "./wsl-files";
 
@@ -57,7 +56,7 @@ export interface ConnectTarget {
 export interface SyncerOptions {
   runner: GitRunner & SyncRunner;
   trust: Trust;
-  reader: Pick<WorkspaceReader, "operationState">;
+  reader: SyncContext["reader"];
   approvals: Approvals;
   registry: OperationRegistry;
   exclusion: Exclusion;
@@ -228,11 +227,11 @@ export function createSyncer(o: SyncerOptions) {
 
   async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, key: ApprovalKey, approval: SyncReview): Promise<void> {
     const b = approval.binding;
-    const context: ObserveContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
+    const context: SyncContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
     await runMarked(o, { operationId, kind: "sync", action: b.payload.action, workspace: w }, context, (m) => steps(m, w, installation, operationId, signal, key, b));
   }
 
-  async function steps({ ctx, q, refuse, resolved }: Marked<ObserveContext>, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, key: ApprovalKey, b: SyncBinding): Promise<void> {
+  async function steps({ ctx, q, refuse, resolved }: Marked<SyncContext>, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, key: ApprovalKey, b: SyncBinding): Promise<void> {
     let lastDescendants = 0;
     // The `pageant` replies of this operation. A reply other than `git` keeps a connect target for a failure (data-model §11).
     const replies: PageantReply["result"][] = [];

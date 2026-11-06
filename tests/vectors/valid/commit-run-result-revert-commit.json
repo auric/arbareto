@@ -1,0 +1,5 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"revert-commit\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"refs\":[{\"ref\":\"refs/heads/main\"}],\"operationState\":\"normal\",\"unmerged\":0}"
+}

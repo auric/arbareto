@@ -15171,6 +15171,11 @@ pub(crate) mod tests {
             Mutation::Commit,
             Mutation::SaveGitignore,
             Mutation::DeleteFiles,
+            // Feature 010 contract Δ3: these steps run only Git.
+            Mutation::Reset,
+            Mutation::CreateTag,
+            Mutation::CherryPick,
+            Mutation::RevertCommit,
         ] {
             let operation = uuid();
             harness.started_as(&operation, mutation, &workspace);

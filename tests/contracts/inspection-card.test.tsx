@@ -163,6 +163,23 @@ describe("the card shows only for a cut name (spec FR-065, US8-1, US8-2)", () =>
     expect(card()!.hasAttribute("data-instant")).toBe(true);
   });
 
+  test("a cut upstream text beside a name that fits shows the card on hover and on keyboard focus", async () => {
+    const host = await sidebar();
+    const target = row(host, "main,");
+    const name = target.getAttribute("aria-label");
+    stubCut(nameOf(target), false);
+    stubCut(target.querySelector<HTMLElement>('[data-slot="ref-upstream"]')!, true);
+    await hover(target);
+    await wait(OPEN_DELAY + 100);
+    expect(cardLines()).toEqual(["main", "Upstream: origin/main", "Up to date"]);
+    await leave(target);
+    await wait(OPEN_DELAY + 100);
+    await focus(target);
+    expect(card()).not.toBeNull();
+    expect(card()!.hasAttribute("data-instant")).toBe(true);
+    expect(target.getAttribute("aria-label")).toBe(name);
+  });
+
   test("a sidebar name that fits shows no card on hover and on focus", async () => {
     const host = await sidebar();
     const target = row(host, "spike,");

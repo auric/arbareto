@@ -647,7 +647,7 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
     throw new Error(`${what}: 40 presses of ${key} did not reach it, the focus is on ${js(await active(c))}`);
   }
   const RESOLVE_BUTTON = "Resolve conflicts";
-  const OPERATION_REASON = "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.";
+  const OPERATION_REASON = "A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.";
   // The Chromium accessibility description is the UIA FullDescription of the control.
   async function description(c: Cdp, expression: string): Promise<string | null> {
     await c.send("Accessibility.enable");
@@ -753,6 +753,51 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
       }
     },
     2 * (caseTimeout(60) + 2 * GIT_WAIT_MS),
+  );
+
+  test.skipIf(reason !== null)(
+    "004 plan Top bar row: on a detached HEAD at 1280x800 CSS px and Comfortable, the header is one --h-header row",
+    async () => {
+      const f = fixture("amend-on-upstream", "detached-header-repo");
+      git(f, ["switch", "-q", "--detach"]);
+      const { app, c } = await cdpStart(f, "detached-header");
+      try {
+        // A device metrics override sets the CSS viewport. The window size stays.
+        await c.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 0, mobile: false });
+        await until<number>(c, "the 1280 px viewport", "innerWidth", (v) => v === 1280);
+        await found(app.pid, "View", ControlType.MenuItem, expand);
+        const item = `[...document.querySelectorAll('[role="menuitemradio"]')].find((e) => e.textContent.trim() === "Comfortable")`;
+        await until<boolean>(c, "the Comfortable item", `!!(${item})`, (v) => v);
+        await c.evaluate(`(${item}).focus(); true`);
+        await press(c, "Enter");
+        await until<string | null>(c, "the Comfortable density", "document.documentElement.getAttribute('data-density')", (v) => v === "comfortable");
+        await until<boolean>(c, "the detached branch button", `document.querySelector('header [data-slot="branch-button"]')?.textContent.includes('Detached at') ?? false`, (v) => v);
+        // `clientHeight` excludes the border. At 125 % scaling Chromium snaps the 1 px border to 1 device px, so the border box is not a whole CSS px.
+        // CSS Flexbox §9.4: with row-gap 0 each item lies inside its flex line, and the lines do not overlap. So vertically overlapping items share one line.
+        const measure = `new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => {
+          const h = document.querySelector('header[data-section="header"]');
+          const boxes = [...h.children].map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0).sort((a, b) => a.top - b.top);
+          let lines = 0, bottom = -Infinity;
+          for (const r of boxes) { if (r.top >= bottom) lines++; bottom = Math.max(bottom, r.bottom); }
+          done({ client: h.clientHeight, row: Number.parseFloat(getComputedStyle(h).minHeight), lines, tops: boxes.map((r) => r.top), count: !!h.querySelector('[data-slot="tracking-count"]'), reason: h.textContent.includes('Pull, Push: No branch checked out.') });
+        })))`;
+        type Header = { client: number; row: number; lines: number; tops: number[]; count: boolean; reason: boolean };
+        const header = await c.evaluate<Header>(measure);
+        console.log(`HEADER 004: ${js(header)}`);
+        expect({ ...header, tops: [] }).toEqual({ client: header.row, row: header.row, lines: 1, tops: [], count: false, reason: true });
+        // Control: at 900 CSS px the controls do not fit, so the last controls wrap to a second line.
+        await c.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 800, deviceScaleFactor: 0, mobile: false });
+        await until<number>(c, "the 900 px viewport", "innerWidth", (v) => v === 900);
+        const narrow = await c.evaluate<Header>(measure);
+        console.log(`HEADER 004 control 900: ${js(narrow)}`);
+        expect(narrow.lines).toBe(2);
+      } finally {
+        c.close();
+        sockets.delete(c);
+        await stop(app);
+      }
+    },
+    caseTimeout(12),
   );
 
   // ---- Live input ----

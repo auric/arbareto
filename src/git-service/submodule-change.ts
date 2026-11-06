@@ -47,6 +47,8 @@ export interface ChangeRequest {
   index?: readonly IndexEntry[];
   // Contract §5: a status bound cut the snapshot index listing, so the read refuses with OUTPUT_LIMIT.
   indexCut?: true;
+  // Plan.md D20 rule 2: the row is a `movedGitlink` record, so a failed D11 check gives `not-located`.
+  moved?: true;
 }
 
 // An all-zero ID marks the absent side (git-status(1), diff-format(5)).
@@ -306,7 +308,7 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
         return headId(orThrow(await lineOf(runner, t, submoduleHeadOidArgs(location))), fmt);
       };
       const [kind, here] = await both(kindRead, locate());
-      if (here === false) return { result: "succeeded", value: value(kind, { state: "not-initialized" }) };
+      if (here === false) return { result: "succeeded", value: value(kind, { state: request.moved ? "not-located" : "not-initialized" }) };
       if (here === null) return { result: "failed", code: "GIT_FAILED" };
       if (typeof here === "string") next = here;
       if (old === null || next === null) return { result: "succeeded", value: value(kind, { state: "single" }) };
@@ -342,7 +344,7 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
 
   type WorkEntry = { pathBytes: string; path: string } & (
     | { state: "checked"; modified: boolean; untracked: boolean }
-    | { state: "not-initialized" }
+    | { state: "not-initialized" | "not-located" }
     | { state: "unchecked"; reason: "programs" }
     | { state: "unchecked"; reason: "failed"; code: ErrorCode }
   );
@@ -395,6 +397,8 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
   async function readSubmoduleWork(
     t: InspectionTarget,
     snapshot: Pick<ChangeSnapshot, "snapshotId" | "indexEntries" | "indexCut" | "completeness"> & { entries: readonly { pathBytes: string }[] },
+    // Plan.md D20 rule 2: the `pathBytes` of the `movedGitlink` records of the snapshot.
+    moved: ReadonlySet<string> = new Set(),
   ): Promise<InspectionOutcome> {
     // Contract §5: a cut index listing names no gitlink, so no target list exists.
     if (snapshot.indexCut) return { result: "failed", code: "OUTPUT_LIMIT" };
@@ -404,7 +408,7 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
     const gitlinks = snapshot.indexEntries.filter((e) => e.stage === 0 && e.mode === GITLINK);
     const named = (e: IndexEntry) => ({ pathBytes: Buffer.from(e.path).toString("base64"), path: displayPath(e.path) });
     const targets = gitlinks.slice(0, SUBMODULE_WORK_TARGETS);
-    // Null: plan.md D11 check 4 or 5 failed, so the target gives `not-initialized`.
+    // Null: plan.md D11 check 4 or 5 failed, so the target gives `not-initialized`, or `not-located` for a moved gitlink.
     const results: (WorkEntry | null | undefined)[] = targets.map(() => undefined);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), readDeadlineMs);
@@ -460,16 +464,21 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
       const entries: WorkEntry[] = [];
       results.forEach((r, i) => {
         if (r === undefined) entries.push({ ...named(targets[i]!), state: "unchecked", reason: "failed", code: "DEADLINE" });
-        else entries.push(r ?? { ...named(targets[i]!), state: "not-initialized" });
+        else entries.push(r ?? { ...named(targets[i]!), state: moved.has(named(targets[i]!).pathBytes) ? "not-located" : "not-initialized" });
       });
+      // Plan.md D11 check 3: a moved gitlink without its stage-0 gitlink entry in the snapshot index is no target. It gives `not-located`.
+      const indexed = new Set(gitlinks.map((e) => named(e).pathBytes));
+      const unlisted = [...moved].filter((p) => !indexed.has(p));
+      const shown = unlisted.slice(0, SUBMODULE_WORK_TARGETS - entries.length);
+      for (const pathBytes of shown) entries.push({ pathBytes, path: displayPath(Buffer.from(pathBytes, "base64")), state: "not-located" });
       // Spec FR-075: a gitlink with local edits and no parent status record. A cut status listing names no such set.
       const listed = new Set(snapshot.entries.map((e) => e.pathBytes));
       const extraRows =
         snapshot.completeness.state === "complete"
           ? entries.filter((e) => e.state === "checked" && (e.modified || e.untracked) && !listed.has(e.pathBytes)).map(({ pathBytes, path }) => ({ pathBytes, path }))
           : [];
-      // Contract Δ3: the gitlinks after the first SUBMODULE_WORK_TARGETS in index order are not checked.
-      return { result: "succeeded", value: { snapshotId: snapshot.snapshotId, entries, extraRows, limited: gitlinks.length - targets.length } };
+      // Contract Δ3: the gitlinks after the first SUBMODULE_WORK_TARGETS entries are not checked.
+      return { result: "succeeded", value: { snapshotId: snapshot.snapshotId, entries, extraRows, limited: gitlinks.length - targets.length + unlisted.length - shown.length } };
     } catch (error) {
       if (error instanceof Stop) return error.outcome;
       throw error;
@@ -495,7 +504,9 @@ export function workspaceIds(entry: { category: string; modes?: readonly string[
 // ---- Feature 005 plan.md D20 rule 2: the facts of a moved gitlink (data-model §17) ----
 
 export type GitlinkRead = { value: GitlinkFact } | ReadFailure;
-const NOT_LOCATED: GitlinkRead = { value: { refused: "submodule" } };
+const NOT_LOCATED: GitlinkRead = { value: { refused: "submodule-not-located" } };
+// Contract §6 "File facts": a path that is no valid UTF-8 has no components. `workingParts` lets it reach rule 2.
+const PATH_REFUSED: GitlinkRead = { value: { refused: "path" } };
 const HEAD_FAILED: { code: ErrorCode } = { code: "GIT_FAILED" };
 
 // Rule 2 step 1 (plan.md D11 check 3) on the snapshot index entries.
@@ -505,7 +516,7 @@ const gitlinkEntry = (index: readonly IndexEntry[], path: Uint8Array): boolean =
 // The caller runs step 1 first. A checkpoint covers it with the bound index digest.
 export async function submoduleHead(runner: GitRunner, t: ReadTarget & { installation: Pick<ReadInstallation, "selectedPath"> }, path: Uint8Array): Promise<GitlinkRead> {
   const parts = componentsOf(path);
-  if (parts === null) return NOT_LOCATED;
+  if (parts === null) return PATH_REFUSED;
   const facts = await requestFacts(runner, t.operationId, t.workspace, false, [{ root: "worktreeRoot", path: parts }, { root: "worktreeRoot", path: [...parts, ".git"] }], t.signal);
   if (t.signal.aborted) return { stop: "canceled" };
   if (!Array.isArray(facts)) return facts;

@@ -189,7 +189,7 @@ A developer uses the same actions in a WSL repository. The write runs inside the
 
 Include Revert selected lines and Revert hunk in the unstaged diff and in the staged diff. Include Revert file for one or several rows of the Changes list and of the Staged list. Include Revert all unstaged changes. Include their reviews, confirmations, refusals, results, keys, menus, and WSL parity.
 
-Exclude the revert of untracked files: the 005 Delete flow covers them. Exclude a backup, an undo, and a Recycle Bin copy of reverted content. Exclude Revert folder and Revert all changes, which would be Git's `reset --hard`. Exclude a revert to another revision (005 excludes "Reset file to a revision"). Exclude Git's commit revert, branch reset, and stash. Exclude the revert of submodules, symbolic links, renames, mode changes, type changes, and conflicted files. Exclude files with a filter driver or Git LFS. Exclude any revert action in History. Exclude Bitbucket and Jira integration and the Linux qualification (feature 009).
+Exclude the revert of untracked files: the 005 Delete flow covers them. Exclude a backup, an undo, and a Recycle Bin copy of reverted content. Exclude Revert folder and Revert all changes, which would be Git's `reset --hard`. Exclude a revert to another revision (005 excludes "Reset file to a revision"). Exclude Git's commit revert, branch reset, and stash. Exclude the revert of submodules, symbolic links, renames, mode changes, type changes, and conflicted files. Exclude files with a filter driver or Git LFS. Exclude any revert action in History. Exclude Bitbucket and Jira integration and the Linux qualification (feature 009). Note (2026-11-04, user decision): Feature 010 adds Git's commit revert and branch reset from the History commit menu. Its Reset Hard covers "Revert all changes", which would be Git's `reset --hard`. The 008 revert actions stay out of History.
 
 The no-heuristics rule applies to every requirement. Every decision comes from exact parses of machine-readable Git output, from Git exit codes that the Git documentation defines for that command, from OS facts, or from contract-defined values. Git message text, timing, retry counts, and name patterns never decide an outcome.
 
@@ -225,7 +225,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-003**: Every path MUST pass to Git as a literal value after an end-of-options marker where Git supports one.
 - **FR-004**: A revert MUST run no repository program: no hook, no filter driver, no textconv driver, no external diff, and no `core.fsmonitor` command. It MUST NOT need trust approval. Reads that load the index MUST wait behind the 001 read gate. The `post-checkout` hook does not run (Clarifications, 2026-10-27).
 - **FR-005**: A revert MUST NOT download objects (001 FR-025). A missing object MUST refuse the action before any change, with the 001 missing-object remedy.
-- **FR-006**: Only the Commit view MUST offer revert actions: the Changes list, the Staged list, and the diff. History, the History commit diff, and the commit details MUST NOT offer one.
+- **FR-006**: Only the Commit view MUST offer revert actions: the Changes list, the Staged list, and the diff. History, the History commit diff, and the commit details MUST NOT offer one. Note (2026-11-04, user decision): "Revert commit…" (`ITEM_REVERT`) of the feature 010 History commit menu is no 008 revert action. This requirement stays valid for the 008 actions.
 
 #### Review and confirmation
 

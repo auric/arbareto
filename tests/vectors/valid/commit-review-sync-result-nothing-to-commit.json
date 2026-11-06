@@ -1,0 +1,5 @@
+{
+  "schema": "review-sync-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"nothing-to-commit\"}"
+}

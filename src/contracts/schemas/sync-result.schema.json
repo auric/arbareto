@@ -339,7 +339,9 @@
               "type": "string",
               "enum": [
                 "merging",
-                "rebasing"
+                "rebasing",
+                "cherry-picking",
+                "reverting"
               ]
             },
             "unmerged": {

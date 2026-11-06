@@ -18,7 +18,7 @@ import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixtu
 import { GIT } from "../git/git-binary";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { BOARD_TOP, BOARD_TREE, boardWorld, folderCount, folderWorld, ICONS, markParts, otherRepo, twinWorlds } from "./submodule-tree-fixture";
+import { BOARD_TOP, BOARD_TREE, boardWorld, folderCount, folderWorld, ICONS, markParts, otherRepo, twinWorlds, wideWorld } from "./submodule-tree-fixture";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./submodule-tree-fixture.ts", "../../src/contracts/limits.ts"]) printOrigin(helper, import.meta.dir);
@@ -29,17 +29,21 @@ const STEP_MS = MAX_WAIT_MS + MAX_CALL_MS;
 const caseTimeout = (steps: number, extraMs = 0) => steps * STEP_MS + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS + extraMs;
 // A key response, a view change, or a service round trip after a key stays far below it.
 const KEY_WAIT_MS = 10_000;
-// Research R31: a list review costs about 250 ms per checked-out row on Windows, so 256 rows take about 64 s.
-const LIST_WAIT_MS = 300_000;
+// Research R31 "List time": the SC-020 budget for 256 rows is 55 s, and build ba095f87 took 107.8 s. The budget for 1,024 rows is 190 s.
+const LIST_WAIT_MS = 600_000;
 
 // ---- Budgets and sample counts (spec SC-018, SC-019; 001 SC-005). Fixed before the first measured run (constitution VII). ----
 
 // Spec SC-018: warm, median of 10 counted runs after one warm-up run, with 20 and 256 checked-out submodules.
 const RUNS = 10;
 const SIZES = [20, 256] as const;
+// Spec SC-020, amended 2026-11-04 (T161): the twins of 1,024 rows have a list budget and no SC-018 budget.
+const LIST_SIZES = [...SIZES, 1_024] as const;
 // Spec SC-018: (median time to the last branch mark) - (median time to the last row of the detached twin), per submodule row. The T144 control sets it to 1.
 const MARK_MS_PER_ROW = 30;
-// Spec SC-019 and 001 SC-005: 95% of inputs within 100 ms, every input within 500 ms. The T144 control sets INPUT_P95_MS to 1.
+// Spec SC-020: the median time from the Enter keydown to the last branch mark, for each twin. The T150 and T161 controls set each value to 1.
+const LIST_MS: Record<(typeof LIST_SIZES)[number], number> = { 20: 6_500, 256: 55_000, 1_024: 190_000 };
+// Spec SC-019 and 001 SC-005: 95% of inputs within 100 ms, every input within 500 ms. The T144 and T161 controls set INPUT_P95_MS to 1.
 const INPUT_P95_MS = 100;
 const INPUT_MAX_MS = 500;
 // One uncounted warm-up cycle, then the counted cycles. Each cycle sends the 10 keys of `CYCLE`, so the p95 counts 200 inputs.
@@ -268,7 +272,7 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
   // ---- Fixtures (no app) ----
 
   test.skipIf(GIT === null)(
-    "T144 fixtures: the board set, the SC-018 twins of 20 and 256 rows, and the 1,024 and 1,025 folder sets give the expected gitlinks, marks, and folder counts",
+    "T144 and T161 fixtures: the board set, the SC-018 twins of 20 and 256 rows, the 1,024 and 1,025 folder sets, and the 1,024 rows at f<i>/s give the expected gitlinks, marks, and folder counts",
     () => {
       const gitlinkPaths = (repo: string) =>
         git(repo, ["ls-files", "-s", "-z"])
@@ -307,6 +311,10 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
         const cloned = paths.filter((p) => existsSync(join(f.repo, p.split("/")[0]!)));
         expect({ folders, gitlinks: paths.length, count: folderCount(paths), cloned }).toEqual({ folders, gitlinks: 256, count: folders, cloned: [] });
       }
+      const w = wideWorld(GIT!, fixtureDir("check-wide"));
+      const wide = gitlinkPaths(w.repo);
+      const wideCloned = wide.filter((p) => existsSync(join(w.repo, p.split("/")[0]!)));
+      expect({ gitlinks: wide.length, first: wide[0], last: wide.at(-1), count: folderCount(wide), cloned: wideCloned }).toEqual({ gitlinks: 1_024, first: "f0000/s", last: "f1023/s", count: 1_024, cloned: [] });
     },
     20 * 60_000,
   );
@@ -372,9 +380,10 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
 
   // ---- SC-018: the A/B time to the last mark ----
 
-  for (const n of SIZES) {
+  for (const n of LIST_SIZES) {
+    const sc018 = (SIZES as readonly number[]).includes(n);
     test.skipIf(reason !== null)(
-      `SC-018: with ${n} checked-out submodules, the time to the last branch mark minus the time to the last row of the detached twin is at most ${MARK_MS_PER_ROW} ms per row (medians of ${RUNS} after one warm-up run)`,
+      `${sc018 ? `SC-018: with ${n} checked-out submodules, the time to the last branch mark minus the time to the last row of the detached twin is at most ${MARK_MS_PER_ROW} ms per row, and ` : ""}SC-020: with ${n.toLocaleString("en-US")} checked-out submodules, each twin shows its last mark within ${LIST_MS[n]} ms (medians of ${RUNS} after one warm-up run)`,
       async () => {
         const t = twinWorlds(GIT!, fixtureDir(`sc018-${n}`), n);
         const other = otherRepo(GIT!, fixtureDir(`sc018-${n}-other`));
@@ -403,7 +412,8 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           const b = median(times.detached);
           const perRow = (a - b) / n;
           console.log(`OBSERVATION ${TASK}: SC-018 ${n} rows: branch runs ${js(rounded(times.branch))} ms, median ${a.toFixed(1)} ms; detached runs ${js(rounded(times.detached))} ms, median ${b.toFixed(1)} ms; ${perRow.toFixed(2)} ms per row, budget ${MARK_MS_PER_ROW} ms`);
-          expect({ n, perRow: perRow <= MARK_MS_PER_ROW }).toEqual({ n, perRow: true });
+          console.log(`OBSERVATION ${TASK}: SC-020 ${n} rows: branch median ${a.toFixed(1)} ms, detached median ${b.toFixed(1)} ms, budget ${LIST_MS[n]} ms`);
+          expect({ n, perRow: !sc018 || perRow <= MARK_MS_PER_ROW, branch: a <= LIST_MS[n], detached: b <= LIST_MS[n] }).toEqual({ n, perRow: true, branch: true, detached: true });
         } finally {
           await end(s);
         }
@@ -412,67 +422,100 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
     );
   }
 
-  // ---- SC-019: the key response with 256 rows and 1,024 open folders ----
+  // ---- SC-019: the key response with 1,024 open folders, and 256 or 1,024 submodule rows ----
 
-  test.skipIf(reason !== null)(
-    `SC-019: with 256 submodule rows and 1,024 open folder rows, ${INPUT_P95_MS} ms for 95% of the tree keys and ${INPUT_MAX_MS} ms for every key (${INPUT_CYCLES * 10} inputs after ${INPUT_WARMUP_CYCLES} warm-up cycle)`,
-    async () => {
-      const f = folderWorld(GIT!, fixtureDir("sc019"), 1_024);
-      const s = await session("sc019", f.repo);
-      try {
-        // T147: the tree mounts only the rows in view. The first row and the root set size show that the 256 folders `t000` to `t255` are listed.
-        const head = factsOf(`${ITEMS}[0]`);
-        await until<RowFacts | null>(s.c, "the tree rows", head, (v) => v?.path === "t000", LIST_WAIT_MS);
-        expect({ line: await s.c.evaluate<string | null>(BOUND_LINE), first: await s.c.evaluate<RowFacts | null>(head) }).toEqual({ line: null, first: { path: "t000", label: "t000", level: 1, pos: 1, size: 256, expanded: "true" } });
-        console.log(`OBSERVATION ${TASK}: SC-019 mounted rows ${await s.c.evaluate<number>(`${ITEMS}.length`)} of ${256 + 1_024}`);
-        // W3C Event Timing: the duration of each keydown runs from the event to the next paint after its handlers.
-        await s.c.evaluate(`(() => {
-          window.__t144Keys = [];
-          window.__t144Events = [];
-          addEventListener('keydown', (e) => window.__t144Keys.push(e.timeStamp), { capture: true });
-          window.__t144Take = (entries) => { for (const e of entries) if (e.name === 'keydown') window.__t144Events.push({ start: e.startTime, duration: e.duration }); };
-          window.__t144Observer = new PerformanceObserver((list) => window.__t144Take(list.getEntries()));
-          window.__t144Observer.observe({ type: 'event', durationThreshold: ${EVENT_THRESHOLD_MS} });
-          return true;
-        })()`);
-        // The focused treeitem of the group tree, or null.
-        const FOCUS = factsOf(`(${GROUP}?.querySelector('[role=tree]')?.contains(document.activeElement) && document.activeElement?.getAttribute('role') === 'treeitem' ? document.activeElement : null)`);
-        const folder = (path: string, level: number, expanded: string) => ({ path, label: path.split("/").at(-1)!, level, pos: 1, size: level === 1 ? 256 : 1, expanded });
-        // The tree starts with `t000`, `t000/a`, `t000/a/b`, `t000/a/b/c`, and the row `s`, and ends with `t255/a/b/c` and its row `s`. Each step names the key and the focus that it must give (plan D15 keyboard map).
-        const CYCLE: [string, RowFacts][] = [
-          ["Home", folder("t000", 1, "true")],
-          ["ArrowDown", folder("t000/a", 2, "true")],
-          ["ArrowDown", folder("t000/a/b", 3, "true")],
-          ["ArrowRight", folder("t000/a/b/c", 4, "true")],
-          ["ArrowLeft", folder("t000/a/b/c", 4, "false")],
-          ["ArrowRight", folder("t000/a/b/c", 4, "true")],
-          ["Enter", folder("t000/a/b/c", 4, "false")],
-          ["Enter", folder("t000/a/b/c", 4, "true")],
-          ["End", { path: "t255/a/b/c/s", label: "s", level: 5, pos: 1, size: 1, expanded: null }],
-          ["ArrowUp", folder("t255/a/b/c", 4, "true")],
-        ];
-        const first = `${GROUP}.querySelector('[role=treeitem][tabindex="0"]')`;
-        await s.c.evaluate(`(${first}).focus(); true`);
-        await until<boolean>(s.c, "the tree focus", `document.activeElement === (${first})`, (v) => v);
-        const durations: number[] = [];
-        for (let cycle = 0; cycle < INPUT_WARMUP_CYCLES + INPUT_CYCLES; cycle++) {
-          await s.c.evaluate("(window.__t144Keys = [], window.__t144Events = [], true)");
-          for (const [key, want] of CYCLE) {
-            await press(s.c, key);
-            await until<RowFacts | null>(s.c, `cycle ${cycle} ${key}`, FOCUS, (v) => js(v) === js(want));
-          }
-          await s.c.evaluate("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => done(true), 50))))");
-          const { keys, events } = await s.c.evaluate<{ keys: number[]; events: { start: number; duration: number }[] }>("(window.__t144Take(window.__t144Observer.takeRecords()), { keys: window.__t144Keys, events: window.__t144Events })");
-          expect({ cycle, keys: keys.length }).toEqual({ cycle, keys: CYCLE.length });
-          if (cycle >= INPUT_WARMUP_CYCLES) durations.push(...keys.map((k) => events.find((e) => e.start === k)?.duration ?? EVENT_THRESHOLD_MS));
-        }
-        console.log(`OBSERVATION ${TASK}: SC-019 ${durations.length} inputs, p95 ${p95(durations)} ms, max ${Math.max(...durations)} ms, durations ${js(durations)}`);
-        expect(durations.length).toBe(INPUT_CYCLES * CYCLE.length);
-        expect({ p95: p95(durations) <= INPUT_P95_MS, max: Math.max(...durations) <= INPUT_MAX_MS }).toEqual({ p95: true, max: true });
-      } finally {
-        await end(s);
-      }
+  type KeyCase = { rows: number; build: () => { repo: string }; first: RowFacts; cycle: [string, RowFacts][] };
+  // The focus that each key must give (plan D15 keyboard map). A step names the key and the focused row after it.
+  const folder = (path: string, level: number, expanded: string, pos = 1, size = level === 1 ? 256 : 1): RowFacts => ({ path, label: path.split("/").at(-1)!, level, pos, size, expanded });
+  const leaf = (path: string, level: number): RowFacts => ({ path, label: "s", level, pos: 1, size: 1, expanded: null });
+  const fRow = (i: number, expanded: string) => folder(`f${String(i).padStart(4, "0")}`, 1, expanded, i + 1, 1_024);
+  const KEY_CASES: KeyCase[] = [
+    // T144: the tree starts with `t000`, `t000/a`, `t000/a/b`, `t000/a/b/c`, and the row `s`, and ends with `t255/a/b/c` and its row `s`.
+    {
+      rows: 256,
+      build: () => folderWorld(GIT!, fixtureDir("sc019"), 1_024),
+      first: folder("t000", 1, "true"),
+      cycle: [
+        ["Home", folder("t000", 1, "true")],
+        ["ArrowDown", folder("t000/a", 2, "true")],
+        ["ArrowDown", folder("t000/a/b", 3, "true")],
+        ["ArrowRight", folder("t000/a/b/c", 4, "true")],
+        ["ArrowLeft", folder("t000/a/b/c", 4, "false")],
+        ["ArrowRight", folder("t000/a/b/c", 4, "true")],
+        ["Enter", folder("t000/a/b/c", 4, "false")],
+        ["Enter", folder("t000/a/b/c", 4, "true")],
+        ["End", leaf("t255/a/b/c/s", 5)],
+        ["ArrowUp", folder("t255/a/b/c", 4, "true")],
+      ],
     },
-    caseTimeout(30 + (INPUT_WARMUP_CYCLES + INPUT_CYCLES) * 10, LIST_WAIT_MS),
-  );
+    // T161: the tree holds `f0000`, `f0000/s`, `f0001`, `f0001/s`, and so on to `f1023/s`.
+    {
+      rows: 1_024,
+      build: () => wideWorld(GIT!, fixtureDir("sc019-wide")),
+      first: fRow(0, "true"),
+      cycle: [
+        ["Home", fRow(0, "true")],
+        ["ArrowDown", leaf("f0000/s", 2)],
+        ["ArrowDown", fRow(1, "true")],
+        ["ArrowLeft", fRow(1, "false")],
+        ["ArrowRight", fRow(1, "true")],
+        ["ArrowRight", leaf("f0001/s", 2)],
+        ["ArrowLeft", fRow(1, "true")],
+        ["Enter", fRow(1, "false")],
+        ["Enter", fRow(1, "true")],
+        ["End", leaf("f1023/s", 2)],
+        ["ArrowUp", fRow(1_023, "true")],
+      ],
+    },
+  ];
+
+  for (const k of KEY_CASES) {
+    test.skipIf(reason !== null)(
+      `SC-019: with ${k.rows.toLocaleString("en-US")} submodule rows and 1,024 open folder rows, ${INPUT_P95_MS} ms for 95% of the tree keys and ${INPUT_MAX_MS} ms for every key (${INPUT_CYCLES * k.cycle.length} inputs after ${INPUT_WARMUP_CYCLES} warm-up cycle)`,
+      async () => {
+        const f = k.build();
+        const s = await session(`sc019-${k.rows}`, f.repo);
+        try {
+          // T147: the tree mounts only the rows in view. The first row and the root set size show that the top folders are listed.
+          const head = factsOf(`${ITEMS}[0]`);
+          await until<RowFacts | null>(s.c, "the tree rows", head, (v) => v?.path === k.first.path, LIST_WAIT_MS);
+          expect({ line: await s.c.evaluate<string | null>(BOUND_LINE), first: await s.c.evaluate<RowFacts | null>(head) }).toEqual({ line: null, first: k.first });
+          console.log(`OBSERVATION ${TASK}: SC-019 ${k.rows} rows: mounted rows ${await s.c.evaluate<number>(`${ITEMS}.length`)} of ${k.rows + 1_024}`);
+          // W3C Event Timing: the duration of each keydown runs from the event to the next paint after its handlers.
+          await s.c.evaluate(`(() => {
+            window.__t144Keys = [];
+            window.__t144Events = [];
+            addEventListener('keydown', (e) => window.__t144Keys.push(e.timeStamp), { capture: true });
+            window.__t144Take = (entries) => { for (const e of entries) if (e.name === 'keydown') window.__t144Events.push({ start: e.startTime, duration: e.duration }); };
+            window.__t144Observer = new PerformanceObserver((list) => window.__t144Take(list.getEntries()));
+            window.__t144Observer.observe({ type: 'event', durationThreshold: ${EVENT_THRESHOLD_MS} });
+            return true;
+          })()`);
+          // The focused treeitem of the group tree, or null.
+          const FOCUS = factsOf(`(${GROUP}?.querySelector('[role=tree]')?.contains(document.activeElement) && document.activeElement?.getAttribute('role') === 'treeitem' ? document.activeElement : null)`);
+          const first = `${GROUP}.querySelector('[role=treeitem][tabindex="0"]')`;
+          await s.c.evaluate(`(${first}).focus(); true`);
+          await until<boolean>(s.c, "the tree focus", `document.activeElement === (${first})`, (v) => v);
+          const durations: number[] = [];
+          for (let cycle = 0; cycle < INPUT_WARMUP_CYCLES + INPUT_CYCLES; cycle++) {
+            await s.c.evaluate("(window.__t144Keys = [], window.__t144Events = [], true)");
+            for (const [key, want] of k.cycle) {
+              await press(s.c, key);
+              await until<RowFacts | null>(s.c, `cycle ${cycle} ${key}`, FOCUS, (v) => js(v) === js(want));
+            }
+            await s.c.evaluate("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => done(true), 50))))");
+            const { keys, events } = await s.c.evaluate<{ keys: number[]; events: { start: number; duration: number }[] }>("(window.__t144Take(window.__t144Observer.takeRecords()), { keys: window.__t144Keys, events: window.__t144Events })");
+            expect({ cycle, keys: keys.length }).toEqual({ cycle, keys: k.cycle.length });
+            if (cycle >= INPUT_WARMUP_CYCLES) durations.push(...keys.map((key) => events.find((e) => e.start === key)?.duration ?? EVENT_THRESHOLD_MS));
+          }
+          console.log(`OBSERVATION ${TASK}: SC-019 ${k.rows} rows: ${durations.length} inputs, p95 ${p95(durations)} ms, max ${Math.max(...durations)} ms, durations ${js(durations)}`);
+          expect(durations.length).toBe(INPUT_CYCLES * k.cycle.length);
+          expect({ p95: p95(durations) <= INPUT_P95_MS, max: Math.max(...durations) <= INPUT_MAX_MS }).toEqual({ p95: true, max: true });
+        } finally {
+          await end(s);
+        }
+      },
+      caseTimeout(30 + (INPUT_WARMUP_CYCLES + INPUT_CYCLES) * k.cycle.length, LIST_WAIT_MS),
+    );
+  }
 });

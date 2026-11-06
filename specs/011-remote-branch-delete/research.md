@@ -79,14 +79,14 @@ Git documentation:
 
 ## R5 Unverified assumptions
 
-- U1 (unverified): `push.useForceIfIncludes=true` is a no-op with an explicit expect (git-push(1)). T001 probes it.
+- U1 (resolved by T001, Probe and Doc): `push.useForceIfIncludes=true` in the owned global configuration does not change a lease delete with an explicit expect. An equal expect gives the P10 line and exit 0. A wrong expect gives the P8 line and exit 1. git-push(1) `--force-if-includes` calls this combination a no-op.
 - U2 (unverified): `[rejected] (remote does not support deleting refs)` (`transport.c:743`) needs a server without the delete-refs capability. No probe caused it. T007 covers its `:<dst>` line form from the R3 source format. No real-server test exists, so this item stays an assumption.
-- U3 (unverified): a branch name with non-ASCII UTF-8, and a SHA-256 repository. T001 adds both probes.
+- U3 (resolved by T001, Probe): a lease delete of `refs/heads/fëature-ж` gives `-	:refs/heads/fëature-ж	[deleted]` and exit 0. The status line holds the raw UTF-8 bytes, without quotes or escapes. The tracking ref goes. In a SHA-256 repository, a lease delete with a 64-digit expect gives the P10 line and exit 0. A wrong 64-digit expect gives the P8 line and exit 1.
 - U4 (unverified): the generated Rust identifier of the new action is `A::DeleteRemoteBranch`. T005 checks the identifier after `bun run export:schemas`.
 - U5 (unverified): fixtures L and M hold no remote-tracking refs, so M-D adds them. T020 checks the fixture shape.
 - U6 (unverified): the native trust dialog returns the focus to the open in-app dialog (plan R8). T019 checks it through UIA.
 - U7 (unverified): the exact schema files that change. The design plan expects `mutation-request`, `renderer-envelope`, `review-sync-result`, `service-envelope`, `sync-result`, and `operation-result`. T004 decides with `bun run export:schemas --check`.
-- U8 (unverified): Git runs the pre-push hook when the lease rejects every ref. T001 probes it before T012 uses it.
+- U8 (resolved by T001, Probe): Git runs the pre-push hook when the lease rejects every ref. The hook wrote its log line. The push printed the P8 line and exited 1.
 - A1 (assumption): 010 merges into `main` before any 011 code task starts. Every code task depends on it.
 
 ## R6 Budgets and the measurement method
@@ -100,7 +100,13 @@ Git documentation:
 
 ### Probe rerun (T001)
 
-Pending. T001 runs P1 to P20, U1, and U3 again on Windows and in `Ubuntu-26.04`.
+- Date: 2026-11-06. Git for Windows 2.56.0.windows.2 (`Program Files\Git\cmd\git.exe`). Git 2.55.0 in `Ubuntu-26.04` (Ubuntu 26.04.1 LTS).
+- Scripts: `probe.sh`, `probe2.sh`, and the new `probe3.sh` (control, U1, U3, U8), with one WSL wrapper. The doc sections of R3 are in `r3-sections.txt`. All files are in local scratch `f011-t001`.
+- P1 to P20: every R2 row is confirmed. After path, object ID, and timing normalization, the new outputs equal the earlier outputs on both platforms. The Windows and WSL outputs equal each other for all three scripts (P20).
+- Control: P10 with a wrong expect (the parent commit) printed `!	(delete):refs/heads/c1	[rejected] (stale info)` and exit 1. A changed status line made the comparison fail, so the comparison can show a difference.
+- U1, U3, and U8: resolved, see R5.
+- Doc text: git-update-ref(1) names the old value `<old-oid>`. git-symbolic-ref(1) `-q` names "a symbolic ref but a detached HEAD". The meaning of R3 does not change.
+- The probe repositories were deleted on both sides after the run.
 
 ### Packaged and perf runs (T021)
 

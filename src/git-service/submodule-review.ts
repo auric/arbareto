@@ -431,7 +431,8 @@ function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: {
 // The Git directory, the hooks folder, and the `config list` entries of one submodule Git directory.
 type RepoConfig = Pick<Repo, "gitDir" | "hooks" | "entries">;
 // The reads of one row before `commitRepo` applies them. `bytes`: the size of its `config list` output.
-type Fetched = { repo: Repo; mark: SubmoduleBranch | null; bytes: number };
+// `reached`: the result of the reach read of `plan`. Null: the row needs no reach read.
+type Fetched = { repo: Repo; mark: SubmoduleBranch | null; bytes: number; reached: boolean | null };
 
 // One submodule Git directory that the review reads.
 export interface Repo {
@@ -552,7 +553,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     }
     const scope = t.scope === undefined ? null : new TextEncoder().encode(t.scope.path);
     // Feature 004 contract Δ12: the review takes the trust listing own or shared. The update preflight always runs its own listing.
-    // Only the list review reads the branch marks ("Branch marks"), and only it reads several rows at once ("Parallel reads").
+    // Only the list review reads the branch marks ("Branch marks"). A scoped review reads one row at a time ("Parallel reads").
     const o = observe(t, undefined, scope, () => sharedListing({ trust, listingTuple }, t), scope === null, scope === null ? SUBMODULE_WORK_PARALLEL : 1);
     const read = await o.top({ head: s.head, indexEntries: s.indexEntries });
     if ("stop" in read) return { result: read.stop };
@@ -777,8 +778,9 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     };
 
     // `markRow`: the row ID of a checked-out row whose branch mark this read adds (contract Δ12 "Branch marks").
+    // `reach`: the target of the reach read of `plan` (contract Δ12 "Update reads"). The read runs when HEAD is another commit.
     // `fetchRepo` only reads, so it can run ahead of its row. `commitRepo` applies its result in row order.
-    const fetchRepo = async (location: SubmoduleLocation, markRow: string | null = null): Promise<Fetched> => {
+    const fetchRepo = async (location: SubmoduleLocation, markRow: string | null = null, reach: string | null = null): Promise<Fetched> => {
       const { head, headRef } = await readHead(location);
       const { gitDir, hooks, entries, bytes } = await readConfig(location);
       let refHeld: boolean | null = null;
@@ -795,7 +797,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           refHeld = held.out.length > 0;
         }
       }
-      return { repo: { location, head, headRef, gitDir, hooks, entries, refHeld }, mark, bytes };
+      const reached = reach !== null && head !== null && head !== reach ? await reaches(location, reach) : null;
+      return { repo: { location, head, headRef, gitDir, hooks, entries, refHeld }, mark, bytes, reached };
     };
     const commitRepo = ({ repo, mark, bytes }: Fetched): Repo => {
       if (boundConfig !== null && (boundConfig += bytes) > REVIEW_CONFIG_BYTES) throw failed("OUTPUT_LIMIT");
@@ -806,11 +809,10 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const readRepo = async (location: SubmoduleLocation, markRow: string | null = null): Promise<Repo> => commitRepo(await fetchRepo(location, markRow));
 
     // Git `is_tip_reachable`: exit 0 without output means that a ref or HEAD reaches the target. Anything else means none does.
+    // `plan` pushes the observed value, so the read can run ahead of its row.
     const reaches = async (location: SubmoduleLocation, target: string) => {
       const r = await git(submoduleReachArgs(location, target, objectFormat));
-      const reached = r.code === 0 && r.out.length === 0;
-      observed.push({ reach: target, reached });
-      return reached;
+      return r.code === 0 && r.out.length === 0;
     };
 
     // `cat-file --batch-check`: `<oid> missing` for an absent object, `<oid> <type> <size>` otherwise.
@@ -1197,9 +1199,12 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
             continue;
           }
 
-          const fetched = rowRead(() => fetchRepo({ worktree }, row.rowId));
+          // Contract Δ12 "Update reads": the reach read of `plan` starts with the other reads of the row. The condition is the entry condition of `plan` in the tail.
+          const reach = mode === "none" || (lv.depth === 0 && (topHeads?.get(latin1(link.path)) ?? link.oid) === link.oid) ? null : link.oid;
+          const fetched = rowRead(() => fetchRepo({ worktree }, row.rowId, reach));
           step.tail = async () => {
-            const repo = commitRepo(await fetched());
+            const read = await fetched();
+            const repo = commitRepo(read);
             pending.repo = repo;
             if (repo.head === null) {
               refuse("clone-interrupted", display, REFUSAL_TEXTS.cloneInterrupted(display), null, row);
@@ -1212,7 +1217,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
             } else {
               if (!modeRefused && mode !== "checkout") refuseMode(mode);
               if (row.head === link.oid) row.action = "none";
-              else await plan(pending, repo, link.oid);
+              else await plan(pending, repo, link.oid, read.reached);
               pending.writes = writing.has(row.action);
             }
             nest(pending, repo);
@@ -1309,14 +1314,16 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     };
 
     // Contract §12 "Plan": the action of a row with a HEAD commit, its notes, and the remotes of a fetching row.
-    async function plan(pending: ObservedRow, repo: Repo, target: string | null): Promise<void> {
+    // `known`: the reach read of the read-ahead. Null: `plan` runs the reach read.
+    async function plan(pending: ObservedRow, repo: Repo, target: string | null, known: boolean | null = null): Promise<void> {
       const { row } = pending;
       if (repo.head === null) return;
       if (target !== null && repo.head === target) {
         if (row.action !== "reuse") row.action = "none";
         return;
       }
-      const reached = target !== null && (await reaches(repo.location, target));
+      const reached = target !== null && (known ?? (await reaches(repo.location, target)));
+      if (target !== null) observed.push({ reach: target, reached });
       if (row.action !== "reuse") row.action = reached ? "checkout" : "fetch-checkout";
       if (repo.headRef?.startsWith("refs/heads/")) row.notes.push(NOTES.detaches(repo.headRef.slice("refs/heads/".length)));
       if (target !== null) row.notes.push(NOTES.moves(repo.head, target));
@@ -1736,8 +1743,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const read = await attempt(async (): Promise<Observed> => {
         const superListing = await superTrust();
         const location = { worktree: parent.worktree };
-        const config = await readConfig(location);
-        const { head, headRef } = await readHead(location);
+        // Contract Δ12 "Update reads": the two reads run at once. The first failure in the serial order decides.
+        const configRead = ahead(() => readConfig(location));
+        const headRead = ahead(() => readHead(location));
+        const config = await configRead();
+        const { head, headRef } = await headRead();
         const firstRow = rows.length;
         const firstRefusal = refusals.length;
         if (setsGitdir(config.entries)) refuseGitdir(parent.row.path, parent.parentWorktree, parent.localPath, parent.row.depth > 0);

@@ -7,7 +7,7 @@
 import { lstat, readdir } from "node:fs/promises";
 import type { Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_PROGRESS_EVENTS_PER_SECOND } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_PROGRESS_EVENTS_PER_SECOND, SUBMODULE_WORK_PARALLEL } from "../contracts/limits";
 import {
   buildRefusalRemedy,
   buildSubmoduleRemedy,
@@ -283,7 +283,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     if ("failed" in captured) return { code: captured.failed };
     const index = await listingOf(ctx, indexEntryArgs(), (bytes) => parseIndexListing(bytes, w.objectFormat));
     if (!("value" in index)) return isStop(index) ? index : { code: index.code };
-    const observer = o.reviews.observe(t, rowIds, a.review.scope);
+    // Feature 004 contract Δ12 "Update reads": the preflight and the level reads read up to 8 rows at once and apply in row order.
+    const observer = o.reviews.observe(t, rowIds, a.review.scope, undefined, false, SUBMODULE_WORK_PARALLEL);
     const read = await observer.top({ head: captured, indexEntries: index.value });
     if ("stop" in read) return read;
     const bound = observer.binding();

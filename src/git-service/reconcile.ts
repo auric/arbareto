@@ -6,7 +6,7 @@
 
 import { lstat } from "node:fs/promises";
 import type { ErrorCode } from "../contracts/errors";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, SUBMODULE_REVIEW_SUBMODULES, TRUST_INPUT_BYTES } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, SUBMODULE_REVIEW_SUBMODULES, SUBMODULE_WORK_PARALLEL, TRUST_INPUT_BYTES } from "../contracts/limits";
 import type { OperationEvent } from "../contracts/outcome";
 import type { SubmoduleFailedRead, SubmoduleRowResult } from "../contracts/submodules";
 import type { CommitBinding } from "./approvals";
@@ -29,7 +29,7 @@ import {
 } from "./commands";
 import type { RetainedReview } from "./commit-review";
 import { IndexFormatError, rawIndexEntries } from "./eligibility";
-import { createCollector, firstEnd, isDeadlineStop, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, exitKind, firstEnd, isDeadlineStop, type GitExit, type GitRunner } from "./git-runner";
 import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
 import { canonicalIndex, diagnosticCause, enterReconciling, observedLocks, observeState, settled, stepOf, type Fact, type Failure, type IndexFacts, type ObserveContext, type PublishContext, type Stop } from "./hunk-publish";
 import type { DiagnosticCause, EffectSummary } from "./log";
@@ -442,9 +442,10 @@ function lineOf(bytes: Uint8Array): string | null {
   }
 }
 
-// Contract §12 "Reconciliation and outcome": the review reads of each row, in row order. `gitDirs` holds the Git directory of each row that has one.
+// Contract §12 "Reconciliation and outcome": the review reads of each row. `gitDirs` holds the Git directory of each row that has one.
 // With `--git-dir=.git`, Git exits 128 in a folder without a `.git` entry, so only a found entry or a kept directory gets a Git read.
-export async function observeUpdateRows(ctx: ObserveContext, reads: readonly UpdateRowRead[]): Promise<Fact<{ observations: RowObservation[]; gitDirs: string[] }>> {
+// Feature 004 contract Δ12 "Update reads": at most `lanes` rows read ahead of the apply, and the results apply in row order.
+export async function observeUpdateRows(ctx: ObserveContext, reads: readonly UpdateRowRead[], lanes = SUBMODULE_WORK_PARALLEL): Promise<Fact<{ observations: RowObservation[]; gitDirs: string[] }>> {
   const w = ctx.workspace;
   const listed = await settled(ctx.signal, ctx.trust.listTrust({ operationId: ctx.operationId, signal: ctx.signal, workspace: w }));
   if (!("ok" in listed)) return listed;
@@ -469,12 +470,33 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
     return components !== undefined ? { worktree: forms.join(forms.root, ...components) } : r.kept === null ? null : { gitDir: r.kept };
   };
 
+  // Contract Δ12 "Job close": the count of recorded deadline exits, and the reads that run now.
+  let deadlines = 0;
+  let deadlineSeen = () => {};
+  let nextDeadline = new Promise<void>((resolve) => (deadlineSeen = resolve));
+  const reading = new Set<Promise<unknown>>();
+  // A read that a Job close ended gets exit code null without `deadline` (contract §6 `exit`). It runs again once for each deadline recorded after its start.
   const git = async (args: string[], maxBytes = DIAGNOSTIC_RETAINED_BYTES_PER_STREAM) => {
-    const out = createCollector({ maxBytes });
-    const step = await stepOf(ctx, args, out);
-    if (!("exit" in step)) throw new ReadHalt(step);
-    if (out.limited) throw new ReadHalt({ code: "OUTPUT_LIMIT" });
-    return { code: step.exit.exitCode, out: out.take() };
+    for (;;) {
+      const before = deadlines;
+      const out = createCollector({ maxBytes });
+      const read = stepOf(ctx, args, out);
+      reading.add(read);
+      const step = await read.finally(() => reading.delete(read));
+      if (isDeadlineStop(step)) {
+        deadlines++;
+        deadlineSeen();
+        nextDeadline = new Promise((resolve) => (deadlineSeen = resolve));
+      }
+      if (!("exit" in step)) throw new ReadHalt(step);
+      if (exitKind(step.exit, "read", out) === "jobClosed") {
+        // The deadline exit of the read that closed the Job can come after this exit. That read still runs, so it is in `reading`.
+        if (deadlines === before) await Promise.race([nextDeadline, Promise.allSettled([...reading])]);
+        if (deadlines !== before) continue;
+      }
+      if (out.limited) throw new ReadHalt({ code: "OUTPUT_LIMIT" });
+      return { code: step.exit.exitCode, out: out.take() };
+    }
   };
   const line = async (args: string[]) => {
     const r = await git(args);
@@ -483,53 +505,80 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
     if (text === null) throw new ReadHalt({ code: "MALFORMED_GIT_OUTPUT" });
     return text;
   };
-  const configs = new Map<UpdateRowRead | null, readonly ConfigEntry[]>([[null, listed.listing.entries]]);
-  const configOf = async (r: UpdateRowRead | null): Promise<readonly ConfigEntry[]> => {
-    const known = configs.get(r);
-    if (known !== undefined) return known;
-    const at = locationOf(r!);
-    let entries: ConfigEntry[] = [];
-    if (at !== null) {
-      const listed = await git(submoduleConfigListArgs(at), TRUST_INPUT_BYTES);
-      if (listed.code !== 0) throw new ReadHalt({ code: "GIT_FAILED" });
-      const parsed = parseConfigListing(listed.out, false);
-      if (parsed === null) throw new ReadHalt({ code: "MALFORMED_GIT_OUTPUT" });
-      entries = parsed;
+  // Each parent runs one `config list`. The rows of that parent share its promise.
+  const configs = new Map<UpdateRowRead | null, Promise<readonly ConfigEntry[]>>([[null, Promise.resolve(listed.listing.entries)]]);
+  const configOf = (r: UpdateRowRead | null): Promise<readonly ConfigEntry[]> => {
+    let known = configs.get(r);
+    if (known === undefined) {
+      known = (async () => {
+        const at = locationOf(r!);
+        if (at === null) return [];
+        const listed = await git(submoduleConfigListArgs(at), TRUST_INPUT_BYTES);
+        if (listed.code !== 0) throw new ReadHalt({ code: "GIT_FAILED" });
+        const parsed = parseConfigListing(listed.out, false);
+        if (parsed === null) throw new ReadHalt({ code: "MALFORMED_GIT_OUTPUT" });
+        return parsed;
+      })();
+      configs.set(r, known);
     }
-    configs.set(r, entries);
-    return entries;
+    return known;
+  };
+
+  // The observation and the Git directory of one row.
+  const rowRead = async (r: UpdateRowRead): Promise<{ observation: RowObservation; gitDir: string | null }> => {
+    const at = locationOf(r);
+    let head: string | null = null;
+    let refs = false;
+    let gitDir: string | null = null;
+    if (at !== null) {
+      const oid = await git(submoduleHeadOidArgs(at));
+      if (oid.code === 0) {
+        head = lineOf(oid.out);
+        if (head === null || !isObjectId(head, w.objectFormat)) throw new ReadHalt({ code: "MALFORMED_GIT_OUTPUT" });
+        refs = true;
+      } else {
+        // HEAD names no commit only when git-show-ref(1) `--exists` exits 2, or when the target fails the ref-name rules.
+        const symbolic = await git(submoduleHeadTargetArgs(at));
+        if (symbolic.code === 0) {
+          const ref = lineOf(symbolic.out);
+          if (ref === null || !isOneLevelRefName(ref)) throw new ReadHalt({ code: "MALFORMED_GIT_OUTPUT" });
+          const exists = await git(submoduleRefExistsArgs(at, ref));
+          if (exists.code !== 2) throw new ReadHalt({ code: "GIT_FAILED" });
+        } else {
+          if (symbolic.code !== 128) throw new ReadHalt({ code: "GIT_FAILED" });
+          const format = await git(submoduleRefFormatArgs(at, await line(submoduleHeadTargetNoRecurseArgs(at))));
+          if (format.code !== 1) throw new ReadHalt({ code: "GIT_FAILED" });
+        }
+      }
+      gitDir = await line(submoduleGitDirArgs(at));
+    }
+    return { observation: { head, gitEntry: entries.has(r), refs, keys: rowKeys(await configOf(r.parent), r.name) }, gitDir };
   };
 
   try {
+    const started: Promise<Awaited<ReturnType<typeof rowRead>>>[] = [];
+    const start = (i: number) => {
+      if (i >= reads.length) return;
+      const read = rowRead(reads[i]!);
+      // The apply awaits no read after the first failure.
+      read.catch(() => {});
+      started.push(read);
+    };
+    for (let i = 0; i < lanes; i++) start(i);
     const observations: RowObservation[] = [];
     const gitDirs: string[] = [];
-    for (const r of reads) {
-      const at = locationOf(r);
-      let head: string | null = null;
-      let refs = false;
-      if (at !== null) {
-        const oid = await git(submoduleHeadOidArgs(at));
-        if (oid.code === 0) {
-          head = lineOf(oid.out);
-          if (head === null || !isObjectId(head, w.objectFormat)) return { code: "MALFORMED_GIT_OUTPUT" };
-          refs = true;
-        } else {
-          // HEAD names no commit only when git-show-ref(1) `--exists` exits 2, or when the target fails the ref-name rules.
-          const symbolic = await git(submoduleHeadTargetArgs(at));
-          if (symbolic.code === 0) {
-            const ref = lineOf(symbolic.out);
-            if (ref === null || !isOneLevelRefName(ref)) return { code: "MALFORMED_GIT_OUTPUT" };
-            const exists = await git(submoduleRefExistsArgs(at, ref));
-            if (exists.code !== 2) return { code: "GIT_FAILED" };
-          } else {
-            if (symbolic.code !== 128) return { code: "GIT_FAILED" };
-            const format = await git(submoduleRefFormatArgs(at, await line(submoduleHeadTargetNoRecurseArgs(at))));
-            if (format.code !== 1) return { code: "GIT_FAILED" };
-          }
-        }
-        gitDirs.push(await line(submoduleGitDirArgs(at)));
+    for (let i = 0; i < reads.length; i++) {
+      let row;
+      try {
+        row = await started[i]!;
+      } catch (error) {
+        // The first failure in row order decides. No later read starts, and every running read ends before the result.
+        await Promise.allSettled(started);
+        throw error;
       }
-      observations.push({ head, gitEntry: entries.has(r), refs, keys: rowKeys(await configOf(r.parent), r.name) });
+      start(i + lanes);
+      observations.push(row.observation);
+      if (row.gitDir !== null) gitDirs.push(row.gitDir);
     }
     return { value: { observations, gitDirs } };
   } catch (error) {

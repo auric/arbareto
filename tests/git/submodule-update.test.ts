@@ -4,12 +4,13 @@
 // T223: `updateSubmodules` (contract §12 "Update protocol", "Trust", "Environment and console", "Reconciliation and outcome", "Remedies").
 // `src/git-service/submodule-update.ts` comes with T230, which registers the operation in the session. T231 turns the cases into real tests.
 
-import { describe, expect } from "bun:test";
+import { describe, expect, spyOn } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import policyFile from "../../src/contracts/git-environment.json";
-import { APPROVAL_LIFETIME_MS } from "../../src/contracts/limits";
-import { SUBMODULE_PROGRESS_PHASES, SubmoduleProgress } from "../../src/contracts/submodules";
+import { APPROVAL_LIFETIME_MS, UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION } from "../../src/contracts/limits";
+import { SUBMODULE_PROGRESS_PHASES, SubmoduleProgress, type SubmodulePlanRow } from "../../src/contracts/submodules";
+import * as trustModule from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { fixtureGitPath } from "./git-binary";
@@ -22,6 +23,7 @@ import {
   gitPath,
   mutationFrames,
   outcome,
+  progressStates,
   readOk,
   repoOf,
   reviewOk as commitReview,
@@ -34,7 +36,7 @@ import {
   withService,
 } from "./hunk-harness";
 import { buildFetchFlags } from "./remote-fixtures";
-import { caseTest, once, withFsCalls, withKeptWorkspaces, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
+import { caseTest, NO_TOTAL_DEADLINE_WAIT_MS, once, withFsCalls, withKeptWorkspaces, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
 import { callsFrom, gitExe, hostFor, native, register, reviewed as syncReviewed, subcommandOf, sync, withSync } from "./sync-harness";
 import { buildWorkbench } from "./workbench-fixtures";
 import {
@@ -47,11 +49,14 @@ import {
   fixtureGit,
   gitLocation,
   globalEnv,
+  insideSubmodule,
   invalidGitFolder,
+  isUpdateStep,
   miniGit,
   miniWorld,
   moduleDirOf,
   NOTES,
+  objectsWith,
   oracleExcept,
   oracleOf,
   q,
@@ -1662,6 +1667,422 @@ describe("kept Git directories whose names differ only in letter case (contract 
       console.log(`OBSERVATION T160 twins: ${JSON.stringify(rows)}`);
       expect({ outcome: outcome(response), refused: rows.filter(([, state]) => state === "refused"), nested: rows.filter(([path]) => path === "p/X").length }).toEqual({ outcome: SUCCEEDED, refused: [], nested: 1 });
     });
+  });
+});
+
+// ---- Feature 004 FR-112, FR-113: the update reads up to 8 rows at once (T152, contract Δ12 "Update reads", "Parallel reads", "Job close") ----
+
+type Call = { operationId: string; arguments: readonly string[] };
+type Recorded = ReturnType<typeof callsSince>[number];
+
+// The most calls that ran at the same time, from the start and the duration of each call.
+function peakOf(calls: readonly { at: number; durationMs?: number }[]): number {
+  const edges = calls.flatMap((c) => [[c.at, 1], [c.at + (c.durationMs ?? 0), -1]] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let now = 0;
+  let peak = 0;
+  for (const [, step] of edges) peak = Math.max(peak, (now += step));
+  return peak;
+}
+
+// `siblingDeadline` of service-harness.ts with several siblings: the target starts after every sibling started, with a 1 ms deadline.
+// Each sibling gets one stdout byte that its paused stdout holds, so only the Job close ends it, with `exitCode` null and no `deadline`.
+function siblingsDeadline(service: Service, target: (c: Call) => boolean, siblings: ((c: Call) => boolean)[]): () => void {
+  const { runner } = service;
+  const isTarget = once(target);
+  const held = siblings.map((s) => once(s));
+  const started = new Set<readonly string[]>();
+  const answered = new Set<readonly string[]>();
+  let armed = true;
+  const releaseTarget = runner.holdStart(isTarget);
+  const releaseHook = runner.holdStart((call) => {
+    if (held.some((isSibling) => isSibling(call)) && !started.has(call.arguments)) {
+      started.add(call.arguments);
+      if (started.size === held.length) releaseTarget();
+    } else if (started.size === held.length && armed && isTarget(call)) {
+      armed = false;
+      // `spawn` reads the deadline synchronously after this check. The reset keeps every later process at its request deadline.
+      runner.inject.deadlineMs = 1;
+      queueMicrotask(() => void (runner.inject.deadlineMs = null));
+    }
+    return false;
+  });
+  const resumes = held.map((isSibling) => runner.pauseStdout(isSibling));
+  const prior = runner.inject.stdout;
+  runner.inject.stdout = (call) => {
+    if (!started.has(call.arguments) || answered.has(call.arguments)) return prior?.(call);
+    answered.add(call.arguments);
+    return new Uint8Array([0]);
+  };
+  return () => {
+    releaseTarget();
+    releaseHook();
+    for (const resume of resumes) resume();
+    runner.inject.stdout = prior;
+  };
+}
+
+describe("parallel update reads (004 FR-112, FR-113, contract Δ12 \"Update reads\")", () => {
+  const readsCase = (name: string, fn: () => Promise<void>) => caseTest("T152", `T152 ${name}`, SHELL, fn, 5 * 60_000);
+  // A test budget for a read of a later row that ends while an earlier read waits. A preflight that reads one row at a time never meets it.
+  const AHEAD_WAIT_MS = 30_000;
+  const NESTED = Array.from({ length: 10 }, (_, i) => `p/c${i}`);
+  // The rows in tree order. b and f are one commit behind their gitlinks. p holds one saved commit after its gitlink.
+  const ROWS = ["a", "a/x", "b", "c", "d", "e", "f", "g", "h", "p", ...NESTED];
+  const MOVED = ["b", "f", "p"];
+  // Contract §12 "Reconciliation and outcome": each moved row ends moved and each other row unchanged, as with one lane.
+  const EXPECTED = ROWS.map((path) => [path, MOVED.includes(path) ? "moved" : "unchanged"]);
+  let shared: TreeWorld | null = null;
+  // The kept Git directory of m has no row. Each update moves b, f, and p to their gitlinks, so each case sets them back first.
+  const world = (): TreeWorld => {
+    if (shared === null) {
+      const w = treeWorld("t152-reads", { a: { x: {} }, b: {}, c: {}, d: {}, e: {}, f: {}, g: {}, h: {}, m: {}, p: Object.fromEntries(NESTED.map((path) => [path.slice(2), {}])) });
+      treeGit(w, w.sup, ["rm", "-q", "-f", "m"]);
+      const p = join(w.sup, "p");
+      treeGit(w, p, ["checkout", "-q", "-b", "work"]);
+      treeGit(w, p, ["commit", "-q", "--allow-empty", "-m", "work"]);
+      shared = w;
+    }
+    for (const path of ["b", "f"]) treeGit(shared, join(shared.sup, path), ["checkout", "-q", "--detach", shared.leaf.first]);
+    treeGit(shared, join(shared.sup, "p"), ["checkout", "-q", "work"]);
+    return shared;
+  };
+  const withTree = (w: TreeWorld, name: string, body: (service: Service) => Promise<void>) => withService({ name, environment: serviceEnv(w.env) }, body);
+  const atRow = (w: TreeWorld, path: string) => isAt(w.sup, path);
+  const belowRow = (w: TreeWorld, prefix: string) => (c: { arguments: readonly string[] }) => at(w.sup, c.arguments)?.startsWith(prefix) === true;
+  const firstRead = (c: { arguments: readonly string[] }) => cmd(c) === "rev-parse --verify -q HEAD";
+  const isConfigList = (c: { arguments: readonly string[] }) => cmd(c) === "config list --show-scope --show-origin -z";
+  const isReach = (c: { arguments: readonly string[] }) => commandOf(c.arguments)[0] === "rev-list";
+  const isStepOf = (path: string) => (c: { arguments: readonly string[] }) => isUpdateStep(c.arguments) && c.arguments.includes(`:(literal)${path}`);
+  const endOf = (c: { at: number; durationMs?: number }) => c.at + (c.durationMs ?? 0);
+  const opCalls = (service: Service, operationId: string) => service.runner.calls.filter((c) => c.operationId === operationId);
+  const headAt = (w: TreeWorld, path: string) => treeGit(w, join(w.sup, ...path.split("/")), ["rev-parse", "HEAD"]).trim();
+  const gitlinkOf = (w: TreeWorld, path: string) => treeGit(w, w.sup, ["ls-files", "-s", "--", path]).split(" ")[1]!;
+  const statesOf = (response: ServiceResponse) => resultsOf(response).map((row) => [row.path, row.state]);
+  const exited = (w: TreeWorld, paths: readonly string[], match: (c: Call) => boolean) => (calls: readonly Recorded[]) => paths.every((path) => calls.some((c) => atRow(w, path)(c) && match(c) && c.exit !== undefined));
+
+  // Sends a request and holds the stdout of the first call that `held` accepts until `ready` holds for the calls since the send.
+  // A red run still waits for the response, so the next case finds no running operation.
+  async function holding(service: Service, held: (c: Call) => boolean, ready: (calls: readonly Recorded[]) => boolean, what: string, send: () => string): Promise<ServiceResponse> {
+    const from = service.runner.calls.length;
+    const release = service.runner.pauseStdout(once(held));
+    let id: string | null = null;
+    try {
+      id = send();
+      await until(() => ready(callsSince(service, from)), what, AHEAD_WAIT_MS);
+      release();
+      return await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS);
+    } finally {
+      release();
+      if (id !== null) await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS).catch(() => undefined);
+    }
+  }
+  // The list review with the hold of `holding`.
+  async function reviewHeld(service: Service, repositoryId: string, held: (c: Call) => boolean, ready: (calls: readonly Recorded[]) => boolean, what: string): Promise<SubmoduleReview> {
+    const read = await readOk(service, repositoryId);
+    const response = await holding(service, held, ready, what, () => service.send("reviewSubmodules", { snapshotId: read.snapshotId }, { repositoryId, repositoryGeneration: read.generation }));
+    return {
+      read,
+      response,
+      token: valuesOf(response.result, "submoduleReviewToken")[0] as string | undefined,
+      rows: objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"]),
+      programs: objectsWith(response.result, ["key", "digest"]),
+      refusals: refusalsOf(response.result),
+    };
+  }
+
+  readsCase("case a: the review holds the first read of c and the preflight holds the first read of g; the update passes its preflight without STALE_REVIEW, and each row result equals the one-lane result", async () => {
+    const w = world();
+    await withTree(w, "t152-a", async (service) => {
+      await update();
+      const { repositoryId } = await service.register(w.sup);
+      const r = await reviewHeld(service, repositoryId, (c) => atRow(w, "c")(c) && firstRead(c), exited(w, ["d", "e", "f", "g", "h"], firstRead), "the first reads of d to h while c waits");
+      expect({ outcome: outcome(r.response), refusals: r.refusals.map((x) => [x.reason, x.path]), rows: r.rows.map((row) => [row.path, row.action]) }).toEqual({
+        outcome: SUCCEEDED,
+        refusals: [],
+        rows: ROWS.map((path) => [path, MOVED.includes(path) ? "checkout" : "none"]),
+      });
+      const response = await holding(service, (c) => atRow(w, "g")(c) && firstRead(c), exited(w, ["h"], firstRead), "the first read of h while g waits", () => sendUpdate(service, repositoryId, r));
+      expect({ outcome: outcome(response), rows: statesOf(response), heads: MOVED.map((path) => headAt(w, path)) }).toEqual({ outcome: SUCCEEDED, rows: EXPECTED, heads: MOVED.map((path) => gitlinkOf(w, path)) });
+    });
+  });
+
+  readsCase("case b: the preflight and the level read of p with 10 nested rows each run at least 2 and at most 9 Git processes at once, and each update step runs as the only Git process", async () => {
+    const w = world();
+    await withTree(w, "t152-b", async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      const id = sendUpdate(service, repositoryId, r);
+      const operationId = await service.operationId(id);
+      const response = await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS);
+      const calls = opCalls(service, operationId);
+      const steps = calls.filter((c) => isUpdateStep(c.arguments));
+      const inside = calls.filter((c) => insideSubmodule(w.sup, c.arguments));
+      const preflight = steps.length === 0 ? inside : inside.filter((c) => c.at < steps[0]!.at);
+      // The level read of p starts after the step of p and ends with the `cat-file --batch-check` target checks of its rows (contract §12 step 6).
+      const stepOfP = steps.find(isStepOf("p"));
+      const afterP = stepOfP === undefined ? [] : inside.filter((c) => belowRow(w, "p/")(c) && c.at >= endOf(stepOfP));
+      const levelEnd = Math.max(...afterP.filter((c) => cmd(c) === "cat-file --batch-check").map(endOf));
+      const level = afterP.filter((c) => c.at < levelEnd);
+      const beside = steps.flatMap((s) => calls.filter((c) => c !== s && c.at < endOf(s) && s.at < endOf(c)).map((c) => [cmd(s), cmd(c)]));
+      const peaks = { preflight: peakOf(preflight), level: peakOf(level) };
+      console.log(`OBSERVATION T152 case b: ${JSON.stringify({ ...peaks, steps: steps.length, levelCalls: level.length })}`);
+      expect({ outcome: outcome(response), rows: statesOf(response), preflight: [peaks.preflight >= 2, peaks.preflight <= 9], level: [peaks.level >= 2, peaks.level <= 9], steps: steps.map(cmd), beside }).toEqual({
+        outcome: SUCCEEDED,
+        rows: EXPECTED,
+        preflight: [true, true],
+        level: [true, true],
+        steps: MOVED.map((path) => CHECKOUT(path).join(" ")),
+        beside: [],
+      });
+    });
+  });
+
+  readsCase("case c: a 1 ms deadline on the config list of d while the first reads of b and c wait moves the mutation to reconciling with DEADLINE; each waiting read runs once more, and no update process starts", async () => {
+    const w = world();
+    await withTree(w, "t152-c", async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      const from = service.runner.calls.length;
+      const isTarget = (c: Call) => atRow(w, "d")(c) && isConfigList(c);
+      const release = siblingsDeadline(service, isTarget, ["b", "c"].map((path) => (c: Call) => atRow(w, path)(c) && firstRead(c)));
+      let id = "";
+      try {
+        id = sendUpdate(service, repositoryId, r);
+        await until(() => callsSince(service, from).some((c) => isTarget(c) && c.exit !== undefined), "the deadline of the config list of d", AHEAD_WAIT_MS);
+      } finally {
+        release();
+        if (id !== "") await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS).catch(() => undefined);
+      }
+      const response = await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS);
+      const exits = (match: (c: Call) => boolean) => callsSince(service, from).filter(match).map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]);
+      expect({
+        outcome: outcome(response),
+        reconciling: progressStates(service, id).includes("reconciling"),
+        target: exits(isTarget),
+        held: ["b", "c"].map((path) => exits((c) => atRow(w, path)(c) && firstRead(c))),
+        steps: updateSteps(service, from).length,
+      }).toEqual({ outcome: { state: "failed", code: "DEADLINE" }, reconciling: true, target: [[null, "deadline"]], held: [0, 1].map(() => [[null, null], [0, null]]), steps: 0 });
+    });
+  });
+
+  readsCase("case d: Cancel while 8 preflight reads wait ends the update canceled; no update process starts, and no Git process of the update starts after Cancel or ends after the response", async () => {
+    const w = world();
+    await withTree(w, "t152-d", async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      const from = service.runner.calls.length;
+      const held = new Set<object>();
+      const dirs = new Set<string>();
+      const resume = service.runner.pauseStdout((c) => {
+        if (held.has(c)) return true;
+        const where = gitLocation(c.arguments);
+        if (where === null || !insideSubmodule(w.sup, c.arguments) || !firstRead(c) || dirs.size >= 8 || dirs.has(where)) return false;
+        dirs.add(where);
+        held.add(c);
+        return true;
+      });
+      let id = "";
+      let canceledAt = 0;
+      let response: ServiceResponse;
+      try {
+        id = sendUpdate(service, repositoryId, r);
+        await until(() => held.size === 8, "8 waiting preflight reads", AHEAD_WAIT_MS);
+        canceledAt = performance.now();
+        await service.cancel(await service.operationId(id));
+        response = await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS);
+      } finally {
+        resume();
+        if (id !== "") await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS).catch(() => undefined);
+      }
+      const end = service.responseAt.get(id)!;
+      const calls = opCalls(service, await service.operationId(id));
+      expect({
+        state: response.state,
+        held: held.size,
+        steps: updateSteps(service, from).length,
+        started: calls.filter((c) => c.at > canceledAt).length,
+        late: calls.filter((c) => c.durationMs === undefined || c.at + c.durationMs > end).length,
+      }).toEqual({ state: "canceled", held: 8, steps: 0, started: 0, late: 0 });
+    });
+  });
+
+  readsCase("case e: 4 MiB of stderr on the config list of d while the first read of a waits fails the update with OUTPUT_LIMIT, and no update process starts", async () => {
+    const w = world();
+    await withTree(w, "t152-e", async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      const from = service.runner.calls.length;
+      const isTarget = (c: Call) => atRow(w, "d")(c) && isConfigList(c);
+      // The seam gets a new call object at each check, so a flag keeps the bytes to the first match.
+      let hit = false;
+      service.runner.inject.stderr = (c) => (!hit && isTarget(c) && (hit = true) ? new Uint8Array(UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION) : undefined);
+      // The first read of a gets one stdout byte that its paused stdout holds, so only the Job close of the bound ends it (as `siblingsDeadline`).
+      let held: readonly string[] | null = null;
+      const isHeld = (c: { arguments: readonly string[] }) => (held === null && atRow(w, "a")(c) && firstRead(c) ? ((held = c.arguments), true) : c.arguments === held);
+      service.runner.inject.stdout = (c) => (isHeld(c) ? new Uint8Array([0]) : undefined);
+      const resume = service.runner.pauseStdout(isHeld);
+      let id = "";
+      let response: ServiceResponse;
+      try {
+        id = sendUpdate(service, repositoryId, r);
+        await until(() => callsSince(service, from).some((c) => isTarget(c) && c.exit !== undefined), "the stderr bound on the config list of d", AHEAD_WAIT_MS);
+        response = await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS);
+      } finally {
+        resume();
+        service.runner.inject.stderr = undefined;
+        service.runner.inject.stdout = undefined;
+        if (id !== "") await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS).catch(() => undefined);
+      }
+      expect({ outcome: outcome(response), steps: updateSteps(service, from).length }).toEqual({ outcome: { state: "failed", code: "OUTPUT_LIMIT" }, steps: 0 });
+    });
+  });
+
+  readsCase("case f: in the level read of p after its step, a 1 ms deadline on the config list and a failing HEAD read that run at once give the readConfig failure: the run ends with DEADLINE, and no nested row of p fails", async () => {
+    const w = world();
+    await withTree(w, "t152-f", async (service) => {
+      await update();
+      const { runner } = service;
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      const inP = atRow(w, "p");
+      let armed = false;
+      let from = 0;
+      const failed = new Set<string>();
+      // The reconciliation reads of p get no injected exit.
+      const reconciling = () => (service.progress as { phase?: string }[]).some((p) => p.phase === "reconciliation");
+      const config = once((c) => armed && inP(c) && isConfigList(c));
+      // `rev-parse --verify` exits 1 and `symbolic-ref` exits 129, so the HEAD read fails with GIT_FAILED (contract §12 "Review reads").
+      // The seam gets a new call object at each check, so the set keeps each exit to the first match.
+      runner.inject.exit = (c) => {
+        const code = !armed || reconciling() || !inP(c) ? undefined : firstRead(c) ? 1 : cmd(c) === "symbolic-ref -q HEAD" ? 129 : undefined;
+        if (code === undefined || failed.has(cmd(c))) return undefined;
+        failed.add(cmd(c));
+        return code;
+      };
+      const releaseHook = runner.holdStart((call) => {
+        if (isStepOf("p")(call)) {
+          armed = true;
+          from = runner.calls.length;
+        } else if (config(call)) {
+          runner.inject.deadlineMs = 1;
+          queueMicrotask(() => void (runner.inject.deadlineMs = null));
+        }
+        return false;
+      });
+      let response: ServiceResponse;
+      try {
+        response = await service.response(sendUpdate(service, repositoryId, r), NO_TOTAL_DEADLINE_WAIT_MS);
+      } finally {
+        releaseHook();
+        runner.inject.exit = undefined;
+      }
+      const after = callsSince(service, from).filter(inP);
+      const configRead = after.find(isConfigList);
+      const headRead = after.find(firstRead);
+      const nested = resultsOf(response).filter((row) => row.path.startsWith("p/"));
+      expect({
+        outcome: outcome(response),
+        reason: (response.result as { reason?: string } | undefined)?.reason,
+        config: configRead?.exit?.deadline ?? null,
+        together: headRead !== undefined && configRead !== undefined && headRead.at < endOf(configRead),
+        nested: nested.map((row) => [row.path, row.state, row.failedRead ?? null]),
+      }).toEqual({
+        outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" },
+        reason: "deadline",
+        config: "deadline",
+        together: true,
+        nested: NESTED.map((path) => [path, "unchanged", null]),
+      });
+    });
+  });
+
+  readsCase("case g: a moved row runs its reach read once, in its read-ahead: the reach read of f ends while the first read of a waits, in the list review and in the preflight", async () => {
+    const w = world();
+    await withTree(w, "t152-g", async (service) => {
+      await update();
+      const { repositoryId } = await service.register(w.sup);
+      const heldA = (c: Call) => atRow(w, "a")(c) && firstRead(c);
+      const reachOf = (from: number) => MOVED.map((path) => callsSince(service, from).filter((c) => atRow(w, path)(c) && isReach(c)).length);
+      const reviewFrom = service.runner.calls.length;
+      const r = await reviewHeld(service, repositoryId, heldA, exited(w, ["f"], isReach), "the reach read of f while a waits");
+      const reviewReach = reachOf(reviewFrom);
+      const updateFrom = service.runner.calls.length;
+      const response = await holding(service, heldA, exited(w, ["f"], isReach), "the reach read of f while a waits", () => sendUpdate(service, repositoryId, r));
+      expect({ review: outcome(r.response), reviewReach, outcome: outcome(response), updateReach: reachOf(updateFrom), rows: statesOf(response) }).toEqual({
+        review: SUCCEEDED,
+        reviewReach: [1, 1, 1],
+        outcome: SUCCEEDED,
+        updateReach: [1, 1, 1],
+        rows: EXPECTED,
+      });
+    });
+  });
+
+  // The shell walks of the program listing (001 §6 "Walks") start no Git process, so the case counts `listSubmoduleTrust` calls (T156 case 6).
+  readsCase("case i: the program listing of the preflight runs at least 2 and at most 8 listings at once; the program list and the digest equal those of one listing at a time", async () => {
+    const w = world();
+    const dirs = ROWS.map((path) => join(w.sup, ...path.split("/")));
+    for (const [i, dir] of dirs.entries()) treeGit(w, dir, ["config", "arbareto.row", ROWS[i]!]);
+    const real = trustModule.listSubmoduleTrust;
+    let serial = true;
+    let started = 0;
+    let live = 0;
+    let peak = 0;
+    let turn: Promise<void> = Promise.resolve();
+    const listing = spyOn(trustModule, "listSubmoduleTrust").mockImplementation(async (...args: Parameters<typeof real>) => {
+      const index = started++;
+      let release = () => {};
+      const prior = turn;
+      if (serial) {
+        turn = new Promise((resolve) => (release = resolve));
+        await prior;
+      }
+      live++;
+      peak = Math.max(peak, live);
+      try {
+        // A later listing ends first, so only the apply order keeps the row order.
+        if (!serial) await Bun.sleep(4 * (24 - (index % 24)));
+        return await real(...args);
+      } finally {
+        live--;
+        release();
+      }
+    });
+    try {
+      await withTree(w, "t152-i", async (service) => {
+        await update();
+        const { repositoryId } = await service.register(w.sup);
+        const r = await reviewSubmodules(service, repositoryId);
+        const one = { calls: started, peak };
+        serial = false;
+        peak = 0;
+        const response = await updateSubmodules(service, repositoryId, r);
+        const pathOf = new Map(r.rows.map((row) => [row.rowId, row.path]));
+        const expectedPaths = [...new Set(r.programs.flatMap((p) => ("rowId" in p ? [pathOf.get(p.rowId) ?? p.rowId] : [])))];
+        console.log(`OBSERVATION T152 case i: listing peak ${peak}, one at a time ${one.peak}, review listings ${one.calls}`);
+        expect({
+          review: outcome(r.response),
+          programs: r.programs.length,
+          one: one.peak,
+          outcome: outcome(response),
+          rows: statesOf(response),
+          atLeast2: peak >= 2,
+          atMost8: peak <= 8,
+          confirm: confirmRuns(service).map((f) => [f.programCount, f.uncheckedCount, f.submodulePaths.map((p) => relative(w.sup, p).replaceAll("\\", "/"))]),
+        }).toEqual({
+          review: SUCCEEDED,
+          programs: ROWS.length,
+          one: 1,
+          outcome: SUCCEEDED,
+          rows: EXPECTED,
+          atLeast2: true,
+          atMost8: true,
+          confirm: [[r.programs.length, r.programs.filter((p) => p.digest === "unchecked").length, expectedPaths]],
+        });
+      });
+    } finally {
+      listing.mockRestore();
+      for (const dir of dirs) treeGit(w, dir, ["config", "--unset", "arbareto.row"]);
+    }
   });
 });
 

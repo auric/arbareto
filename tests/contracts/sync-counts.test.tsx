@@ -20,7 +20,7 @@ registerDom();
 const { createRoot } = await import("react-dom/client");
 const workbench = await import("../../src/frontend/app/Workbench");
 const { ReferencesSidebar } = await import("../../src/frontend/refs/ReferencesSidebar");
-const { COUNTS_TOOLTIP, NO_BRANCH, refIndex, trackingLabels, trackLabel } = await import("../../src/frontend/state/tracking");
+const { COUNTS_TOOLTIP, refIndex, trackingLabels, trackLabel } = await import("../../src/frontend/state/tracking");
 
 let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
@@ -45,8 +45,16 @@ describe("label rule (data-model §1, FR-020, FR-021)", () => {
   });
 
   test("no upstream and a gone upstream show their texts", () => {
-    expect(trackLabel(entry({ upstream: null, upstreamObjectId: null, track: { state: "none" } }), index())).toEqual({ text: "No upstream", label: "No upstream", state: "none" });
+    const unset = createWorld({ branches: [{ name: "main", objectId: oid(1), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: true }] });
+    expect(trackLabel(entry({ upstream: null, upstreamObjectId: null, track: { state: "none" } }), index(unset))).toEqual({ text: "No upstream", label: "No upstream", state: "none" });
     expect(trackLabel(entry({ upstreamObjectId: null, track: { state: "gone" } }), index())).toEqual({ text: "Upstream gone", label: "Upstream gone", state: "gone" });
+  });
+
+  test("an entry whose upstream differs from the newest readRefs upstream shows nothing (FR-020, FR-021)", () => {
+    // `git branch --set-upstream-to` after the last readTracking: readRefs lists main with refs/remotes/origin/main.
+    expect(trackLabel(entry({ upstream: null, upstreamObjectId: null, track: { state: "none" } }), index())).toBeNull();
+    expect(trackLabel(entry({ upstream: "refs/remotes/origin/old", upstreamObjectId: null, track: { state: "gone" } }), index())).toBeNull();
+    expect(trackLabel(entry({ upstream: "refs/remotes/origin/old", upstreamObjectId: oid(9) }), index())).toBeNull();
   });
 
   test("a count above 10,000 shows 10000+", () => {
@@ -105,10 +113,14 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
     expect(count()?.textContent ?? "").not.toMatch(/[0-9]/);
   });
 
-  test("a detached HEAD shows No branch checked out and no counts", async () => {
+  // Feature 004 plan "Top bar row" (2026-11-05): the branch button and the Pull and Push reason line state a detached HEAD.
+  test("a detached HEAD shows no count element, the Detached at button, and the Pull and Push reason line", async () => {
     await mountWorkbench(workbench, createWorld({ head: { state: "detached", oid: oid(1) }, branches: [{ name: "main", objectId: oid(1), upstream: "refs/remotes/origin/main", upstreamObjectId: oid(9), track: { state: "counts", ahead: 2, behind: 3 }, current: false }] }));
-    expect(text(count()!)).toBe(NO_BRANCH);
-    expect(text(count()!)).not.toMatch(/[↑↓]/);
+    expect(count()).toBeNull();
+    expect(text(document.querySelector('header [data-slot="branch-button"]')!)).toContain(`Detached at ${oid(1).slice(0, 12)}`);
+    const reason = document.getElementById(button("Pull").getAttribute("aria-describedby")!)!;
+    expect(text(reason)).toBe("Pull, Push: No branch checked out.");
+    expect(button("Push").getAttribute("aria-describedby")).toBe(button("Pull").getAttribute("aria-describedby"));
   });
 
   test("a failed readTracking shows its code and no counts", async () => {
@@ -145,5 +157,20 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
     await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: fixtureId(0x101) }));
     await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x201), state: "succeeded", result: { action: "fetch", fetch: { remotes: [], observed: [] } } });
     expect(double.count("readTracking")).toBe(4);
+  });
+
+  test("a new readRefs upstream with the same refsDigest reads the tracking again (FR-020, FR-021, 004 FR-008)", async () => {
+    const world = createWorld({ branches: [{ name: "main", objectId: oid(1), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: true }] });
+    const double = await mountWorkbench(workbench, world);
+    expect(double.count("readTracking")).toBe(1);
+    // `git branch --set-upstream-to=origin/main main`: refname and objectname stay, so the digest stays.
+    world.branches = [{ name: "main", objectId: oid(1), upstream: "refs/remotes/origin/main", upstreamObjectId: oid(9), track: { state: "counts", ahead: 2, behind: 3 }, current: true }];
+    await press(document.body, "F5");
+    await settle();
+    expect(double.count("readRefs")).toBe(2);
+    expect(double.count("readTracking")).toBe(2);
+    const row = [...document.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((e) => e.getAttribute("aria-label")?.startsWith("main,"))!;
+    expect(text(row)).not.toContain("No upstream");
+    expect(text(row)).toContain("↑2 ↓3");
   });
 });

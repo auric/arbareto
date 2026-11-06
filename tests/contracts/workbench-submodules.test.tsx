@@ -10,8 +10,9 @@
 // tasks.md T142 (feature 004, WP31). Story US12. Spec FR-107 to FR-111. Plan D20, D15 "Tree rows". Data-model §12 "Tree node", §15.
 // - `buildSubmoduleTree({ rows, found, marks, closed })` in `src/frontend/submodules/submodule-tree.ts` gives the shown tree rows.
 // - `SubmodulesGroup` takes `repository`, the worktree key that keeps the closed folders for the window session.
+// tasks.md T147 (feature 004). Plan D20 "Group": above 200 shown rows, the group mounts only the rows in view. Plan D15 "Tree rows": the shrink order.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { act, useState, type ReactNode } from "react";
 import { SUBMODULE_TREE_FOLDERS } from "../../src/contracts/limits";
@@ -1044,12 +1045,189 @@ describe("Submodules group tree (FR-107 to FR-111)", () => {
     await mount({ listed: reviewed({ rows: [...rows, nested] }) });
     expect(text(group().querySelector('[data-slot="tree-bound"]')!)).toBe("The submodule paths have more than 1,024 folders, so the group shows no folder rows.");
     expect(items().every((r) => r.hasAttribute("data-path"))).toBe(true);
-    expect(items()).toHaveLength(257);
   });
 
   test("at 1,024 folders no bound line shows", async () => {
     await mount({ listed: reviewed({ rows: folderRows(256) }) });
     expect(group().querySelector('[data-slot="tree-bound"]')).toBeNull();
-    expect(items()).toHaveLength(256 + 1_024);
+  });
+});
+
+// tasks.md T147, plan D20 "Group": above 200 shown rows, the group mounts only the rows in view, as the References tree does (feature 002 T062).
+describe("virtual tree", () => {
+  // happy-dom has no layout. The stub gives the group scroll region a height of 400 px and each virtual row the compact row height.
+  let restore: () => void = () => {};
+  beforeAll(() => {
+    const proto = HTMLElement.prototype;
+    const keys = ["clientHeight", "offsetHeight", "scrollHeight", "scrollTop", "scrollTo", "getBoundingClientRect"] as const;
+    const saved = keys.map((key) => [key, Object.getOwnPropertyDescriptor(proto, key)] as const);
+    const tops = new WeakMap<Element, number>();
+    const region = (e: Element) => e.getAttribute("data-slot") === "submodules-scroll";
+    const content = (e: Element) => parseFloat(e.querySelector<HTMLElement>('[role="presentation"]')?.style.height ?? "") || 0;
+    Object.defineProperty(proto, "clientHeight", { configurable: true, get: function (this: Element) { return region(this) ? 400 : 0; } });
+    Object.defineProperty(proto, "scrollHeight", { configurable: true, get: function (this: Element) { return region(this) ? content(this) : 0; } });
+    // The tree sits at the region top and moves up as the region scrolls, as in Chromium.
+    const rect = Object.getOwnPropertyDescriptor(Element.prototype, "getBoundingClientRect")!.value as (this: Element) => DOMRect;
+    Object.defineProperty(proto, "getBoundingClientRect", {
+      configurable: true,
+      writable: true,
+      value: function (this: HTMLElement) {
+        const scroller = this.getAttribute("role") === "tree" ? this.closest<HTMLElement>('[data-slot="submodules-scroll"]') : null;
+        return scroller === null ? rect.call(this) : ({ x: 0, y: -scroller.scrollTop, top: -scroller.scrollTop, bottom: -scroller.scrollTop, left: 0, right: 0, width: 0, height: 0, toJSON: () => ({}) } as DOMRect);
+      },
+    });
+    Object.defineProperty(proto, "offsetHeight", { configurable: true, get: function (this: Element) { return region(this) ? 400 : this.hasAttribute("data-index") ? 26 : 0; } });
+    Object.defineProperty(proto, "scrollTop", { configurable: true, get: function (this: Element) { return tops.get(this) ?? 0; }, set: function (this: Element, v: number) { tops.set(this, Math.max(0, v)); } });
+    Object.defineProperty(proto, "scrollTo", {
+      configurable: true,
+      writable: true,
+      value: function (this: HTMLElement, options: ScrollToOptions | number, y?: number) {
+        this.scrollTop = typeof options === "object" ? (options.top ?? this.scrollTop) : (y ?? 0);
+        this.dispatchEvent(new Event("scroll"));
+      },
+    });
+    restore = () => {
+      for (const [key, descriptor] of saved) {
+        if (descriptor === undefined) delete (proto as unknown as Record<string, unknown>)[key];
+        else Object.defineProperty(proto, key, descriptor);
+      }
+    };
+  });
+  afterAll(() => restore());
+  const wait = () =>
+    act(async () => {
+      for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  const focused = () => document.activeElement as HTMLElement;
+  const at = (e: Element) => [e.getAttribute("role"), e.getAttribute("aria-level"), e.getAttribute("aria-posinset"), e.getAttribute("aria-setsize")];
+  const expected = (r: { level: number; pos: number; size: number }) => ["treeitem", String(r.level), String(r.pos), String(r.size)];
+  const shownRows = (rows: readonly SubmodulePlanRow[]) => {
+    const tree = build(rows);
+    if (tree.state !== "tree") throw new Error("malformed");
+    return tree.rows;
+  };
+
+  for (const n of [64, 256]) {
+    test(`with ${n} submodules in ${n * 5} rows, fewer than 80 rows are mounted, also after Left and Right on a folder`, async () => {
+      const rows = folderRows(n);
+      expect(shownRows(rows)).toHaveLength(n * 5);
+      await mount({ listed: reviewed({ rows }) });
+      await wait();
+      const mounted = () => items().length;
+      console.log(`MOUNTED T147: ${n * 5} rows, ${mounted()} mounted`);
+      expect(mounted()).toBeLessThan(80);
+      expect(mounted()).toBeGreaterThan(0);
+      const folder = items()[0]!;
+      expect(folder.getAttribute("aria-expanded")).toBe("true");
+      await act(async () => folder.focus());
+      await press(focused(), "ArrowLeft");
+      await wait();
+      expect(items()[0]!.getAttribute("aria-expanded")).toBe("false");
+      expect(mounted()).toBeLessThan(80);
+      await press(focused(), "ArrowRight");
+      await wait();
+      expect(items()[0]!.getAttribute("aria-expanded")).toBe("true");
+      expect(focused()).toBe(items()[0]!);
+      expect(mounted()).toBeLessThan(80);
+    });
+  }
+
+  test("End, Home, and Left to a parent focus a mounted row with the right level and position", async () => {
+    const rows = folderRows(256);
+    const shown = shownRows(rows);
+    await mount({ listed: reviewed({ rows }) });
+    await wait();
+    await act(async () => items()[0]!.focus());
+    await press(focused(), "End");
+    await wait();
+    const last = shown.at(-1)!;
+    expect(focused().isConnected).toBe(true);
+    expect([focused().dataset.path, ...at(focused())]).toEqual([last.path, ...expected(last)]);
+    await press(focused(), "ArrowLeft");
+    await wait();
+    const parent = shown[last.parent]!;
+    expect([focused().getAttribute("aria-description"), ...at(focused())]).toEqual([parent.path, ...expected(parent)]);
+    await press(focused(), "Home");
+    await wait();
+    expect([focused().getAttribute("aria-description"), ...at(focused())]).toEqual([shown[0]!.path, ...expected(shown[0]!)]);
+    expect(items().filter((r) => r.getAttribute("tabindex") === "0")).toEqual([focused()]);
+  });
+
+  test("Left on the last of 300 rows in one folder focuses the folder row, which was not mounted", async () => {
+    const rows = Array.from({ length: 300 }, (_, i) => planRow({ rowId: fixtureId(0x3000 + i), path: `big/s${String(i).padStart(3, "0")}` }));
+    await mount({ listed: reviewed({ rows }) });
+    await wait();
+    await act(async () => items()[0]!.focus());
+    await press(focused(), "End");
+    await wait();
+    expect([focused().dataset.path, ...at(focused())]).toEqual(["big/s299", "treeitem", "2", "300", "300"]);
+    expect(items().some((r) => r.getAttribute("aria-description") === "big")).toBe(false);
+    await press(focused(), "ArrowLeft");
+    await wait();
+    expect([focused().getAttribute("aria-description"), ...at(focused())]).toEqual(["big", "treeitem", "1", "1", "1"]);
+  });
+
+  test("above 1,024 folders, the first mounted row is the first path among 256 root rows; at 1,024 folders, it is the folder of the first path", async () => {
+    const rows = folderRows(256);
+    const nested = planRow({ rowId: fixtureId(0x2000), path: `${rows[0]!.path}/n/x`, depth: 1, parentRowId: rows[0]!.rowId });
+    await mount({ listed: reviewed({ rows: [...rows, nested] }) });
+    await wait();
+    expect(items().length).toBeLessThan(80);
+    expect([items()[0]!.dataset.path, ...at(items()[0]!)]).toEqual([rows[0]!.path, "treeitem", "1", "1", "256"]);
+    for (const unmount of roots.splice(0)) await unmount();
+    await mount({ listed: reviewed({ rows }) });
+    await wait();
+    expect([items()[0]!.hasAttribute("data-path"), items()[0]!.getAttribute("aria-description"), ...at(items()[0]!)]).toEqual([false, "t0a", "treeitem", "1", "1", "256"]);
+  });
+
+  test("a tree of 80 rows mounts all 80 rows", async () => {
+    await mount({ listed: reviewed({ rows: folderRows(16) }) });
+    await wait();
+    expect(items()).toHaveLength(80);
+    expect(group().querySelector("[data-index]")).toBeNull();
+  });
+});
+
+// tasks.md T147, plan D15 "Tree rows": the at-rest short ID shrinks first, then the branch mark, then the name. Each keeps its first character and "…".
+// happy-dom has no layout: `scrollWidth` and `clientWidth` are 0. This test checks the DOM structure that gives the order in Chromium.
+describe("row shrink order", () => {
+  const classes = (e: Element | null | undefined) => (e?.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
+  // A part that shrinks: one grid cell with the cut text and a hidden copy of "<first character>…" that sets the minimum width.
+  const expectPart = (shown: Element, floor: string) => {
+    const cell = shown.parentElement!;
+    expect(classes(cell)).toEqual(expect.arrayContaining(["grid", "grid-cols-[minmax(auto,max-content)]"]));
+    expect(classes(cell)).not.toContain("min-w-0");
+    expect(classes(shown)).toEqual(expect.arrayContaining(["col-start-1", "row-start-1", "min-w-0", "truncate"]));
+    const copy = cell.querySelector('[data-slot="shrink-floor"]')!;
+    expect([text(copy), copy.getAttribute("aria-hidden")]).toEqual([floor, "true"]);
+    expect(classes(copy)).toEqual(expect.arrayContaining(["invisible", "col-start-1", "row-start-1", "whitespace-nowrap"]));
+    return cell;
+  };
+
+  test("in a 240 px tree, the ID part takes the free width first, the mark part next, and the name last; no part uses a flex weight", async () => {
+    await mount({ listed: reviewed({ rows: BOARD, branches: BOARD_MARKS }) });
+    group().style.width = "240px";
+    const ui = row("libs/ui");
+    const label = ui.querySelector('[data-slot="row-label"]')!;
+    expect(classes(label)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+    // The tail starts at width 0 and grows into the free width. Its minimum is its content minimum, so the name shrinks only after the tail parts reach their floors.
+    const tail = label.nextElementSibling;
+    expect(tail?.getAttribute("data-slot")).toBe("row-tail");
+    expect(classes(tail)).toEqual(expect.arrayContaining(["flex", "flex-1"]));
+    expect(classes(tail)).not.toContain("min-w-0");
+    const [marks, id] = [...(tail?.children ?? [])];
+    // The ID cell also starts at width 0, so it gives way before the mark group, which keeps its content width.
+    expect(classes(id)).toEqual(expect.arrayContaining(["flex-1", "justify-end"]));
+    expect(expectPart(ui.querySelector('[data-slot="row-state"]')!, `${OLD[0]}…`)).toBe(id as HTMLElement);
+    expect(classes(marks)).not.toContain("flex-1");
+    expect(classes(marks)).not.toContain("min-w-0");
+    expect(expectPart(ui.querySelector('[data-slot="branch-mark"]')!, "m…").parentElement).toBe(marks as HTMLElement);
+    expect(text(ui.querySelector('[data-slot="branch-mark"]')!)).toBe("main");
+    expect(text(ui.querySelector('[data-slot="row-state"]')!)).toBe(short(OLD));
+    // "no branch" keeps "n…". A row without a mark has no mark part.
+    expectPart(row("libs/core").querySelector('[data-slot="branch-mark"]')!, "n…");
+    expect(row(ICONS).querySelector('[data-slot="branch-mark"]')).toBeNull();
+    const weights = [...group().querySelectorAll('[role="treeitem"] *')].flatMap(classes).filter((c) => c.startsWith("shrink-["));
+    expect(weights).toEqual([]);
   });
 });

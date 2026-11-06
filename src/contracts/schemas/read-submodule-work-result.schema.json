@@ -87,6 +87,32 @@
               },
               "state": {
                 "type": "string",
+                "const": "not-located"
+              }
+            },
+            "required": [
+              "pathBytes",
+              "path",
+              "state"
+            ],
+            "additionalProperties": false,
+            "title": "SubmoduleWorkNotLocated"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pathBytes": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "path": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
                 "const": "unchecked"
               },
               "reason": {

@@ -6,7 +6,7 @@
 // Git's own `add`, `restore --staged`, and `add -A` on a copy are the oracle. They compare `ls-files -z --stage` bytes, because `--index-info` writes zero stat data.
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ReadComparisonResult } from "../../src/contracts/envelope";
 import { STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
@@ -444,6 +444,141 @@ describe("T118 Unstage selected with a staged gitlink (spec FR-081, 004 contract
       expect(submoduleFacts(sup)).toEqual(subs);
       expect(workingFileDigests(sup)).toEqual(files);
       expect(candidateFiles(sup)).toEqual([]);
+    }),
+    T118_MS,
+  );
+});
+
+// ---- T121: a moved gitlink that plan.md D11 check 3, 4, or 5 does not locate (spec FR-078) ----
+
+const MOVED_RECORD = "1 .M SC.. 160000 160000 160000";
+const NOT_LOCATED = "submodule-not-located";
+// The first six fields of the parent status record of `path`.
+const parentRecord = (sup: string, path: string) =>
+  gitText(sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=dirty"])
+    .split("\0")
+    .find((r) => r.endsWith(` ${path}`))
+    ?.split(" ")
+    .slice(0, 6)
+    .join(" ");
+// The real `ls-files -z --stage -v` records of `sup`, without the records of `path` when `drop` is set.
+const indexListing = (sup: string, path: string, drop: boolean) =>
+  Buffer.from(
+    git(sup, ["ls-files", "-z", "--stage", "-v"])
+      .toString("latin1")
+      .split("\0")
+      .filter((r) => r !== "" && !(drop && r.endsWith(`\t${path}`)))
+      .map((r) => `${r}\0`)
+      .join(""),
+    "latin1",
+  );
+
+// `readComparison` of the unstaged `sub` row, then `applyFile` stage. `listing` replaces the snapshot index listing.
+async function stageSub(service: Service, sup: string, listing?: Buffer) {
+  const { repositoryId } = await service.register(sup);
+  if (listing !== undefined) service.runner.inject.stdout = (call) => (call.arguments.includes("ls-files") && call.arguments.includes("-v") ? listing : undefined);
+  const read = await readOk(service, repositoryId).finally(() => (service.runner.inject.stdout = undefined));
+  const c = await compare(service, repositoryId, "sub", "unstaged", read);
+  expect({ ...outcome(c.response), parsed: ReadComparisonResult.safeParse(c.response.result).success }).toEqual({ ...SUCCEEDED, parsed: true });
+  const decided = { fileAction: one(c.response.result, "fileAction"), gitlink: valuesOf(c.response.result, "gitlink"), remedy: valuesOf(c.response.result, "remedy") };
+  const response = await applyFile(service, repositoryId, c, "stage");
+  return { decided, response, updates: updatesOf(service, response.operationId!) };
+}
+
+// Plan.md D20 "Refusal texts": a failed check refuses with `submodule-not-located`, offers no remedy, and changes no index byte.
+async function refusedNotLocated(service: Service, sup: string, listing?: Buffer) {
+  const index = rawIndexDigest(gitPath(), sup);
+  const subs = submoduleFacts(sup);
+  const r = await stageSub(service, sup, listing);
+  expect(r.decided).toEqual({ fileAction: NOT_LOCATED, gitlink: [], remedy: [null] });
+  expect(refusal(r.response)).toEqual({ code: "UNSUPPORTED_COMPARISON", reason: NOT_LOCATED });
+  expect(r.updates).toEqual([]);
+  expect({ index: rawIndexDigest(gitPath(), sup), subs: submoduleFacts(sup) }).toEqual({ index, subs });
+}
+// The control: the same row stages the submodule HEAD, as `git add -- sub` does.
+async function stagedHead(service: Service, sup: string, listing?: Buffer) {
+  const head = headOf(join(sup, "sub"));
+  const r = await stageSub(service, sup, listing);
+  expect({ fileAction: r.decided.fileAction, gitlink: r.decided.gitlink, staged: outcome(r.response) }).toEqual({ fileAction: "stage", gitlink: [{ oid: head }], staged: SUCCEEDED });
+  expect(r.updates).toEqual([{ args: INDEX_INFO, input: `160000 ${head}\tsub\0` }]);
+}
+
+describe("T121 Stage file of a moved gitlink that the D11 checks do not locate (spec FR-078, contract Δ4)", () => {
+  caseTest("T121", `check 4: a junction at the submodule path gives ${NOT_LOCATED}, and applyFile keeps the index SHA-256; the real folder stages the HEAD`, [...SHELL, "ntfs-junction"], () =>
+    withService({ name: "t121-junction" }, async (service) => {
+      const sup = world();
+      const sub = join(sup, "sub");
+      const real = join(sup, "sub-real");
+      renameSync(sub, real);
+      symlinkSync(real, sub, "junction");
+      expect(parentRecord(sup, "sub")).toBe(MOVED_RECORD);
+      await refusedNotLocated(service, sup);
+      unlinkSync(sub);
+      renameSync(real, sub);
+      expect(parentRecord(sup, "sub")).toBe(MOVED_RECORD);
+      await stagedHead(service, sup);
+    }),
+    T118_MS,
+  );
+
+  caseTest("T121", `check 5: core.worktree of the submodule names a folder inside it, so Stage file gives ${NOT_LOCATED}; without it Stage file stages the HEAD`, SHELL, () =>
+    withService({ name: "t121-worktree" }, async (service) => {
+      const sup = world();
+      const sub = join(sup, "sub");
+      const inner = join(sub, "inner");
+      mkdirSync(inner);
+      git(sub, ["config", "core.worktree", inner.replaceAll("\\", "/")]);
+      expect(parentRecord(sup, "sub")).toBe(MOVED_RECORD);
+      await refusedNotLocated(service, sup);
+      git(sub, ["config", "--unset", "core.worktree"]);
+      expect(parentRecord(sup, "sub")).toBe(MOVED_RECORD);
+      await stagedHead(service, sup);
+    }),
+    T118_MS,
+  );
+
+  caseTest("T121", `check 3: a snapshot index listing without the gitlink entry gives ${NOT_LOCATED}; the unchanged listing gives {head} and stages it`, SHELL, () =>
+    withService({ name: "t121-index" }, async (service) => {
+      const sup = world();
+      expect(parentRecord(sup, "sub")).toBe(MOVED_RECORD);
+      await refusedNotLocated(service, sup, indexListing(sup, "sub", true));
+      await stagedHead(service, sup, indexListing(sup, "sub", false));
+    }),
+    T118_MS,
+  );
+});
+
+// T121 analyze finding T1: one not-located gitlink refuses the whole set (spec FR-081, 004 FR-038).
+describe("T121 Stage all changes with a moved gitlink that the D11 checks do not locate (spec FR-081, contract Δ4)", () => {
+  caseTest("T121", `check 5 in Stage all changes refuses the whole set with ${NOT_LOCATED}, names the gitlink, and keeps the index SHA-256; without it the set stages`, SHELL, () =>
+    withService({ name: "t121-all" }, async (service) => {
+      const sup = world();
+      writeFileSync(join(sup, "s.txt"), "changed\n");
+      const sub = join(sup, "sub");
+      const inner = join(sub, "inner");
+      mkdirSync(inner);
+      git(sub, ["config", "core.worktree", inner.replaceAll("\\", "/")]);
+      expect(parentRecord(sup, "sub")).toBe(MOVED_RECORD);
+      const index = rawIndexDigest(gitPath(), sup);
+      const subs = submoduleFacts(sup);
+      const { repositoryId } = await service.register(sup);
+      let read = await readOk(service, repositoryId);
+      let changes = changesOf(read);
+      expect(changes.map((e) => `${e.category} ${e.path}`).sort()).toEqual(["unstaged s.txt", "unstaged sub"]);
+      const refused = await applyFiles(service, repositoryId, read, changes.map((e) => e.entryId));
+      expect({ ...refusal(refused), entryId: (refused.result as { entryId?: string } | undefined)?.entryId }).toEqual({ code: "UNSUPPORTED_COMPARISON", reason: NOT_LOCATED, entryId: changes.find((e) => e.path === "sub")!.entryId });
+      expect(updatesOf(service, refused.operationId!)).toEqual([]);
+      expect({ index: rawIndexDigest(gitPath(), sup), subs: submoduleFacts(sup) }).toEqual({ index, subs });
+      // Control: without the setting, the same set stages the file and the submodule HEAD.
+      git(sub, ["config", "--unset", "core.worktree"]);
+      read = await readOk(service, repositoryId);
+      changes = changesOf(read);
+      const staged = await applyFiles(service, repositoryId, read, changes.map((e) => e.entryId));
+      expect(outcome(staged)).toEqual(SUCCEEDED);
+      expect(updatesOf(service, staged.operationId!)).toEqual([
+        { args: ADD_STDIN, input: "s.txt\0" },
+        { args: INDEX_INFO, input: `160000 ${headOf(sub)}\tsub\0` },
+      ]);
     }),
     T118_MS,
   );

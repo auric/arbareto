@@ -168,6 +168,7 @@ Each section names its source. Field names are contract names. "001 data-model ย
   - `commits`: `added` and `removed` counts (exact, from `rev-list --left-right --count`), and `addedCommits` and `removedCommits`, each at most 50 `{oid, subject}` in Git's log order. `subject` is the lossless display text of the subject bytes (001 data-model "Display text").
   - `missing`: `which` is `old`, `new`, or `both`. No counts.
   - `not-initialized`: no counts and no IDs beyond `old` and `new`.
+  - `not-located`: a moved gitlink (plan D20 rule 2) whose plan D11 check 3, 4, or 5 failed. No counts. Check 3 maps to `not-located` on purpose (orchestrator decision 2026-11-04). Then the status and the index of one snapshot disagree. Such a snapshot refuses the same way, and the next refresh reads again.
   - `single`: an added or a deleted gitlink. No counts.
 - `limited`: true when the `log` output reached its bound. The counts stay exact.
 - Refusal: `SUBMODULE_UNAVAILABLE` with `{reason: "path"}` replaces the result (contract ฮ”3).
@@ -176,11 +177,12 @@ Each section names its source. Field names are contract names. "001 data-model ย
 ## 16. Submodule work state (`readSubmoduleWork` result, 2026-10-31)
 
 - Binding: `snapshotId` of the `readWorkspace` result that it extends. A newer snapshot drops it.
-- `entries`: one per gitlink of the index, in index order, at most 256. Each holds the literal path bytes, the display path, and one state:
+- `entries`: at most 256. First, one entry per gitlink of the index, in index order. Then one entry per unlisted moved gitlink. Each holds the literal path bytes, the display path, and one state:
   - `not-initialized`: plan D11 check 4 or 5 failed. No submodule process ran after it.
+  - `not-located`: the same failure for a moved gitlink (plan D20 rule 2). An unlisted moved gitlink also gets this state. It has no stage-0 gitlink entry in the snapshot index (check 3). Check 3 maps to `not-located` on purpose (orchestrator decision 2026-11-04). Then the status and the index of one snapshot disagree. Such a snapshot refuses the same way, and the next refresh reads again.
   - `checked`: `modified` (a `1`, `2`, or `u` record in the submodule status) and `untracked` (a `?` record).
   - `unchecked`: `reason` is `programs`, or `failed` with the error code.
-- `limited`: the count of gitlinks after the first 256 in index order. They have no entry.
+- `limited`: the count of gitlinks and unlisted moved gitlinks that have no entry.
 - `extraRows`: the entries with `checked`, `modified` or `untracked` true, and no record in the parent status. The renderer lists them in Changes (spec FR-075).
 - Counts: the Changes count, the folder counts, and the History Working directory count add the `extraRows` count once the result arrives.
 
@@ -189,5 +191,6 @@ Each section names its source. Field names are contract names. "001 data-model ย
 - Scope: a retained comparison or a multi-file item of a moved gitlink (plan D20 rule 2).
 - `head`: the full object ID that `rev-parse --verify -q HEAD` printed inside the submodule. The `readComparison` result carries it as `gitlink: {oid}`.
 - The binding of the 001 data-model ยง6 row "File approval" applies with `working: null`. `head` takes the place of the working-file values.
-- Checkpoints: plan D20 rule 2 steps 1 to 4 run again. Another `head` gives `STALE_SELECTION`.
+- At the comparison read, a failed step 1, 2, or 3 binds no `head`. The decision gives reason `submodule-not-located`. A path that is no valid UTF-8 gives reason `path`.
+- Checkpoints: plan D20 rule 2 steps 1 to 4 run again. Another `head` or a failed step gives `STALE_SELECTION`.
 - Lifetime: the lifetime of its comparison or of its multi-file request.

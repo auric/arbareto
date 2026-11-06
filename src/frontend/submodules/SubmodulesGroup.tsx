@@ -3,7 +3,8 @@
 
 import { ArrowDown01Icon, ArrowRight01Icon, CubeIcon, Folder01Icon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
 import { SUBMODULE_REVIEW_NESTING_LEVELS, SUBMODULE_TREE_FOLDERS } from "../../contracts/limits";
 import type { SubmoduleBranch, SubmoduleHost, SubmoduleHostLine, SubmodulePlanRow, SubmoduleProgram, SubmoduleRefusalReason, SubmoduleRowResult } from "../../contracts/submodules";
 import { CopyButton, unknownReadText, useCopy } from "../app/RepositoryStates";
@@ -382,7 +383,14 @@ export type SubmodulesGroupProps = {
   onRefused?(reason: string): void;
   /** The depth of the parent chain (feature 005 data-model §9). */
   chain?: number;
+  /** The constrained profile: the references section that scrolls the group. Without it, the group region scrolls. */
+  scrollElement?: () => HTMLElement | null;
 };
+
+// Plan D20 "Group": plain rows up to this count, as the References tree does.
+const VIRTUAL_MIN = 200;
+// The compact row height (plan.md density table). The measured height of each mounted row replaces it.
+const ROW_HEIGHT = 26;
 
 // Spec FR-108: the closed rows last for the window session per repository and are not stored.
 const sessionClosed = new Map<string, ReadonlySet<string>>();
@@ -425,6 +433,23 @@ const common = (row: TreeRow, { index, selected, actions }: ItemProps) => ({
   onFocus: () => actions.focused(row.key),
   onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => actions.keyDown(event, index),
 });
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const cutFloor = (text: string) => `${graphemes.segment(text)[Symbol.iterator]().next().value?.segment ?? ""}…`;
+/**
+ * Plan D15 "Tree rows": one part of the shrink order. The hidden copy of `floor` sets the minimum width of the cell.
+ * The cell must keep `min-width: auto`, so its flex parent cannot shrink it below the copy.
+ */
+function ShrinkPart({ floor, className = "", children }: { floor: string; className?: string; children: ReactElement }) {
+  return (
+    <span className={`grid grid-cols-[minmax(auto,max-content)] ${className}`}>
+      {children}
+      <span data-slot="shrink-floor" aria-hidden="true" className="invisible col-start-1 row-start-1 whitespace-nowrap">
+        {floor}
+      </span>
+    </span>
+  );
+}
 
 const FolderItem = memo(function FolderItem(props: ItemProps & { row: Extract<TreeRow, { kind: "folder" }> }) {
   const { row, actions } = props;
@@ -491,23 +516,33 @@ const SubmoduleItem = memo(function SubmoduleItem(props: SubmoduleItemProps) {
             {row.label}
           </span>
         </TextTooltip>
-        {mark === null ? null : (
-          <TextTooltip text={mark.tooltip}>
-            <span data-slot="branch-mark" aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
-              {mark.branch}
+        {/* Plan D15 "Tree rows" shrink order. A flex basis of 0 makes a part take only the free width, so it shrinks before its siblings. */}
+        <span data-slot="row-tail" className="flex flex-1 items-center gap-1">
+          {mark === null ? null : (
+            <span className="flex items-center gap-1">
+              <ShrinkPart floor={cutFloor(mark.branch)}>
+                <TextTooltip text={mark.tooltip}>
+                  <span data-slot="branch-mark" aria-hidden="true" className="col-start-1 row-start-1 min-w-0 truncate text-muted-text">
+                    {mark.branch}
+                  </span>
+                </TextTooltip>
+              </ShrinkPart>
+              {mark.gone === undefined ? null : <GoneMark upstream={mark.gone} />}
+              {mark.count === null ? null : (
+                <TextTooltip text={mark.count.tooltip}>
+                  <span data-slot="track-count" aria-hidden="true" className="num shrink-0 whitespace-nowrap">
+                    {mark.count.text}
+                  </span>
+                </TextTooltip>
+              )}
             </span>
-          </TextTooltip>
-        )}
-        {mark?.gone === undefined ? null : <GoneMark upstream={mark.gone} />}
-        {mark?.count == null ? null : (
-          <TextTooltip text={mark.count.tooltip}>
-            <span data-slot="track-count" aria-hidden="true" className="num shrink-0 whitespace-nowrap">
-              {mark.count.text}
+          )}
+          {/* Only the short ID at rest shrinks. The run and result texts keep their full width. */}
+          <ShrinkPart floor={running || result !== undefined || state === "" ? state : cutFloor(state)} className="flex-1 justify-end pl-1">
+            <span data-slot="row-state" aria-hidden="true" className={`num col-start-1 row-start-1 min-w-0 truncate ${failed ? "text-removed" : "text-muted-text"}`}>
+              {state}
             </span>
-          </TextTooltip>
-        )}
-        <span data-slot="row-state" aria-hidden="true" className={`num ml-auto shrink-0 pl-1 ${failed ? "text-removed" : "text-muted-text"}`}>
-          {state}
+          </ShrinkPart>
         </span>
       </div>
       {line === null ? null : <p className="text-muted-text">{line}</p>}
@@ -558,7 +593,7 @@ const SubmoduleItem = memo(function SubmoduleItem(props: SubmoduleItemProps) {
 });
 
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
-export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0 }: SubmodulesGroupProps) {
+export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0, scrollElement }: SubmodulesGroupProps) {
   const headingId = useId();
   const reasonId = useId();
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -598,11 +633,50 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
     sessionClosed.set(repository, next);
     setStored({ repository, closed: next });
   }
+  const treeElement = useRef<HTMLDivElement>(null);
+  // The tree offset inside the scroll element (TanStack Virtual `scrollMargin`).
+  const [margin, setMargin] = useState(0);
+  const toFocus = useRef<string | null>(null);
+  const virtual = expanded && shown.length > VIRTUAL_MIN;
+  const virtualizer = useVirtualizer({
+    count: shown.length,
+    enabled: virtual,
+    getScrollElement: () => scrollElement?.() ?? lines.current,
+    scrollMargin: margin,
+    estimateSize: () => ROW_HEIGHT,
+    getItemKey: (i) => shown[i]!.key,
+    overscan: 8,
+    // React 19 refuses a flushSync from a layout effect, where keyboard navigation scrolls.
+    useFlushSync: false,
+    // The focused row stays mounted (plan.md "Keyboard and focus").
+    rangeExtractor: (range) => {
+      const mounted = defaultRangeExtractor(range);
+      return mounted.includes(at) ? mounted : [...mounted, at].sort((a, b) => a - b);
+    },
+  });
+  useLayoutEffect(() => {
+    const element = scrollElement?.() ?? lines.current;
+    if (!virtual || element === null || treeElement.current === null) return;
+    const next = treeElement.current.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop;
+    if (next !== margin) setMargin(next);
+  });
+  // Plan D6: keyboard navigation scrolls the target row into the window before it moves focus.
+  useLayoutEffect(() => {
+    const key = toFocus.current;
+    const element = key === null ? undefined : elements.current.get(key);
+    if (!element) return;
+    toFocus.current = null;
+    element.focus();
+  });
   function focusRow(index: number) {
-    const row = shown[Math.min(shown.length - 1, Math.max(0, index))];
+    const to = Math.min(shown.length - 1, Math.max(0, index));
+    const row = shown[to];
     if (row === undefined) return;
     setActiveKey(row.key);
-    elements.current.get(row.key)?.focus();
+    const element = elements.current.get(row.key);
+    if (element) return element.focus();
+    toFocus.current = row.key;
+    if (virtual) virtualizer.scrollToIndex(to);
   }
 
   const openReason = (row: SubmoduleNode) => openSubmoduleReason(rows, row.row?.pathBytes ?? null, chain);
@@ -670,6 +744,23 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
     }),
     [],
   );
+  const treeItem = (row: TreeRow, index: number) =>
+    row.kind === "folder" ? (
+      <FolderItem key={row.key} row={row} index={index} selected={index === at} actions={actions} />
+    ) : (
+      <SubmoduleItem
+        key={row.key}
+        row={row}
+        index={index}
+        selected={index === at}
+        actions={actions}
+        state={stateText(row.path, run, results.get(row.path), row.row?.head ?? null)}
+        running={run !== null && run.inScope.has(row.path)}
+        result={results.get(row.path)}
+        outputOpen={opened.has(row.path)}
+        reason={reason}
+      />
+    );
 
   return (
     <section data-slot="submodules-group" aria-labelledby={headingId} className="flex min-h-0 flex-col">
@@ -709,7 +800,7 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
           {reason}
         </p>
       )}
-      <div ref={lines} className="flex min-h-0 flex-col gap-1 overflow-y-auto overscroll-contain">
+      <div ref={lines} data-slot="submodules-scroll" className="flex min-h-0 flex-col gap-1 overflow-y-auto overscroll-contain">
         {update.hosts === null ? null : (
           <div data-slot="host-line" tabIndex={-1} className="flex flex-col gap-1 px-2 py-1">
             <ul>
@@ -801,24 +892,18 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
         )}
         {/* Plan D15 "Rows at rest": a failed list keeps the rows of the last list. Only a malformed tree shows no rows. */}
         {!expanded || shown.length === 0 ? null : (
-          <div role="tree" aria-labelledby={headingId} className="flex flex-col">
-            {shown.map((row, index) =>
-              row.kind === "folder" ? (
-                <FolderItem key={row.key} row={row} index={index} selected={index === at} actions={actions} />
-              ) : (
-                <SubmoduleItem
-                  key={row.key}
-                  row={row}
-                  index={index}
-                  selected={index === at}
-                  actions={actions}
-                  state={stateText(row.path, run, results.get(row.path), row.row?.head ?? null)}
-                  running={run !== null && run.inScope.has(row.path)}
-                  result={results.get(row.path)}
-                  outputOpen={opened.has(row.path)}
-                  reason={reason}
-                />
-              ),
+          <div ref={treeElement} role="tree" aria-labelledby={headingId} className="flex flex-col">
+            {virtual ? (
+              <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
+                {/* A failed row has more lines, so each mounted row is measured. */}
+                {virtualizer.getVirtualItems().map((item) => (
+                  <div key={item.key} role="none" data-index={item.index} ref={virtualizer.measureElement} className="absolute inset-x-0 top-0" style={{ transform: `translateY(${item.start - margin}px)` }}>
+                    {treeItem(shown[item.index]!, item.index)}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              shown.map(treeItem)
             )}
           </div>
         )}

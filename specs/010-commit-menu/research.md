@@ -141,6 +141,69 @@ Run 2026-11-05, packaged NSIS build, warm, in the foreground, alone, under the t
 
 - SC-011 probe (decision 2026-11-05): the probe waits 2 ms between inputs. Thus a run of about 400 ms still gets the minimum of 20 inputs. The 001 SC-005 targets do not change.
 
+#### Run 2026-11-06 (final run)
+
+Packaged NSIS build, warm, alone, under the test gate and the full-run lock. No Kernel-Power 42 event occurred in any step. Free memory before the first packaged case: 12,258 MB.
+
+- Build: commit `22cdcac9`. Built `arbareto.exe` SHA-256 `50913356...1ff0a3`. Installed SHA-256 `e8418226...269a9e23`. The installed exe equals the built exe after the NSIS marker patch (1 hit). The T017, T018, and Top bar `ORIGIN` lines name this hash.
+- OS: Windows 11 Pro 10.0.26300. Git: 2.56.0.windows.2. WSL distro: Ubuntu-26.04.
+- Post-merge check: `bun install --frozen-lockfile`, typecheck, `export:schemas --check`, contracts with portable imports (614 s), and the six Git suites (876 s) all exit 0.
+- T017 (SC-009): 5 pass, 2 skip, 0 fail.
+- T018 Windows: 3 pass, 2 fail, 3 skip (the WSL cases). SC-010b and SC-010d on M fail on a median.
+- Top bar row case (004 plan): it fails on the clean build. The header height is 44.8 px, the `--h-header` row is 44 px. Count and reason are correct.
+
+| Measure | Median (budget) | Every-run max (budget) | Cold (budget) |
+|---|---|---|---|
+| SC-010a menu paint, 40 opens | p95 25.4 ms (100 ms) | 27.6 ms (500 ms) | 35.4 ms (200 ms) |
+| SC-010b Reset | **388.9 ms (300 ms), missed** | 404.3 ms (500 ms) | 406 ms (600 ms) |
+| SC-010b Check out | 230.2 ms (300 ms) | 368.7 ms (500 ms) | - |
+| SC-010b Create tag | 20.4 ms (300 ms) | 24.8 ms (500 ms) | - |
+| SC-010b Cherry-pick | 244.4 ms (300 ms) | 391.5 ms (500 ms) | - |
+| SC-010b Revert | 298 ms (300 ms) | 409.1 ms (500 ms) | - |
+| SC-010c Hard review (M-R) | 857.1 ms (1 s) | 1,076.1 ms (2 s) | 975.5 ms (2 s) |
+| SC-010d Soft | 893.6 ms (1 s) | 1,256.1 ms (2 s) | 1,025.4 ms (2 s) |
+| SC-010d Mixed | 971.7 ms (2 s) | 1,079.5 ms (4 s) | - |
+| SC-010d Create tag | **1,052.6 ms (1 s), missed** | 1,245.8 ms (2 s) | - |
+| SC-010d Hard (M-R) | 3,655.5 ms (4 s) | 5,722.9 ms (8 s) | 4,780.9 ms (8 s) |
+| SC-010d Cherry-pick | 839 ms (2 s) | 940.8 ms (4 s) | - |
+| SC-010d Revert | 738.3 ms (2 s) | 883.9 ms (4 s) | - |
+| SC-010d Abort | 492.6 ms (2 s) | 661 ms (4 s) | - |
+| SC-010d Continue | 904.8 ms (2 s) | 1,223 ms (4 s) | - |
+| SC-010d Detached checkout (M-R) | 2,368.2 ms (4 s) | 2,877.6 ms (8 s) | - |
+
+- Missed budgets (finding for `/speckit-converge`): SC-010b Reset median 388.9 ms against 300 ms. Its runs are bimodal: 3 runs near 255 ms, 7 runs near 390 ms. SC-010d Create tag median 1,052.6 ms against 1 s. The previous run had 254.6 ms and 684.6 ms.
+- SC-011 (inputs per run, 11 runs per action, 12 with the cold run): Abort 20 to 39, Revert 35 to 51, Cherry-pick 39 to 60, Continue 49 to 82, Soft 63 to 125, Mixed 73 to 100, Create tag 81 to 114, Detached checkout 199 to 289, Hard 324 to 633. No run is below 20. Input p95 is at most 40 ms, max is at most 88 ms (Cherry-pick). SC-011 passes.
+- SC-011 first-input offsets: Continue 8 to 30.3 ms, Create tag 9.1 to 25.6 ms, Mixed 19.1 to 25 ms, Soft 17.5 to 27.6 ms, Detached checkout 20 to 27.1 ms, Hard 26 to 31.9 ms, Cherry-pick 45.9 to 54.7 ms, Revert 50.6 to 58.4 ms, Abort 58.9 to 64.4 ms.
+- Process-tree private bytes, start to end per series: SC-010b 668 to 697 MB. SC-010c 770 to 763 MB. SC-010d M 805 to 1,009 MB. SC-010d M-R 930 to 1,201 MB (max 1,274 MB, Detached checkout). The bytes increase across the session, and each series starts a new app.
+- JS heap used, run 0 to the last run per action: SC-010b Reset 26.6 to 19 MB, Revert 19.7 to 19.8 MB, Cherry-pick 14.3 to 29.9 MB (SC-010b max 31.3 MB). SC-010c 29 to 29.6 MB (max 38.4 MB). SC-010d Soft 18.4 to 22.3 MB, Hard 19.9 to 25.8 MB, Continue 49.6 to 51.1 MB, Detached checkout 25.5 to 34.2 MB (SC-010d max 66.3 MB). No action grows without bound.
+
+WSL record (Ubuntu-26.04, no budget, 10 + 1 runs per action). All three `RECORD` lines are complete.
+
+| Measure | Median | Every-run max | Cold |
+|---|---|---|---|
+| SC-010b WSL Reset | 1,789.5 ms | 1,856.3 ms | 2,352 ms |
+| SC-010b WSL Check out | 1,586 ms | 1,717.9 ms | - |
+| SC-010b WSL Create tag | 30.8 ms | 36.7 ms | - |
+| SC-010b WSL Cherry-pick | 1,707.2 ms | 1,917.5 ms | - |
+| SC-010b WSL Revert | 1,755 ms | 1,986.4 ms | - |
+| SC-010d WSL Soft | 4,254.2 ms | 6,948.8 ms | 3,702.6 ms |
+| SC-010d WSL Mixed | 4,116.5 ms | 4,393.5 ms | - |
+| SC-010d WSL Create tag | 5,528.2 ms | 7,227.9 ms | - |
+| SC-010d WSL Hard (M-R) | 10,634.8 ms | 20,270.9 ms | 13,485.9 ms |
+| SC-010d WSL Cherry-pick | 3,895.3 ms | 4,925.6 ms | - |
+| SC-010d WSL Revert | 3,871 ms | 4,259.5 ms | - |
+| SC-010d WSL Abort | 2,835.7 ms | 3,100.3 ms | - |
+| SC-010d WSL Continue | 5,404.1 ms | 5,643.5 ms | - |
+| SC-010d WSL Detached checkout | 4,873.4 ms | 7,100.7 ms | - |
+
+- WSL SC-011: 113 to 1,378 inputs per run, p95 at most 40 ms, max at most 72 ms. WSL private bytes 675 to 1,080 MB. WSL heap at most 48.3 MB.
+
+Controls:
+
+- Control a (one scratch build): `AlertConfirm` focused the danger button first, and the header showed the detached count span. Installed SHA-256 `90f8ac95...68b94c63e`. The FR-044 Cancel focus case failed (the focus stayed on "Reset hard"). The Top bar row case failed with `count: true`. Both source files were restored byte-equal (`RevertConfirm.tsx` `688895e6...24f33d8`, `Workbench.tsx` `bb505608...bd306d0`). A clean rebuild and reinstall matched its built exe after the marker patch. The FR-044 rerun passed with `ORIGIN` SHA-256 `85f7036c...8c8161b1`. This hash differs from the first clean build, so two builds of one commit do not give equal bytes.
+- Control a limit: the Top bar row case also fails on the clean build (height only), so its control shows only the extra `count` difference.
+- Control b (WSL identity, test edit, no rebuild): without the local `user.email` write and its check, the WSL M-R record case did not stop. Cherry-pick run 0 completed, and the case passed. The control did not turn red. The identity source of the app's distro Git in this case is unverified. `commit-menu-perf.test.ts` was restored byte-equal (`6cc9dab9...f5f92ab`).
+
 ### Requirement-to-test map (T022)
 
 Pending. T022 maps every FR and SC to its tests (spec SC-012).

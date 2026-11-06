@@ -70,7 +70,8 @@ A developer deletes a local branch from the 004 Delete dialog. The developer che
 6. **Given** the box is checked. **When** I uncheck it. **Then** the 004 plan shows again, and Delete deletes only the local branch.
 7. **Given** the box is checked with a plan. **When** I select Delete. **Then** Git deletes the remote branch first, then the local branch and its `branch.<name>` section. The status bar states X21.
 8. **Given** the network fails during the remote delete. **When** the run ends. **Then** both branches stay, and the status bar states the failure with X25.
-9. **Given** the remote delete succeeds and the local delete fails. **When** the run ends. **Then** the status bar states X24, and the local branch keeps its tip.
+9. **Given** the remote delete succeeds and the local ref delete fails. **When** the run ends. **Then** the status bar states X24, and the local branch keeps its tip.
+10. **Given** the remote delete and the local ref delete succeed, and the `branch.<name>` section removal fails. **When** the run ends. **Then** the status bar states the 003 line "{name} did not complete and left effects: {code}", not a success text.
 
 ---
 

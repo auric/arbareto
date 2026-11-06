@@ -225,13 +225,17 @@ Steps:
 
 `expected` is the listing before, without `ref` after `deleted` or `remoteGone`. After local writes that all exited 0, it is also without the local ref.
 
+`localNotDeleted` comes only from the fresh ref listing after the run. Exit codes do not set it (data-model §4).
+
 | Push line and steps | Event | Result fields | Text |
 |---|---|---|---|
 | `deleted`; local writes done, or none | `intended-effects-confirmed`, or `differing-effects` when other refs or HEAD changed | `push.status` `deleted` | X20, or X21 when combined |
-| `deleted`; a local write failed, or Cancel stopped it | `failed-with-effects` | `localNotDeleted: true` | X24 |
+| `deleted`; the fresh listing still holds the local ref after a failed local write or Cancel | `failed-with-effects` | `localNotDeleted: true` | X24 |
+| `deleted`; the local ref is gone, but the section removal failed, or Cancel stopped it | `failed-with-effects` | `push.status` `deleted`, no `localNotDeleted` | the 003 line "{name} did not complete and left effects: {code}" |
 | `rejected` with the lease (stale), no gone fact | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`; `remedy` X27 | X22, plus X25 when combined |
 | `rejected` and `remoteGone`; local writes done, or none | `intended-effects-confirmed` | `remoteGone: true` | X23, then X26 when combined |
-| `rejected` and `remoteGone`; a local write failed, or Cancel stopped it | `failed-with-effects` | `remoteGone: true`, `localNotDeleted: true` | X23, then X25 |
+| `rejected` and `remoteGone`; the fresh listing still holds the local ref after a failed local write or Cancel | `failed-with-effects` | `remoteGone: true`, `localNotDeleted: true` | X23, then X25 |
+| `rejected` and `remoteGone`; the local ref is gone, but the section removal failed, or Cancel stopped it | `failed-with-effects` | `remoteGone: true`, no `localNotDeleted` | the 003 line "{name} did not complete and left effects: {code}" |
 | `rejected` with another reason | `no-effects`, failed, `PUSH_REJECTED` | `reason`, `reasonText` (display only) | E2, plus X25 when combined |
 | `remote-rejected` or `remote-failure` | `no-effects`, failed, `PUSH_REJECTED` | `reason`, `reasonText` (display only) | E2, plus X25 when combined |
 | `none` with a nonzero exit, or a refused start | `no-effects`, failed, `GIT_FAILED` (or the runner code) | `remedy` with the command; the connect target | E3 with the remedy, plus X25 when combined |
@@ -460,7 +464,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
 - R9 The 60 s token lifetime while the dialog stays open. The run then refuses with `APPROVAL_EXPIRED`, as the 003 and 004 flows do today.
 - R10 PuTTY remotes. The delete reuses the push Pageant step. T009 checks the Pageant frame on Windows (D16).
 - R11 A remote that hides refs (`uploadpack.hideRefs`). The gone check then removes the stale ref, but the remote keeps its branch. The confirmation listed the commits of that ref, so no unconfirmed data goes.
-- R12 Cancel after a remote success and before the local delete. `writeUpstream` checks the signal before each write (`sync.ts:310`). The result then states `localNotDeleted`.
+- R12 Cancel after a remote success and before the local delete. `writeUpstream` checks the signal before each write (`sync.ts:310`). The result is `failed-with-effects`. It states `localNotDeleted` only when the fresh ref listing still holds the local ref. A Cancel between the ref delete and the section removal gives no `localNotDeleted`.
 - R13 Known limit: a gone remote branch with a differing `pushurl` gives X22 on every retry. Fetch does not prune by default, so the stale ref stays (D8). Mitigation: the details area shows the terminal remedy X27, `git fetch --prune <remote>` in the D6 step 4 remedy form.
 
 ## Open items and reviewer defaults

@@ -1797,6 +1797,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     onOpenWorktree: (path) => void (repositoryId === null ? undefined : ignore.guard(() => void bridge.openWorktree({ repositoryId, path }).then(openedWorktree))),
     push: { reason: quietSync ?? reasons.pushReason, quiet: quietSync !== null, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
+    sync,
   });
   // Feature 010 plan.md D1 and D13: the History commit menu. It blocks with the reason of the 004 actions.
   const commitMenu = useCommitActions({

@@ -3,7 +3,7 @@
 
 import { Copy01Icon, Delete02Icon, FolderGitIcon, GitBranchIcon, GitCompareArrowsIcon, GitMergeIcon, PencilEdit02Icon, PlusSignIcon, Upload04Icon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { unknownReadText, useCopy } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
@@ -20,7 +20,11 @@ import { shortId, trackOperation, type StatusOperation } from "../status/Operati
 import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
 import type { AddSelection } from "../worktrees/AddWorktreePanel";
 import { CHECKOUT_BUTTON, CHECKOUT_DISCARD_BUTTON, CHECKOUT_TITLE } from "../history/commit-texts";
-import { OUTCOME, refusalText, STASH, T } from "./texts";
+import type { useSync } from "../sync/useSync";
+import { LeaseCommits } from "../sync/ForcePushConfirm";
+import { WarningIcon } from "../app/NoticeBand";
+import { RemoteDeleteConfirm, type RemoteDeletePlan } from "./RemoteDeleteConfirm";
+import { OUTCOME, RD, refusalText, remoteRefusalText, STASH, T } from "./texts";
 
 // Feature 004 spec FR-009 to FR-020, plan.md D3, D4, D15, D16, data-model §3 and §4, contract Δ3 and Δ14.
 
@@ -32,6 +36,10 @@ type SwitchTarget = { ref: string } | { track: { ref: string; name: string } } |
 type SwitchPlan = { trackedChanges: number; unreachable: string | null; choice: Choice };
 /** Data-model §4. */
 type DeletePlan = { oid: string; onlyHere: number; reflogKeeps: boolean };
+/** Feature 011 data-model §3: the plan of a combined delete has `local`. */
+type SyncDeletePlan = RemoteDeletePlan & { remotes: string[]; destination: { trackingRef: string }; local?: { ref: string; oid: string; reflogKeeps: boolean } };
+/** Feature 011 data-model §7 "Delete overlay field". */
+type RemotePart = { checked: boolean; plan: SyncDeletePlan | null; token: string | null; error: string | null };
 
 /** The preselected choice. `known` is false when `readSyncSettings` failed, so no choice shows the Default tag. */
 type Preset = { choice: Choice; known: boolean };
@@ -41,7 +49,8 @@ type Overlay =
   | { kind: "remote"; anchor: Element | null; entry: BranchEntry; mode: "track" | "detach"; name: string; error: string | null; existing?: string }
   | { kind: "create"; anchor: Element | null; start: string; name: string; switchTo: boolean; error: string | null; commit?: true }
   | { kind: "rename"; anchor: Element | null; entry: BranchEntry; name: string; error: string | null }
-  | { kind: "delete"; entry: BranchEntry; plan: DeletePlan | null; token: string | null; error: string | null };
+  | { kind: "delete"; entry: BranchEntry; plan: DeletePlan | null; token: string | null; error: string | null; remote: RemotePart | null }
+  | { kind: "remote-delete"; entry: BranchEntry; plan: SyncDeletePlan; token: string };
 
 export type BranchActionsOptions = {
   bridge: Pick<Bridge, "reviewWorkbench" | "runWorkbench" | "readSyncSettings">;
@@ -71,9 +80,16 @@ export type BranchActionsOptions = {
   onAddWorktree?(selection: AddSelection, opener: Element | null): void;
   /** Feature 004 plan.md D12 "Ask": a review that needs trust asks once, then runs again. */
   askTrust?: AskTrust;
+  /** Feature 011 plan.md D15: the sync review and start of a remote branch delete. Without it, the remote delete states that it cannot start here. */
+  sync?: Pick<ReturnType<typeof useSync>, "review" | "startReviewed">;
 };
 
 const isRefused = (response: BridgeResponse) => response.state !== "succeeded";
+/** Feature 011 contract Δ3: a delete plan names its destination and its lease. */
+const syncReviewedOf = (response: BridgeResponse) => {
+  const r = response.result;
+  return response.state === "succeeded" && isObject(r) && typeof r.syncReviewToken === "string" && isObject(r.plan) && isObject(r.plan.destination) && isObject(r.plan.lease) ? { token: r.syncReviewToken, plan: r.plan as SyncDeletePlan } : null;
+};
 const reviewedOf = (response: BridgeResponse) => (isObject(response.result) && typeof response.result.workbenchToken === "string" && isObject(response.result.plan) ? { token: response.result.workbenchToken, plan: response.result.plan } : null);
 const ACTION_NAMES: Record<string, string> = { switch: "Switch", "create-branch": "Create branch", "rename-branch": "Rename", "delete-branch": "Delete" };
 // Plan D15: the status bar name, running text, and area heading of each run.
@@ -86,12 +102,14 @@ const RUN_TEXTS: Record<string, [string, string, string]> = {
 
 /** The branch actions of the toolbar list, the references sidebar, and the history labels. It returns the actions and their overlays. */
 export function useBranchActions(options: BranchActionsOptions) {
-  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, blockedRunning = false, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, onAddWorktree, askTrust } = options;
+  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, blockedRunning = false, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, onAddWorktree, askTrust, sync } = options;
   const snapshot = () => workbench.getState().branches;
   const branches = useSyncExternalStore(workbench.subscribe, snapshot, snapshot);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [menu, setMenu] = useState<{ ref: string; entry: BranchEntry; anchor: Element; byKey: boolean } | null>(null);
   const busy = useRef(false);
+  // The newest check-box review. An older answer changes nothing.
+  const remoteReview = useRef(0);
   const field = useRef<HTMLInputElement>(null);
   // True when the selected menu item opens a panel or a popover that takes the focus. The menu then returns no focus to its row.
   const handoff = useRef(false);
@@ -270,12 +288,46 @@ export function useBranchActions(options: BranchActionsOptions) {
       const response = await review({ action: "delete-branch", ref: entry.ref });
       if (response === null) return;
       const reviewed = reviewedOf(response);
-      if (reviewed !== null && !isRefused(response)) return setOverlay({ kind: "delete", entry, plan: reviewed.plan as DeletePlan, token: reviewed.token, error: null });
+      if (reviewed !== null && !isRefused(response)) return setOverlay({ kind: "delete", entry, plan: reviewed.plan as DeletePlan, token: reviewed.token, error: null, remote: remoteBox(entry) ? { checked: false, plan: null, token: null, error: null } : null });
       // Plan D15: the confirmation states `config-in-include`. Other refusals go to the status bar.
       const reason = isObject(response.result) ? response.result.reason : undefined;
-      if (reason === "config-in-include") setOverlay({ kind: "delete", entry, plan: null, token: null, error: refusalText(response, entry.name) });
+      if (reason === "config-in-include") setOverlay({ kind: "delete", entry, plan: null, token: null, error: refusalText(response, entry.name), remote: null });
       else onNotice(refusalText(response, entry.name));
     });
+  }
+
+  /** Feature 011 plan.md D1: X9 shows for an upstream that the branch list holds as a remote-tracking entry. */
+  const remoteBox = (entry: BranchEntry) => sync !== undefined && entry.upstream !== null && entry.upstream.startsWith("refs/remotes/") && entryOf(entry.upstream) !== null;
+
+  /** Feature 011 plan.md D1 and D2: the review of the remote-tracking `entry`, then the alert dialog. A refusal goes to the status bar. */
+  function startRemoteDelete(entry: BranchEntry) {
+    if (sync === undefined) return;
+    void once(async () => {
+      const response = await sync.review({ action: "delete-remote-branch", ref: entry.ref });
+      if (response === null) return;
+      const reviewed = syncReviewedOf(response);
+      if (reviewed !== null) return setOverlay({ kind: "remote-delete", entry, plan: reviewed.plan, token: reviewed.token });
+      onNotice(remoteRefusalText(response, { tracking: entry.name, branch: null, remote: null }));
+    });
+  }
+
+  /** Feature 011 plan.md D3: checking X9 starts the combined review. Unchecking shows the 004 plan again. */
+  function checkRemote(o: Extract<Overlay, { kind: "delete" }>, checked: boolean) {
+    const id = ++remoteReview.current;
+    const upstream = o.entry.upstream;
+    setOverlay({ ...o, remote: { checked, plan: null, token: null, error: null } });
+    if (!checked || sync === undefined || upstream === null) return;
+    const tracking = shortRef(upstream);
+    void (async () => {
+      const response = await sync.review({ action: "delete-remote-branch", ref: upstream, local: o.entry.ref });
+      if (response === null || id !== remoteReview.current) return;
+      const reviewed = syncReviewedOf(response);
+      const remote: RemotePart =
+        reviewed !== null && reviewed.plan.local !== undefined
+          ? { checked: true, plan: reviewed.plan, token: reviewed.token, error: null }
+          : { checked: true, plan: null, token: null, error: remoteRefusalText(response, { tracking, branch: o.entry.name, remote: null }) };
+      setOverlay((current) => (current?.kind === "delete" && current.entry.ref === o.entry.ref && current.remote?.checked ? { ...current, remote } : current));
+    })();
   }
 
   /**
@@ -309,7 +361,7 @@ export function useBranchActions(options: BranchActionsOptions) {
       createBranch: block("createBranch"),
       addWorktree: addWorktreeOf(entry).reason ?? block("addWorktree") ?? (onAddWorktree === undefined ? T.noPanel : null),
       rename: block("rename"),
-      delete: isCurrent ? T.deleteCurrent : entry.heldBy !== null ? T.otherWorktree(entry.heldBy) : block("delete"),
+      delete: isCurrent ? T.deleteCurrent : entry.heldBy !== null ? T.otherWorktree(entry.heldBy) : (block("delete") ?? (entry.kind === "remote" && sync === undefined ? T.noPanel : null)),
       push: isCurrent ? push.reason : T.pushOther,
       stageLines: null,
       unstageLines: null,
@@ -337,6 +389,7 @@ export function useBranchActions(options: BranchActionsOptions) {
     else if (action === "createBranch") startCreate(entry.oid, anchor);
     else if (action === "rename" && entry.kind === "local") setOverlay({ kind: "rename", anchor, entry, name: entry.name, error: null });
     else if (action === "delete" && entry.kind === "local") startDelete(entry);
+    else if (action === "delete") startRemoteDelete(entry);
     else if (action === "push") push.run();
     else if (action === "addWorktree") {
       const { selection } = addWorktreeOf(entry);
@@ -365,7 +418,8 @@ export function useBranchActions(options: BranchActionsOptions) {
     const copyItem: ActionItem = { label: T.copy, icon: Copy01Icon, onSelect: () => (setMenu(null), copy(entry.name)) };
     const integrate = [item(T.switch, "switch", GitBranchIcon), item(T.merge(current), "merge", GitMergeIcon), item(T.rebase(current, entry.name), "rebase", GitCompareArrowsIcon)];
     const create = [item(T.createHere, "createBranch", PlusSignIcon), item(T.addWorktree, "addWorktree", FolderGitIcon)];
-    if (entry.kind === "remote") return [integrate, create, [copyItem]];
+    // Feature 011 plan D1: group 2 of a remote-tracking branch ends with X1.
+    if (entry.kind === "remote") return [integrate, [...create, item(RD.item, "delete", Delete02Icon, true)], [copyItem]];
     const groups = [integrate, [...create, item(T.rename, "rename", PencilEdit02Icon), item(T.delete, "delete", Delete02Icon, true)], [item(T.push, "push", Upload04Icon), copyItem]];
     // 002 FR-049 change: the item stays on the current branch.
     if (entry.current) groups.push([{ label: SHOW_BRANCH_HISTORY, keys: { aria: "Control+Shift+B", text: "Ctrl+Shift+B" }, onSelect: () => (setMenu(null), onShowBranchHistory()) }]);
@@ -460,9 +514,26 @@ export function useBranchActions(options: BranchActionsOptions) {
         <DeleteConfirm
           overlay={overlay}
           onCancel={() => setOverlay(null)}
+          onCheck={(checked) => checkRemote(overlay, checked)}
           onConfirm={(token) => {
             setOverlay(null);
+            const remote = overlay.remote;
+            // Data-model §7: a checked box sends `sync` with the sync token, never `runWorkbench`.
+            if (remote?.checked) {
+              if (remote.plan !== null && remote.token !== null) sync?.startReviewed("delete-remote-branch", remote.plan, remote.token);
+              return;
+            }
             void once(() => run(token, "delete-branch", overlay.entry.name));
+          }}
+        />
+      ) : null}
+      {overlay?.kind === "remote-delete" ? (
+        <RemoteDeleteConfirm
+          plan={overlay.plan}
+          onCancel={() => setOverlay(null)}
+          onConfirm={() => {
+            setOverlay(null);
+            sync?.startReviewed("delete-remote-branch", overlay.plan, overlay.token);
           }}
         />
       ) : null}
@@ -589,15 +660,50 @@ function SwitchConfirm({ overlay: o, unborn, onChange, onConfirm, onCancel }: { 
   );
 }
 
-function DeleteConfirm({ overlay: o, onCancel, onConfirm }: { overlay: Extract<Overlay, { kind: "delete" }>; onCancel(): void; onConfirm(token: string): void }) {
+function DeleteConfirm({ overlay: o, onCancel, onCheck, onConfirm }: { overlay: Extract<Overlay, { kind: "delete" }>; onCancel(): void; onCheck(checked: boolean): void; onConfirm(token: string): void }) {
   const cancel = useRef<HTMLButtonElement>(null);
+  const reasonId = useId();
   const plan = o.plan;
+  const remote = o.remote;
+  const tracking = o.entry.upstream === null ? "" : shortRef(o.entry.upstream);
+  const combined = remote?.checked && remote.plan?.local !== undefined ? { ...remote.plan, local: remote.plan.local } : null;
+  // Plan D3: while the check-box review runs or refuses, Delete stays visible, disabled, and focusable.
+  const pending = remote?.checked === true && combined === null;
   return (
     <Dialog open onOpenChange={(next) => void (next || onCancel())}>
       <DialogContent showCloseButton={false} initialFocus={cancel} className="flex flex-col gap-2 sm:max-w-lg">
-        <DialogTitle>{T.deleteTitle(o.entry.name)}</DialogTitle>
+        <DialogTitle className="[overflow-wrap:anywhere]">{T.deleteTitle(o.entry.name)}</DialogTitle>
         {o.error !== null ? <p role="alert">{o.error}</p> : null}
-        {plan === null ? null : (
+        {remote === null || plan === null ? null : (
+          <label className="flex items-start gap-2 [overflow-wrap:anywhere]">
+            <input type="checkbox" className="mt-0.5" checked={remote.checked} onChange={(event) => onCheck(event.target.checked)} />
+            {RD.alsoDelete(tracking)}
+          </label>
+        )}
+        {pending ? (
+          remote.error === null ? (
+            <p id={reasonId} className="text-muted-text">
+              {RD.loading}
+            </p>
+          ) : (
+            <p id={reasonId} role="alert" className="flex items-start gap-2 [overflow-wrap:anywhere]">
+              <WarningIcon />
+              <span>{remote.error}</span>
+            </p>
+          )
+        ) : null}
+        {combined === null ? null : (
+          <>
+            <p className="[overflow-wrap:anywhere]">{combined.lease.count > 0 ? RD.bothLost(o.entry.name, tracking, combined.lease.count) : RD.bothNoneLost(o.entry.name, tracking)}</p>
+            {combined.lease.count > 0 ? <LeaseCommits lease={combined.lease} label={RD.list(tracking)} /> : null}
+            <p>{combined.local.reflogKeeps ? T.reflogKeeps(combined.local.oid) : T.noReflog(combined.local.oid)}</p>
+            <p className="flex items-start gap-2 rounded-sm bg-warning-fill p-2 [overflow-wrap:anywhere]">
+              <WarningIcon />
+              <span>{RD.warning(tracking)}</span>
+            </p>
+          </>
+        )}
+        {plan === null || remote?.checked ? null : (
           <>
             <p>{plan.onlyHere > 0 ? T.onlyHere(o.entry.name, plan.onlyHere) : T.noneLost(o.entry.name)}</p>
             <p>{plan.reflogKeeps ? T.reflogKeeps(plan.oid) : T.noReflog(plan.oid)}</p>
@@ -608,7 +714,7 @@ function DeleteConfirm({ overlay: o, onCancel, onConfirm }: { overlay: Extract<O
             Cancel
           </Button>
           {plan === null || o.token === null ? null : (
-            <Button className="danger-button" onClick={() => onConfirm(o.token!)}>
+            <Button className="danger-button" disabled={pending} focusableWhenDisabled aria-describedby={pending ? reasonId : undefined} onClick={pending ? undefined : () => onConfirm(o.token!)}>
               {T.deleteButton}
             </Button>
           )}

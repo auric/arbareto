@@ -88,6 +88,43 @@ export const T = {
   noReflog: (oid: string) => `No reflog keeps commit ${shortId(oid)} after the delete.`,
 } as const;
 
+const lost = (n: number) => `${n.toLocaleString("en-US")} ${n === 1 ? "commit" : "commits"}`;
+
+/** Feature 011 plan.md D13: X1 to X17 and X30. `tracking` is the short remote-tracking name, `branch` the local branch name. */
+export const RD = {
+  item: "Delete remote branch…",
+  title: (tracking: string) => `Delete the remote branch ${tracking}?`,
+  // X3 shows `{dst}` in the code font between these two parts.
+  deletesLead: "Git deletes ",
+  deletesTail: (remote: string, tracking: string) => ` on ${remote}, and the remote-tracking branch ${tracking} here.`,
+  lost: (n: number) => (n === 1 ? "1 commit is on no other branch, tag, or remote-tracking branch here:" : `${n.toLocaleString("en-US")} commits are on no other branch, tag, or remote-tracking branch here:`),
+  noneLost: (tracking: string) => `Another branch, tag, or remote-tracking branch here holds every commit of ${tracking}.`,
+  warning: (tracking: string) => `Other people can lose work. The delete stops if ${tracking} changed since the last fetch.`,
+  button: "Delete remote branch",
+  alsoDelete: (tracking: string) => `Also delete the remote branch ${tracking}`,
+  bothLost: (branch: string, tracking: string, n: number) => `${branch} and ${tracking} have ${lost(n)} that no other branch, tag, or remote-tracking branch has. The delete loses them.`,
+  bothNoneLost: (branch: string, tracking: string) => `Deleting ${branch} and ${tracking} loses no commit.`,
+  loading: "Loading…",
+  list: (tracking: string) => `Commits only on ${tracking}`,
+} as const;
+
+type RemoteNames = { tracking: string; branch: string | null; remote: string | null };
+// Plan D4 "Refusals". A text that needs a name the renderer does not have falls back to the code and the reason.
+const REMOTE_REASONS: Record<string, (n: RemoteNames) => string | null> = {
+  "default-branch": (n) => (n.remote === null ? null : `${n.tracking} is the default branch of ${n.remote}. Arbareto does not delete the default branch of a remote.`),
+  "default-unknown": (n) => (n.remote === null ? null : `Arbareto cannot tell the default branch of ${n.remote}. Fetch ${n.remote}, or run git remote set-head ${n.remote} --auto, then try again.`),
+  "no-remote-branch": (n) => `No fetch refspec of exactly one remote maps ${n.tracking} to a remote branch, so Arbareto cannot name it.`,
+  "not-upstream": (n) => (n.branch === null ? null : `${n.tracking} is no longer the upstream of ${n.branch}. Close this dialog, then try again.`),
+};
+
+/** Feature 011 plan.md D4: the text of a refused `reviewSync` of `delete-remote-branch`. */
+export function remoteRefusalText(response: BridgeResponse, names: RemoteNames): string {
+  const r = isObject(response.result) ? response.result : {};
+  if (response.code === "UNKNOWN_TARGET") return `${names.tracking} no longer exists here.`;
+  const text = response.code === "SYNC_UNAVAILABLE" && typeof r.reason === "string" ? REMOTE_REASONS[r.reason]?.(names) : null;
+  return text ?? refusalText(response, names.branch ?? names.tracking);
+}
+
 const REASONS: Record<string, (r: Record<string, unknown>, branch: string) => string> = {
   "no-tracking-refspec": () => "No refspec of a remote maps this branch, so Git cannot set up tracking. Check out the commit only.",
   "several-tracking-remotes": (r) => `The refspecs of ${(r.remotes as string[]).join(", ")} map this branch, so Git cannot set up tracking. Check out the commit only.`,

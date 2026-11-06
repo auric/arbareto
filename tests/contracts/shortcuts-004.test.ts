@@ -17,7 +17,8 @@ const D15: [ScopedAction, string, string, KeyScope[]][] = [
   ["rebase", "Control+Shift+E", "Ctrl+Shift+E", ["localBranchRow", "remoteBranchRow"]],
   ["createBranch", "Control+B", "Ctrl+B", ["localBranchRow", "remoteBranchRow", "historyRow"]],
   ["rename", "F2", "F2", ["localBranchRow"]],
-  ["delete", "Delete", "Del", ["localBranchRow"]],
+  // Feature 011 plan D1: Del also starts the remote branch delete on a remote-tracking row.
+  ["delete", "Delete", "Del", ["localBranchRow", "remoteBranchRow"]],
   ["stageLines", "S", "S", ["diff"]],
   ["unstageLines", "U", "U", ["diff"]],
   ["stageEntry", "Space", "Space", ["fileList"]],

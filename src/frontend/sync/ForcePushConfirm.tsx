@@ -27,6 +27,24 @@ export type ForcePushConfirmProps = {
   finalFocus?: () => HTMLElement | null;
 };
 
+/** The commit list of a lease and the line of the commits that it does not list. Feature 011 plan.md D2 names the list (X30). */
+export function LeaseCommits({ lease, label }: { lease: ForcePlan["lease"]; label?: string }) {
+  const more = lease.count - lease.commits.length;
+  return (
+    <>
+      <ul aria-label={label} className="max-h-60 overflow-y-auto">
+        {lease.commits.map((c) => (
+          <li key={c.objectId} className="flex gap-2">
+            <code className="shrink-0">{shortId(c.objectId)}</code>
+            {c.subject === null ? null : <span className="min-w-0 truncate">{c.subject}</span>}
+          </li>
+        ))}
+      </ul>
+      {more > 0 ? <p>{more === 1 ? "and 1 more commit" : `and ${more} more commits`}</p> : null}
+    </>
+  );
+}
+
 const commits = (n: number) => (n === 1 ? "1 commit" : `${n} commits`);
 
 /** The modal confirmation of Force push with lease. Cancel has the initial focus (FR-024). */
@@ -34,7 +52,6 @@ export function ForcePushConfirm({ plan, branch, onConfirm, onCancel, finalFocus
   const cancel = useRef<HTMLButtonElement>(null);
   const { destination, lease } = plan;
   const tracking = shortRef(lease.trackingRef);
-  const more = lease.count - lease.commits.length;
   return (
     <Dialog open onOpenChange={(next) => void (next || onCancel())}>
       <DialogContent showCloseButton={false} initialFocus={cancel} finalFocus={finalFocus ?? true} className="flex flex-col gap-2 sm:max-w-lg">
@@ -42,15 +59,7 @@ export function ForcePushConfirm({ plan, branch, onConfirm, onCancel, finalFocus
         <p>
           The push replaces <code>{destination.ref}</code> {`on ${destination.remote} with your branch ${branchName(branch)}. It removes ${commits(lease.count)} from the remote branch:`}
         </p>
-        <ul className="max-h-60 overflow-y-auto">
-          {lease.commits.map((c) => (
-            <li key={c.objectId} className="flex gap-2">
-              <code className="shrink-0">{shortId(c.objectId)}</code>
-              {c.subject === null ? null : <span className="min-w-0 truncate">{c.subject}</span>}
-            </li>
-          ))}
-        </ul>
-        {more > 0 ? <p>{more === 1 ? "and 1 more commit" : `and ${more} more commits`}</p> : null}
+        <LeaseCommits lease={lease} />
         <p className="flex items-center gap-2">
           <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0 text-warning" />
           {`Other people can lose work. The push stops if ${tracking} changed since the last fetch.`}

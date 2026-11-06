@@ -30,6 +30,8 @@ export type World = {
   refsDigest: string;
   /** Feature 010: the parents of a history commit by object ID. A commit without an entry has the next commit as its only parent. */
   parents?: Record<string, string[]>;
+  /** Feature 011: the history rows also label the `remotes` entries at their object IDs. */
+  remoteLabels?: boolean;
   defaultPullAction: "pull" | "pull-merge" | "pull-rebase" | "fetch" | "fetch-all";
   /** Overrides of the automatic answers. `undefined` keeps the call pending. */
   answers: Record<string, ((args: unknown[]) => unknown) | undefined>;
@@ -124,7 +126,10 @@ function history(world: World, operation: string, args: unknown[]): unknown {
     oid: oids[i]!,
     parents: world.parents?.[oids[i]!] ?? (i + 1 < oids.length ? [oids[i + 1]!] : []),
     cell: { node: 0, color: 0, merge: false, limited: false, segments: [], marks: i + 1 < oids.length ? [] : ["root"] },
-    labels: world.branches.filter((b) => b.objectId === oids[i]).map((b) => ({ kind: "branch", name: b.name, invalidUtf8: false })),
+    labels: [
+      ...world.branches.filter((b) => b.objectId === oids[i]).map((b) => ({ kind: "branch", name: b.name, invalidUtf8: false })),
+      ...(world.remoteLabels ? world.remotes.filter((r) => r.objectId === oids[i]).map((r) => ({ kind: "remote", name: r.name, invalidUtf8: false })) : []),
+    ],
     checkout: i === 0,
     ...(text === "none" ? {} : { subject: `Commit ${i}`, author: person, date: 1_700_000_000, encoding: null, invalidUtf8: false }),
     ...(text === "details" ? { body: "", bodyCut: false, committer: person, committerDate: 1_700_000_000, children: i > 0 ? [oids[i - 1]!] : [] } : {}),

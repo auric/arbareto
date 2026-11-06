@@ -24,6 +24,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - `SyncPlan` gains `local: { ref: FullRef, oid: ObjectId, reflogKeeps: boolean }`, optional (`envelope.ts:1307`).
 - `ReviewSyncResult` (`envelope.ts:1322`): the reviewed refine adds two rules. `delete-remote-branch` needs `destination`, `lease`, and a token. `local` needs that action.
 - `SyncRefused.reason` gains the new sync reasons of Δ9 and the workbench reasons `current-branch`, `other-worktree`, `head-unresolved`, and `config-in-include`. `SyncRefused` gains `worktree: ChannelPath.optional()`.
+- `SyncRefused` gains `remote: RemoteName.optional()`. It is present exactly with the reasons `default-branch` and `default-unknown`. It names the remote that the review resolved, as `git remote` lists it. The texts X13 and X14 take it, so the renderer never splits a tracking name.
 - Reads, in order (plan D4):
   0. The payload rule, with no Git process.
   1. The 003 common reads (`sync-review.ts:400-420`).
@@ -79,13 +80,14 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - New `SYNC_UNAVAILABLE_REASONS` (`errors.ts:71`): `default-branch`, `default-unknown`, `no-remote-branch`, and `not-upstream`.
 - `SyncRefused` carries the four workbench reasons and `worktree` for the combined review.
+- `SyncRefused` carries `remote` with `default-branch` and `default-unknown` only.
 - Reused codes: `UNKNOWN_TARGET`, `OPERATION_IN_PROGRESS`, `STALE_REVIEW`, `APPROVAL_EXPIRED`, `PUSH_REJECTED`, `GIT_FAILED`, `MALFORMED_GIT_OUTPUT`, and `INVALID_REQUEST`.
 
 ## Δ10 Required contract checks (001 §10)
 
 - `bun run export:schemas` regenerates `src/contracts/schemas/*.json`. `bun run export:schemas --check` decides the changed set (research R5 U7).
-- Valid vectors in `tests/vectors/valid/remote-delete-*.json`: the remote payload, the combined payload, a plan with `local`, and a result with status `deleted`, `remoteGone`, and `localNotDeleted`. Also a result with `remoteGone` and `localNotDeleted` together.
-- Invalid vectors in `tests/vectors/invalid/remote-delete-*.json`: `local` with action `push`, `remoteGone` with action `push`, and a plan of this action without `lease`.
+- Valid vectors in `tests/vectors/valid/remote-delete-*.json`: the remote payload, the combined payload, a plan with `local`, and a result with status `deleted`, `remoteGone`, and `localNotDeleted`. Also a result with `remoteGone` and `localNotDeleted` together. Also the refusals `default-branch` and `default-unknown`, each with `remote`.
+- Invalid vectors in `tests/vectors/invalid/remote-delete-*.json`: `local` with action `push`, `remoteGone` with action `push`, and a plan of this action without `lease`. Also `default-branch` and `default-unknown` without `remote`, and `remote` with `no-remote-branch`.
 
 ## Δ11 WSL repositories (001 §11)
 

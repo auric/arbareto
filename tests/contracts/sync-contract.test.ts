@@ -472,7 +472,9 @@ describe("contract Δ3 results", () => {
 
   test("a refused reviewSync names its Δ9 reason or the unmerged count", () => {
     const R = C.ReviewSyncResult;
-    for (const reason of [...(E.SYNC_UNAVAILABLE_REASONS ?? []), "SYNC_REMOTES"]) expect(ok(R, { reason })).toBe(true);
+    // Feature 011 contract Δ3: `default-branch` and `default-unknown` also name the remote.
+    const named = (reason: string) => (reason === "default-branch" || reason === "default-unknown" ? { reason, remote: "origin" } : { reason });
+    for (const reason of [...(E.SYNC_UNAVAILABLE_REASONS ?? []), "SYNC_REMOTES"]) expect(ok(R, named(reason))).toBe(true);
     expect(ok(R, { unmerged: 3 })).toBe(true);
     expect(ok(R, { reason: "detached-head" })).toBe(false);
     expect(ok(R, { reason: "stale-lease" })).toBe(false);

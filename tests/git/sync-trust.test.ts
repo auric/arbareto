@@ -8,7 +8,8 @@ import { expect } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
-import { buildFetchFlags, gitRun, refMap, type GitHost } from "./remote-fixtures";
+import { buildBase, copyOf, logHook, payloadOf } from "./remote-delete-harness";
+import { buildFetchFlags, gitRun, refMap, revParse, type GitHost } from "./remote-fixtures";
 import { caseTest, type Service, type TrustResult } from "./service-harness";
 import { hostFor, native, register, remoteCalls, reviewed, reviewSync, run, sync, TIMEOUT_MS, withSync } from "./sync-harness";
 
@@ -185,6 +186,25 @@ describeGit("trust class sync (T036)", () => {
       expect(existsSync(native(ran))).toBe(true);
       expect(refMap(f.h, f.origin, ["refs/heads/feature"])).toEqual({ "refs/heads/feature": refMap(f.h, f.repo, ["refs/heads/feature"])["refs/heads/feature"] });
     });
+  }, TIMEOUT_MS);
+
+  // Feature 011 T011, SC-007, and research.md R2 P7: the delete takes the `sync` class, so its pre-push hook waits for the approval.
+  caseTest("T011", "011 SC-007: the pre-push hook of a remote branch delete runs only after approval and gets the (delete) line; the hook log is empty before it", SHELL, async () => {
+    const a = copyOf(buildBase("t011-trust"));
+    const log = `${a.h.root}/pre-push.log`;
+    logHook(a, "pre-push", log);
+    const ref = "refs/remotes/origin/feature";
+    const expectOid = revParse(a.h, a.repo, ref);
+    await withSync("t011-trust", async (service) => {
+      const r = await register(service, a.repo);
+      const from = service.runner.calls.length;
+      expect(outcome(await reviewSync(service, r, payloadOf(ref)))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
+      expect(remoteCalls(service, from)).toEqual([]);
+      expect(a.h.read(log)).toBeNull();
+      await approve(service, r.repositoryId, r.generation);
+      expect(outcome(await run(service, r, payloadOf(ref)))).toEqual({ state: "succeeded", code: undefined });
+    });
+    expect(a.h.read(log)!.toString("utf8")).toBe(`(delete) ${"0".repeat(expectOid.length)} refs/heads/feature ${expectOid}\nrun\n`);
   }, TIMEOUT_MS);
 
   caseTest(TASK, "Δ7: readTrust shows only the program of each transport value, a credential shell snippet as <shell command>, and remote.<name>.puttykeyfile, redacted; no secret reaches a response, progress event, or session log, and the program names stay stable", SHELL, async () => {

@@ -70,8 +70,8 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 
 | Code | Reason | Source |
 | --- | --- | --- |
-| `SYNC_UNAVAILABLE` | `default-branch` (new) | `symbolic-ref -q` names `ref` (plan D4 read 6). |
-| `SYNC_UNAVAILABLE` | `default-unknown` (new) | `symbolic-ref -q` exits 1. |
+| `SYNC_UNAVAILABLE` | `default-branch` (new) | `symbolic-ref -q` names `ref` (plan D4 read 6). `remote` names R. |
+| `SYNC_UNAVAILABLE` | `default-unknown` (new) | `symbolic-ref -q` exits 1. `remote` names R. |
 | `SYNC_UNAVAILABLE` | `no-remote-branch` (new) | The refspec mapping fails (plan D4 read 3). |
 | `SYNC_UNAVAILABLE` | `not-upstream` (new) | `%(upstream)` of `local` differs from `ref` (plan D4 read 7). |
 | `SYNC_UNAVAILABLE` | `push-urls`, `mirror`, `invalid-config`, `remote-missing`, `unknown-operation` (existing) | As in 003. |
@@ -80,6 +80,7 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 | `OPERATION_IN_PROGRESS`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `STALE_REVIEW`, `APPROVAL_EXPIRED`, `GIT_FAILED`, `MALFORMED_GIT_OUTPUT`, `INVALID_REQUEST` | none | As in 003. |
 
 - The texts of each reason are in plan D4 "Refusals" and D13.
+- `SyncRefused.remote` is present exactly with `default-branch` and `default-unknown`. It holds the remote name R of plan D4 read 3, as `git remote` lists it.
 
 ## 7. Renderer state (not stored)
 

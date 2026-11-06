@@ -1370,8 +1370,11 @@ export const ReviewSyncResult = z
         unmerged: Count.optional(),
         remedy: SyncRemedy.optional(),
         worktree: ChannelPath.optional(),
+        // Feature 011 contract Δ3: the remote that the review resolved, as `git remote` names it. The texts X13 and X14 name it.
+        remote: RemoteName.optional(),
       })
       .refine((r) => r.worktree === undefined || r.reason === "other-worktree" || r.reason === "head-unresolved")
+      .refine((r) => (r.remote !== undefined) === (r.reason === "default-branch" || r.reason === "default-unknown"))
       .meta({ title: "SyncRefused" }),
   ])
   .meta({ title: "ReviewSyncResult" });

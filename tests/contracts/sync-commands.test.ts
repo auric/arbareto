@@ -174,6 +174,57 @@ describe("refused inputs", () => {
   });
 });
 
+// Feature 011 plan.md D5 and contract Δ3 (T006). Thunks keep a missing builder from breaking the other cases of this file.
+describe("remote branch delete arrays (feature 011)", () => {
+  const DST = "refs/heads/feature/x";
+  const LOCAL = "5".repeat(40);
+  const PUSH = [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags"];
+  const NOT_REMOTE = ["--branches", "--tags", "--exclude=origin/feature/x", "--remotes"];
+  const reads: [string, () => string[], string[]][] = [
+    ["default branch symref", () => sync.remoteHeadArgs("team/up"), [...R, "symbolic-ref", "-q", "refs/remotes/team/up/HEAD"]],
+    // Research.md R2 P14: `--exclude` before `--remotes` takes the name without `refs/remotes/`.
+    ["removed-commit count, remote branch only", () => sync.onlyTipsCountArgs([T], null, "origin/feature/x", "sha1"), [...R, "rev-list", "--count", T, "--not", ...NOT_REMOTE]],
+    ["removed-commit count with the local branch", () => sync.onlyTipsCountArgs([T, LOCAL], "feature/x", "origin/feature/x", "sha1"), [...R, "rev-list", "--count", T, LOCAL, "--not", "--exclude=feature/x", ...NOT_REMOTE]],
+    ["removed-commit list, remote branch only", () => sync.onlyTipsListArgs([T], null, "origin/feature/x", "sha1"), [...R, "rev-list", "--max-count=100", T, "--not", ...NOT_REMOTE]],
+    ["removed-commit list with the local branch", () => sync.onlyTipsListArgs([T, LOCAL], "feature/x", "origin/feature/x", "sha1"), [...R, "rev-list", "--max-count=100", T, LOCAL, "--not", "--exclude=feature/x", ...NOT_REMOTE]],
+    ["remote get-url --all", () => sync.fetchUrlArgs("origin"), [...R, "remote", "get-url", "--all", "--", "origin"]],
+  ];
+  const writes: [string, () => string[], string[]][] = [
+    ["delete with the lease", () => sync.pushArgs("origin", null, DST, T, "sha1"), [...PUSH, `--force-with-lease=${DST}:${T}`, "--", "origin", `:${DST}`]],
+    ["gone check", () => sync.lsRemoteArgs("origin", DST), [L, "ls-remote", "--exit-code", "--", "origin", DST]],
+  ];
+  for (const [name, build, expected] of [...reads, ...writes]) test(name, () => expect(build()).toEqual(expected));
+
+  test("every array starts with --no-lazy-fetch, and every read has --no-optional-locks", () => {
+    for (const [name, build] of [...reads, ...writes]) expect({ name, first: build()[0] }).toEqual({ name, first: L });
+    for (const [name, build] of reads) expect({ name, head: build().slice(0, 2) }).toEqual({ name, head: R });
+  });
+
+  test("no review read contacts a remote", () => {
+    const network = ["fetch", "push", "pull", "clone", "ls-remote", "--dry-run"];
+    for (const [, build] of reads) for (const item of build()) expect(network).not.toContain(item);
+  });
+
+  // Research.md R2 P2 and P11: without the lease Git deletes a moved or an absent remote branch.
+  test("a delete without a lease throws", () => {
+    expect(() => sync.pushArgs("origin", null, DST, null, "sha1")).toThrow(TypeError);
+  });
+
+  test("refused inputs", () => {
+    const throws = (f: () => unknown) => expect(f).toThrow(TypeError);
+    throws(() => sync.pushArgs("origin", null, "feature", T, "sha1"));
+    throws(() => sync.pushArgs("origin", null, DST, "x", "sha1"));
+    throws(() => sync.remoteHeadArgs("a..b"));
+    throws(() => sync.remoteHeadArgs(""));
+    throws(() => sync.onlyTipsCountArgs([], null, "origin/x", "sha1"));
+    throws(() => sync.onlyTipsCountArgs([T], "bad..name", "origin/x", "sha1"));
+    throws(() => sync.onlyTipsListArgs([T], null, "origin/x*", "sha1"));
+    throws(() => sync.onlyTipsListArgs([HEAD], null, "origin/x", "sha256"));
+    throws(() => sync.fetchUrlArgs(""));
+    throws(() => sync.lsRemoteArgs("origin", "feature"));
+  });
+});
+
 // Contract Δ3 read 8: `show-ref --verify` prints one line: the object ID, a space, `REBASE_HEAD`, and LF.
 describe("the REBASE_HEAD read of the skip review", () => {
   const parse = (text: string, format: "sha1" | "sha256" = "sha1") => parsers.parseRebaseHead(new TextEncoder().encode(text), format);

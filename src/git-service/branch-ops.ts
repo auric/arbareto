@@ -5,18 +5,20 @@
 // A delete binds the shown object ID, so Git refuses it when the branch moved (git-update-ref(1)).
 
 import { branchNameRefusal } from "../contracts/branch-name";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, REFLOG_SCAN_ENTRIES, TRUST_INPUT_BYTES } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
 import { headRefExistsArgs, isObjectId, isRefName } from "./commands";
 import { createCollector } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
+import { deleteFacts, type DeleteFacts } from "./ref-facts";
 import type { Head } from "./snapshot";
 import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
-import { readOut, refKey } from "./sync-review";
-import { parseConfigListing, type ConfigEntry, type TrustListing } from "./trust";
-import { branchNameCheckArgs, createArgs, createSwitchArgs, deleteRefArgs, headReflogArgs, headReflogExistsArgs, localConfigArgs, removeBranchSectionArgs, renameArgs, unmergedCountArgs } from "./workbench-commands";
-import { oidList } from "./workbench-parsers";
-import { heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, unresolvedRefusal, conclude, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
+import { refKey } from "./sync-review";
+import { branchNameCheckArgs, createArgs, createSwitchArgs, deleteRefArgs, removeBranchSectionArgs, renameArgs } from "./workbench-commands";
+import { heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, unresolvedRefusal, conclude, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
+
+// Feature 011 plan.md D15: `ref-facts.ts` holds the delete facts.
+export { deleteFacts, type DeleteFacts };
 
 const HEADS = "refs/heads/";
 const short = (ref: string) => ref.slice(HEADS.length);
@@ -52,29 +54,6 @@ export async function newName(ctx: ObserveContext, name: string): Promise<Fact<n
   const exists = await refExists(ctx, `${HEADS}${name}`);
   if (!("value" in exists)) return exists;
   return exists.value ? unavailable("name-exists", { ref: `${HEADS}${name}` }) : { value: null };
-}
-
-// Data-model §4 `reflogKeeps`. builtin/reflog.c `cmd_reflog_exists`: exit 0 when the reflog exists, 1 when it does not.
-async function headReflogKeeps(ctx: ObserveContext, tip: string): Promise<Fact<boolean>> {
-  const exists = await stepOf(ctx, headReflogExistsArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }));
-  if (!("exit" in exists)) return exists;
-  if (exists.exit.exitCode === 1) return { value: false };
-  if (exists.exit.exitCode !== 0) return { code: "GIT_FAILED" };
-  // `-n` caps the entries at REFLOG_SCAN_ENTRIES, so more bytes break the grammar.
-  const read = await readOut(ctx, headReflogArgs(), REFLOG_SCAN_ENTRIES * 65);
-  if ("limited" in read) return { code: "MALFORMED_GIT_OUTPUT" };
-  if (!("value" in read)) return read;
-  const oids = oidList(read.value, ctx.workspace.objectFormat);
-  return oids === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: oids.includes(tip) };
-}
-
-// The count of local file keys that `keep` takes. The listing of the review counts the included files too (git-config(1) `--no-includes`).
-async function localSectionKeys(ctx: ObserveContext, keep: (e: ConfigEntry) => boolean): Promise<Fact<number>> {
-  const read = await readOut(ctx, localConfigArgs(), TRUST_INPUT_BYTES);
-  if ("limited" in read) return { code: "OUTPUT_LIMIT" };
-  if (!("value" in read)) return read;
-  const entries = parseConfigListing(read.value, false);
-  return entries === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: entries.filter(keep).length };
 }
 
 // Contract Δ3 `runWorkbench` step 4 for a ref action. `expect` holds the refs and HEAD that the action intends.
@@ -150,32 +129,6 @@ registerWorkbenchAction("rename-branch", {
 });
 
 // ---- Delete ----
-
-// Data-model §4 facts of one local branch. `section`: the local file holds a `branch.<name>` key.
-export interface DeleteFacts {
-  oid: string;
-  onlyHere: number;
-  reflogKeeps: boolean;
-  section: boolean;
-}
-
-// Plan.md D4 delete reads after the worktree check. Feature 004 plan.md D10 "Also delete the branch" reads them too.
-export async function deleteFacts(ctx: ObserveContext, ref: string, listing: Pick<TrustListing, "entries">): Promise<Fact<DeleteFacts> | Refused> {
-  const tip = await refTarget(ctx, ref);
-  if (!("value" in tip)) return tip;
-  const count = await revCount(ctx, unmergedCountArgs(tip.value, short(ref), ctx.workspace.objectFormat));
-  if (!("value" in count)) return count;
-  const keeps = await headReflogKeeps(ctx, tip.value);
-  if (!("value" in keeps)) return keeps;
-  // builtin/branch.c `delete_branch_config` removes the `branch.<name>` section. A key prints as section, subsection, and a variable without a dot.
-  const inSection = (e: ConfigEntry) => e.scope === "local" && e.key.slice(0, e.key.lastIndexOf(".")) === `branch.${short(ref)}`;
-  const listed = listing.entries.filter(inSection).length;
-  const own = listed === 0 ? { value: 0 } : await localSectionKeys(ctx, inSection);
-  if (!("value" in own)) return own;
-  // `config --local --remove-section` changes the local file alone. A key of an included file would stay, and Git exits 128 when the local file holds no key.
-  if (own.value < listed) return unavailable("config-in-include");
-  return { value: { oid: tip.value, onlyHere: count.value, reflogKeeps: keeps.value, section: own.value > 0 } };
-}
 
 // Contract Δ3 `delete-branch` steps. A nonzero `update-ref` exit runs no second step.
 export async function deleteSteps(r: WorkbenchRun, ref: string, b: Pick<DeleteFacts, "oid" | "section">): Promise<StepEnd[]> {

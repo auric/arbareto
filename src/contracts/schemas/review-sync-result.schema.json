@@ -376,6 +376,11 @@
           "type": "string",
           "maxLength": 32767,
           "pattern": "^[^\\u0000]*$"
+        },
+        "remote": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "additionalProperties": false,

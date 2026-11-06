@@ -156,7 +156,10 @@ describe("contract Δ9 reasons (data-model §6)", () => {
   test("SYNC_UNAVAILABLE gains default-branch, default-unknown, no-remote-branch, and not-upstream", () => {
     expect<readonly string[]>(errors.SYNC_UNAVAILABLE_REASONS).toEqual(expect.arrayContaining(NEW_SYNC_REASONS));
     expect(new Set(errors.SYNC_UNAVAILABLE_REASONS).size).toBe(errors.SYNC_UNAVAILABLE_REASONS.length);
-    for (const reason of NEW_SYNC_REASONS) expect(ok(R, { reason })).toBe(true);
+    // Contract Δ3 `SyncRefused`: `remote` comes exactly with `default-branch` and `default-unknown`.
+    const named = ["default-branch", "default-unknown"];
+    for (const reason of NEW_SYNC_REASONS) expect({ reason, ok: ok(R, named.includes(reason) ? { reason, remote: "origin" } : { reason }) }).toEqual({ reason, ok: true });
+    for (const reason of NEW_SYNC_REASONS) expect({ reason, ok: ok(R, named.includes(reason) ? { reason } : { reason, remote: "origin" }) }).toEqual({ reason, ok: false });
   });
 
   test("the reused sync reasons of the delete review stay", () => {

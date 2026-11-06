@@ -59,6 +59,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - `close.rs` `Mutation` gains `DeleteRemoteBranch` under `StartedKind::Sync`, with the close name X18 (plan D13).
 - `schema.rs` started-action test list gains `"delete-remote-branch"`.
+- The phase `sync-delete-local` carries no counter (Δ2). `schema.rs` `progress` refuses a counter on it. The no-counter phase test gains `"sync-delete-local"`.
 - `dialogs.rs` stays unchanged, because the trust ask names `push`.
 
 ## Δ7 Startup, trust, and environment (001 §7)

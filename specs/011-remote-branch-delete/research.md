@@ -82,7 +82,7 @@ Git documentation:
 - U1 (resolved by T001, Probe and Doc): `push.useForceIfIncludes=true` in the owned global configuration does not change a lease delete with an explicit expect. An equal expect gives the P10 line and exit 0. A wrong expect gives the P8 line and exit 1. git-push(1) `--force-if-includes` calls this combination a no-op.
 - U2 (unverified): `[rejected] (remote does not support deleting refs)` (`transport.c:743`) needs a server without the delete-refs capability. No probe caused it. T007 covers its `:<dst>` line form from the R3 source format. No real-server test exists, so this item stays an assumption.
 - U3 (resolved by T001, Probe): a lease delete of `refs/heads/fëature-ж` gives `-	:refs/heads/fëature-ж	[deleted]` and exit 0. The status line holds the raw UTF-8 bytes, without quotes or escapes. The tracking ref goes. In a SHA-256 repository, a lease delete with a 64-digit expect gives the P10 line and exit 0. A wrong 64-digit expect gives the P8 line and exit 1.
-- U4 (unverified): the generated Rust identifier of the new action is `A::DeleteRemoteBranch`. T005 checks the identifier after `bun run export:schemas`.
+- U4 (resolved by T005, Check): the generated Rust identifier of the new action is `A::DeleteRemoteBranch` (`StartedAction::DeleteRemoteBranch`). See R7 "Shell (T005)".
 - U5 (unverified): fixtures L and M hold no remote-tracking refs, so M-D adds them. T020 checks the fixture shape.
 - U6 (unverified): the native trust dialog returns the focus to the open in-app dialog (plan R8). T019 checks it through UIA.
 - U7 (resolved by T004, Check): eight schema files change, see R7 "Contract schemas (T004)". The design plan expected six. The phase `sync-delete-local` also changes `progress` and `run-workbench-result`.
@@ -129,6 +129,18 @@ Git documentation:
 - `sync-result`: the action, the status `deleted`, `remoteGone`, and `localNotDeleted`.
 - `progress`, `operation-result`, and `run-workbench-result`: the phase `sync-delete-local`.
 - The phase `sync-delete-local` carries no counter. `update-ref` and `config` print no progress.
+
+### Shell (T005)
+
+- Date: 2026-11-06. `bun run export:schemas --check` reported current schema files. The scripts and logs are in local scratch `f011-wp3`.
+- typify in `src-tauri/build.rs` generated `StartedAction::DeleteRemoteBranch` and `ProgressPhase::SyncDeleteLocal`.
+- `close.rs`: `Mutation::DeleteRemoteBranch` is under `StartedKind::Sync`, with the close name X18. A `workbench` frame with this action names no mutation.
+- `schema.rs`: `progress` lets `sync-delete-local` carry no counter, as `PHASE_COUNTERS` in `operations.ts` does.
+- The started-action test list holds `delete-remote-branch`. The no-counter phase test holds `sync-delete-local`.
+- Red: before the change, the close-name test, the started-action test, and the phase test failed.
+- Control: without the sync mapping arm, the close-name test and the started-action test failed. The restored `close.rs` has the original SHA-256.
+- Green: `cargo test --locked` gave 658 passed, 0 failed, and 16 ignored. The golden vector count stays 274 on Windows.
+- T005 adds no vector. The 011 vectors use `renderer-envelope`, `review-sync-result`, and `sync-result`, and the shell reads none of them.
 
 ### Packaged and perf runs (T021)
 

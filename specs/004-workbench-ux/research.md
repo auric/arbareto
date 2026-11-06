@@ -766,7 +766,8 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 | `for-each-ref %(upstream)` + `rev-list --left-right --count` | 2 | 95.4 ms | 32.9 ms | Rejected. `@{u}` exits 128 for "no upstream" and for "not a branch". Only the message text differs. |
 | `%(ahead-behind:<upstream>)` | 2 | not run | not run | Rejected. It needs the upstream name first. The Git minimum allows it, but it gives no gain. |
 
-- Inside the review, interleaved, 10 runs: today's row read (6 processes) took 251 ms per row. With the track read beside `--contains`: 269 ms (+18 ms, +7%). With the track read after it: 294 ms (+43 ms, +17%). Chosen: beside `--contains`.
+- Inside the review, interleaved, 10 runs: today's row read (6 processes) took 251 ms per row. With the track read beside `--contains`: 269 ms (+18 ms, +7%). With the track read after it: 294 ms (+43 ms, +17%). Chosen: beside `--contains`. T146 replaced this choice on 2026-11-04.
+- SC-018 miss and fix (2026-11-04, T146): the packaged T144 case on build ba095f87 gave +39.9 ms per row at 256 rows, against the 30 ms budget. Cause: a branch row started the mark read and the `--contains` read, so it ran one more Git process than a detached row. The fix runs the mark read alone. A record of the HEAD ref at the HEAD commit gives `refHeld`, and no `--contains` read runs. Unpackaged A/B at 256 rows, median of 3 after one warm-up: +18.2 ms per row before the fix, +3.0 ms after it. After the fix, both fixtures start 2,056 Git processes.
 - A second read after the rows (the rejected option) would take about 4 s for 256 rows on Windows and about 12 s in WSL, 8 at a time. It needs a new operation and about 4 times the code.
 
 **Git facts (probe)**
@@ -781,7 +782,7 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 
 - SC-018 basis: +18 ms measured unpackaged, plus about 5 ms for the packaged process path (005 research "Packaged cost"). The budget is 30 ms per row, set before the packaged test. A miss stays a failure, unless the user approves a changed target (constitution VII).
 - WSL: record only. Estimate +40 ms to +170 ms per row (168 ms per process in 005 research). Today's WSL review costs about 1 s or more per checked-out row.
-- SC-019 keeps the 001 SC-005 targets with 256 rows and 1,024 open folders, without virtualization. T144 decides.
+- SC-019 keeps the 001 SC-005 targets with 256 rows and 1,024 open folders. A packaged probe gave a p95 of 184 ms with all rows mounted, so the group mounts only the rows in view above 200 rows (T147). T144 decides.
 - Context, not in scope: the review costs about 250 ms per checked-out row on Windows. 256 rows take about 1 minute before the tree shows.
 
 **Open assumptions**

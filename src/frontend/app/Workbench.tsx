@@ -83,7 +83,7 @@ import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, failureText, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, scopeLine, StartPage, unknownReadText, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
-import { COUNTS_TOOLTIP, isTrackingList, NO_BRANCH, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
+import { COUNTS_TOOLTIP, isTrackingList, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
 import { ConflictConfirm, ConflictRow } from "../sync/ConflictActions";
 import { ForcePushConfirm } from "../sync/ForcePushConfirm";
 import { PullModeChoice } from "../sync/PullModeChoice";
@@ -1296,9 +1296,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   }
   // Plan.md D8 triggers: each new `readRefs.refsDigest` and each focus return. Each sync outcome runs one too.
   const refsDigest = state.refs?.refsDigest ?? null;
+  // `refsDigest` covers only `refname NUL objectname`, so a new `%(upstream)` of a local branch keeps it (FR-020, FR-021).
+  const upstreams = useMemo(() => JSON.stringify(state.refs?.refs.map((r) => (r.kind === "branch" ? r.upstream : null)) ?? null), [state.refs]);
   useEffect(() => {
     if (refsDigest !== null) readTracking();
-  }, [repositoryId, refsDigest]);
+  }, [repositoryId, refsDigest, upstreams]);
   useEffect(() => {
     if (repositoryId === null) return;
     const onFocus = () => readTracking();
@@ -1812,9 +1814,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     },
   });
   const trackingCount =
-    currentHead === null ? null : currentHead.state === "detached" || trackingFailure !== null ? (
+    // Feature 004 plan "Top bar row": on a detached HEAD, the branch button and the sync reason line state it.
+    currentHead === null || currentHead.state === "detached" ? null : trackingFailure !== null ? (
       <span data-slot="tracking-count" className="shrink-0 text-muted-text">
-        {currentHead.state === "detached" ? NO_BRANCH : trackingFailure}
+        {trackingFailure}
       </span>
     ) : (
       <TrackingCount label={currentLabel} upstream={currentEntry?.upstream ?? null} />
@@ -2096,6 +2099,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           onOpen={openSubmodule}
           onRefused={setNotice}
           chain={parents.length}
+          scrollElement={profile === "constrained" ? referencesElement : undefined}
         />
       </div>
     );

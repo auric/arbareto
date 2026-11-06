@@ -755,6 +755,38 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
     2 * (caseTimeout(60) + 2 * GIT_WAIT_MS),
   );
 
+  test.skipIf(reason !== null)(
+    "004 plan Top bar row: on a detached HEAD at 1280x800 CSS px and Comfortable, the header is one --h-header row",
+    async () => {
+      const f = fixture("amend-on-upstream", "detached-header-repo");
+      git(f, ["switch", "-q", "--detach"]);
+      const { app, c } = await cdpStart(f, "detached-header");
+      try {
+        // A device metrics override sets the CSS viewport. The window size stays.
+        await c.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 0, mobile: false });
+        await until<number>(c, "the 1280 px viewport", "innerWidth", (v) => v === 1280);
+        await found(app.pid, "View", ControlType.MenuItem, expand);
+        const item = `[...document.querySelectorAll('[role="menuitemradio"]')].find((e) => e.textContent.trim() === "Comfortable")`;
+        await until<boolean>(c, "the Comfortable item", `!!(${item})`, (v) => v);
+        await c.evaluate(`(${item}).focus(); true`);
+        await press(c, "Enter");
+        await until<string | null>(c, "the Comfortable density", "document.documentElement.getAttribute('data-density')", (v) => v === "comfortable");
+        await until<boolean>(c, "the detached branch button", `document.querySelector('header [data-slot="branch-button"]')?.textContent.includes('Detached at') ?? false`, (v) => v);
+        await c.evaluate(`new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))`);
+        const header = await c.evaluate<{ height: number; row: number; count: boolean; reason: boolean }>(
+          `(() => { const h = document.querySelector('header[data-section="header"]'); return { height: h.getBoundingClientRect().height, row: Number.parseFloat(getComputedStyle(h).minHeight), count: !!h.querySelector('[data-slot="tracking-count"]'), reason: h.textContent.includes('Pull, Push: No branch checked out.') }; })()`,
+        );
+        console.log(`HEADER 004: ${js(header)}`);
+        expect(header).toEqual({ height: header.row, row: header.row, count: false, reason: true });
+      } finally {
+        c.close();
+        sockets.delete(c);
+        await stop(app);
+      }
+    },
+    caseTimeout(12),
+  );
+
   // ---- Live input ----
 
   test.skipIf(liveReason !== null)(

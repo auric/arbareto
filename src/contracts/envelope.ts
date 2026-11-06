@@ -2231,6 +2231,7 @@ const SubmoduleChangeState = z.discriminatedUnion("state", [
   z.strictObject({ state: z.literal("commits"), added: Count, removed: Count, addedCommits: SubmoduleCommits, removedCommits: SubmoduleCommits }).meta({ title: "SubmoduleCommitsState" }),
   z.strictObject({ state: z.literal("missing"), which: z.enum(["old", "new", "both"]) }).meta({ title: "SubmoduleMissingState" }),
   z.strictObject({ state: z.literal("not-initialized") }).meta({ title: "SubmoduleNotInitializedState" }),
+  z.strictObject({ state: z.literal("not-located") }).meta({ title: "SubmoduleNotLocatedState" }),
   z.strictObject({ state: z.literal("single") }).meta({ title: "SubmoduleSingleState" }),
 ]);
 const listed = (count: number, list: readonly unknown[], limited: boolean) => Array.isArray(list) && (limited ? list.length <= Math.min(count, SUBMODULE_CHANGE_COMMITS) : list.length === Math.min(count, SUBMODULE_CHANGE_COMMITS));
@@ -2247,7 +2248,7 @@ const SubmoduleChange = z
   .refine((c) => {
     const st = c.state;
     if (st?.state === "single") return (c.old === null) !== (c.new === null) && !c.limited;
-    if (st?.state === "not-initialized") return !c.limited;
+    if (st?.state === "not-initialized" || st?.state === "not-located") return !c.limited;
     if (st?.state === "missing") return c.old !== null && c.new !== null && !c.limited;
     return c.old !== null && c.new !== null && listed(st.added, st.addedCommits, c.limited) && listed(st.removed, st.removedCommits, c.limited);
   })
@@ -2257,12 +2258,14 @@ export const ReadSubmoduleChangeResult = z.union([SubmoduleChange, z.strictObjec
 export type SubmoduleChange = z.infer<typeof SubmoduleChange>;
 
 // Data-model §16 `readSubmoduleWork`, contract Δ9 "Submodule work reasons". `failed` carries the error code.
-// Each of the first SUBMODULE_WORK_TARGETS gitlinks in index order has one entry. `limited` counts the later gitlinks, which have none.
+// Each of the first SUBMODULE_WORK_TARGETS gitlinks in index order has one entry. Each unlisted moved gitlink follows with one entry.
+// The list holds at most SUBMODULE_WORK_TARGETS entries. `limited` counts the rest, which have none.
 const SubmodulePathFields = { pathBytes: PathBytes, path: z.string() };
 const SubmoduleWorkEntry = z
   .union([
     z.strictObject({ ...SubmodulePathFields, state: z.literal("checked"), modified: z.boolean(), untracked: z.boolean() }).meta({ title: "SubmoduleWorkChecked" }),
     z.strictObject({ ...SubmodulePathFields, state: z.literal("not-initialized") }).meta({ title: "SubmoduleWorkNotInitialized" }),
+    z.strictObject({ ...SubmodulePathFields, state: z.literal("not-located") }).meta({ title: "SubmoduleWorkNotLocated" }),
     z.strictObject({ ...SubmodulePathFields, state: z.literal("unchecked"), reason: z.literal("programs") }).meta({ title: "SubmoduleWorkSkipped" }),
     z.strictObject({ ...SubmodulePathFields, state: z.literal("unchecked"), reason: z.literal("failed"), code: ErrorCodeSchema }).meta({ title: "SubmoduleWorkFailed" }),
   ])

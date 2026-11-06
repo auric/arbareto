@@ -11,7 +11,7 @@ import { trackOperation, type StatusOperation } from "../status/OperationStatus"
 import type { TrustReport } from "../trust/TrustChip";
 import type { FileActionResult } from "./ChangesPane";
 import { BLOCKED_TEXT, STALE_TEXT, stagingReason, type Blocked, type Eligibility, type StagingTarget } from "./HunkControls";
-import { GITLINK_TEXT, isGitlink, LIMITATION_TEXT, UNBORN_TEXT } from "./limitation-text";
+import { GITLINK_TEXT, isGitlink, LIMITATION_TEXT, NOT_LOCATED_TEXT, UNBORN_TEXT } from "./limitation-text";
 import { changeOf, PENDING_TEXT, type ChangeRead } from "./SubmodulePreview";
 
 // plan.md "Task flow and command placement" (Stage or unstage, File controls), "Limitation text", "Keyboard and focus" (File actions, Stage key row), and contract §4 "File staging" and "Limitation remedies".
@@ -51,7 +51,7 @@ type Decision = { label: "Stage file" | "Unstage file" | "Mark resolved"; direct
 type Refused = Exclude<Comparison["fileAction"], Direction>;
 
 // plan.md "Limitation text", plus the feature 003 data-model §9 `missing` refusal of Mark resolved.
-const REFUSAL_TEXT: Record<Refused, string> = { ...LIMITATION_TEXT, missing: "The working file of this conflicted path is missing.", "submodule-unborn": UNBORN_TEXT };
+const REFUSAL_TEXT: Record<Refused, string> = { ...LIMITATION_TEXT, missing: "The working file of this conflicted path is missing.", "submodule-not-located": NOT_LOCATED_TEXT, "submodule-unborn": UNBORN_TEXT };
 const LABEL: Record<Direction, Decision["label"]> = { stage: "Stage file", unstage: "Unstage file", resolve: "Mark resolved" };
 const OUTCOME: Record<Direction, string> = { stage: "File staged", unstage: "File unstaged", resolve: "File marked resolved" };
 

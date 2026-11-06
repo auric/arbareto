@@ -25,6 +25,8 @@ export interface Lib {
   url: string;
   // `main` and the tag `v1`.
   main: string;
+  // The tip of `release/2.x`.
+  release: string;
 }
 
 // `<root>/lib.git` has `main` (2 commits), the tag `v1` at `main`, `release/2.x` (3 commits after `main`), and `lint` at `main`.
@@ -48,7 +50,7 @@ function lib(exe: string, root: string): Lib {
   g(src, ["switch", "-q", "-c", "release/2.x"]);
   for (const n of [1, 2, 3]) commit(`release ${n}`);
   g(src, ["push", "-q", slashed(bare), "refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"]);
-  return { url: slashed(bare), main };
+  return { url: slashed(bare), main, release: g(src, ["rev-parse", "HEAD"]) };
 }
 
 // One commit on `main` of a new repository at `repo`. `prepare` writes the index entries of that commit.
@@ -93,7 +95,7 @@ export function twinWorlds(exe: string, dir: string, n: number): Twins {
     g(branch, ["add", "--", ".gitmodules"]);
     g(branch, ["update-index", "--index-info"], gitlinks(l.main, paths));
   });
-  g(branch, ["submodule", "update", "--init", "-q"]);
+  g(branch, ["submodule", "update", "--init", "--jobs", "8", "-q"]);
   // The update leaves each HEAD detached at the gitlink. The clone made `main` with `origin/main` as its upstream, at the same commit.
   const detached = join(dir, "detached");
   // The gitfile and `core.worktree` of each submodule hold relative paths, so the copy stays valid.
@@ -102,14 +104,49 @@ export function twinWorlds(exe: string, dir: string, n: number): Twins {
   return { branch, detached, paths };
 }
 
+export interface Moved {
+  repo: string;
+  paths: string[];
+  // The commit of each HEAD: `main` of `lib.git`.
+  head: string;
+  // The commit of each gitlink: the `release/2.x` tip, which each clone holds.
+  target: string;
+}
+
+/** T154: the detached twin of `twinWorlds` with every gitlink at the `release/2.x` tip. Each HEAD stays detached at `main`. */
+export function movedTwins(exe: string, dir: string, n: number): Moved {
+  const g = gitIn(exe);
+  const l = lib(exe, dir);
+  const paths = Array.from({ length: n }, (_, i) => twinPath(i));
+  const repo = join(dir, "moved");
+  commitRepo(exe, repo, () => {
+    writeFileSync(join(repo, ".gitmodules"), gitmodules(paths.map((p) => [p, l.url])));
+    g(repo, ["add", "--", ".gitmodules"]);
+    g(repo, ["update-index", "--index-info"], gitlinks(l.main, paths));
+  });
+  g(repo, ["submodule", "update", "--init", "--jobs", "8", "-q"]);
+  g(repo, ["update-index", "--index-info"], gitlinks(l.release, paths));
+  g(repo, ["commit", "-q", "--no-verify", "-m", "move"]);
+  return { repo, paths, head: l.main, target: l.release };
+}
+
 // ---- (c): the 1,024-folder bound ----
 
 /** T144 (c): 256 gitlinks without a clone. Each path has 4 own folders, so 256 rows give 1,024 folders. `top` adds 1 shared folder. */
 export function folderWorld(exe: string, dir: string, folders: 1_024 | 1_025): { repo: string; paths: string[] } {
+  const prefix = folders === 1_025 ? "top/" : "";
+  return gitlinkWorld(exe, dir, Array.from({ length: 256 }, (_, i) => `${prefix}t${String(i).padStart(3, "0")}/a/b/c/s`));
+}
+
+/** T161: 1,024 gitlinks without a clone at `f<i>/s`, i from 0000 to 1023. So 1,024 rows give 1,024 folders. */
+export function wideWorld(exe: string, dir: string): { repo: string; paths: string[] } {
+  return gitlinkWorld(exe, dir, Array.from({ length: 1_024 }, (_, i) => `f${String(i).padStart(4, "0")}/s`));
+}
+
+// One commit with a gitlink at `main` of `lib.git` for each path, without a clone.
+function gitlinkWorld(exe: string, dir: string, paths: string[]): { repo: string; paths: string[] } {
   const g = gitIn(exe);
   const l = lib(exe, dir);
-  const prefix = folders === 1_025 ? "top/" : "";
-  const paths = Array.from({ length: 256 }, (_, i) => `${prefix}t${String(i).padStart(3, "0")}/a/b/c/s`);
   const repo = join(dir, "repo");
   commitRepo(exe, repo, () => {
     writeFileSync(join(repo, ".gitmodules"), gitmodules(paths.map((p) => [p, l.url])));

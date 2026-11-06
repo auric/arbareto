@@ -1,0 +1,5 @@
+{
+  "schema": "review-sync-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"delete-remote-branch\",\"plan\":{\"remotes\":[\"origin\"],\"destination\":{\"remote\":\"origin\",\"ref\":\"refs/heads/feature\",\"trackingRef\":\"refs/remotes/origin/feature\",\"url\":\"https://example.test/r.git\",\"setUpstream\":false,\"upstreamRebase\":false,\"source\":\"tracking-ref\"}},\"syncReviewToken\":\"0f0f0f0f-0000-4000-8000-000000000301\"}"
+}

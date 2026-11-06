@@ -55,6 +55,7 @@
             "abort",
             "continue",
             "skip",
+            "delete-remote-branch",
             "switch",
             "create-branch",
             "rename-branch",

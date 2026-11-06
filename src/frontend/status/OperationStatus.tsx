@@ -142,6 +142,8 @@ export const SYNC_NAMES: Record<SyncAction, string> = {
   abort: "Abort",
   continue: "Continue",
   skip: "Skip",
+  // Feature 011 plan.md D13 X18.
+  "delete-remote-branch": "Delete remote branch",
 };
 function textsOf(op: StatusOperation): [name: string, running: string, heading: string] {
   if (op.texts !== undefined) return op.texts;

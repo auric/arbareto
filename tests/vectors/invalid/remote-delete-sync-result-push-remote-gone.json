@@ -1,0 +1,5 @@
+{
+  "schema": "sync-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"push\",\"push\":{\"status\":\"pushed\",\"oldObjectId\":\"0123456789abcdef0123456789abcdef01234567\",\"newObjectId\":\"89abcdef0123456789abcdef0123456789abcdef\",\"reasonText\":null,\"lease\":false,\"upstreamWritten\":false,\"upstreamNotSet\":false,\"outputTail\":\"\"},\"remoteGone\":true}"
+}

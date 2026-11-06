@@ -85,7 +85,7 @@ Git documentation:
 - U4 (unverified): the generated Rust identifier of the new action is `A::DeleteRemoteBranch`. T005 checks the identifier after `bun run export:schemas`.
 - U5 (unverified): fixtures L and M hold no remote-tracking refs, so M-D adds them. T020 checks the fixture shape.
 - U6 (unverified): the native trust dialog returns the focus to the open in-app dialog (plan R8). T019 checks it through UIA.
-- U7 (unverified): the exact schema files that change. The design plan expects `mutation-request`, `renderer-envelope`, `review-sync-result`, `service-envelope`, `sync-result`, and `operation-result`. T004 decides with `bun run export:schemas --check`.
+- U7 (resolved by T004, Check): eight schema files change, see R7 "Contract schemas (T004)". The design plan expected six. The phase `sync-delete-local` also changes `progress` and `run-workbench-result`.
 - U8 (resolved by T001, Probe): Git runs the pre-push hook when the lease rejects every ref. The hook wrote its log line. The push printed the P8 line and exited 1.
 - A1 (assumption): 010 merges into `main` before any 011 code task starts. Every code task depends on it.
 
@@ -119,6 +119,16 @@ Git documentation:
 - 6: the remote confirmation keeps the alert dialog, the warning icon, and X7. The local 004 dialog keeps its look.
 - 7: the commit list shows up to `SYNC_LEASE_COMMITS` (100) commits, then X5.
 - 8: in forced colors, the danger red goes. The button text and the title state the danger.
+
+### Contract schemas (T004)
+
+- Date: 2026-11-06. `bun run export:schemas --check` before the export named eight stale files. The export changed the same eight files.
+- `mutation-request`: the started action `delete-remote-branch`.
+- `renderer-envelope` and `service-envelope`: the payload `ReviewDeleteRemoteBranch`.
+- `review-sync-result`: the action, the source `tracking-ref`, the plan field `local`, the four new sync reasons, the four workbench reasons, and `worktree`.
+- `sync-result`: the action, the status `deleted`, `remoteGone`, and `localNotDeleted`.
+- `progress`, `operation-result`, and `run-workbench-result`: the phase `sync-delete-local`.
+- The phase `sync-delete-local` carries no counter. `update-ref` and `config` print no progress.
 
 ### Packaged and perf runs (T021)
 

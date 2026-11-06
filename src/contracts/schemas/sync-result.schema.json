@@ -13,7 +13,8 @@
         "force-push",
         "abort",
         "continue",
-        "skip"
+        "skip",
+        "delete-remote-branch"
       ]
     },
     "fetch": {
@@ -191,7 +192,8 @@
             "rejected",
             "remote-rejected",
             "remote-failure",
-            "none"
+            "none",
+            "deleted"
           ]
         },
         "oldObjectId": {
@@ -448,6 +450,14 @@
       "pattern": "^[^\\u0000]*$"
     },
     "connectTarget": {
+      "type": "boolean",
+      "const": true
+    },
+    "remoteGone": {
+      "type": "boolean",
+      "const": true
+    },
+    "localNotDeleted": {
       "type": "boolean",
       "const": true
     }

@@ -30,6 +30,8 @@ export const SYNC_TRUST: Record<(typeof SYNC_ACTIONS)[number], TrustAction> = {
   abort: "pull",
   continue: "pull",
   skip: "pull",
+  // Feature 011 plan.md D9: the trust ask names the push.
+  "delete-remote-branch": "push",
 };
 
 /** Feature 010 plan.md D6: Abort and Continue of a stopped cherry-pick or revert ask with that action. Every other sync action keeps `SYNC_TRUST`. */

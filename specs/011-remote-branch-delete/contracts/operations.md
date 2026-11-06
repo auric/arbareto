@@ -84,7 +84,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 ## Δ10 Required contract checks (001 §10)
 
 - `bun run export:schemas` regenerates `src/contracts/schemas/*.json`. `bun run export:schemas --check` decides the changed set (research R5 U7).
-- Valid vectors in `tests/vectors/valid/remote-delete-*.json`: the remote payload, the combined payload, a plan with `local`, and a result with status `deleted`, `remoteGone`, and `localNotDeleted`.
+- Valid vectors in `tests/vectors/valid/remote-delete-*.json`: the remote payload, the combined payload, a plan with `local`, and a result with status `deleted`, `remoteGone`, and `localNotDeleted`. Also a result with `remoteGone` and `localNotDeleted` together.
 - Invalid vectors in `tests/vectors/invalid/remote-delete-*.json`: `local` with action `push`, `remoteGone` with action `push`, and a plan of this action without `lease`.
 
 ## Δ11 WSL repositories (001 §11)

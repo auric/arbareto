@@ -20,7 +20,7 @@ The user gave these decisions on 2026-11-06. Each decision is binding.
 - Q: Does the local Delete dialog also delete the remote branch? → A: When the branch has an upstream remote-tracking branch, the dialog offers a check box (plan D13 X9). It is unchecked by default. One confirmation covers both deletes (FR-010).
 - Q: Can the user delete the default branch of a remote? → A: No. The review refuses the branch that `refs/remotes/<remote>/HEAD` names after the last fetch, with the reason. When that ref is absent, the review refuses and tells the user to fetch (FR-004).
 - Q: Which budgets apply? → A: The budgets of SC-009a to SC-009e, as the design plan proposed them. Each cold run has a budget of 2 times the warm budget of its measure. WSL times are recorded only.
-- Q: What happens when the remote branch is already gone? → A: After a stale-lease refusal, Arbareto checks the remote with `ls-remote --exit-code`. When the branch is gone, Arbareto removes the stale remote-tracking ref, bound to the shown object ID, and says so (FR-012).
+- Q: What happens when the remote branch is already gone? → A: After a stale-lease refusal, Arbareto checks the remote with `ls-remote --exit-code`. When the branch is gone, Arbareto removes the stale remote-tracking ref and says so. The removal binds to the shown object ID (FR-012).
 - Q: Does Del on a remote-tracking row open the confirmation? → A: Yes. Cancel has the first focus, so one key never deletes (FR-001).
 - Q: Does the stale outcome offer a Fetch button? → A: No. The outcome names Fetch as text only (plan D13 X22).
 - Q: Which menu label applies? → A: "Delete remote branch…" (plan D13 X1).
@@ -87,7 +87,7 @@ Another clone deleted the remote branch. Fetch does not prune by default, so the
 1. **Given** `origin/gone1` here and no `refs/heads/gone1` on the remote. **When** I confirm X8. **Then** the lease delete refuses, the check finds no branch, Arbareto removes `refs/remotes/origin/gone1`, and the status bar states X23.
 2. **Given** the remote branch moved after the last fetch. **When** I confirm. **Then** the check finds the branch, nothing changes, and the status bar states X22.
 3. **Given** the remote has a `pushurl` that differs from its fetch URL. **When** the lease refuses. **Then** Arbareto does not check the remote and states X22.
-4. **Given** the combined delete and a gone remote branch. **When** I confirm. **Then** Arbareto removes the stale ref and deletes the local branch. The status bar states X23, then X21.
+4. **Given** the combined delete and a gone remote branch. **When** I confirm. **Then** Arbareto removes the stale ref and deletes the local branch. The status bar states X23, then X26.
 
 ---
 
@@ -115,12 +115,12 @@ A developer deletes a remote branch in a repository inside a WSL distro.
 - The remote has several push URLs, or it is a mirror. The review refuses with the existing reason (FR-005).
 - The remote refuses the delete: `receive.denyDeletes`, its own HEAD branch, a checked-out branch of a non-bare remote, or a pre-receive hook. The remote-tracking ref stays, and the outcome states the remote reason as display text (research R2 P3 to P6).
 - A stale local `refs/remotes/<remote>/HEAD` names an old default. The new default of the remote stays deletable here. Git servers refuse their HEAD branch by default (research R2 P4, plan R4).
-- `remote.<name>.followRemoteHEAD=never` keeps `refs/remotes/<remote>/HEAD` absent. Every branch of that remote refuses with X14 (research R2 P13).
+- `remote.<name>.followRemoteHEAD=never` keeps `refs/remotes/<remote>/HEAD` absent. Every branch of that remote refuses with X14 (research R2 P13). A fetch does not create the ref then, so X14 also names `git remote set-head`.
 - A local pre-push hook declines. Git deletes nothing. The outcome is the shared failure outcome with the terminal remedy (research R2 P7).
 - An approved pre-push hook commits on the local branch during a combined run. The local delete refuses the moved tip, and the outcome states X24.
 - Local branches that track the deleted remote branch keep their upstream setting and show `gone` (research R2 P12, FR-009).
 - The remote hides refs (`uploadpack.hideRefs`). The gone check can find no branch while the remote keeps it. Arbareto then removes only the stale ref whose commits the confirmation listed (plan R11).
-- The user cancels after the remote delete and before the local delete. The outcome states X24. The remote can hold the delete (FR-013).
+- The user cancels after the remote delete and before the local delete. The outcome states X24 (FR-013).
 - The review stays open for more than 60 seconds. The run changes nothing and refuses with `APPROVAL_EXPIRED`, as the 003 flows do.
 - A trust ask opens from inside the open Delete dialog. The focus goes back to the dialog after the shell dialog closes (research R5 U6).
 - A detached or an unborn HEAD does not refuse a remote-only delete.
@@ -139,7 +139,7 @@ The no-heuristics rule applies to every requirement. Every decision comes from o
 
 - Feature 001 provides the operation registry with Cancel and the outcome reconciliation (FR-023). It also provides the mutation block (FR-015, FR-016), the trust approval, the stall notice (FR-051), and the WSL rules.
 - Feature 003 provides the sync action frame, the push step, and the `sync` trust class. It also provides Pageant, the remedies, the connect target, and the force-push commit list.
-- Feature 004 provides the References sidebar, the branch menu on rows and History labels (FR-014), and the local Delete dialog (FR-017 to FR-019).
+- Feature 004 provides the References sidebar and the branch menu on rows and History labels (FR-014). It also provides the local Delete dialog (FR-017 to FR-019).
 - Feature 006 provides the WSL route.
 - Feature 008 provides the alert dialog pattern of a destructive confirmation (FR-008, FR-047).
 - Feature 010 changes the same files. The 011 code starts on `main` after 010 merges (plan R7).
@@ -170,7 +170,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 - **FR-002**: The review MUST bind the remote, the full remote ref, and the remote-tracking ref with its object ID. It MUST also bind exactly one push URL and the commits that the delete removes from every ref here. The review MUST NOT use the network.
 - **FR-003**: The remote and the remote ref MUST come from the fetch refspecs. Exactly one remote and one `refs/heads/` source MUST map the remote-tracking ref. The forward mapping MUST give the same ref. Otherwise the review MUST refuse with `no-remote-branch`.
-- **FR-004**: The review MUST refuse the branch that `refs/remotes/<remote>/HEAD` names, with `default-branch`. When that ref is absent or not symbolic, the review MUST refuse with `default-unknown`. That refusal MUST name Fetch as the next step.
+- **FR-004**: The review MUST refuse the branch that `refs/remotes/<remote>/HEAD` names, with `default-branch`. When that ref is absent or not symbolic, the review MUST refuse with `default-unknown`. That refusal MUST name Fetch and `git remote set-head` as the next steps.
 - **FR-005**: The review MUST refuse while an operation is in progress. It MUST refuse a missing remote-tracking ref with `UNKNOWN_TARGET`. It MUST refuse without trust approval of the `sync` class. It MUST also refuse several push URLs and a mirror remote.
 
 #### Confirmation and run
@@ -187,7 +187,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Gone recovery
 
-- **FR-012**: After a lease refusal, the application MUST check the remote with `ls-remote --exit-code -- <remote> <dst>`. It MUST check only when the fetch URL equals the push URL byte for byte. Exit 2, or exit 0 with no exact `<dst>` line, means gone. Then the application MUST remove the remote-tracking ref with `update-ref --no-deref -d <ref> <expect>`, and say so. Any other result MUST keep the stale outcome.
+- **FR-012**: After a stale-lease refusal, the application MUST check the remote with `ls-remote --exit-code -- <remote> <dst>`. It MUST check only when the fetch URL equals the push URL byte for byte. Exit 2, or exit 0 with no exact `<dst>` line, means gone. Then the application MUST remove the remote-tracking ref with `update-ref --no-deref -d <ref> <expect>`, and say so. Any other result MUST keep the stale outcome.
 
 #### Common rules
 

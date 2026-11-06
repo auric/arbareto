@@ -64,6 +64,7 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 | deleted | failed, or not run after Cancel | `failed-with-effects` | `localNotDeleted: true` |
 | failed, rejected, stale, or canceled | not run | `no-effects` | the failure fields |
 | gone, stale ref removed | deleted | `intended-effects-confirmed` | `remoteGone: true` |
+| gone, stale ref removed | failed, or not run after Cancel | failed-with-effects | remoteGone: true, localNotDeleted: true |
 
 ## 6. Refusal reasons
 

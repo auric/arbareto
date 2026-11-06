@@ -30,7 +30,7 @@ Four facts drive the design (research R2 and R3):
 
 **Testing**: Bun tests in real disposable repositories with a local bare remote and Git oracles on a copy (`tests/git`). Contract tests and golden vectors (`tests/contracts`, `tests/vectors`). Cargo tests for the shell. Packaged tests through UI Automation and CDP (`tests/windows`). WSL tests on `Ubuntu-26.04` with Git 2.55 (`tests/wsl`).
 
-**Target Platform**: Windows 11 x64 with WebView2 and Git for Windows (2.56.0.windows.2 on the reference PC). WSL2 repositories run the distro's Git. The Git floor stays 2.55.0.windows.3 on Windows (`admission.ts:9`) and 2.55.0 in WSL (`wsl-route.ts:12`).
+**Target Platform**: Windows 11 x64 with WebView2 and Git for Windows (2.56.0.windows.2 on the reference PC). WSL2 repositories run the distro's Git. The Git floor stays 2.55.0.windows.3 on Windows (`admission.ts:9`) and 2.55.0 in WSL (`src/contracts/wsl-route.ts:12`).
 
 **Project Type**: Local-first desktop application: Tauri 2 shell, compiled Bun Git service, React renderer.
 
@@ -134,7 +134,7 @@ Each step writes its tests first.
 
 - An alert dialog (Base UI `AlertDialog`, the 008 `RevertConfirm` pattern). Cancel has the first focus. No button is the default, so Enter alone never deletes.
 - Content: X2, X3, then X4 with the commit list (up to 100 rows) and X5, or X6. Then X7. Buttons: X8 (danger) and Cancel.
-- The list reuses the force-push list (`ForcePushConfirm.tsx:46-55`), exported as `LeaseCommits`: short ID and subject, `max-h-60` with its own scrollbar.
+- The list reuses the force-push list (`ForcePushConfirm.tsx:45-53`), exported as `LeaseCommits`: short ID and subject, `max-h-60` with its own scrollbar.
 - A name that does not fit keeps its full text in the tooltip and the accessible name (arbareto-ux rule).
 
 ### D3 Local dialog with the check box
@@ -224,8 +224,9 @@ Steps:
 |---|---|---|---|
 | `deleted`; local writes done, or none | `intended-effects-confirmed`, or `differing-effects` when other refs or HEAD changed | `push.status` `deleted` | X20, or X21 when combined |
 | `deleted`; a local write failed, or Cancel stopped it | `failed-with-effects` | `localNotDeleted: true` | X24 |
-| `rejected` with the lease (stale), no gone fact | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease` | X22, plus X25 when combined |
-| `rejected` and `remoteGone`; local writes done, or none | `intended-effects-confirmed` | `remoteGone: true` | X23, then X21 when combined |
+| `rejected` with the lease (stale), no gone fact | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`; `remedy` X27 | X22, plus X25 when combined |
+| `rejected` and `remoteGone`; local writes done, or none | `intended-effects-confirmed` | `remoteGone: true` | X23, then X26 when combined |
+| rejected with another reason | no-effects, failed, PUSH_REJECTED | reason, reasonText (display only) | E2, plus X25 when combined |
 | `remote-rejected` or `remote-failure` | `no-effects`, failed, `PUSH_REJECTED` | `reason`, `reasonText` (display only) | E2, plus X25 when combined |
 | `none` with a nonzero exit, or a refused start | `no-effects`, failed, `GIT_FAILED` (or the runner code) | `remedy` with the command; the connect target | E3 with the remedy, plus X25 when combined |
 | Canceled, no ref changed | `no-effects`, canceled | `remedy` `CANCELED_PUSH_TEXT` (`sync.ts:36`) | E4, plus X25 when combined |
@@ -251,11 +252,12 @@ Order: remote first, then local.
 | deleted | deleted | intended | X21 |
 | deleted | failed, or not run after Cancel | failed-with-effects | X24 |
 | failed, rejected, stale, or canceled | not run | no-effects | the failure text plus X25 |
-| gone, stale ref removed | deleted | intended | X23 then X21 |
+| gone, stale ref removed | deleted | intended | X23 then X26 |
+| gone, stale ref removed | failed, or not run after Cancel | failed-with-effects | X23, then X25 |
 
 ### D8 Gone recovery (user decision 2026-11-06, design option Q1 a)
 
-- Trigger: the push status is `rejected` with the lease, and the review bound `sameUrl: true`.
+- Trigger: the push status is `rejected`, the reason is `stale-lease`, and the review bound `sameUrl: true`.
 - Step: `ls-remote --exit-code -- R <dst>` through `networkStep`, with the same policy, Pageant, and remedies as the push.
 - Gone fact: exit 2, or exit 0 with no exact `<dst>` line (`parseLsRemote`). Exit 0 with an exact `<dst>` line means the branch exists, so the stale outcome stays. Another exit, a parse failure, or Cancel keeps the stale outcome.
 - Removal: `update-ref --no-deref -d <ref> <expect>` as one more write through `writeUpstream`. Exit 0 marks `remoteGone`. A nonzero exit keeps the stale outcome. The expect value makes Git refuse a ref that changed after the review.
@@ -309,7 +311,7 @@ The user accepted these budgets on 2026-11-06, before any measured run. The runs
   8. Local-checked: the combined plan.
   9. Local-refused: checked, X13 under the box, Delete unavailable.
   10. Status-running: X19 with Cancel.
-  11. Status-outcomes: X20 to X24 and E3 with a remedy command.
+  11. Status-outcomes: X20 to X24, X26, and E3 with a remedy command.
   12. Forced colors and dark theme: boards 3 and 8.
   13. Comfortable density: boards 1 and 6.
 - The user approves the boards before any code task (T003 onward) starts. A changed text goes into D13 first.
@@ -336,7 +338,7 @@ New texts:
 | X10 | local dialog, checked, count above 0 | {branch} and {tracking} have {n} commits that no other branch, tag, or remote-tracking branch has. The delete loses them. (n = 1: "commit") |
 | X11 | local dialog, checked, count 0 | Deleting {branch} and {tracking} loses no commit. |
 | X13 | refusal | {tracking} is the default branch of {remote}. Arbareto does not delete the default branch of a remote. |
-| X14 | refusal | Arbareto cannot tell the default branch of {remote}. Fetch {remote}, then try again. |
+| X14 | refusal | Arbareto cannot tell the default branch of {remote}. Fetch {remote}, or run git remote set-head {remote} --auto, then try again. |
 | X15 | refusal | No fetch refspec of exactly one remote maps {tracking} to a remote branch, so Arbareto cannot name it. |
 | X16 | refusal | {tracking} is no longer the upstream of {branch}. Close this dialog, then try again. |
 | X17 | refusal | {tracking} no longer exists here. |
@@ -345,15 +347,19 @@ New texts:
 | X20 | outcome | Deleted the remote branch {tracking}. |
 | X21 | outcome | Deleted {branch} and the remote branch {tracking}. |
 | X22 | outcome | {tracking} changed on {remote} since the last fetch, so Git deleted nothing. Fetch {remote}, then try again. |
-| X23 | outcome | {remote} had no branch {name} any more. Arbareto deleted the remote-tracking branch {tracking}. |
+| X23 | outcome | {remote} lists no branch {name}. Arbareto deleted the remote-tracking branch {tracking}. |
 | X24 | outcome | Deleted the remote branch {tracking}. Arbareto could not delete {branch}, so it stays. |
 | X25 | outcome suffix | {branch} stays. |
+| X26 | outcome, combined after X23 | Deleted the local branch {branch}. |
+| X27 | details area remedy of X22 | Text: "This command fetches {remote} and removes the remote-tracking branches whose remote branch is gone." Command: `& {git} --no-lazy-fetch -C {root} fetch --prune -- {remote}` |
+
+- X24 equals X20 followed by X25.
 
 Existing texts that this feature reuses unchanged:
 
 | ID | Where | Source | Text |
 |---|---|---|---|
-| X5 | dialog, list end | force-push list (`ForcePushConfirm.tsx:46-55`) | and 1 more commit / and {n} more commits |
+| X5 | dialog, list end | force-push list (`ForcePushConfirm.tsx:45-53`) | and 1 more commit / and {n} more commits |
 | X12 | local dialog, review runs | existing loading text | Loading… |
 | E1 | key text of X1 | `KEYS.delete` (`shortcuts.ts:182`) | Del |
 | E2 | outcome, remote rejected | `OperationStatus.tsx:399` | Rejected by the remote, then `: <reasonText>` |
@@ -384,7 +390,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
 - So move `refTarget`, `revCount`, `readWorktrees`, `unresolvedRefusal`, `heldElsewhere`, `unavailable`, and type `Refused` from `workbench-review.ts:65-184` into a new `src/git-service/ref-facts.ts`. Move `DeleteFacts`, `deleteFacts`, `headReflogKeeps`, and `localSectionKeys` from `branch-ops.ts:57-78` and `:154-178` there too. The new module has no load-time side effects. `workbench-review.ts` and `branch-ops.ts` re-export the moved names, so no other importer changes.
 - Review module: new `src/git-service/remote-delete.ts` (no load-time side effects) with `observeRemoteDelete`. `sync-review.ts` `observeSync` calls it for the new action, after the remote list (`:419`) and before the push reads (`:444`). `sync-review.ts:537-544` passes `worktree` into the refusal value. `planOf` (`:499`) adds `local`. `leaseOf` (`:180-211`) splits into the tracking read and a shared `commitsOf`.
 - Run: `src/git-service/sync.ts` gets `runDelete(entries)` inside `createSyncer`, next to `runPush` (`:417`). It reuses `pageant` (`:249`), `networkStep` (`:278`), `remedyOf` (`:259`), `writeUpstream` (`:307`), `processEnded` (`:327`), and `keepTarget` (`:256`). The shared after-run reads of `runPush` (`:461-476`) move into one helper that both use. The dispatch at `:519-524` gains the action. The forward check `trackingOf` (`sync.ts:150`) must give back the reviewed ref.
-- Frontend: `src/frontend/branches/BranchActions.tsx`, `texts.ts`, and the new `RemoteDeleteConfirm.tsx`. `src/frontend/sync/ForcePushConfirm.tsx` exports the commit list of `:46-55` as `LeaseCommits`. `src/frontend/sync/useSync.ts` exports `review` and `startReviewed` (the current `start`, `:86-115`). `src/frontend/app/Workbench.tsx` passes them to `useBranchActions` (`:1776`). `src/frontend/status/OperationStatus.tsx` changes `syncStepText` (`:367`) and `syncOutcome` (`:392`), and `SYNC_NAMES` (`:135`) gains X18. `src/frontend/keyboard/shortcuts.ts:182` widens the scope.
+- Frontend: `src/frontend/branches/BranchActions.tsx`, `texts.ts`, and the new `RemoteDeleteConfirm.tsx`. `src/frontend/sync/ForcePushConfirm.tsx` exports the commit list of `:45-53` as `LeaseCommits`. `src/frontend/sync/useSync.ts` exports `review` and `startReviewed` (the current `start`, `:88-115`). `src/frontend/app/Workbench.tsx` passes them to `useBranchActions` (`:1776`). `src/frontend/status/OperationStatus.tsx` changes `syncStepText` (`:367`) and `syncOutcome` (`:392`), and `SYNC_NAMES` (`:135`) gains X18. `src/frontend/keyboard/shortcuts.ts:182` widens the scope.
 - Renderer state: the remote overlay `{ kind: "remote-delete", entry, plan, token }`, and the delete overlay field `remote: { checked, plan, token, error } | null` (data-model §7).
 
 ### D16 Tests and fixtures
@@ -392,7 +398,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
 - Oracle: the same Git commands on a copy (`git push --porcelain --force-with-lease=<dst>:<expect> -- <remote> :<dst>`, then `update-ref` and `config --remove-section`). Compare `for-each-ref` of the local repository and the bare remote, HEAD, and the config bytes by SHA-256.
 - T009 (remote only). Each fixture compares with the oracle or asserts its code and reason:
   - Success. A name with a slash (P19). A branch with 150 commits that only it holds (count 150, list 100).
-  - The remote moved after the fetch (stale; every remote commit stays). The remote branch is absent (stale, P9).
+  - The remote moved after the fetch (stale; every remote commit stays). The remote branch is absent, and the `pushurl` differs (stale, P9, P16).
   - `receive.denyDeletes` (P3). The HEAD branch of a bare remote behind a stale local `origin/HEAD` (P4, remote rejected).
   - A non-bare remote with the branch checked out (P5). A remote pre-receive hook (P6). A local pre-push hook that declines (P7, after approval).
   - The default branch (refused, no network process). `origin/HEAD` absent, and non-symbolic (`default-unknown`). `followRemoteHEAD=never`.
@@ -407,7 +413,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
   - `STALE_REVIEW` after an external commit on the local branch.
   - An approved pre-push hook commits on the local branch during the run. The result has `localNotDeleted`, and the local ref keeps the new commit.
   - Cancel between the steps. The combined count of P14.
-- T012 (gone recovery): another clone deleted the remote branch (gone). The branch moved (no removal). A `pushurl` differs (no check). The remote holds `refs/heads/x/refs/heads/<name>` but not `refs/heads/<name>` (the exact parse gives gone). The combined form (X23 then X21).
+- T012 (gone recovery): another clone deleted the remote branch (gone). The branch moved (no removal). A `pushurl` differs (no check). The remote holds `refs/heads/x/refs/heads/<name>` but not `refs/heads/<name>` (the exact parse gives gone). The combined form (X23 then X26).
 - A test that asserts a refusal asserts its code and reason, never a message text (spec SC-011).
 - Every Git test uses an owned `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM=1`. Hook fixtures write one log line per event. A test asserts the event set after approval and an empty log before it.
 - Each new file in `tests/contracts`, `tests/git`, or `tests/wsl` adds its line to `tests/groups.json` in the same task.
@@ -444,6 +450,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
 - R10 PuTTY remotes. The delete reuses the push Pageant step. T009 checks the Pageant frame on Windows (D16).
 - R11 A remote that hides refs (`uploadpack.hideRefs`). The gone check then removes the stale ref, but the remote keeps its branch. The confirmation listed the commits of that ref, so no unconfirmed data goes.
 - R12 Cancel after a remote success and before the local delete. `writeUpstream` checks the signal before each write (`sync.ts:310`). The result then states `localNotDeleted`.
+- R13 Known limit: a gone remote branch with a differing `pushurl` gives X22 on every retry. Fetch does not prune by default, so the stale ref stays (D8). Mitigation: the details area shows the terminal remedy X27, `git fetch --prune <remote>` in the D6 step 4 remedy form.
 
 ## Open items and reviewer defaults
 
@@ -477,7 +484,7 @@ Each batch ends with its verification, one independent review (`reviewer`), and 
 | 4 | WP2 | implementer-xhigh | `src/contracts/channel.ts`, `envelope.ts`, `errors.ts`, `src/contracts/schemas/*`; one line each in `src/frontend/trust/ask.ts` and `src/frontend/status/OperationStatus.tsx`; `tests/contracts/remote-delete-contract.test.ts`; `tests/vectors/**/remote-delete-*.json`; `tests/groups.json` | T003, T004 | WP1 approval; 010 merged |
 | 5a | WP3 | implementer-xhigh (`Local: Rust`) | `src-tauri/src/close.rs`, `src-tauri/src/schema.rs` | T005 | WP2 |
 | 5b | WP4 | implementer-xhigh | `src/git-service/ref-facts.ts` (new), `remote-delete.ts` (new), `workbench-review.ts`, `branch-ops.ts`, `sync-review.ts`, `sync.ts`, `sync-commands.ts`, `sync-parsers.ts`; `tests/contracts/sync-commands.test.ts`, `sync-parsers.test.ts`, `trust-classes.test.ts` (new); `tests/git/remote-delete*.test.ts` (new), `pre-push.test.ts`, `sync-trust.test.ts`, `sync-credentials.test.ts`; `tests/groups.json` | T006 to T014 | WP2 |
-| 5c | WP5 | frontend-implementer | `src/frontend/branches/BranchActions.tsx`, `texts.ts`, `RemoteDeleteConfirm.tsx` (new); `src/frontend/sync/ForcePushConfirm.tsx`, `useSync.ts`; `src/frontend/app/Workbench.tsx`; `src/frontend/status/OperationStatus.tsx`; `src/frontend/keyboard/shortcuts.ts`; `tests/contracts/remote-delete.test.tsx` (new), `workbench-branches.test.tsx`; `tests/groups.json` | T015 to T017 | WP1, WP2 |
+| 5c | WP5 | frontend-implementer | `src/frontend/branches/BranchActions.tsx`, `texts.ts`, `RemoteDeleteConfirm.tsx` (new); `src/frontend/sync/ForcePushConfirm.tsx`, `useSync.ts`; `src/frontend/app/Workbench.tsx`; `src/frontend/status/OperationStatus.tsx`; `src/frontend/keyboard/shortcuts.ts`; `tests/contracts/remote-delete.test.tsx` (new), `workbench-branches.test.tsx`; `tests/groups.json` | T015 to T017 | WP1, WP2; T017 also WP4 (T013, T014) |
 | 6 | WP6 | implementer-xhigh (`Local: WSL`, alone) | `tests/wsl/remote-delete-wsl.test.ts` (new), `tests/groups.json` | T018 | WP4 |
 | 7 | WP7 | implementer (`Local: package`) | `tests/windows/remote-delete-packaged.test.ts` and `remote-delete-perf.test.ts` (new), `tests/windows/perf-fixtures.ts` | T019, T020 | WP3, WP4, WP5 |
 | 8 | WP7r | scout (`Local: package`) | research.md R7 | T021 | WP6, WP7 |

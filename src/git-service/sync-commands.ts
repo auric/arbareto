@@ -28,12 +28,13 @@ function oid(value: string, objectFormat: ObjectFormat): string {
   return value;
 }
 
-export type IntegrationKind = "merging" | "rebasing";
+// Feature 010 plan.md D6: Abort and Continue also end a single cherry-pick or revert.
+export type IntegrationKind = "merging" | "rebasing" | "cherry-picking" | "reverting";
+const KINDS = { merging: "merge", rebasing: "rebase", "cherry-picking": "cherry-pick", reverting: "revert" } as const;
 
-function kind(value: IntegrationKind): "merge" | "rebase" {
-  if (value === "merging") return "merge";
-  if (value === "rebasing") return "rebase";
-  throw new TypeError("operation kind refused");
+function kind(value: IntegrationKind): (typeof KINDS)[IntegrationKind] {
+  if (!Object.hasOwn(KINDS, value)) throw new TypeError("operation kind refused");
+  return KINDS[value];
 }
 
 // Plan.md D8: one process for all branches.
@@ -140,8 +141,10 @@ export function abortArgs(state: IntegrationKind): string[] {
 }
 
 // Plan.md D7: a merge continues with `commit`, which takes `MERGE_MSG` under `GIT_EDITOR=:`.
+// Feature 010 research.md R2 P1: with a stdin that is no terminal, a pick or a revert continues with the message that Git prepared.
 export function continueArgs(state: IntegrationKind): string[] {
-  return kind(state) === "merge" ? [L, "commit", "--quiet"] : [L, "rebase", "--continue"];
+  const k = kind(state);
+  return k === "merge" ? [L, "commit", "--quiet"] : [L, k, "--continue"];
 }
 
 // Contract Δ3 read 8: status 2 of `--exists` means no REBASE_HEAD (git-show-ref(1)).

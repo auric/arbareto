@@ -5,9 +5,9 @@
 // The oracle is a second build of the same fixture with Git's own commands. Fresh Git reads decide every expectation, never message text.
 
 import { expect, spyOn } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
+import { STATUS_LISTING_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { syncRefsArgs } from "../../src/git-service/sync-commands";
 import { trackedStatusArgs } from "../../src/git-service/workbench-commands";
 import { localNameOf } from "../../src/git-service/workbench-parsers";
@@ -17,7 +17,7 @@ import { useFixtureRoot } from "./fixture-root";
 import { sha256, workingFileDigests } from "./git-oracle";
 import { caseTest, siblingDeadline, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
-import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
+import { buildWorkbench, hookEvents, logHooks, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
 
 for (const module of ["switch", "workbench-review", "session"]) {
   printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -222,22 +222,33 @@ caseTest(TASK, "FR-012: Stash and reapply with a reapply conflict keeps the stas
   expect(stateOf(f)).toEqual(stateOf(o));
 }, TIMEOUT_MS);
 
+// The Stash review refuses an untracked file in the way, so the file appears while the checkout step waits. Git's checkout then refuses it.
 caseTest(TASK, "FR-012: a failed checkout after the stash reapplies nothing; the stash stays with its commit ID and Git's own command to apply it", SHELL, async () => {
-  const f = build("switch-untracked");
-  const o = build("switch-untracked");
+  const f = build("switch-clean");
+  const o = build("switch-clean");
   for (const x of [f, o]) put(x, "b.txt", "b changed\n");
   let result: SwitchResult | undefined;
   let root = "";
   await withSync("t021-checkout-fails", async (service) => {
     const r = await open(service, f.repo);
     root = r.worktreeRoot;
+    const rv = await reviewed(service, r, switchTo("stash"));
     const from = service.runner.calls.length;
-    const response = await run(service, r, switchTo("stash"));
+    const release = service.runner.holdStart((call) => isStep(call, "checkout"));
+    const requestId = sendRun(service, r, rv.workbenchToken);
+    try {
+      await until(() => service.runner.calls.some((c) => isStep(c, "checkout")), "held checkout");
+      put(f, "new.txt", "new local\n");
+    } finally {
+      release();
+    }
+    const response = await service.response<SwitchResult>(requestId);
     expect(outcome(response)).toEqual(WITH_EFFECTS);
     result = response.result!;
     expect(subcommands(service, from)).toEqual(["stash push", "checkout"]);
   });
   git(o, ["stash", "push", "--quiet", "-m", MESSAGE]);
+  put(o, "new.txt", "new local\n");
   git(o, ["checkout", "-q", "--no-guess", "target", "--"], [1]);
   const stash = oid(o, "refs/stash");
   expect(result).toMatchObject({ head: { state: "branch", target: "refs/heads/main", oid: f.oids.base }, stash: { oid: stash, state: "kept-failed-checkout" }, conflicted: 0 });
@@ -271,6 +282,200 @@ caseTest(TASK, "FR-011 and SC-002: Discard with an untracked file or folder in t
   });
   for (const args of [["stash", "push", "--quiet", "-m", MESSAGE], ["checkout", "-q", "--no-guess", "target", "--"], ["stash", "drop", "--quiet"]]) git(o, args);
   expect(stateOf(f)).toEqual(stateOf(o));
+}, TIMEOUT_MS);
+
+// Shares `path` between `main` (HEAD) and the target: each gets a commit that adds the same blob. Then `reset --hard` writes it to the working tree.
+function shared(f: WbFixture, path: string): void {
+  const r = repoOf(f);
+  const blob = wb(r, ["hash-object", "-w", "--stdin"], { input: "shared\n" }).stdout.toString("utf8").trim();
+  const env = { GIT_INDEX_FILE: join(f.root, "shared-index") };
+  for (const ref of ["refs/heads/main", TARGET]) {
+    wb(r, ["read-tree", ref], { env });
+    wb(r, ["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { env });
+    const tree = wb(r, ["write-tree"], { env }).stdout.toString("utf8").trim();
+    wb(r, ["update-ref", ref, wb(r, ["commit-tree", "-p", ref, "-m", "shared", tree]).stdout.toString("utf8").trim()]);
+  }
+  wb(r, ["reset", "-q", "--hard"]);
+}
+
+// 010 research.md R2 P17: `stash push` rolls the working tree back to HEAD (git-stash(1)) and stashes no untracked file.
+caseTest(TASK, "FR-011 and SC-002: Stash and Discard with an untracked folder in place of a tracked file or an untracked file in place of a tracked folder, at a path that HEAD and the target share, refuse with UNTRACKED_IN_WAY; Git's own stash push on a copy loses those bytes; every byte stays", SHELL, async () => {
+  const cases: [string, (f: WbFixture) => void, string[], (copy: WbFixture) => boolean][] = [
+    [
+      "folder in place of a file",
+      (f) => {
+        rmSync(join(f.repo, "c.txt"));
+        mkdirSync(join(f.repo, "c.txt"));
+        put(f, "c.txt/keep.txt", "keep\n");
+      },
+      ["c.txt"],
+      (o) => !existsSync(join(o.repo, "c.txt", "keep.txt")),
+    ],
+    [
+      "file in place of a folder",
+      (f) => {
+        shared(f, "k/k.txt");
+        rmSync(join(f.repo, "k"), { recursive: true });
+        put(f, "k", "k local\n");
+      },
+      ["k"],
+      (o) => lstatSync(join(o.repo, "k")).isDirectory(),
+    ],
+  ];
+  for (const [name, prepare, paths, lost] of cases) {
+    const o = build("switch-clean");
+    prepare(o);
+    put(o, "b.txt", "b changed\n");
+    git(o, ["stash", "push", "--quiet", "-m", MESSAGE]);
+    // The stash commit has HEAD and the index commit as parents, and no third parent with untracked files (git-stash(1)).
+    expect({ name, parents: git(o, ["rev-list", "--parents", "-n", "1", "refs/stash"]).trim().split(" ").length, lost: lost(o) }).toEqual({ name, parents: 3, lost: true });
+    for (const choice of ["stash", "discard"]) {
+      const f = build("switch-clean");
+      prepare(f);
+      put(f, "b.txt", "b changed\n");
+      const before = stateOf(f);
+      await withSync(`t021-head-way-${paths[0]}-${choice}`, async (service) => {
+        const r = await open(service, f.repo);
+        const from = service.runner.calls.length;
+        expect({ name, choice, ...refusalOf(await review(service, r, switchTo(choice))) }).toEqual({ name, choice, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths, more: 0 } });
+        expect({ name, choice, steps: steps(service, from) }).toEqual({ name, choice, steps: [] });
+        // Keep runs only the checkout, which does not write this path.
+        expect({ name, ...outcome(await review(service, r, switchTo("keep"))) }).toEqual({ name, ...SUCCEEDED });
+      });
+      expect({ name, choice, state: stateOf(f) }).toEqual({ name, choice, state: before });
+    }
+  }
+}, TIMEOUT_MS);
+
+// 010 research.md R2 P19: the rollback of `stash push` rewrites an assume-unchanged entry whose file the user replaced. Git keeps the bytes of a skip-worktree entry.
+caseTest(TASK, "FR-011 and SC-002: Stash and Discard with an assume-unchanged entry and an untracked folder in place of its file, or an untracked file in place of its folder, refuse with UNTRACKED_IN_WAY, and Git's own commands on a copy lose those bytes; with a skip-worktree entry in the same shape, Discard runs as Git's own commands and keeps the bytes", SHELL, async () => {
+  const shapes: [string, string, (f: WbFixture) => void, string, (f: WbFixture) => boolean][] = [
+    [
+      "folder in place of a file",
+      "c.txt",
+      (f) => {
+        rmSync(join(f.repo, "c.txt"));
+        mkdirSync(join(f.repo, "c.txt"));
+        put(f, "c.txt/keep.txt", "keep\n");
+      },
+      "c.txt",
+      (f) => existsSync(join(f.repo, "c.txt", "keep.txt")) && readFileSync(join(f.repo, "c.txt", "keep.txt"), "utf8") === "keep\n",
+    ],
+    [
+      "file in place of a folder",
+      "k/k.txt",
+      (f) => {
+        rmSync(join(f.repo, "k"), { recursive: true });
+        put(f, "k", "k local\n");
+      },
+      "k",
+      (f) => lstatSync(join(f.repo, "k")).isFile() && readFileSync(join(f.repo, "k"), "utf8") === "k local\n",
+    ],
+  ];
+  const DISCARD = [["stash", "push", "--quiet", "-m", MESSAGE], ["checkout", "-q", "--no-guess", "target", "--"], ["stash", "drop", "--quiet"]];
+  for (const flag of ["--assume-unchanged", "--skip-worktree"] as const) {
+    for (const [name, entry, prepare, way, kept] of shapes) {
+      const setup = (x: WbFixture) => {
+        if (entry === "k/k.txt") shared(x, entry);
+        git(x, ["update-index", flag, "--", entry]);
+        prepare(x);
+        put(x, "b.txt", "b changed\n");
+      };
+      const o = build("switch-clean");
+      setup(o);
+      for (const args of DISCARD) git(o, args);
+      expect({ flag, name, kept: kept(o) }).toEqual({ flag, name, kept: flag === "--skip-worktree" });
+      if (flag === "--assume-unchanged") {
+        for (const choice of ["stash", "discard"]) {
+          const f = build("switch-clean");
+          setup(f);
+          const before = stateOf(f);
+          await withSync(`t021-assumed-${way}-${choice}`, async (service) => {
+            const r = await open(service, f.repo);
+            const from = service.runner.calls.length;
+            expect({ name, choice, ...refusalOf(await review(service, r, switchTo(choice))) }).toEqual({ name, choice, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths: [way], more: 0 } });
+            expect({ name, choice, steps: steps(service, from) }).toEqual({ name, choice, steps: [] });
+          });
+          expect({ name, choice, state: stateOf(f) }).toEqual({ name, choice, state: before });
+        }
+      } else {
+        const f = build("switch-clean");
+        setup(f);
+        await withSync(`t021-skip-${way}`, async (service) => {
+          const r = await open(service, f.repo);
+          expect({ name, ...outcome(await run(service, r, switchTo("discard"))) }).toEqual({ name, ...SUCCEEDED });
+        });
+        expect({ name, state: stateOf(f), kept: kept(f) }).toEqual({ name, state: stateOf(o), kept: true });
+      }
+    }
+  }
+}, TIMEOUT_MS);
+
+// 010 research.md R2 P18: the listing runs for each ignored folder in the way, to find a nested repository.
+caseTest(TASK, "FR-011: Discard with an ignored folder in the way reviews as replaceable after one ls-files --others --ignored read; an output above STATUS_LISTING_BYTES refuses with OUTPUT_LIMIT", SHELL, async () => {
+  const f = build("switch-clean");
+  put(f, "b.txt", "b changed\n");
+  mkdirSync(join(f.repo, "build.log", "z"), { recursive: true });
+  for (const name of ["x.txt", "y.txt", "z/w.txt"]) put(f, `build.log/${name}`, `${name} local\n`);
+  const isIgnoredList = (args: readonly string[]) => args.includes("ls-files") && args.includes("--others") && args.includes("--ignored");
+  await withSync("t021-in-the-way-ignored-folder", async (service) => {
+    const r = await open(service, f.repo);
+    const from = service.runner.calls.length;
+    const response = await review(service, r, switchTo("discard"));
+    expect({ ...outcome(response), inTheWay: (response.result as Reviewed | undefined)?.plan?.inTheWay }).toEqual({ ...SUCCEEDED, inTheWay: null });
+    expect(service.runner.calls.slice(from).filter((c) => isIgnoredList(c.arguments)).length).toBe(1);
+    service.runner.inject.stdout = (call) => (isIgnoredList(call.arguments) ? new Uint8Array(STATUS_LISTING_BYTES + 1) : undefined);
+    const limited = await review(service, r, switchTo("discard"));
+    service.runner.inject.stdout = undefined;
+    expect(outcome(limited)).toEqual({ state: "failed", code: "OUTPUT_LIMIT" });
+  });
+}, TIMEOUT_MS);
+
+// A nested repository with one commit.
+function nest(f: WbFixture, dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  const r = repoOf(f, dir);
+  wb(r, ["init", "-q"]);
+  writeFileSync(join(dir, "n.txt"), "n\n");
+  wb(r, ["add", "--", "n.txt"]);
+  wb(r, ["commit", "-q", "-m", "nested"]);
+}
+
+caseTest(TASK, "FR-011 and 010 research.md R2 P18: Discard and Stash with an ignored folder in the way that holds a nested repository refuse with UNTRACKED_IN_WAY and the repository folder; Git's own stash push and checkout on a copy delete it; every byte stays", SHELL, async () => {
+  const layouts: [string, (f: WbFixture) => void, string[], string][] = [
+    ["top", (f) => nest(f, join(f.repo, "build.log")), ["build.log"], "build.log/.git"],
+    [
+      "deep",
+      (f) => {
+        mkdirSync(join(f.repo, "build.log"));
+        put(f, "build.log/plain.txt", "plain\n");
+        nest(f, join(f.repo, "build.log", "sub"));
+      },
+      ["build.log/sub"],
+      "build.log/sub/.git",
+    ],
+  ];
+  for (const [layout, prepare, paths, mark] of layouts) {
+    const o = build("switch-clean");
+    prepare(o);
+    put(o, "b.txt", "b changed\n");
+    git(o, ["stash", "push", "--quiet", "-m", MESSAGE]);
+    git(o, ["checkout", "-q", "--no-guess", "target", "--"]);
+    expect({ layout, kept: existsSync(join(o.repo, mark)) }).toEqual({ layout, kept: false });
+    for (const choice of ["stash", "discard"]) {
+      const f = build("switch-clean");
+      prepare(f);
+      put(f, "b.txt", "b changed\n");
+      const before = stateOf(f);
+      await withSync(`t021-nested-${layout}-${choice}`, async (service) => {
+        const r = await open(service, f.repo);
+        const from = service.runner.calls.length;
+        expect({ layout, choice, ...refusalOf(await review(service, r, switchTo(choice))) }).toEqual({ layout, choice, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths, more: 0 } });
+        expect({ layout, choice, steps: steps(service, from) }).toEqual({ layout, choice, steps: [] });
+      });
+      expect({ layout, choice, state: stateOf(f), mark: existsSync(join(f.repo, mark)) }).toEqual({ layout, choice, state: before, mark: true });
+    }
+  }
 }, TIMEOUT_MS);
 
 // Contract §2: the token is in use from the accepted run on. The held process starts keep the first run in its validation.
@@ -333,7 +538,7 @@ caseTest(TASK, "contract §6: a Discard ls-files batch that fits only under the 
     const calls = service.runner.calls.slice(from);
     expect(calls.filter((c) => c.refused !== undefined).map((c) => c.refused)).toEqual([]);
     expect({ ...outcome(response), reason: (response.result as { reason?: string } | undefined)?.reason }).toEqual({ state: "failed", code: "UNTRACKED_IN_WAY", reason: "untracked-in-way" });
-    const batches = calls.filter((c) => c.arguments[3] === "ls-files").map((c) => [...c.arguments]);
+    const batches = calls.filter((c) => c.arguments[3] === "ls-files" && c.arguments.includes("--stage")).map((c) => [...c.arguments]);
     const paths = batches.flatMap((args) => args.slice(args.indexOf("--") + 1));
     expect(unitsOf(selectedPath, [...STAGES, ...paths])).toBe(WINDOWS_COMMAND_LINE_UNITS);
     expect(batches.map((args) => unitsOf(executablePath, args) <= WINDOWS_COMMAND_LINE_UNITS)).toEqual([true, true]);
@@ -690,6 +895,86 @@ caseTest("T034", "a track target and a detach target that name an annotated tag 
   const branch = (x: WbFixture) => ({ anno: oid(x, "refs/heads/anno"), config: git(x, ["config", "--get-regexp", "^branch\\.anno\\."]) });
   expect(branch(f)).toEqual(branch(o));
   expect(branch(f).anno).toBe(commit);
+}, TIMEOUT_MS);
+
+// ---- Feature 010 plan.md D2: Check out this commit (T023) ----
+// The payload is `{ detach: <oid> }`. The oracle is the 004 SC-001 oracle: a second build with Git's own commands.
+// Control: send a branch target in place of `detach`; the detached-HEAD assertion must fail.
+
+const detach = (f: WbFixture, choice: string) => switchTo(choice, { detach: f.oids.target! });
+const DETACH = (oid: string) => ["checkout", "-q", "--no-recurse-submodules", "--detach", oid, "--"];
+
+caseTest("T023", "010 FR-020 and SC-005: Check out this commit on a clean tree and with Keep, Stash, and Discard on a dirty tree gives a detached HEAD and equals Git's own commands on a copy", SHELL, async () => {
+  for (const [fixture, choice] of [["switch-clean", "keep"], ["switch-dirty", "keep"], ["switch-dirty", "stash"], ["switch-dirty", "discard"]] as const) {
+    const f = build(fixture);
+    const o = build(fixture);
+    const target = f.oids.target!;
+    const message = `Arbareto: switch to ${target}`;
+    const oracle: Record<string, string[][]> = {
+      keep: [DETACH(target)],
+      stash: [["stash", "push", "--quiet", "-m", message], DETACH(target), ["stash", "apply", "--index"], ["stash", "drop", "--quiet"]],
+      discard: [["stash", "push", "--quiet", "-m", message], DETACH(target), ["stash", "drop", "--quiet"]],
+    };
+    await withSync(`t023-${fixture}-${choice}`, async (service) => {
+      const r = await open(service, f.repo);
+      const rv = await reviewed(service, r, detach(f, choice));
+      expect({ fixture, choice, plan: rv.plan }).toEqual({ fixture, choice, plan: { target: { detach: target }, trackedChanges: fixture === "switch-clean" ? 0 : 4, unreachable: null, heldBy: null, choice, inTheWay: null } });
+      const from = service.runner.calls.length;
+      const response = await service.response<SwitchResult>(sendRun(service, r, rv.workbenchToken));
+      expect({ fixture, choice, ...outcome(response), head: response.result!.head }).toEqual({ fixture, choice, ...SUCCEEDED, head: { state: "detached", oid: target } });
+      expect({ fixture, choice, checkout: steps(service, from).filter((a) => a[1] === "checkout") }).toEqual({ fixture, choice, checkout: [["--no-lazy-fetch", "checkout", "--no-recurse-submodules", "--detach", target, "--"]] });
+    });
+    for (const args of oracle[choice]!) git(o, args);
+    expect({ fixture, choice, state: stateOf(f) }).toEqual({ fixture, choice, state: stateOf(o) });
+    expect(stateOf(f).head).toBe("");
+  }
+}, TIMEOUT_MS);
+
+caseTest("T023", "010 FR-020: from a detached commit that no ref holds the plan names it; an untracked file in the way refuses Discard with UNTRACKED_IN_WAY, and Keep fails as Git's own checkout; every untracked byte stays", SHELL, async () => {
+  const f = build("switch-clean");
+  const unreachable = git(f, ["commit-tree", "-p", f.oids.base!, "-m", "unreachable", `${f.oids.base}^{tree}`]).trim();
+  git(f, ["checkout", "-q", "--detach", unreachable]);
+  await withSync("t023-unreachable", async (service) => {
+    const r = await open(service, f.repo);
+    expect((await reviewed(service, r, detach(f, "keep"))).plan.unreachable).toBe(unreachable);
+  });
+  const u = build("switch-untracked");
+  const o = build("switch-untracked");
+  for (const x of [u, o]) put(x, "b.txt", "b changed\n");
+  const before = stateOf(u);
+  await withSync("t023-in-the-way", async (service) => {
+    const r = await open(service, u.repo);
+    const from = service.runner.calls.length;
+    expect(refusalOf(await review(service, r, detach(u, "discard")))).toEqual({ state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths: ["new.txt"], more: 0 } });
+    expect(steps(service, from)).toEqual([]);
+    const keep = await run(service, r, detach(u, "keep"));
+    expect({ ...outcome(keep), head: keep.result!.head }).toEqual({ state: "failed", code: "GIT_FAILED", head: { state: "branch", target: "refs/heads/main", oid: u.oids.base } });
+  });
+  expect(wb(repoOf(o), DETACH(u.oids.target!), { allowExit: [1] }).exitCode).toBe(1);
+  expect(stateOf(u)).toEqual(before);
+  expect(stateOf(u)).toEqual(stateOf(o));
+  expect(readFileSync(join(u.repo, "new.txt"), "utf8")).toBe("new local\n");
+}, TIMEOUT_MS);
+
+caseTest("T023", "010 SC-007: the hooks of a detached checkout run only after the workbench approval, with the event set of research.md R2 P3b and the log of Git's own checkout on a copy", SHELL, async () => {
+  const f = build("switch-clean");
+  const o = build("switch-clean");
+  const [log, oracleLog] = [join(f.root, "hooks.log"), join(o.root, "hooks-oracle.log")];
+  logHooks(join(f.repo, ".git", "hooks"), log);
+  logHooks(join(o.repo, ".git", "hooks"), oracleLog);
+  await withSync("t023-hooks", async (service) => {
+    const r = await service.register(native(f.repo));
+    expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.workbench).toBe(true);
+    expect(refusalOf(await review(service, r, detach(f, "keep")))).toEqual({ state: "failed", code: "TRUST_REQUIRED", result: { trustGate: "repository" } });
+    expect({ steps: steps(service), log: existsSync(log) }).toEqual({ steps: [], log: false });
+    expect((await service.approveTrust(r.repositoryId, "switch")).state).toBe("succeeded");
+    const response = await run(service, r, detach(f, "keep"));
+    expect({ ...outcome(response), head: response.result!.head }).toEqual({ ...SUCCEEDED, head: { state: "detached", oid: f.oids.target! } });
+  });
+  git(o, DETACH(o.oids.target!));
+  expect(hookEvents(log)).toEqual(["post-checkout", "post-index-change", "reference-transaction"]);
+  expect(readFileSync(log, "utf8")).toBe(readFileSync(oracleLog, "utf8"));
+  expect(stateOf(f)).toEqual(stateOf(o));
 }, TIMEOUT_MS);
 
 // T399, 001 contract §5 "Deadline outcomes": a reconciliation read at its deadline closes the operation Job, so the sibling read ends with `exitCode` null and no `deadline`.

@@ -543,3 +543,16 @@ const WORKBENCH_FIXTURES = {
 export type WbFixtureName = keyof typeof WORKBENCH_FIXTURES;
 
 export const buildWorkbench = (git: string, fixture: WbFixtureName, folder: string): WbFixture => WORKBENCH_FIXTURES[fixture](git, folder);
+
+// ---- Feature 010 hook logs (research.md R1) ----
+
+// The 12 events of the feature 010 probe repositories.
+export const PROBE_EVENTS = ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-checkout", "post-rewrite", "reference-transaction", "post-index-change", "pre-auto-gc", "post-merge", "pre-merge-commit", "pre-rebase"] as const;
+
+// One logging hook per probe event in the hooks folder. Each run appends `<event> <arguments>` to `log`. Git runs the hooks through its shell, so the path uses `/`.
+export function logHooks(hooksDir: string, log: string): void {
+  for (const event of PROBE_EVENTS) put(hooksDir, event, `#!/bin/sh\necho "${event} $*" >> '${slash(log)}'\n`);
+}
+
+// The sorted event names of a hook log. An absent log gives none.
+export const hookEvents = (log: string): string[] => (existsSync(log) ? [...new Set(readFileSync(log, "utf8").split("\n").filter((l) => l !== "").map((l) => l.split(" ")[0]!))].sort() : []);

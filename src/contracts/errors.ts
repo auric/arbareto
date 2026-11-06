@@ -90,6 +90,9 @@ export const SYNC_UNAVAILABLE_REASONS = [
   "not-rebasing",
   "no-skip-commit",
   "rebase-exec",
+  // Feature 010 contract Δ9: Abort and Continue of a cherry-pick or a revert.
+  "nothing-to-commit",
+  "sequence",
 ] as const;
 export type SyncUnavailableReason = (typeof SYNC_UNAVAILABLE_REASONS)[number];
 export const PUSH_REJECTED_REASONS = ["rejected", "stale-lease", "remote-rejected", "remote-failure"] as const;
@@ -160,6 +163,11 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   // Feature 008 contract Δ9. `limit` exists (004).
   ...REVERT_FILE_REASONS,
   "nothing-to-revert",
+  // Feature 010 contract Δ9.
+  "tag-signing",
+  "already-on-branch",
+  "mainline-needed",
+  "not-merge",
 ] as const;
 export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];
 export const UNTRACKED_IN_WAY_REASONS = ["untracked-in-way"] as const;

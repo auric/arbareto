@@ -972,7 +972,7 @@ describe("message editor (FR-047) and Amend last commit (FR-098)", () => {
     expect(unborn.calls).toEqual([]);
     for (const operationState of ["merging", "rebasing"]) {
       const t = await tray({ operationState, amend: box });
-      expect(describedBy(t.host.querySelector('input[type="checkbox"]')!)).toBe("A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.");
+      expect(describedBy(t.host.querySelector('input[type="checkbox"]')!)).toBe("A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.");
     }
   });
 
@@ -1448,7 +1448,7 @@ describe("Filter files (FR-101, Q29)", () => {
 
 const RESOLVE = "Resolve conflicts";
 const RESOLVE_TIP = "Open the Commit view and select the first conflicted file.";
-const OPERATION_REASON = "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.";
+const OPERATION_REASON = "A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.";
 const workingRow = () => document.querySelector<HTMLElement>('section[aria-label="History"] [role="option"][data-row-id="working-directory"]')!;
 const dock = () => document.querySelector<HTMLElement>('section[aria-label="Dock"]')!;
 const bandRow = () => document.querySelector<HTMLElement>('[data-slot="notice-band"] [data-slot="conflict-row"]')!;
@@ -1708,6 +1708,21 @@ describe("conflict guidance review fixes", () => {
     const folder = buttons("Stage folder src/x", host)[0]!;
     expect(folder.getAttribute("aria-disabled")).toBe("true");
     expect(describedBy(folder)).toBe(OPERATION_REASON);
+  });
+
+  // Feature 010 plan.md D6 and the Stopped board: a cherry-pick or a revert in progress names the count too. A normal snapshot does not.
+  test("the dock names the conflicted count during a cherry-pick and a revert, and not in a normal snapshot (010 FR-060)", async () => {
+    for (const operationState of ["cherry-picking", "reverting"] as const) {
+      await mountWorkbench(workbench, createWorld({ operationState, entries: mergeBoard().all }));
+      await click(workingRow());
+      expect(text(dock())).toContain("3 working changes, 2 staged, 2 conflicted");
+      expect([...dock().querySelectorAll("button")].map((b) => text(b))).toContain(RESOLVE);
+      await unmountAll();
+    }
+    await mountWorkbench(workbench, createWorld({ operationState: "normal", entries: mergeBoard().all }));
+    await click(workingRow());
+    expect(text(dock())).toContain("3 working changes, 2 staged");
+    expect(text(dock())).not.toContain("conflicted");
   });
 
   test("the dock names no conflicted count outside a merge or a rebase, nor while entry pages are missing (FR-103, SC-017)", async () => {

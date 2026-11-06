@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import type { FileFact } from "../../src/contracts/channel";
 import { DISCARD_CHECK_PATHS } from "../../src/contracts/limits";
-import { discardCandidates, ignoreRead, inTheWay, IN_THE_WAY_PATHS, sortFacts, untrackedOf } from "../../src/git-service/switch-check";
+import { assumedOf, discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, IN_THE_WAY_PATHS, nestedVerdict, sortFacts, untrackedOf } from "../../src/git-service/switch-check";
 
 printOrigin("../../src/git-service/switch-check.ts", import.meta.dir);
 
@@ -164,5 +164,40 @@ describe("check-ignore (research.md R21 F1)", () => {
   test("another exit status fails", () => {
     expect(inTheWay(["a"], { exitCode: 128, stdout: raw("") })).toBe("failed");
     expect(inTheWay(["a"], { exitCode: null, stdout: raw("") })).toBe("failed");
+  });
+});
+
+// Feature 010 research.md R2 P18: `ls-files -z --others --ignored` prints a nested repository as its folder with a trailing `/`.
+describe("ignored files below the folders in the way", () => {
+  test("files count, and a record with a trailing slash names a nested repository", () => {
+    expect(ignoredFilesOf(["x"], raw("x/a.txt\0x/z/w.txt\0"))).toEqual({ files: 2, nested: [] });
+    expect(ignoredFilesOf(["x"], raw("x/\0"))).toEqual({ files: 0, nested: ["x"] });
+    expect(ignoredFilesOf(["x", "y"], raw("x/plain.txt\0x/sub/\0y/b\0"))).toEqual({ files: 2, nested: ["x/sub"] });
+  });
+
+  test("a record outside the folders or with an empty component is malformed", () => {
+    for (const out of ["x\0", "y/a\0", "x//\0", "x/a", "x/a//b\0"]) expect({ out, r: ignoredFilesOf(["x"], raw(out)) }).toEqual({ out, r: "malformed" });
+  });
+
+  test("a .git file or folder marks each repository; another reply kind is malformed, and an error leaves no verdict", () => {
+    expect(nestedVerdict(["x", "y/sub"], [DIR, FILE])).toEqual({ paths: ["x", "y/sub"], more: 0 });
+    expect(nestedVerdict([utf8("ä")], [DIR])).toEqual({ paths: ["ä"], more: 0 });
+    expect(nestedVerdict(["x", "y"], [DIR, ABSENT])).toBe("malformed");
+    expect(nestedVerdict(["x"], [link(2)])).toBe("malformed");
+    expect(nestedVerdict(["x", "y"], [ABSENT, { kind: "error", component: 1, code: "access-denied" }])).toBe("unknown");
+    expect(() => nestedVerdict(["x"], [])).toThrow(TypeError);
+  });
+});
+
+// Feature 010 research.md R2 P19 and git-ls-files(1) `-t`, `-v`: a tag, a space, and the path. A lowercase tag marks the assume-unchanged bit.
+describe("assume-unchanged entries", () => {
+  test("each h entry becomes an M record of the --name-status -z form; other index tags give nothing", () => {
+    expect(Buffer.from(assumedOf(raw("H a.txt\0h p.txt\0S s.txt\0s both.txt\0M u.txt\0m v.txt\0h d/f\0")) as Uint8Array).toString("latin1")).toBe("M\0p.txt\0M\0d/f\0");
+    expect(Buffer.from(assumedOf(raw("")) as Uint8Array).toString("latin1")).toBe("");
+    expect(Buffer.from(assumedOf(raw(utf8("h ä b.txt\0"))) as Uint8Array).toString("latin1")).toBe(utf8("M\0ä b.txt\0"));
+  });
+
+  test("another tag, a missing space or path, or a missing NUL is malformed", () => {
+    for (const out of ["R a\0", "C a\0", "K a\0", "? a\0", "! a\0", "U a\0", "Ha\0", "h \0", "h\0", "h a", "hh a\0"]) expect({ out, r: assumedOf(raw(out)) }).toEqual({ out, r: "malformed" });
   });
 });

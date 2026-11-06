@@ -122,6 +122,11 @@ pub enum Mutation {
     RevertLines,
     RevertFiles,
     RevertUnstaged,
+    // Feature 010 contract Δ6.
+    Reset,
+    CreateTag,
+    CherryPick,
+    RevertCommit,
 }
 
 impl Mutation {
@@ -177,6 +182,10 @@ impl Mutation {
                 A::RevertLines => Mutation::RevertLines,
                 A::RevertFiles => Mutation::RevertFiles,
                 A::RevertUnstaged => Mutation::RevertUnstaged,
+                A::Reset => Mutation::Reset,
+                A::CreateTag => Mutation::CreateTag,
+                A::CherryPick => Mutation::CherryPick,
+                A::RevertCommit => Mutation::RevertCommit,
                 _ => return None,
             },
             _ => return None,
@@ -217,7 +226,11 @@ impl Mutation {
             | M::SaveExclude
             | M::RevertLines
             | M::RevertFiles
-            | M::RevertUnstaged => StartedKind::Workbench,
+            | M::RevertUnstaged
+            | M::Reset
+            | M::CreateTag
+            | M::CherryPick
+            | M::RevertCommit => StartedKind::Workbench,
             M::StageFiles | M::UnstageFiles => StartedKind::ApplyFiles,
             M::Clone => return None,
         })
@@ -262,6 +275,10 @@ impl Mutation {
             Mutation::RevertLines => "Revert lines",
             Mutation::RevertFiles => "Revert files",
             Mutation::RevertUnstaged => "Revert unstaged changes",
+            Mutation::Reset => "Reset",
+            Mutation::CreateTag => "Create tag",
+            Mutation::CherryPick => "Cherry-pick",
+            Mutation::RevertCommit => "Revert commit",
         }
     }
 }
@@ -656,6 +673,11 @@ mod tests {
             (A::RevertLines, "Revert lines"),
             (A::RevertFiles, "Revert files"),
             (A::RevertUnstaged, "Revert unstaged changes"),
+            // Feature 010 contract Δ6 and plan.md D11.
+            (A::Reset, "Reset"),
+            (A::CreateTag, "Create tag"),
+            (A::CherryPick, "Cherry-pick"),
+            (A::RevertCommit, "Revert commit"),
         ];
         let cases = workbench
             .map(|(action, name)| (StartedKind::Workbench, None, Some(action), name))

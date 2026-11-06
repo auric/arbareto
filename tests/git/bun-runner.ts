@@ -687,7 +687,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Bytes replace the process of a call and go to stderr in 64 KiB chunks. They count toward the operation stderr bound, which closes the Job (contract §5, §6).
     stderr: undefined as ((call: { operationId: string; arguments: readonly string[] }) => Uint8Array | undefined) | undefined,
     // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
-    exit: undefined as ((call: { arguments: readonly string[] }) => number | undefined) | undefined,
+    exit: undefined as ((call: { arguments: readonly string[] }) => number | null | undefined) | undefined,
     // A code refuses a call as the shell refuses it. No process starts (T377).
     refuse: undefined as ((call: { operationId: string; arguments: readonly string[] }) => RefusedCode | undefined) | undefined,
     // A path replaces the approved `systemd-run` of one WSL call, such as `/usr/bin/false` for a scope that does not start (T377).

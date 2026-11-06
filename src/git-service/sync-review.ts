@@ -22,7 +22,12 @@ import { isMissing } from "./read-steps";
 import type { Head, OperationState } from "./snapshot";
 import { gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
 import { autoSetupRemote, decidePull, defaultRemote, decidePushDestination, holdsExec, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRebaseHead, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
+import type { WorkspaceReader } from "./status";
 import { parseMaybeBool, type ConfigEntry, type ListingOutcome } from "./trust";
+import { indexMatchArgs } from "./workbench-commands";
+
+// Feature 010 plan.md D6: the sync reads also take the marker facts of the reader, for the `sequence` refusal.
+export type SyncContext = ObserveContext & { reader: Pick<WorkspaceReader, "operationState" | "markers"> };
 
 export type ReviewPayload = Extract<ServiceRequest, { operation: "reviewSync" }>["payload"];
 export type SyncAction = ReviewPayload["action"];
@@ -232,6 +237,13 @@ export async function indexState(ctx: ObserveContext): Promise<Fact<IndexState>>
   return { value: { fingerprint: new Bun.CryptoHasher("sha256").update(bytes).digest("hex"), unmerged: unmerged.size } };
 }
 
+// Feature 010 contract Δ3: git-diff-index(1) `--quiet` exits 0 when the index equals `rev`, 1 when it differs. Another exit gives GIT_FAILED.
+export async function indexMatches(ctx: ObserveContext, rev: string): Promise<Fact<boolean>> {
+  const step = await stepOf(ctx, indexMatchArgs(rev, ctx.workspace.objectFormat), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }));
+  if (!("exit" in step)) return step;
+  return step.exit.exitCode === 0 ? { value: true } : step.exit.exitCode === 1 ? { value: false } : { code: "GIT_FAILED" };
+}
+
 // The OS fact of one Git-resolved path, as the 001 markers read it (status.ts `markerFacts`). Contract §11: a WSL path takes its UNC form.
 async function gitPathOf(ctx: ObserveContext, name: string): Promise<Fact<string>> {
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
@@ -325,13 +337,26 @@ async function rebaseHead(ctx: ObserveContext): Promise<Fact<{ objectId: string;
   return { value: { objectId: oid, subject: answer === "large" ? null : answer.subject } };
 }
 
+// Feature 010 plan.md D6: Abort and Continue also end a single cherry-pick or revert. Skip stays a rebase action.
+const STOPPED: readonly OperationState[] = ["merging", "rebasing", "cherry-picking", "reverting"];
+const PICKS: readonly OperationState[] = ["cherry-picking", "reverting"];
+
 // Plan.md D7. The kind comes from the 001 markers. `unknown` (`rebase-apply/applying`, or a marker without a fact) gets no action.
 // Every rebase stop offers Continue and Skip: builtin/rebase.c `init_basic_state` writes `rebase-merge/interactive` for every merge-backend rebase, so that file decides nothing.
-async function observeConflictAction(ctx: ObserveContext, action: "abort" | "continue" | "skip", state: OperationState, bound: (b: Bound) => Observation): Promise<Observation> {
+async function observeConflictAction(ctx: SyncContext, action: "abort" | "continue" | "skip", state: OperationState, bound: (b: Bound) => Observation): Promise<Observation> {
   const none = { remotes: [], destination: null, lease: null };
   if (state === "unknown") return unavailable("unknown-operation");
-  if (state !== "merging" && state !== "rebasing") return unavailable("no-operation");
-  if (action === "skip" && state === "merging") return unavailable("not-rebasing");
+  if (!STOPPED.includes(state)) return unavailable("no-operation");
+  if (action === "skip" && state !== "rebasing") return unavailable("not-rebasing");
+  // Feature 010 plan.md D6: another tool started a sequence. Its Abort moves HEAD back, which the confirmation does not state.
+  if (PICKS.includes(state)) {
+    const facts = await settled(ctx.signal, ctx.reader.markers(ctx));
+    if (facts === "canceled" || facts === "deadline") return { stop: facts };
+    if ("stop" in facts || "code" in facts) return facts;
+    if ("refused" in facts) return { code: facts.refused };
+    if (facts.sequencer === null) return unavailable("unknown-operation");
+    if (facts.sequencer) return unavailable("sequence");
+  }
   // Repository content is untrusted, so a remaining `exec` line refuses Continue and Skip. Abort runs no todo line.
   let todo: { todo: string | null } | Record<string, never> = {};
   if (state === "rebasing" && action !== "abort") {
@@ -345,6 +370,12 @@ async function observeConflictAction(ctx: ObserveContext, action: "abort" | "con
     const index = await indexState(ctx);
     if (!("value" in index)) return index;
     if (index.value.unmerged > 0) return { refused: "CONFLICTED", unmerged: index.value.unmerged };
+    // Feature 010 research.md R2 P6 and P13: Git stops again when the index equals HEAD (git-commit(1) `--allow-empty`).
+    if (PICKS.includes(state)) {
+      const same = await indexMatches(ctx, "HEAD");
+      if (!("value" in same)) return same;
+      if (same.value) return unavailable("nothing-to-commit");
+    }
     return bound({ ...none, ...todo, index: index.value });
   }
   if (action === "skip") {
@@ -397,7 +428,7 @@ async function observePull(ctx: ObserveContext, payload: Extract<ReviewPayload, 
 }
 
 // Contract Δ3 `reviewSync` reads 1 to 8. `list` gives the trust listing: shared or own for a review, own for `sync`.
-export async function observeSync(ctx: ObserveContext, payload: ReviewPayload, list: () => Promise<ListingOutcome>): Promise<Observation> {
+export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list: () => Promise<ListingOutcome>): Promise<Observation> {
   const { trust, workspace: w, installation, signal } = ctx;
   const listed = await settled(signal, list());
   if (!("ok" in listed)) return listed;
@@ -510,7 +541,7 @@ export function planOf(b: SyncBinding) {
   };
 }
 
-const operationStateOf = (state: OperationState) => (state === "merging" || state === "rebasing" ? { operationState: state } : {});
+const operationStateOf = (state: OperationState) => (STOPPED.includes(state) ? { operationState: state } : {});
 
 // The read outcome forms of `session.ts`.
 export type ReviewOutcome =
@@ -522,7 +553,7 @@ export type ReviewOutcome =
 export interface SyncReviewerOptions extends Pick<HistoryReaderOptions, "listingTuple"> {
   runner: ObserveContext["runner"];
   trust: ObserveContext["trust"];
-  reader: ObserveContext["reader"];
+  reader: SyncContext["reader"];
   approvals: Approvals;
 }
 
@@ -530,7 +561,7 @@ export function createSyncReviewer(o: SyncReviewerOptions) {
   return {
     // Contract Δ3 `reviewSync`. A refusal issues no token.
     async reviewSync(t: ReadHistoryTarget, payload: ReviewPayload): Promise<ReviewOutcome> {
-      const ctx: ObserveContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
+      const ctx: SyncContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
       const observed = await observeSync(ctx, payload, () => sharedListing({ trust: o.trust, listingTuple: o.listingTuple }, t));
       if (isStop(observed)) return { result: observed.stop };
       if ("code" in observed) return { result: "failed", code: observed.code };

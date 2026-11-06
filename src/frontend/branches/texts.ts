@@ -122,6 +122,8 @@ export function refusalText(response: BridgeResponse, branch: string): string {
 
 export const OUTCOME = {
   switched: (branch: string) => `Switched to ${branch}.`,
+  // Feature 010 plan.md D11 "Check out". `oid` is the short ID.
+  detached: (oid: string) => `Checked out ${oid}. HEAD is detached.`,
   created: (branch: string) => `Created ${branch}.`,
   renamed: (branch: string) => `Renamed the branch to ${branch}.`,
   deleted: (branch: string) => `Deleted ${branch}.`,

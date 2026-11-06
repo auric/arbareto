@@ -11,12 +11,12 @@ import { createCollector, firstEnd, isDeadlineStop, stepUnits } from "./git-runn
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
-import { discardCandidates, ignoreRead, inTheWay, sortFacts, untrackedOf } from "./switch-check";
+import { assumedOf, discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, nestedVerdict, sortFacts, untrackedOf } from "./switch-check";
 import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { indexState, readOut, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
-import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, refPeelArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
+import { assumedArgs, changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, ignoredFilesArgs, refPeelArgs, resetCandidatesArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
 import { oidList, parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
 import { conclude, heldElsewhere, killed, readWorktrees, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
 
@@ -25,6 +25,7 @@ export const STASH_REMEDY_TEXT = "The stash keeps the changes. This command appl
 const HEADS = "refs/heads/";
 const STASH = "refs/stash";
 const MALFORMED = { code: "MALFORMED_GIT_OUTPUT" } as const;
+const LISTING_LIMIT = { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" } as const;
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
@@ -40,7 +41,7 @@ interface SwitchBound {
 type Kept = "conflicts" | "failed-apply" | "failed-checkout" | "not-found";
 
 // `parseTrackedStatus` skips the `# ` header lines, such as `# stash <n>` of `status.showStash` (git-status(1)).
-async function trackedStatus(ctx: ObserveContext): Promise<Fact<{ digest: string; count: number; unmerged: number }>> {
+export async function trackedStatus(ctx: ObserveContext): Promise<Fact<{ digest: string; count: number; unmerged: number }>> {
   const out = createCollector({ maxBytes: STATUS_LISTING_BYTES, maxRecords: STATUS_LISTING_RECORDS, separator: 0 });
   const step = await stepOf(ctx, trackedStatusArgs(), out);
   if (!("exit" in step)) return step;
@@ -133,7 +134,7 @@ export async function refCommit(ctx: ObserveContext, ref: string): Promise<Fact<
 
 // Contract Δ3 `switch` `detach`: `info <oid>^{commit}` names the commit, also through an annotated tag (git-cat-file(1), gitrevisions(7)).
 // Git prints `<object> missing` for a missing object and for an object that peels to no commit, so both give UNKNOWN_TARGET.
-async function detachCommit(ctx: ObserveContext, oid: string): Promise<Fact<string> | Refused> {
+export async function detachCommit(ctx: ObserveContext, oid: string): Promise<Fact<string> | Refused> {
   const input = `${oid}^{commit}`;
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   const step = await stepOf(ctx, batchCommandArgs(), out, new TextEncoder().encode(`info ${input}\0`));
@@ -146,26 +147,32 @@ async function detachCommit(ctx: ObserveContext, oid: string): Promise<Fact<stri
 }
 
 // Contract §6 command-line bound: each `ls-files` batch fits WINDOWS_COMMAND_LINE_UNITS under the measure of its route.
-function batches(paths: readonly string[], ctx: ObserveContext): string[][] {
+function batches(paths: readonly string[], ctx: ObserveContext, args: (list: string[]) => string[] = stagesArgs): string[][] {
   const out: string[][] = [];
   for (const path of paths) {
     const last = out.at(-1);
-    if (last !== undefined && stepUnits(ctx, "read", stagesArgs([...last, path])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(path);
+    if (last !== undefined && stepUnits(ctx, "read", args([...last, path])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(path);
     else out.push([path]);
   }
   return out;
 }
 
-// Plan.md D3 and research.md R4: the untracked-in-the-way check of Discard. Paths stay byte strings (`latin1`) until an argv or a `fileFacts` entry needs text.
-async function inTheWayCheck(ctx: ObserveContext, head: string, target: string): Promise<Fact<null> | Refused> {
+// Plan.md D3 and research.md R4: the untracked-in-the-way check of Discard and Stash. Paths stay byte strings (`latin1`) until an argv or a `fileFacts` entry needs text.
+// Each of `listings` reads candidates in the `--name-status -z` form, and the check takes all of them (plan.md D3 note of 2026-11-06).
+// `ignored` counts the ignored files in the way, which Git replaces (feature 010 research.md R2 P4c). Without `countFolders`, an ignored folder counts as one.
+export async function inTheWayCheck(ctx: ObserveContext, listings: readonly string[][], countFolders = false): Promise<Fact<{ ignored: number }> | Refused> {
   const w = ctx.workspace;
-  const diff = await readOut(ctx, changedPathsArgs(head, target, w.objectFormat), STATUS_LISTING_BYTES);
-  if ("limited" in diff) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
-  if (!("value" in diff)) return diff;
-  const c = discardCandidates(diff.value);
+  // 001 contract §5 "Deadline outcomes": the reads run at once, so a deadline decides first. The last read gives the assume-unchanged entries (P19).
+  const reads = await Promise.all([...listings, assumedArgs()].map((args) => readOut(ctx, args, STATUS_LISTING_BYTES)));
+  const end = firstEnd(reads.map((r) => ("limited" in r ? LISTING_LIMIT : "value" in r ? null : r)), isDeadlineStop);
+  if (end !== null) return end;
+  const outputs = reads.map((r) => ("value" in r ? r.value : new Uint8Array()));
+  const assumed = assumedOf(outputs.pop()!);
+  if (assumed === "malformed") return MALFORMED;
+  const c = discardCandidates(Buffer.concat([...outputs, assumed]));
   if (c === "malformed") return MALFORMED;
   if (c === "limit") return unavailable("limit");
-  if (c.paths.length === 0) return { value: null };
+  if (c.paths.length === 0) return { value: { ignored: 0 } };
   // Contract §6 "File facts": a candidate that the channel cannot carry as worktree components refuses with reason `path`.
   const texts = new Map<string, string>();
   for (const path of c.paths) {
@@ -192,7 +199,7 @@ async function inTheWayCheck(ctx: ObserveContext, head: string, target: string):
     for (const path of left) counted.add(path);
   }
   const ordered = c.paths.filter((path) => counted.has(path));
-  if (ordered.length === 0) return { value: null };
+  if (ordered.length === 0) return { value: { ignored: 0 } };
   const read = ignoreRead(ordered);
   if (read === "path") return unavailable("path");
   const out = createCollector({ maxBytes: STATUS_LISTING_BYTES });
@@ -202,7 +209,41 @@ async function inTheWayCheck(ctx: ObserveContext, head: string, target: string):
   const verdict = inTheWay(ordered, { exitCode: step.exit.exitCode, stdout: out.take() });
   if (verdict === "malformed") return MALFORMED;
   if (verdict === "failed") return { code: "GIT_FAILED" };
-  return verdict === null ? { value: null } : { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...verdict } };
+  if (verdict !== null) return { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...verdict } };
+  // Git replaces each ignored file below an ignored folder, so a folder counts its listed files and not itself.
+  let files = 0;
+  const nested: string[] = [];
+  for (const batch of batches(sorted.folders, ctx, ignoredFilesArgs)) {
+    const listed = await readOut(ctx, ignoredFilesArgs(batch.map((path) => texts.get(path)!)), STATUS_LISTING_BYTES);
+    if ("limited" in listed) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
+    if (!("value" in listed)) return listed;
+    const found = ignoredFilesOf(batch, listed.value);
+    if (found === "malformed") return MALFORMED;
+    files += found.files;
+    nested.push(...found.nested);
+  }
+  // Feature 010 research.md R2 P18: Git deletes a nested repository in an ignored folder in the way, so it is no replaceable file.
+  if (nested.length > 0) {
+    const marks: string[][] = [];
+    for (const path of nested) {
+      let text: string;
+      try {
+        text = strict.decode(Buffer.from(path, "latin1"));
+      } catch {
+        return unavailable("path");
+      }
+      const parts = [...text.split("/"), ".git"];
+      if (!parts.every(isComponent)) return unavailable("path");
+      marks.push(parts);
+    }
+    const repos = await requestFacts(ctx.runner, ctx.operationId, w, false, marks.map((path) => ({ root: "worktreeRoot", path })), ctx.signal);
+    if (!Array.isArray(repos)) return "stop" in repos ? repos : { code: repos.code };
+    const found = nestedVerdict(nested, repos);
+    if (found === "unknown") return unavailable("unreadable");
+    if (found === "malformed") return MALFORMED;
+    return { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...found } };
+  }
+  return { value: { ignored: countFolders ? ordered.length - sorted.folders.length + files : ordered.length } };
 }
 
 registerWorkbenchAction("switch", {
@@ -253,8 +294,10 @@ registerWorkbenchAction("switch", {
     }
     const stash = await stashValue(ctx);
     if (!("value" in stash)) return stash;
-    if (p.choice === "discard" && head.state !== "unborn") {
-      const way = await inTheWayCheck(ctx, head.oid, target.value);
+    // Plan.md D3 note of 2026-11-06: `stash push` first rolls the working tree back to HEAD, then the checkout writes the target.
+    if (p.choice !== "keep" && head.state !== "unborn") {
+      const of = ctx.workspace.objectFormat;
+      const way = await inTheWayCheck(ctx, [changedPathsArgs(head.oid, target.value, of), resetCandidatesArgs(head.oid, of)]);
       if (!("value" in way)) return way;
     }
     const bound: SwitchBound = { target: target.value, tracked: { digest: status.value.digest, count: status.value.count }, stash: stash.value, unreachable };

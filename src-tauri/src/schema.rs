@@ -390,7 +390,10 @@ pub fn progress(value: &Value) -> bool {
                 | P::SyncPush
                 | P::SyncContinue
                 | P::Clone
-                | P::Pageant,
+                | P::Pageant
+                // Feature 010 contract Δ2.
+                | P::SyncCherryPick
+                | P::SyncRevert,
             ) => Some(&SYNC_COUNTERS),
             // Feature 008 contract Δ2: `revert-files` counts files, and `revert-index` carries no counter.
             Some(P::StageFiles | P::DeleteFiles | P::RevertFiles) => {
@@ -413,7 +416,12 @@ pub fn progress(value: &Value) -> bool {
                 | P::Worktree
                 | P::IgnoreSave
                 | P::Preview
-                | P::RevertIndex,
+                | P::RevertIndex
+                // Feature 010 contract Δ2.
+                | P::Reset
+                | P::Tag
+                | P::CherryPick
+                | P::RevertCommit,
             ) => Some(&[]),
             _ => None,
         };
@@ -1601,9 +1609,10 @@ mod tests {
         // Feature 006 T061 adds the 5 `read-dictionary-result` chunk vectors, 2 of them new (contract Δ1).
         // Feature 008 T006 adds 4 `mutation-request`, 4 `progress`, 9 `fileReplace`, 2 `tempRemove`, and 2 `fileFacts` vectors (contract Δ10).
         // WP4 adds the 2 `run` vectors of the size rule. The batch 1 gaps add 4 `fileReplace` and 1 `tempRemove` request vectors.
+        // Feature 010 T003 adds 5 `mutation-request` and 8 `progress` vectors (contract Δ10).
         assert_eq!(
             checked,
-            if cfg!(windows) { 261 } else { 256 },
+            if cfg!(windows) { 274 } else { 269 },
             "shell-read vectors"
         );
     }
@@ -2053,6 +2062,9 @@ mod tests {
             "sync-continue",
             "clone",
             "pageant",
+            // Feature 010 contract Δ2.
+            "sync-cherry-pick",
+            "sync-revert",
         ] {
             assert!(progress(&event(phase, json!({}))), "{phase}");
             assert!(
@@ -2215,6 +2227,11 @@ mod tests {
             "resolve",
             "mergetool",
             "worktree",
+            // Feature 010 contract Δ2.
+            "reset",
+            "tag",
+            "cherry-pick",
+            "revert-commit",
         ];
         for phase in bare {
             assert!(progress(&event(phase, json!({}))), "{phase}");
@@ -2265,6 +2282,11 @@ mod tests {
             "worktree-remove",
             "worktree-prune",
             "config-save",
+            // Feature 010 contract Δ1.
+            "reset",
+            "create-tag",
+            "cherry-pick",
+            "revert-commit",
         ] {
             assert!(
                 started(json!({ "kind": "workbench", "action": action })),

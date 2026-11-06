@@ -80,7 +80,11 @@ export interface Cdp {
 }
 
 export type IpcCall = { command: string; requestId: string };
+// CDP `Network` times of one call: `sent` and `end` are `MonotonicTime` seconds, `wall` is the `TimeSinceEpoch` seconds of `sent`. `end` is null until the reply has fully arrived.
+export type IpcTiming = IpcCall & { sent: number; wall: number; end: number | null };
 export interface IpcLog {
+  // Each call that `watchIpc` saw sent, in send order.
+  calls(): readonly IpcTiming[];
   // The calls of `command` whose reply has fully arrived, in arrival order.
   finished(command: string): IpcCall[];
   // Waits until `count` calls of `command` have their reply, at most `ms`.
@@ -132,10 +136,15 @@ export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number):
 export async function watchIpc(c: Cdp, onFinished?: (call: IpcCall) => void): Promise<IpcLog> {
   const open = new Map<string, string>();
   const done: IpcCall[] = [];
+  const timings: IpcTiming[] = [];
   c.on("Network.requestWillBeSent", (p) => {
     const request = p.request as { url: string; method: string };
     // The cross-origin call first sends a CORS preflight (method OPTIONS). Only the POST carries the reply.
-    if (request.method === "POST" && request.url.startsWith(`${IPC_ORIGIN}/`)) open.set(p.requestId as string, decodeURIComponent(new URL(request.url).pathname.slice(1)));
+    if (request.method === "POST" && request.url.startsWith(`${IPC_ORIGIN}/`)) {
+      const command = decodeURIComponent(new URL(request.url).pathname.slice(1));
+      open.set(p.requestId as string, command);
+      timings.push({ command, requestId: p.requestId as string, sent: p.timestamp as number, wall: p.wallTime as number, end: null });
+    }
   });
   c.on("Network.loadingFailed", (p) => void open.delete(p.requestId as string));
   c.on("Network.loadingFinished", (p) => {
@@ -143,6 +152,8 @@ export async function watchIpc(c: Cdp, onFinished?: (call: IpcCall) => void): Pr
     const command = open.get(requestId);
     if (command === undefined) return;
     open.delete(requestId);
+    const timing = timings.findLast((t) => t.requestId === requestId);
+    if (timing !== undefined) timing.end = p.timestamp as number;
     const call = { command, requestId };
     done.push(call);
     onFinished?.(call);
@@ -150,6 +161,7 @@ export async function watchIpc(c: Cdp, onFinished?: (call: IpcCall) => void): Pr
   await c.send("Network.enable");
   const finished = (command: string) => done.filter((d) => d.command === command);
   return {
+    calls: () => timings,
     finished,
     async wait(command, count, ms) {
       for (const end = performance.now() + ms; finished(command).length < count; await Bun.sleep(POLL_MS)) if (performance.now() >= end) throw new Error(`${count} ${command} replies did not arrive within ${ms} ms: ${finished(command).length}`);

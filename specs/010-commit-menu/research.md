@@ -111,7 +111,7 @@ Run 2026-11-05, packaged NSIS build, warm, in the foreground, alone, under the t
 - Build: commit `bba51aca`. Installed `arbareto.exe` SHA-256 `44f1270664da40ec005d5104832085f61d5194199fbde4415f18858823e0b73b`. It equals the built exe after the NSIS marker patch (`__TAURI_BUNDLE_TYPE_VAR_UNK` to `__TAURI_BUNDLE_TYPE_VAR_NSS`, 1 hit). The T017 and T018 `ORIGIN` lines name this hash.
 - OS: Windows 11 Pro 10.0.26300 (build 26300). Git: 2.56.0.windows.2.
 - T017 (SC-009): 5 pass, 2 skip, 0 fail. The 150% and 225% text-scale cases skip, because the OS text size is 100%. These two cases stay unverified.
-- T018: 4 pass, 1 fail. All time budgets pass. SC-011 fails (see below).
+- T018: 4 pass, 1 fail. All time budgets pass. SC-011 fails (see below). Superseded by the 2026-11-06 runs.
 
 | Measure | Median (budget) | Every-run max (budget) | Cold (budget) |
 |---|---|---|---|
@@ -135,7 +135,7 @@ Run 2026-11-05, packaged NSIS build, warm, in the foreground, alone, under the t
 - Cold runs: the test measures one cold run per SC-010 measure (SC-010a, SC-010b Reset, SC-010c, SC-010d Soft and Hard). All are within 2 times the warm budget.
 - Records, no budget: CPU 0.078 s to 10.2 s per run (165 runs). Process-tree private bytes 669 MB to 1,254 MB. The bytes increase across the series.
 - SC-011 counts (inputs per run, 11 runs per action): Abort 15 to 31, Revert 31 to 45, Continue 34 to 55, Cherry-pick 37 to 67, Soft 38 to 54, Mixed 44 to 64, Create tag 48 to 69, Detached checkout 166 to 229, Hard 229 to 289. Input p95 is at most 40 ms and max is at most 48 ms.
-- Finding for `/speckit-converge`: SC-011 fails. Abort runs 1 to 6 got 18, 15, 19, 18, 18, and 18 inputs, below the minimum of 20. The response times pass. The Abort runs are short (median 450 ms), so the probe does not reach 20 inputs.
+- Finding for `/speckit-converge`: SC-011 fails. Superseded by the 2026-11-06 runs. Abort runs 1 to 6 got 18, 15, 19, 18, 18, and 18 inputs, below the minimum of 20. The response times pass. The Abort runs are short (median 450 ms), so the probe does not reach 20 inputs.
 - Control: a scratch build let `AlertConfirm` focus the danger button first (installed SHA-256 `add5319c...1030964`, `ORIGIN` line matches). The FR-044 Cancel focus case failed (0 pass, 1 fail). `RevertConfirm.tsx` was restored byte-equal (SHA-256 `688895e6...24f33d8`). A clean rebuild and reinstall matched its own built exe after the marker patch. The worktree status was clean.
 - WSL record: `tests/windows/commit-menu-perf.test.ts` has three WSL record cases on `Ubuntu-26.04`, with no budget. They are SC-010b on M, SC-010d and SC-011 on M, and SC-010d and SC-011 on M-R. They print `RECORD` lines.
 
@@ -204,6 +204,95 @@ Controls:
 - Control a limit: the Top bar row case also fails on the clean build (height only), so its control shows only the extra `count` difference.
 - Control b (WSL identity, test edit, no rebuild): without the local `user.email` write and its check, the WSL M-R record case did not stop. Cherry-pick run 0 completed, and the case passed. The control did not turn red. The identity source of the app's distro Git in this case is unverified. `commit-menu-perf.test.ts` was restored byte-equal (`6cc9dab9...f5f92ab`).
 
+#### Targeted rerun (2026-11-06)
+
+Packaged build of `5d27b52f` plus one test commit with four test fixes: the Top bar line count, the SC-011 probe without polling, per-run IPC timing, and the WSL identity check in the distro environment. The app code equals `22cdcac9`. Installed SHA-256 prefix `0A677CAE`. The targeted run passed.
+
+- Top bar row case: the header has one line (client height 44 px, row height 44 px). Control: at a window width of 900 px, the header has 2 lines.
+- SC-010b medians on M (budget 300 ms median, 500 ms every run): Reset 256 ms (max 397 ms, cold 411 ms), Check out 230 ms, Create tag 21 ms, Cherry-pick 240 ms, Revert 245 ms.
+- SC-010d on M: Soft 705 ms (max 775 ms, cold 923 ms), Mixed 813 ms (max 877 ms), Create tag 747 ms (max 891 ms).
+- SC-011: 48 to 83 inputs per run. Input p95 is at most 32 ms.
+- IPC split: each slow run is about 130 to 150 ms slower than the fast group. The extra time is inside one `review_workbench` or `run_workbench` call. Thus the variance is in Git process time, not in the page.
+- WSL record medians: Soft 3,617 ms, Mixed 4,009 ms, Create tag 5,148 ms.
+- WSL identity control: without the local `user.name`, the new check fails with exit 128 before the series. With it, the series passes.
+- Result: every budget passes. SC-010a, SC-010c, and SC-010d on M-R passed on `22cdcac9`. SC-010b and SC-010d on M pass on this rerun with the same app code.
+- Text size (user decision 2026-11-06): the skip of the SC-009 150% and 225% cases is accepted for v0.1.0. The cases run after v0.1.0 (tasks.md T024).
+
 ### Requirement-to-test map (T022)
 
-Pending. T022 maps every FR and SC to its tests (spec SC-012).
+Review 2026-11-06 by the reviewer on `9c8dfe0e`. The map below adds the later fixes and tests up to `22cdcac9`. Test files are in `tests/git/`, `tests/contracts/`, `tests/wsl/`, and `tests/windows/`.
+
+| ID | Test file and case | Coverage |
+|---|---|---|
+| FR-001 | All refusal cases assert code and reason (`tests/git/*`); the T022 SC-012 review | yes |
+| FR-002 | `commit-actions-contract.test.ts` "WORKBENCH_ACTIONS and WORKBENCH_STARTED_ACTIONS gain the four actions", "no new operation name, and MUTATIONS keeps runWorkbench"; `commit-menu.test.tsx` "a running mutation blocks all but Copy…"; `src-tauri/src/schema.rs` and `close.rs` cargo tests | yes |
+| FR-003 | `reset.test.ts` "FR-003: a new untracked file in the way after the Hard review gives STALE_REVIEW…"; `create-tag.test.ts` "FR-003 and FR-007: an external tag write…"; `cherry-pick-revert.test.ts` "FR-003 and FR-007: an external commit…"; `sync-conflicts.test.ts` "010 FR-003 and FR-007…"; `commit-actions.test.tsx` "an expired ${action} review states that nothing changed" | yes |
+| FR-004 | `reset.test.ts`, `create-tag.test.ts`, `cherry-pick-revert.test.ts` "SC-007 and FR-004…"; `sync-conflicts.test.ts` "010 SC-007 and FR-004…"; `sync-conflicts.test.tsx` "${k.state}: Abort and Continue ask trust with the ${k.trust} action"; `dialogs.rs` cargo tests | yes |
+| FR-005 | `keepConfigs` in every `withSync` of `reset.test.ts`, `create-tag.test.ts`, `cherry-pick-revert.test.ts`; `workbench-commands.test.ts` "cherry-pick and revert pass no --, no hook bypass…", "a tag step passes no -a, no -f, and no --no-sign…"; `create-tag.test.ts` "FR-032 and P8…" (2 cases); `cherry-pick-revert.test.ts` "SC-003 and FR-053: an empty pick (P6) and a signing failure (P11)…" | yes |
+| FR-006 | `cherry-pick-revert.test.ts` "SC-003 and FR-053: an empty pick (P6) and a signing failure (P11)… with the output tail…"; `commit-actions.test.tsx` "a stop without conflicts states it and shows the output tail as plain text" | yes |
+| FR-007 | `reset.test.ts` "FR-007: Cancel before the step…; a step killed while index.lock exists…"; `create-tag.test.ts` and `cherry-pick-revert.test.ts` "FR-003 and FR-007…"; `sync-conflicts.test.ts` "010 FR-003 and FR-007…" | yes |
+| FR-008 | `workbench-commands.test.ts` "every array starts with --no-lazy-fetch…"; UNKNOWN_TARGET: `reset.test.ts` "FR-041 and data-model §6…", `create-tag.test.ts` "plan.md D3: the open review…", `cherry-pick-revert.test.ts` "FR-051…" | yes |
+| FR-010 | `commit-menu.test.tsx` "a right-click on a commit row selects the row, docks its details…", "a right-click on a branch chip keeps the 004 branch menu", "${name} with no active label opens the commit menu…", "Right makes the first label active…"; `commit-actions.test.tsx` Escape and Hard dialog focus cases; `commit-menu-packaged.test.ts` "FR-010, FR-014, U2: Shift+F10 and a right-click…" | yes |
+| FR-011 | `commit-menu.test.tsx` "a right-click on a commit row selects the row…", "a detached HEAD blocks Cherry-pick, Revert, and Reset, and the Reset label drops the branch name" | yes |
+| FR-012 | `commit-menu.test.tsx` availability cases (clean branch, running mutation, operation states, detached, unborn, HEAD at this commit); service rechecks `reset.test.ts` "FR-041…", `cherry-pick-revert.test.ts` "FR-051…" | yes |
+| FR-013 | `commit-menu.test.tsx` "the Working directory and Index rows open no menu", "the More commits row and a Loading row open no menu (plan D1)" | yes |
+| FR-014 | `commit-menu.test.tsx` "every item has an icon and an accessible name", "an unavailable item stays focusable and runs nothing"; `commit-actions.test.tsx` preselection and first-focus cases; `commit-menu-packaged.test.ts` "FR-010, FR-014, U2…", "SC-009: in Dark, Light, and forced colors…", "SC-009 at text size ${size}%…" (the 150% and 225% cases skip, because the OS text size is 100%) | partial |
+| FR-015 | `commit-menu.test.tsx` "Right makes the first label active and Shift+F10 then opens its branch menu; Left on the first label goes back…"; `workbench-branches.test.tsx` "Right and Left move the active label…", "a new selected row starts with no active label" | yes |
+| FR-020 | `switch.test.ts` "010 FR-020 and SC-005…", "010 FR-020: from a detached commit that no ref holds…"; `commit-actions.test.tsx` checkout confirmation cases; `commit-menu-packaged.test.ts` "FR-020: the Check out confirmation gives Cancel the first focus…"; `commit-actions-wsl.test.ts` "T016 FR-020…" | yes |
+| FR-021 | `commit-menu.test.tsx` "Create branch here shows Ctrl+B, and it opens the 004 Create branch popover at the commit"; `commit-actions.test.tsx` "Escape on the Create branch popover of the commit menu returns the focus to the list" | yes |
+| FR-022 | `commit-menu.test.tsx` "Copy commit ID copies the full object ID and is always available" | yes |
+| FR-030 | `commit-actions.test.tsx` tag kind cases; `create-tag.test.ts` "plan.md D3: the open review with name null…" | yes |
+| FR-031 | `create-tag.test.ts` "FR-031 and P9…", "FR-031 and FR-032: an existing name gives name-exists…", "contract §5: a check-ref-format exit code null gives GIT_FAILED…"; `tag-name.test.ts` (8 cases); `commit-actions.test.tsx` "the refusal ${reason} shows in the popover after Create tag" | yes |
+| FR-032 | `create-tag.test.ts` "FR-032 and P8" (2 cases), "FR-031 and FR-032… invalid-config…"; `commit-actions.test.tsx` signing line cases | yes |
+| FR-033 | `commit-actions-contract.test.ts` tag message rules and invalid vectors; `create-tag.test.ts` "FR-031 and FR-032: … a message …" | yes |
+| FR-034 | `commit-actions.test.tsx` "Create tag reviews again… and states the outcome"; `workbench-commands.test.ts` tag argv (no tag push) | yes |
+| FR-040 | `commit-actions.test.tsx` "Mixed is preselected and focused…", "a mode change reviews again…"; `commit-actions-contract.test.ts` "reset takes the target and one of soft, mixed, or hard" | yes |
+| FR-041 | `reset.test.ts` "FR-041 and data-model §6…"; `commit-menu.test.tsx` detached and unborn cases | yes |
+| FR-042 | `reset.test.ts` "SC-001: each mode two commits back…", "SC-001 and FR-042…"; `commit-actions.test.tsx` "the counts and notes of the plan, in plural and singular forms" | yes |
+| FR-043 | `reset.test.ts` "FR-043 and SC-002: Hard with an untracked file at a target path…", "FR-043: 101 untracked files…", "FR-043 and P4c…"; P17: `reset.test.ts` "FR-043 and SC-002: where the index equals the target, Hard with an untracked folder in place of a file…", "FR-043: Hard at the tip with more than DISCARD_CHECK_PATHS changed tracked files refuses with limit…", `switch.test.ts` "FR-011 and SC-002: Stash and Discard with an untracked folder in place of a tracked file…"; P18: `reset.test.ts` "FR-043 and FR-044: an ignored folder in the way that holds a nested repository refuses Hard…", `switch.test.ts` "FR-011 and 010 research.md R2 P18: Discard and Stash with an ignored folder in the way that holds a nested repository…"; P19: `reset.test.ts` "FR-043 and SC-002: an assume-unchanged entry with an untracked folder in place of its file…", `switch.test.ts` "FR-011 and SC-002: Stash and Discard with an assume-unchanged entry…"; `commit-actions.test.tsx` in-the-way list; `commit-actions-wsl.test.ts` "T016 FR-043…" | yes |
+| FR-044 | `commit-actions.test.tsx` Hard dialog cases; `reset.test.ts` "FR-044 and P4c: an ignored folder…"; `commit-menu-packaged.test.ts` "FR-044: the Hard dialog gives Cancel the first focus (UIA HasKeyboardFocus)…" | yes |
+| FR-045 | `workbench-commands.test.ts` "commit menu argv" rows reset soft, mixed, hard | yes |
+| FR-046 | `reset.test.ts` SC-001 cases and "FR-007: … index.lock … failed-with-effects" | yes |
+| FR-050 | `cherry-pick-revert.test.ts` "SC-003 and FR-050: a merge commit with -m 1 and -m 2…"; `commit-actions.test.tsx` parent choice cases | yes |
+| FR-051 | `cherry-pick-revert.test.ts` "FR-051: …", "SC-010b: with parallel reads, CONFLICTED comes before…"; `commit-actions.test.tsx` "${action}: the refusal ${reason} shows its text" | yes |
+| FR-052 | `workbench-commands.test.ts` pick argv; `commit-actions.test.tsx` "a plain commit: the popover names the branch, Git's message and author, and Amend last commit…" | yes |
+| FR-053 | `cherry-pick-revert.test.ts` "SC-003 and FR-053…" (3 cases), "SC-007 and FR-004: … post-commit hook…"; `commit-actions.test.tsx` stop cases | yes |
+| FR-060 | `sync-conflicts.test.tsx` conflict row cases in the pick states | yes |
+| FR-061 | `sync-conflicts.test.ts` "010 SC-006 and FR-061: Abort…", "010 SC-006, FR-062, and FR-063: … Continue…"; `sync-conflicts.test.tsx` Abort confirmation cases | yes |
+| FR-062 | `sync-conflicts.test.ts` Continue refusals, nothing-to-commit, sequence; `sync-conflicts.test.tsx` refusal text cases; `commit-actions-wsl.test.ts` "T016 plan.md D6: with a .git/sequencer folder…" | yes |
+| FR-063 | `sync-conflicts.test.ts` "010 SC-006, FR-062, and FR-063…", "010 FR-063: Choose ours and Choose theirs of a stopped cherry-pick and revert run checkout --<side>…"; `sync-conflicts.test.tsx` "${k.state}: Mark resolved stays available…", "the resolve tools of a conflicted file (FR-063)" (a merge case and one case per pick state) | yes |
+| FR-070 | `commit-actions-wsl.test.ts` (all 7 T016 cases) | yes |
+| FR-080 | `commit-menu-perf.test.ts` "SC-010d, SC-011 on M…", "SC-010d, SC-011 on M-R…"; SC-011 passes on build `22cdcac9` (R7 "Run 2026-11-06") | yes |
+| SC-001 | `reset.test.ts` SC-001 cases | yes |
+| SC-002 | `reset.test.ts` "FR-043 and SC-002…" (3 cases), "FR-043: 101 untracked files…"; `switch.test.ts` "FR-011 and SC-002…" P17 and P19 cases; `commit-actions-wsl.test.ts` "T016 FR-043…" | yes |
+| SC-003 | `cherry-pick-revert.test.ts` SC-003 cases; `commit-actions-wsl.test.ts` "T016 SC-003…" | yes |
+| SC-004 | `create-tag.test.ts` SC-004 and FR-031/032 cases; `commit-actions-wsl.test.ts` "T016 SC-004…" | yes |
+| SC-005 | `switch.test.ts` "010 FR-020 and SC-005…" | yes |
+| SC-006 | `sync-conflicts.test.ts` SC-006 cases; `commit-actions-wsl.test.ts` "T016 SC-006…" | yes |
+| SC-007 | "SC-007 and FR-004…" cases in reset, create-tag, cherry-pick-revert, switch, sync-conflicts | yes |
+| SC-008 | `commit-actions-wsl.test.ts` "T016 SC-008…" and the mode, owner and link-count checks | yes |
+| SC-009 | `commit-menu-packaged.test.ts` cases (the 150% and 225% cases skip) | partial |
+| SC-010a | `commit-menu-perf.test.ts` "SC-010a, U3: on L…" | yes |
+| SC-010b | `commit-menu-perf.test.ts` "SC-010b, U3: on M…" | yes |
+| SC-010c | `commit-menu-perf.test.ts` "SC-010c: on M-R the Hard review…" | yes |
+| SC-010d | `commit-menu-perf.test.ts` SC-010d cases on M and M-R | yes |
+| SC-011 | `commit-menu-perf.test.ts` SC-010d cases; passes on build `22cdcac9` (R7 "Run 2026-11-06") | yes |
+| SC-012 | The T022 review (manual). Its findings below name no outcome that message text, timing, a retry count, or a name pattern decides. | yes |
+
+- Coverage marks: the map gives test coverage. The pass or fail result of a budget is in R7 "Packaged and perf runs (T019)". SC-010b Reset and SC-010d Create tag missed a median on `22cdcac9` and pass on the targeted rerun.
+- Control: the reviewer removed FR-022 from the draft map. The coverage pass then reported "missing in draft: FR-022".
+
+Review findings and outcomes:
+
+- HIGH-1: Hard reset lost untracked data where the index equals the target (P17). Fixed by `c732eb32`.
+- S1: Switch with Stash or Discard lost untracked data in the way (P17). Fixed by `c732eb32`.
+- S2: a nested repository in the way was lost (P17, P18). Fixed by `c732eb32`.
+- P19: Hard reset, Stash, and Discard lost untracked data at an assume-unchanged entry. Fixed by `be61a01d`.
+- LOW-1, LOW-2, and LOW-3: handled.
+
+Known items for after v0.1.0:
+
+- Check out with the default switch choice Stash takes about 340 to 380 ms, because the review reads once more. Fix: run the Switch observe reads in parallel.
+- The resolve view shows no "theirs" name during a cherry-pick or a revert.
+- A bare repository in an ignored folder counts as ignored files.
+- With `core.ignoreStat=true`, the Hard review can refuse with `limit`.

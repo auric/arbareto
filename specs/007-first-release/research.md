@@ -484,8 +484,8 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - Scope: 76 requirements (FR and SC), 409 tasks (353 done, 56 open). 60 of 76 requirements have an explicit ID in 001 tasks.md.
 - Counts: 0 CRITICAL, 1 HIGH, 3 MEDIUM, 1 LOW.
 - HIGH, fixed: 001 research.md R7 "Corresponding Source location" kept the rule "private until version 1" next to the 2026-10-24 paragraph, and spec.md line 37 states that the repository is public since 2026-10-25. The 2026-10-24 paragraph now states that it replaces that rule.
-- MEDIUM, open (two findings): 001 plan.md B-RELEASE row and line 613 say that the repository "becomes public" before the preview. spec.md line 37 says that it is public since 2026-10-25.
+- MEDIUM, fixed (two findings): 001 plan.md B-RELEASE row and line 613 said that the repository "becomes public" before the preview. spec.md line 37 says that it is public since 2026-10-25. Both lines now state that fact.
 - MEDIUM, open: 16 requirements have no explicit ID in 001 tasks.md: FR-001, FR-006, FR-009, FR-010, FR-011, FR-014, FR-016, FR-018, FR-029, FR-031, FR-032, FR-038, FR-049, FR-050, FR-051, FR-054. The 007 amendments do not touch them.
 - LOW, no change: 001 plan.md "Constitution Check" cites constitution 3.0.0. The 4.0.1 sync report keeps these rows correct.
 - No CRITICAL or HIGH finding on the 007 amendments stays open.
-- `OBSERVATION T027: 001 analyze 0 CRITICAL, 1 HIGH fixed, 3 MEDIUM open, 1 LOW`
+- `OBSERVATION T027: 001 analyze 0 CRITICAL, 1 HIGH fixed, 2 MEDIUM fixed, 1 MEDIUM open, 1 LOW`

@@ -18,6 +18,7 @@ The first preview release for Windows 11 x64.
 - Folders come first in every file tree. Show a folder in Explorer.
 - Edit an ignore file with a live preview.
 - Open a submodule as a repository, and go back to its parent.
+- A changed submodule shows its new and removed commits in the preview, and its local edits in the Commit view.
 - The full branch name and its tracking state. Branches that lost their upstream are marked.
 - Spell check of the commit message. A marked word offers suggestions, Ignore, and Add to dictionary. English works offline.
 - More spell check languages: download a dictionary or import its files, and select up to 3 languages. Settings lists the personal word list.
@@ -26,6 +27,7 @@ The first preview release for Windows 11 x64.
 - Recovery from a rejected push, with force push with lease after a confirmation.
 - Clone a repository.
 - Branches: switch, create, rename, delete, merge, and rebase. Resolve a conflicted file, or open it in your merge tool.
+- A merge or a rebase with conflicts lists the conflicted files first and offers Resolve conflicts.
 - A commit menu in History: check out a commit, create a branch or a tag, and copy the commit ID.
 - Reset the current branch to a commit: Soft, Mixed, or Hard. Hard asks for a confirmation first.
 - Cherry-pick a commit or revert it. Abort or continue a stopped cherry-pick or revert.

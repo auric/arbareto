@@ -8,7 +8,7 @@
 
 **Code base**: origin/main `65959ceb`. Line references cite `65959ceb` unless they name the branch `010-commit-menu` (`22cdcac9`).
 
-**Mockup** (T002): pending. Boards: the D12 list. The user approves them before any code task starts.
+**Mockup** (T002): approved by the user on 2026-11-06 (14 boards, eight decisions). Boards: the D12 list. Review page: https://claude.ai/artifact/MC4tBgvkN2fAnAuoLYAPFF (screenshots of the 14 boards; the board sources are in local scratch). Decisions: research R7 "Mockup review (T002)".
 
 ## Summary
 
@@ -133,7 +133,10 @@ Each step writes its tests first.
 ### D2 Remote confirmation
 
 - An alert dialog (Base UI `AlertDialog`, the 008 `RevertConfirm` pattern). Cancel has the first focus. No button is the default, so Enter alone never deletes.
-- Content: X2, X3, then X4 with the commit list (up to 100 rows) and X5, or X6. Then X7. Buttons: X8 (danger) and Cancel.
+- Content: X2, X3, then X4 with the commit list and X5, or X6. Then X7 with the warning icon. Buttons: X8 (danger) and Cancel.
+- The commit list shows up to `SYNC_LEASE_COMMITS` (100) commits, then X5. Its accessible name is X30.
+- The remote confirmation keeps this stronger look: the alert dialog, the warning icon, and X7. The local 004 dialog keeps its look (D3).
+- In forced colors, the danger red goes. X2 and X8 state the danger in text.
 - The list reuses the force-push list (`ForcePushConfirm.tsx:45-53`), exported as `LeaseCommits`: short ID and subject, `max-h-60` with its own scrollbar.
 - A name that does not fit keeps its full text in the tooltip and the accessible name (arbareto-ux rule).
 
@@ -144,6 +147,8 @@ Each step writes its tests first.
 - Checking starts a sync review `{ action: "delete-remote-branch", ref: entry.upstream, local: entry.ref }`. While it runs, the dialog shows X12 under the check box, and Delete is unavailable.
 - Checked and reviewed: X10 or X11 shows. The list and X5 show when the count is above 0. The reflog line for the local tip follows (`T.reflogKeeps` or `T.noReflog` from `plan.local.reflogKeeps`). Then X7 shows. Delete runs the sync token.
 - Checked and refused: the refusal text shows under the check box with `role="alert"`. Delete is unavailable while the box is checked.
+- Unavailable Delete: the button stays visible. It is disabled and stays focusable. The reason shows under the check box. The dialog never hides the button.
+- The commit list of the checked plan has the accessible name X30.
 - Unchecking shows the 004 plan again and uses the workbench token.
 - A trust ask for `push` can open from inside the dialog. The packaged test checks the focus return (R8, research R5 U6).
 
@@ -214,7 +219,7 @@ Steps:
 4. The push: `pushArgs(R, null, dst, expect, of)` through `networkStep(..., "sync-push", ...)`. Policy `remote`, `PROCESS_LIMITS.network`, and the stall notice. Remedy: `& {git} --no-lazy-fetch -C {root} push --force-with-lease={lease} -- {remote} {refspec}`. A URL with user information gets the remedy as text only (`sync.ts:173-174`).
 5. Parse: `parsePushPorcelain(stdout, ":<dst>", exit, "(delete):<dst>")`.
 6. Gone recovery (D8), only when the status is `rejected` and `sameUrl` holds.
-7. With `local`, after `deleted` or `remoteGone`: the local writes `deleteRefArgs(branch, oid)` and, when `section`, `removeBranchSectionArgs(branch)` (`workbench-commands.ts:275-282`), through `writeUpstream`. It stops at the first nonzero exit and at Cancel (`sync.ts:310`).
+7. With `local`, after `deleted` or `remoteGone`: the local writes `deleteRefArgs(branch, oid)` and, when `section`, `removeBranchSectionArgs(branch)` (`workbench-commands.ts:275-282`), through `writeUpstream`. It stops at the first nonzero exit and at Cancel (`sync.ts:310`). The status bar shows the step X28.
 8. Enter reconciling. Wait for the WSL process-end fact (`processEnded`). Read refs, HEAD, the operation state, and the trust listing.
 9. Outcome (table below).
 
@@ -313,8 +318,9 @@ The user accepted these budgets on 2026-11-06, before any measured run. The runs
   9. Local-refused: checked, X13 under the box, Delete unavailable.
   10. Status-running: X19 with Cancel.
   11. Status-outcomes: X20 to X24, X26, and E3 with a remedy command.
-  12. Forced colors and dark theme: boards 3 and 8.
-  13. Comfortable density: boards 1 and 6.
+  12. Forced colors: boards 3 and 8.
+  13. Dark theme, compact density: boards 3 and 8.
+  14. Comfortable density: boards 1 and 6.
 - The user approves the boards before any code task (T003 onward) starts. A changed text goes into D13 first.
 
 ### D13 Texts
@@ -353,8 +359,12 @@ New texts:
 | X25 | outcome suffix | {branch} stays. |
 | X26 | outcome, combined after X23 | Deleted the local branch {branch}. |
 | X27 | details area remedy of X22 | Text: "This command fetches {remote} and removes the remote-tracking branches whose remote branch is gone." Command: `& {git} --no-lazy-fetch -C {root} fetch --prune -- {remote}` |
+| X28 | status bar step, local delete | Deleting {branch}… |
+| X29 | details heading | Delete remote branch details |
+| X30 | accessible name of the commit list | Commits only on {tracking} |
 
 - X24 equals X20 followed by X25.
+- A status-bar line that does not fit keeps its full text in a tooltip and in its accessible name (arbareto-ux rule).
 
 Existing texts that this feature reuses unchanged:
 
@@ -459,7 +469,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
 - Reviewer default: X9 uses `{tracking}`. With the default refspec, it equals the `<remote>/<name>` of the user decision (spec Assumptions).
 - Reviewer default: E4 keeps the existing word "push" for a delete. The mockup review can change it in D13.
 - Reviewer default: the cold measures cover SC-009a to SC-009d. SC-009e is an input-response measure during the runs and has no cold run.
-- Mockup decisions: pending (T002).
+- Mockup decisions: the user approved the boards and eight decisions on 2026-11-06 (research R7 "Mockup review (T002)"). D2, D3, D6, and D13 hold them.
 
 ## Phases
 

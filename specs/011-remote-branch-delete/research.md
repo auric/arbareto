@@ -108,6 +108,18 @@ Git documentation:
 - Doc text: git-update-ref(1) names the old value `<old-oid>`. git-symbolic-ref(1) `-q` names "a symbolic ref but a detached HEAD". The meaning of R3 does not change.
 - The probe repositories were deleted on both sides after the run.
 
+### Mockup review (T002)
+
+- Date: 2026-11-06. The user approved the 14 boards and the eight open points as proposed.
+- 1: the combined already-gone outcome states X23, then X26.
+- 2: X14 names Fetch and `git remote set-head {remote} --auto`.
+- 3: the local Delete button stays visible while the check-box review runs or refuses. It is disabled and focusable, with the reason under the check box.
+- 4: new texts X28 (local delete step), X29 (details heading), and X30 (commit list name).
+- 5: a cut status-bar line keeps its full text in a tooltip and in its accessible name.
+- 6: the remote confirmation keeps the alert dialog, the warning icon, and X7. The local 004 dialog keeps its look.
+- 7: the commit list shows up to `SYNC_LEASE_COMMITS` (100) commits, then X5.
+- 8: in forced colors, the danger red goes. The button text and the title state the danger.
+
 ### Packaged and perf runs (T021)
 
 Pending.

@@ -2075,3 +2075,46 @@ describe("config total in row order (004 FR-112, FR-115)", () => {
     ordered("t159-order-failed", Array.from({ length: 21 }, (_, i) => i).filter((i) => i !== 17), 17, 16, "GIT_FAILED"),
   );
 });
+
+// ---- Feature 004 FR-112: the nested reads of a level run at most `lanes` ahead of the depth-first apply (contract Δ12 "Parallel reads") ----
+
+describe("nested read window (004 FR-112)", () => {
+  caseTest("T159", "20 rows with one nested row each: while the level read of r00 waits, only the nested reads of r01 to r08 start; the update preflight with one lane observes the same values", SHELL, async () => {
+    const names = Array.from({ length: 20 }, (_, i) => `r${String(i).padStart(2, "0")}`);
+    const w = treeWorld("t159-nested-window", Object.fromEntries(names.map((name) => [name, { x: {} }])));
+    const at = (path: string) => (c: { arguments: readonly string[] }) => {
+      const location = gitLocation(c.arguments);
+      return location !== null && relative(join(w.sup, ...path.split("/")), resolve(w.sup, location)) === "";
+    };
+    // A nested read starts with `cat-file --batch-check` in its row and ends with `ls-tree` (contract Δ12 "Parallel reads").
+    const began = (name: string) => (c: { arguments: readonly string[] }) => at(name)(c) && commandOf(c.arguments).join(" ") === "cat-file --batch-check";
+    const ended = (name: string) => (c: { arguments: readonly string[]; exit?: unknown }) => at(name)(c) && commandOf(c.arguments)[0] === "ls-tree" && c.exit !== undefined;
+    await withTree(w, "t159-nested-window", async (service) => {
+      await review();
+      const { repositoryId } = await service.register(w.sup);
+      const read = await readOk(service, repositoryId);
+      const from = service.runner.calls.length;
+      // The first read of the level of r00 holds the depth-first apply at r00.
+      const release = service.runner.holdStart(once(at("r00/x")));
+      let response: ServiceResponse;
+      let started: string[];
+      try {
+        const id = service.send("reviewSubmodules", { snapshotId: read.snapshotId }, { repositoryId, repositoryGeneration: read.generation });
+        await until(() => names.filter((name) => callsSince(service, from).some(ended(name))).length >= 9, "nine nested reads", NO_TOTAL_DEADLINE_WAIT_MS);
+        started = names.slice(1).filter((name) => callsSince(service, from).some(began(name)));
+        release();
+        response = await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS);
+      } finally {
+        release();
+      }
+      console.log(`OBSERVATION T159 nested window: started while r00 waits ${JSON.stringify(started)}`);
+      expect({ outcome: outcome(response), started }).toEqual({ outcome: SUCCEEDED, started: names.slice(1, 9) });
+      const r: SubmoduleReview = { read, response, token: valuesOf(response.result, "submoduleReviewToken")[0] as string | undefined, rows: objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"]), programs: [], refusals: refusalsOf(response.result) };
+      expect({ rows: r.rows.length, refusals: r.refusals.length, token: typeof r.token }).toEqual({ rows: 40, refusals: 0, token: "string" });
+      // The preflight observer reads one row at a time, so another order or another observed value gives STALE_REVIEW.
+      await underTestSubmodule("submodule-update");
+      const updated = await updateSubmodules(service, repositoryId, r);
+      expect({ outcome: outcome(updated), states: [...new Set(resultsOf(updated).map((row) => row.state))], rows: resultsOf(updated).length }).toEqual({ outcome: SUCCEEDED, states: ["unchanged"], rows: 40 });
+    });
+  }, 20 * 60_000);
+});

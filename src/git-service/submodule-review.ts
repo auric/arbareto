@@ -975,28 +975,33 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       let next = 0;
       const initialized = entries.map((e) => (e.components === null ? false : dotGit[next++]!));
       const topHeads = lv.depth === 0 ? await headsOf(entries.filter((e, i) => initialized[i] && e.components !== null).map((e) => e.link.path)) : null;
+      // Contract Δ12 "Submodule bound": a read keeps its result until this level applies it, so at most `lanes` reads of one window run ahead of the apply.
+      // The level takes the reads of a window in the order of their start, so each read that it takes has started.
+      const windowed = () => {
+        const later: (() => void)[] = [];
+        let open = 0;
+        return <T>(work: () => Promise<T>): (() => Promise<T>) => {
+          let read: (() => Promise<T>) | null = null;
+          const start = () => {
+            open++;
+            read = ahead(work);
+          };
+          if (open < lanes) start();
+          else later.push(start);
+          return () => {
+            open--;
+            later.shift()?.();
+            return read!();
+          };
+        };
+      };
+      // Pass B applies the row reads. The depth-first loop below applies the nested reads, whose `ls-tree` output can reach STATUS_LISTING_BYTES each.
+      const rowRead = windowed();
+      const nestedAhead = windowed();
       const nested: { pending: ObservedRow; repo: Repo; read: (() => ReturnType<typeof nestedRead>) | null }[] = [];
       // The nested reads of a row start when the row has its action (contract Δ12 "Parallel reads").
       const nest = (pending: ObservedRow, repo: Repo) => {
-        nested.push({ pending, repo, read: pending.row.action === "skip" ? null : ahead(() => nestedRead(pending, repo, recurse)) });
-      };
-      // Contract Δ12 "Submodule bound": a row read keeps its config listing until pass B applies it, so at most `lanes` row reads of this level run ahead of pass B.
-      // Pass B takes the row reads in the order of their start, so each read that it takes has started.
-      const later: (() => void)[] = [];
-      let open = 0;
-      const rowRead = <T>(work: () => Promise<T>): (() => Promise<T>) => {
-        let read: (() => Promise<T>) | null = null;
-        const start = () => {
-          open++;
-          read = ahead(work);
-        };
-        if (open < lanes) start();
-        else later.push(start);
-        return () => {
-          open--;
-          later.shift()?.();
-          return read!();
-        };
+        nested.push({ pending, repo, read: pending.row.action === "skip" ? null : nestedAhead(() => nestedRead(pending, repo, recurse)) });
       };
 
       // Pass A, in row order: the checks of each row that await nothing. A checked-out row starts its reads here.

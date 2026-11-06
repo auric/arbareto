@@ -15,7 +15,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
-import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
+import { FIXED_IDENTITY, fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { sha256 } from "../git/git-oracle";
 import type { GitHost } from "../git/remote-fixtures";
@@ -471,6 +471,12 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     const repo: Repo = { folder: uncPath(w, dir), wsl: true, git, digest, exists: (path) => h.existing([path]).length === 1, write: (path, text) => h.write(`${dir}/${path}`, text), copy: (from, to) => h.copy(from, to) };
     // Git for Windows writes these keys at `init`, so the distro copy drops them (as revert-perf.test.ts).
     for (const key of ["core.symlinks", "core.ignorecase", "core.filemode"]) git(["config", "--local", "--unset", key], [0, 5]);
+    // The app's distro Git gets no fixture environment (empty WSLENV), so its commits read the identity from the repository config.
+    git(["config", "--local", "user.name", FIXED_IDENTITY.name]);
+    git(["config", "--local", "user.email", FIXED_IDENTITY.email]);
+    expect(git(["config", "--local", "--get", "user.name"]).trim()).toBe(FIXED_IDENTITY.name);
+    expect(git(["config", "--local", "--get", "user.email"]).trim()).toBe(FIXED_IDENTITY.email);
+    expect(git(["var", "GIT_COMMITTER_IDENT"]).startsWith(`${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> `)).toBe(true);
     git(["update-index", "-q", "--refresh"], [0, 1]);
     const shape = [
       ["for-each-ref", "--format=%(objectname) %(refname)"],

@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import type { FileFact } from "../../src/contracts/channel";
 import { DISCARD_CHECK_PATHS } from "../../src/contracts/limits";
-import { discardCandidates, ignoreRead, inTheWay, IN_THE_WAY_PATHS, sortFacts, untrackedOf } from "../../src/git-service/switch-check";
+import { discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, IN_THE_WAY_PATHS, nestedVerdict, sortFacts, untrackedOf } from "../../src/git-service/switch-check";
 
 printOrigin("../../src/git-service/switch-check.ts", import.meta.dir);
 
@@ -164,5 +164,27 @@ describe("check-ignore (research.md R21 F1)", () => {
   test("another exit status fails", () => {
     expect(inTheWay(["a"], { exitCode: 128, stdout: raw("") })).toBe("failed");
     expect(inTheWay(["a"], { exitCode: null, stdout: raw("") })).toBe("failed");
+  });
+});
+
+// Feature 010 research.md R2 P18: `ls-files -z --others --ignored` prints a nested repository as its folder with a trailing `/`.
+describe("ignored files below the folders in the way", () => {
+  test("files count, and a record with a trailing slash names a nested repository", () => {
+    expect(ignoredFilesOf(["x"], raw("x/a.txt\0x/z/w.txt\0"))).toEqual({ files: 2, nested: [] });
+    expect(ignoredFilesOf(["x"], raw("x/\0"))).toEqual({ files: 0, nested: ["x"] });
+    expect(ignoredFilesOf(["x", "y"], raw("x/plain.txt\0x/sub/\0y/b\0"))).toEqual({ files: 2, nested: ["x/sub"] });
+  });
+
+  test("a record outside the folders or with an empty component is malformed", () => {
+    for (const out of ["x\0", "y/a\0", "x//\0", "x/a", "x/a//b\0"]) expect({ out, r: ignoredFilesOf(["x"], raw(out)) }).toEqual({ out, r: "malformed" });
+  });
+
+  test("a .git file or folder marks each repository; another reply kind is malformed, and an error leaves no verdict", () => {
+    expect(nestedVerdict(["x", "y/sub"], [DIR, FILE])).toEqual({ paths: ["x", "y/sub"], more: 0 });
+    expect(nestedVerdict([utf8("ä")], [DIR])).toEqual({ paths: ["ä"], more: 0 });
+    expect(nestedVerdict(["x", "y"], [DIR, ABSENT])).toBe("malformed");
+    expect(nestedVerdict(["x"], [link(2)])).toBe("malformed");
+    expect(nestedVerdict(["x", "y"], [ABSENT, { kind: "error", component: 1, code: "access-denied" }])).toBe("unknown");
+    expect(() => nestedVerdict(["x"], [])).toThrow(TypeError);
   });
 });

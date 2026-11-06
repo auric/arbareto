@@ -5,7 +5,7 @@
 // The oracle is a second build of the same fixture with Git's own commands. Fresh Git reads decide every expectation, never message text.
 
 import { expect, spyOn } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { STATUS_LISTING_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { syncRefsArgs } from "../../src/git-service/sync-commands";
@@ -222,22 +222,33 @@ caseTest(TASK, "FR-012: Stash and reapply with a reapply conflict keeps the stas
   expect(stateOf(f)).toEqual(stateOf(o));
 }, TIMEOUT_MS);
 
+// The Stash review refuses an untracked file in the way, so the file appears while the checkout step waits. Git's checkout then refuses it.
 caseTest(TASK, "FR-012: a failed checkout after the stash reapplies nothing; the stash stays with its commit ID and Git's own command to apply it", SHELL, async () => {
-  const f = build("switch-untracked");
-  const o = build("switch-untracked");
+  const f = build("switch-clean");
+  const o = build("switch-clean");
   for (const x of [f, o]) put(x, "b.txt", "b changed\n");
   let result: SwitchResult | undefined;
   let root = "";
   await withSync("t021-checkout-fails", async (service) => {
     const r = await open(service, f.repo);
     root = r.worktreeRoot;
+    const rv = await reviewed(service, r, switchTo("stash"));
     const from = service.runner.calls.length;
-    const response = await run(service, r, switchTo("stash"));
+    const release = service.runner.holdStart((call) => isStep(call, "checkout"));
+    const requestId = sendRun(service, r, rv.workbenchToken);
+    try {
+      await until(() => service.runner.calls.some((c) => isStep(c, "checkout")), "held checkout");
+      put(f, "new.txt", "new local\n");
+    } finally {
+      release();
+    }
+    const response = await service.response<SwitchResult>(requestId);
     expect(outcome(response)).toEqual(WITH_EFFECTS);
     result = response.result!;
     expect(subcommands(service, from)).toEqual(["stash push", "checkout"]);
   });
   git(o, ["stash", "push", "--quiet", "-m", MESSAGE]);
+  put(o, "new.txt", "new local\n");
   git(o, ["checkout", "-q", "--no-guess", "target", "--"], [1]);
   const stash = oid(o, "refs/stash");
   expect(result).toMatchObject({ head: { state: "branch", target: "refs/heads/main", oid: f.oids.base }, stash: { oid: stash, state: "kept-failed-checkout" }, conflicted: 0 });
@@ -273,7 +284,71 @@ caseTest(TASK, "FR-011 and SC-002: Discard with an untracked file or folder in t
   expect(stateOf(f)).toEqual(stateOf(o));
 }, TIMEOUT_MS);
 
-caseTest(TASK, "FR-011: Discard with an ignored folder in the way reviews as replaceable and starts no ls-files --others --ignored read, so an output above STATUS_LISTING_BYTES cannot refuse it", SHELL, async () => {
+// Shares `path` between `main` (HEAD) and the target: each gets a commit that adds the same blob. Then `reset --hard` writes it to the working tree.
+function shared(f: WbFixture, path: string): void {
+  const r = repoOf(f);
+  const blob = wb(r, ["hash-object", "-w", "--stdin"], { input: "shared\n" }).stdout.toString("utf8").trim();
+  const env = { GIT_INDEX_FILE: join(f.root, "shared-index") };
+  for (const ref of ["refs/heads/main", TARGET]) {
+    wb(r, ["read-tree", ref], { env });
+    wb(r, ["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { env });
+    const tree = wb(r, ["write-tree"], { env }).stdout.toString("utf8").trim();
+    wb(r, ["update-ref", ref, wb(r, ["commit-tree", "-p", ref, "-m", "shared", tree]).stdout.toString("utf8").trim()]);
+  }
+  wb(r, ["reset", "-q", "--hard"]);
+}
+
+// 010 research.md R2 P17: `stash push` rolls the working tree back to HEAD (git-stash(1)) and stashes no untracked file.
+caseTest(TASK, "FR-011 and SC-002: Stash and Discard with an untracked folder in place of a tracked file or an untracked file in place of a tracked folder, at a path that HEAD and the target share, refuse with UNTRACKED_IN_WAY; Git's own stash push on a copy loses those bytes; every byte stays", SHELL, async () => {
+  const cases: [string, (f: WbFixture) => void, string[], (copy: WbFixture) => boolean][] = [
+    [
+      "folder in place of a file",
+      (f) => {
+        rmSync(join(f.repo, "c.txt"));
+        mkdirSync(join(f.repo, "c.txt"));
+        put(f, "c.txt/keep.txt", "keep\n");
+      },
+      ["c.txt"],
+      (o) => !existsSync(join(o.repo, "c.txt", "keep.txt")),
+    ],
+    [
+      "file in place of a folder",
+      (f) => {
+        shared(f, "k/k.txt");
+        rmSync(join(f.repo, "k"), { recursive: true });
+        put(f, "k", "k local\n");
+      },
+      ["k"],
+      (o) => lstatSync(join(o.repo, "k")).isDirectory(),
+    ],
+  ];
+  for (const [name, prepare, paths, lost] of cases) {
+    const o = build("switch-clean");
+    prepare(o);
+    put(o, "b.txt", "b changed\n");
+    git(o, ["stash", "push", "--quiet", "-m", MESSAGE]);
+    // The stash commit has HEAD and the index commit as parents, and no third parent with untracked files (git-stash(1)).
+    expect({ name, parents: git(o, ["rev-list", "--parents", "-n", "1", "refs/stash"]).trim().split(" ").length, lost: lost(o) }).toEqual({ name, parents: 3, lost: true });
+    for (const choice of ["stash", "discard"]) {
+      const f = build("switch-clean");
+      prepare(f);
+      put(f, "b.txt", "b changed\n");
+      const before = stateOf(f);
+      await withSync(`t021-head-way-${paths[0]}-${choice}`, async (service) => {
+        const r = await open(service, f.repo);
+        const from = service.runner.calls.length;
+        expect({ name, choice, ...refusalOf(await review(service, r, switchTo(choice))) }).toEqual({ name, choice, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths, more: 0 } });
+        expect({ name, choice, steps: steps(service, from) }).toEqual({ name, choice, steps: [] });
+        // Keep runs only the checkout, which does not write this path.
+        expect({ name, ...outcome(await review(service, r, switchTo("keep"))) }).toEqual({ name, ...SUCCEEDED });
+      });
+      expect({ name, choice, state: stateOf(f) }).toEqual({ name, choice, state: before });
+    }
+  }
+}, TIMEOUT_MS);
+
+// 010 research.md R2 P18: the listing runs for each ignored folder in the way, to find a nested repository.
+caseTest(TASK, "FR-011: Discard with an ignored folder in the way reviews as replaceable after one ls-files --others --ignored read; an output above STATUS_LISTING_BYTES refuses with OUTPUT_LIMIT", SHELL, async () => {
   const f = build("switch-clean");
   put(f, "b.txt", "b changed\n");
   mkdirSync(join(f.repo, "build.log", "z"), { recursive: true });
@@ -282,12 +357,61 @@ caseTest(TASK, "FR-011: Discard with an ignored folder in the way reviews as rep
   await withSync("t021-in-the-way-ignored-folder", async (service) => {
     const r = await open(service, f.repo);
     const from = service.runner.calls.length;
-    service.runner.inject.stdout = (call) => (isIgnoredList(call.arguments) ? new Uint8Array(STATUS_LISTING_BYTES + 1) : undefined);
     const response = await review(service, r, switchTo("discard"));
-    service.runner.inject.stdout = undefined;
     expect({ ...outcome(response), inTheWay: (response.result as Reviewed | undefined)?.plan?.inTheWay }).toEqual({ ...SUCCEEDED, inTheWay: null });
-    expect(service.runner.calls.slice(from).filter((c) => isIgnoredList(c.arguments)).length).toBe(0);
+    expect(service.runner.calls.slice(from).filter((c) => isIgnoredList(c.arguments)).length).toBe(1);
+    service.runner.inject.stdout = (call) => (isIgnoredList(call.arguments) ? new Uint8Array(STATUS_LISTING_BYTES + 1) : undefined);
+    const limited = await review(service, r, switchTo("discard"));
+    service.runner.inject.stdout = undefined;
+    expect(outcome(limited)).toEqual({ state: "failed", code: "OUTPUT_LIMIT" });
   });
+}, TIMEOUT_MS);
+
+// A nested repository with one commit.
+function nest(f: WbFixture, dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  const r = repoOf(f, dir);
+  wb(r, ["init", "-q"]);
+  writeFileSync(join(dir, "n.txt"), "n\n");
+  wb(r, ["add", "--", "n.txt"]);
+  wb(r, ["commit", "-q", "-m", "nested"]);
+}
+
+caseTest(TASK, "FR-011 and 010 research.md R2 P18: Discard and Stash with an ignored folder in the way that holds a nested repository refuse with UNTRACKED_IN_WAY and the repository folder; Git's own stash push and checkout on a copy delete it; every byte stays", SHELL, async () => {
+  const layouts: [string, (f: WbFixture) => void, string[], string][] = [
+    ["top", (f) => nest(f, join(f.repo, "build.log")), ["build.log"], "build.log/.git"],
+    [
+      "deep",
+      (f) => {
+        mkdirSync(join(f.repo, "build.log"));
+        put(f, "build.log/plain.txt", "plain\n");
+        nest(f, join(f.repo, "build.log", "sub"));
+      },
+      ["build.log/sub"],
+      "build.log/sub/.git",
+    ],
+  ];
+  for (const [layout, prepare, paths, mark] of layouts) {
+    const o = build("switch-clean");
+    prepare(o);
+    put(o, "b.txt", "b changed\n");
+    git(o, ["stash", "push", "--quiet", "-m", MESSAGE]);
+    git(o, ["checkout", "-q", "--no-guess", "target", "--"]);
+    expect({ layout, kept: existsSync(join(o.repo, mark)) }).toEqual({ layout, kept: false });
+    for (const choice of ["stash", "discard"]) {
+      const f = build("switch-clean");
+      prepare(f);
+      put(f, "b.txt", "b changed\n");
+      const before = stateOf(f);
+      await withSync(`t021-nested-${layout}-${choice}`, async (service) => {
+        const r = await open(service, f.repo);
+        const from = service.runner.calls.length;
+        expect({ layout, choice, ...refusalOf(await review(service, r, switchTo(choice))) }).toEqual({ layout, choice, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths, more: 0 } });
+        expect({ layout, choice, steps: steps(service, from) }).toEqual({ layout, choice, steps: [] });
+      });
+      expect({ layout, choice, state: stateOf(f), mark: existsSync(join(f.repo, mark)) }).toEqual({ layout, choice, state: before, mark: true });
+    }
+  }
 }, TIMEOUT_MS);
 
 // Contract §2: the token is in use from the accepted run on. The held process starts keep the first run in its validation.

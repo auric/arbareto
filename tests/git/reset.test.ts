@@ -3,10 +3,11 @@
 
 // T007: `reviewWorkbench` and `runWorkbench` with action `reset` (feature 010 contract Δ3, data-model §2 to §6, plan.md D4, SC-001, SC-002, SC-007).
 // The oracle is Git's own `reset --<mode>` on a copy. Fresh Git reads decide every expectation, never message text.
-// Control: build the Hard candidates from `diff-tree HEAD <target>`; the P4b case must fail.
+// Control: build the Hard candidates from `diff-tree HEAD <target>`; the P4b case must fail. With `diff-index --cached`, the P17 cases and the dirty limit case must fail.
 
 import { expect } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, rmSync } from "node:fs";
+import { DISCARD_CHECK_PATHS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
@@ -350,6 +351,134 @@ describeGit("reset current branch to here (T007)", () => {
     }
   }, TIMEOUT_MS);
 
+  // A nested repository with one commit.
+  const nest = (h: GitHost, dir: string) => {
+    gitRun(h, h.root, ["init", "-q", "--", dir]);
+    h.write(`${dir}/n.txt`, "n\n");
+    gitRun(h, dir, ["add", "--", "n.txt"]);
+    gitRun(h, dir, ["commit", "-q", "-m", "nested"]);
+  };
+  const tipOf = (h: GitHost, f: Fixture) => gitOut(h, f.repo, ["rev-parse", "HEAD"]).trim();
+
+  // Research.md R2 P17: the index equals the target at each path, so only the working files show the change.
+  caseTest(TASK, "FR-043 and SC-002: where the index equals the target, Hard with an untracked folder in place of a file, an untracked file in place of a folder, or a nested repository in place of a file refuses with UNTRACKED_IN_WAY; Git's own reset --hard on a copy loses those bytes; every byte stays", SHELL, async () => {
+    const h = hostFor("t007-index-equal");
+    const folder = [fc({ mark: 6, message: "m5\n", from: 4, files: { "k/k.txt": "k\n" } })];
+    const cases: [string, (f: Fixture) => void, (f: Fixture) => string, string[], (copy: string) => boolean, Buffer[]][] = [
+      [
+        "folder in place of a file",
+        (f) => {
+          rmSync(native(`${f.repo}/p.txt`));
+          h.write(`${f.repo}/p.txt/keep.txt`, "keep\n");
+        },
+        (f) => f.c.m2,
+        ["p.txt"],
+        (o) => !existsSync(native(`${o}/p.txt/keep.txt`)),
+        [],
+      ],
+      [
+        "file in place of a folder",
+        (f) => {
+          rmSync(native(`${f.repo}/k`), { recursive: true });
+          h.write(`${f.repo}/k`, "k local\n");
+        },
+        (f) => tipOf(h, f),
+        ["k"],
+        (o) => lstatSync(native(`${o}/k`)).isDirectory(),
+        folder,
+      ],
+      [
+        "nested repository in place of a file",
+        (f) => {
+          rmSync(native(`${f.repo}/p.txt`));
+          nest(h, `${f.repo}/p.txt`);
+        },
+        (f) => f.c.m2,
+        ["p.txt"],
+        (o) => !existsSync(native(`${o}/p.txt/.git`)),
+        [],
+      ],
+    ];
+    for (const [name, prepare, target, paths, lost, extra] of cases) {
+      const f = build(h, `equal-${name.replaceAll(" ", "-")}`, extra);
+      prepare(f);
+      const t = target(f);
+      const near = (p: string) => paths.some((w) => p === w || p.startsWith(`${w}/`));
+      expect({ name, cached: gitOut(h, f.repo, ["diff-index", "--cached", "-R", "--name-only", t, "--"]).split("\n").filter(near) }).toEqual({ name, cached: [] });
+      const o = copyOf(h, f.repo);
+      gitRun(h, o, ["reset", "--quiet", "--no-recurse-submodules", "--hard", t, "--"]);
+      expect({ name, lost: lost(o) }).toEqual({ name, lost: true });
+      const before = stateOf(h, f.repo);
+      await withSync(`t007-equal-${paths[0]}`, async (service) => {
+        const r = await approved(service, f.repo);
+        const from = service.runner.calls.length;
+        expect({ name, ...refusal(await review(service, r, RESET(t, "hard"))) }).toEqual({ name, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths, more: 0 } });
+        expect({ name, steps: steps(service, from) }).toEqual({ name, steps: [] });
+        for (const mode of ["soft", "mixed"] as const) expect({ name, mode, ...outcome(await review(service, r, RESET(t, mode))) }).toEqual({ name, mode, ...SUCCEEDED });
+      });
+      expect({ name, state: stateOf(h, f.repo) }).toEqual({ name, state: before });
+    }
+  }, TIMEOUT_MS);
+
+  // Research.md R2 P18: Git prints a nested repository below an ignored folder as a record that ends with `/`.
+  caseTest(TASK, "FR-043 and FR-044: an ignored folder in the way that holds a nested repository refuses Hard with UNTRACKED_IN_WAY and the repository folder, for a .git folder at the top or deeper and for a .git file; Git's own reset --hard on a copy deletes it; every byte stays", SHELL, async () => {
+    const h = hostFor("t007-nested");
+    const layouts: [string, (repo: string) => void, string[], string][] = [
+      ["top", (repo) => nest(h, `${repo}/build.log`), ["build.log"], "build.log/.git"],
+      [
+        "deep",
+        (repo) => {
+          h.write(`${repo}/build.log/plain.txt`, "plain\n");
+          nest(h, `${repo}/build.log/sub`);
+        },
+        ["build.log/sub"],
+        "build.log/sub/.git",
+      ],
+      [
+        "gitdir-file",
+        (repo) => {
+          gitRun(h, h.root, ["init", "-q", `--separate-git-dir=${native(`${h.root}/separate.git`)}`, "--", `${repo}/build.log`]);
+          h.write(`${repo}/build.log/n.txt`, "n\n");
+          gitRun(h, `${repo}/build.log`, ["add", "--", "n.txt"]);
+          gitRun(h, `${repo}/build.log`, ["commit", "-q", "-m", "nested"]);
+        },
+        ["build.log"],
+        "build.log/.git",
+      ],
+    ];
+    for (const [layout, prepare, paths, mark] of layouts) {
+      const f = build(h, `nested-${layout}`);
+      prepare(f.repo);
+      const o = copyOf(h, f.repo);
+      gitRun(h, o, ["reset", "--quiet", "--no-recurse-submodules", "--hard", f.c.m2, "--"]);
+      expect({ layout, lost: existsSync(native(`${o}/${mark}`)) }).toEqual({ layout, lost: false });
+      const before = stateOf(h, f.repo);
+      await withSync(`t007-nested-${layout}`, async (service) => {
+        const r = await approved(service, f.repo);
+        const from = service.runner.calls.length;
+        expect({ layout, ...refusal(await review(service, r, RESET(f.c.m2, "hard"))) }).toEqual({ layout, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths, more: 0 } });
+        expect({ layout, steps: steps(service, from) }).toEqual({ layout, steps: [] });
+      });
+      expect({ layout, state: stateOf(h, f.repo), mark: existsSync(native(`${f.repo}/${mark}`)) }).toEqual({ layout, state: before, mark: true });
+    }
+  }, TIMEOUT_MS);
+
+  // Research.md R2 P17: the working-file listing names each changed tracked file. A tracked file never counts as in the way, but it counts against the bound.
+  caseTest(TASK, "FR-043: Hard at the tip with more than DISCARD_CHECK_PATHS changed tracked files refuses with limit; every byte stays", SHELL, async () => {
+    const h = hostFor("t007-dirty-limit");
+    const names = Array.from({ length: DISCARD_CHECK_PATHS + 1 }, (_, i) => `t${String(i).padStart(5, "0")}.txt`);
+    const f = build(h, "dirty-limit", [fc({ mark: 6, message: "wide\n", from: 4, files: Object.fromEntries(names.map((n) => [n, "t\n"])) })]);
+    for (const n of names) h.write(`${f.repo}/${n}`, "t local\n");
+    const before = stateOf(h, f.repo);
+    await withSync("t007-dirty-limit", async (service) => {
+      const r = await approved(service, f.repo);
+      const from = service.runner.calls.length;
+      expect(refusal(await review(service, r, RESET(tipOf(h, f), "hard")))).toEqual(unavailable("limit"));
+      expect(steps(service, from)).toEqual([]);
+    });
+    expect(stateOf(h, f.repo)).toEqual(before);
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "FR-043: 101 untracked files in the way list the first 100 paths with more 1, and more than DISCARD_CHECK_PATHS candidates refuse with limit; every byte stays", SHELL, async () => {
     const h = hostFor("t007-bounds");
     const names = Array.from({ length: 101 }, (_, i) => `w${String(i).padStart(3, "0")}.txt`);
@@ -358,7 +487,7 @@ describeGit("reset current branch to here (T007)", () => {
     const huge = build(h, "huge", [fc({ mark: 6, ref: "refs/heads/huge", message: "huge\n", from: 4, files: Object.fromEntries(Array.from({ length: 20_001 }, (_, i) => [`f${String(i).padStart(5, "0")}.txt`, "x\n"])) })]);
     const wide = gitOut(h, many.repo, ["rev-parse", "wide"]).trim();
     const big = gitOut(h, huge.repo, ["rev-parse", "huge"]).trim();
-    expect(gitOut(h, huge.repo, ["diff-index", "--cached", "-R", "--name-only", big, "--"]).split("\n").filter((l) => l !== "").length).toBe(20_001);
+    expect(gitOut(h, huge.repo, ["diff-index", "-R", "--name-only", big, "--"]).split("\n").filter((l) => l !== "").length).toBe(20_001);
     const states = [stateOf(h, many.repo), stateOf(h, huge.repo)];
     await withSync("t007-bounds-many", async (service) => {
       const r = await approved(service, many.repo);

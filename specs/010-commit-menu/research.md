@@ -4,7 +4,7 @@
 
 - Arbareto code: the design plan read the branch `007-first-release` at `ba095f87`. This spec checked a sample of its line references on `main` at `f0d79499`. The sample is `NoticeBand.tsx:24-25`, `workbench-review.ts:117`, `HistoryList.tsx:414-418`, `shortcuts.ts:180`, `integrate/texts.ts:64-65`, `HunkControls.tsx:34-46`, and `running-tooltip.tsx:10`. Each matched. Every implementer checks the other references on the base of the task.
 - Git: Git for Windows 2.56.0.windows.2 on the reference PC. The probes ran in scratch repositories with `GIT_EDITOR=:`, `GIT_TERMINAL_PROMPT=0`, and an empty owned `GIT_CONFIG_GLOBAL`. Stdin was not a TTY. Each probe repository installs a logging hook for 12 events. Six events are pre-commit, prepare-commit-msg, commit-msg, post-commit, post-checkout, and post-rewrite. The other six are reference-transaction, post-index-change, pre-auto-gc, post-merge, pre-merge-commit, and pre-rebase.
-- Probe scripts: `probe.sh` (P1 to P3c), `probe2.sh` (P4 to P7), and `probe3.sh` (P8 to P14). They are in local scratch, with the design plan of 2026-11-04. T001 ran them again on 2026-11-04 in a new local scratch folder. It added `probe4.sh` for P15 and P16, and set `GIT_CONFIG_NOSYSTEM=1`.
+- Probe scripts: `probe.sh` (P1 to P3c), `probe2.sh` (P4 to P7), and `probe3.sh` (P8 to P14). They are in local scratch, with the design plan of 2026-11-04. T001 ran them again on 2026-11-04 in a new local scratch folder. It added `probe4.sh` for P15 and P16, and set `GIT_CONFIG_NOSYSTEM=1`. On 2026-11-06, `probe-high1.sh` and `probe-s1s2.sh` added P17 to P20 in a new local scratch folder, with the same settings.
 - Git documentation: the Git 2.56 HTML pages that Git for Windows installs. Local scratch holds text copies of git-reset(1), git-cherry-pick(1), git-revert(1), and git-tag(1).
 - Constitution: `.specify/memory/constitution.md` on `main` `f0d79499`, footer "**Version**: 4.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-22".
 - Marks: "Probe" is a fact that a probe run showed. "Doc" is a fact of the Git documentation. "Code" is a fact of the Arbareto source. "Decision" is a plan choice.
@@ -44,6 +44,10 @@
 | P14 | `reset --soft HEAD` during a cherry-pick stop | `CHERRY_PICK_HEAD` goes. HEAD is unchanged. No design depends on it, because a workbench action refuses every non-normal state (plan Invariant 1). | `probe3.sh` (T001) | none |
 | P15 | `diff-index --cached -R -z --no-renames --name-status <target> --` | In the HEAD-to-target direction, `A` means that the target has the path and the index lacks it. `D` means that only the index has it. T001: `A p.txt`, `D r.txt`, `D s.txt`. Without `-R`, the letters swap. | `probe4.sh` (T001) | plan D4 read 7 |
 | P16 | A `reference-transaction` hook that writes another ref and exits 1 in the `prepared` state, for `git tag` and `git tag -m` | Git calls the hook with `preparing`, `prepared`, and `aborted` for the tag ref. `git tag` exits 128, and no tag ref exists. The ref that the hook wrote stays. | `probe4.sh` (T001) | plan D3 outcome, T008 |
+| P17 | `reset --hard <target>` where the index equals the target at `p` and at `d/f`. The user replaced `p` by an untracked folder `p/keep.txt`, `d/` by an untracked file `d`, or `p` by a nested repository. | Exit 0. Git deletes `p/keep.txt`, replaces the file `d` by the folder `d/`, and deletes the nested `.git` folder. `diff-index --cached -R <target>` lists none of these paths. `diff-index -R <target>` lists `A p`, `A d/f`, and `T p`. A staged change at `p` gives `M p` with `--cached` and `A p` without it. The P4b path gives `A p` in both forms. A file with new stat data and the same bytes gives `M` without `--cached`. | `probe-high1.sh` | plan D4 read 7, SC-002 |
+| P18 | An ignored folder `x/` where the target writes a file `x`. It holds a nested repository: a `.git` folder at `x/` or at `x/sub/`, or a `.git` file (gitdir link) at `x/`. | `reset --hard` deletes the nested repository. The 004 Discard (`stash push`, then `checkout`) deletes it too. `ls-files -z --others --ignored --exclude-standard -- x` prints the record `x/`, or `x/plain.txt` and `x/sub/`. A plain ignored folder gives one record for each file. | `probe-s1s2.sh` | plan D4 read 7, 004 plan D3 |
+| P19 | An assume-unchanged `p` (`update-index --assume-unchanged`), replaced by an untracked folder `p/keep.txt`. The same for `d/f`, with `d/` replaced by a file `d`. | `reset --hard` deletes `p/keep.txt` and replaces the file `d`. Neither `diff-index` form lists `p` or `d/f`. `ls-files -z -v` prints `h p`. A skip-worktree `p` in the same shape: Git keeps `p/keep.txt`. | `probe-high1.sh` | plan D4 read 7 (gap) |
+| P20 | A gitlink `s` that is equal in the index and the target. The user replaced the submodule folder by an untracked file `s`. | `diff-index -R <target>` lists `T s`. `status --porcelain=v2` gives `1 .T` for `s`, so Git counts a tracked change. `reset --hard --no-recurse-submodules` replaces the file `s` by an empty folder. | `probe-s1s2.sh` | plan D4 effects |
 
 ## R3 Git documentation facts
 
@@ -56,13 +60,18 @@
 - git-show-ref(1) `--exists`: 0 when the ref exists, 2 when it is missing, 1 on an error.
 - git-merge-base(1) `--is-ancestor`: 0 for true, 1 for false, and another non-zero status for an error.
 - git-diff-index(1): `--quiet` implies `--exit-code`. 1 means differences, and 0 means none.
+- git-diff-index(1) "Raw output format": `git-diff-index <tree-ish>` "compares the <tree-ish> and the files on the filesystem". `git-diff-index --cached <tree-ish>` "compares the <tree-ish> and the index". Section "NON-CACHED MODE": "show me the differences between HEAD and the currently checked out tree - index contents _and_ files that aren't up to date".
+- git-stash(1) `push`: "Save your local modifications to a new stash entry and roll them back to HEAD (in the working tree and in the index)."
+- git-update-index(1) `--assume-unchanged`: "the user promises not to change the file". "To see which files have the "assume unchanged" bit set, use git ls-files -v". git-ls-files(1) `-v`: "use lowercase letters for files that are marked as assume unchanged".
 - git-rev-list(1) `--exclude=<glob>`: patterns for `--branches` do not start with `refs/heads`.
 - git-commit(1) `--allow-empty`: Git refuses a commit with the same tree as its sole parent.
 - Minimum Git: Windows 2.55.0.windows.3 (`admission.ts:9`), WSL 2.55.0 (`wsl-route.ts:12`).
 
 ## R4 Decisions
 
-- Decision: the Hard check lists its candidates through `diff-index --cached -R` (P4b, P15). `diff-tree HEAD <target>` misses an index-removed path.
+- Decision: the Hard check lists its candidates through `diff-index --cached -R` (P4b, P15). `diff-tree HEAD <target>` misses an index-removed path. Note (2026-11-06): the check reads `diff-index -R <target>` without `--cached`. The `--cached` form misses a working-tree change at a path where the index equals the target, and Git then deletes untracked bytes (P17). The non-cached form compares the target with the files on the filesystem (R3).
+- Decision (2026-11-06): a nested repository in an ignored folder in the way is not replaceable. An `ls-files --others --ignored` record that ends with `/` names it, when `fileFacts` gives a file or a folder at `<record>.git` (P18). The check refuses it with `UNTRACKED_IN_WAY` and its folder path. A record that ends with `/` and has no `.git` gives `MALFORMED_GIT_OUTPUT`.
+- Gap (2026-11-06): the check misses an assume-unchanged path (P19). Diff-index does not look at the working file of such an entry, but `reset --hard` does. git-update-index(1) states that the user promises not to change such a file. `ls-files -z -v` names these entries (R3). The check does not read it yet.
 - Decision: the annotated tag step passes `-m` without `-a` (P8). The signing configuration then applies as Git defines it.
 - Decision: Cherry-pick and Revert pass no `--`. A full object ID is unambiguous, and Git would read later items as paths.
 - Decision: the clean-tree rule follows the documentation, not the P10 behavior. The documentation is the contract.
@@ -127,7 +136,7 @@ Run 2026-11-05, packaged NSIS build, warm, in the foreground, alone, under the t
 - SC-011 counts (inputs per run, 11 runs per action): Abort 15 to 31, Revert 31 to 45, Continue 34 to 55, Cherry-pick 37 to 67, Soft 38 to 54, Mixed 44 to 64, Create tag 48 to 69, Detached checkout 166 to 229, Hard 229 to 289. Input p95 is at most 40 ms and max is at most 48 ms.
 - Finding for `/speckit-converge`: SC-011 fails. Abort runs 1 to 6 got 18, 15, 19, 18, 18, and 18 inputs, below the minimum of 20. The response times pass. The Abort runs are short (median 450 ms), so the probe does not reach 20 inputs.
 - Control: a scratch build let `AlertConfirm` focus the danger button first (installed SHA-256 `add5319c...1030964`, `ORIGIN` line matches). The FR-044 Cancel focus case failed (0 pass, 1 fail). `RevertConfirm.tsx` was restored byte-equal (SHA-256 `688895e6...24f33d8`). A clean rebuild and reinstall matched its own built exe after the marker patch. The worktree status was clean.
-- WSL record: gap. `tests/windows/commit-menu-perf.test.ts` has no WSL route, so the SC-010b and SC-010d WSL times on `Ubuntu-26.04` are not measured.
+- WSL record: `tests/windows/commit-menu-perf.test.ts` has three WSL record cases on `Ubuntu-26.04`, with no budget. They are SC-010b on M, SC-010d and SC-011 on M, and SC-010d and SC-011 on M-R. They print `RECORD` lines.
 
 - SC-011 probe (decision 2026-11-05): the probe waits 2 ms between inputs. Thus a run of about 400 ms still gets the minimum of 20 inputs. The 001 SC-005 targets do not change.
 

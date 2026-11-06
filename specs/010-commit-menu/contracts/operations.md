@@ -35,7 +35,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   4. `rev-list --count <target>..HEAD` and `rev-list --count HEAD..<target>`.
   5. `rev-list --count HEAD --not <target> --exclude=<branch> --branches --tags --remotes`.
   6. The force note, then `trackedStatus`.
-  7. Hard only: `diff-index --cached -R -z --no-renames --name-status <target> --` and the 004 in-the-way facts (`limit`, `UNTRACKED_IN_WAY`).
+  7. Hard only: `diff-index --cached -R -z --no-renames --name-status <target> --` and the 004 in-the-way facts (`limit`, `UNTRACKED_IN_WAY`). Note (2026-11-06): the read is `diff-index -R -z --no-renames --name-status <target> --`, without `--cached`, so it compares the target with the working files (plan D4 read 7, research R2 P17). For each ignored folder in the way, `ls-files -z --others --ignored --exclude-standard -- <folders>` runs. A record that ends with `/` and has a `.git` file or folder gives `UNTRACKED_IN_WAY` with that folder path (P18).
 - `create-tag` reads, in order:
   1. `tagNameRefusal`, with no Git process.
   2. `check-ref-format refs/tags/<name>`. Exit 0 passes. Another exit gives `invalid-name`.

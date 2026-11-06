@@ -329,7 +329,7 @@ export function useCommitActions({ bridge, target, repositoryId, head, blockedRe
 /** The D11 text of a Create tag refusal. Other codes use the 004 fallback (plan D11). */
 function tagRefusal(response: BridgeResponse, name: string): string {
   const reason = reasonOf(response);
-  return response.code === "WORKBENCH_UNAVAILABLE" && reason !== null && reason in TAG_REASON ? TAG_REASON[reason]!(name) : refusalText(response, name);
+  return response.code === "WORKBENCH_UNAVAILABLE" && reason !== null && Object.hasOwn(TAG_REASON, reason) ? TAG_REASON[reason]!(name) : refusalText(response, name);
 }
 
 function pickRefusal(response: BridgeResponse, pick: boolean, branch: string): string {

@@ -79,11 +79,30 @@ export function untrackedOf(entries: readonly string[], stdout: Uint8Array, obje
 }
 
 // `ls-files -z --others --ignored` below `folders`: one NUL-ended path per file. Each path must lie below one of `folders`.
-export function ignoredFilesOf(folders: readonly string[], stdout: Uint8Array): number | "malformed" {
+// Git prints a nested repository as its folder with a trailing `/`, also at a folder itself (feature 010 research.md R2 P18). `nested` holds these folders.
+export function ignoredFilesOf(folders: readonly string[], stdout: Uint8Array): { files: number; nested: string[] } | "malformed" {
   const records = fields(stdout);
-  if (records === null || !records.every((path) => folders.some((folder) => path.startsWith(`${folder}/`) && path.length > folder.length + 1))) return "malformed";
-  return records.length;
+  if (records === null) return "malformed";
+  const nested: string[] = [];
+  for (const record of records) {
+    const dir = record.endsWith("/");
+    const path = dir ? record.slice(0, -1) : record;
+    if (path.split("/").includes("") || !folders.some((folder) => (path === folder ? dir : path.startsWith(`${folder}/`)))) return "malformed";
+    if (dir) nested.push(path);
+  }
+  return { files: records.length - nested.length, nested };
 }
+
+// `facts` holds one `fileFacts` reply for `<folder>/.git` per nested folder. A file or a folder there marks a repository (gitrepository-layout(5)).
+// Another reply kind contradicts the `/` record. An error fact leaves the check without a verdict.
+export function nestedVerdict(nested: readonly string[], facts: readonly FileFact[]): { paths: string[]; more: number } | "malformed" | "unknown" {
+  if (facts.length !== nested.length) throw new TypeError("fact count refused");
+  if (facts.some((fact) => fact.kind === "error")) return "unknown";
+  return facts.every((fact) => fact.kind === "file" || fact.kind === "directory") ? shown(nested) : "malformed";
+}
+
+// Contract Δ5 "In-the-way paths in a result": UTF-8 text for display.
+const shown = (paths: readonly string[]) => ({ paths: paths.slice(0, IN_THE_WAY_PATHS).map((path) => Buffer.from(path, "latin1").toString("utf8")), more: Math.max(0, paths.length - IN_THE_WAY_PATHS) });
 
 // Research.md R21 F1: the read has no `--literal-pathspecs`. Each path goes on stdin with NUL.
 // Without that flag, Git can read a leading `:` as pathspec magic. Plan D3 refuses such a path with reason `path` until T081 shows a literal read.
@@ -101,6 +120,5 @@ export function inTheWay(counted: readonly string[], result: { exitCode: number 
   if (ignored === null || (result.exitCode === 0) !== (ignored.length > 0) || !ignored.every((path) => input.has(path))) return "malformed";
   const skip = new Set(ignored);
   const left = counted.filter((path) => !skip.has(path));
-  if (left.length === 0) return null;
-  return { paths: left.slice(0, IN_THE_WAY_PATHS).map((path) => Buffer.from(path, "latin1").toString("utf8")), more: Math.max(0, left.length - IN_THE_WAY_PATHS) };
+  return left.length === 0 ? null : shown(left);
 }

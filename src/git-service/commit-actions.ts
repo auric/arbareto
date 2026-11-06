@@ -78,10 +78,10 @@ registerWorkbenchAction<"reset", ResetBound>("reset", {
     ]);
     if (!("value" in leave) || !("value" in gain) || !("value" in reflogOnly) || !("value" in tracking) || (kept !== null && !("value" in kept)) || !("value" in status)) return fault([leave, gain, reflogOnly, tracking, kept, status])!;
     const forceNote = kept !== null && kept.value < leave.value ? { trackingRef: tracking.value! } : null;
-    // Research.md R2 P4 and P15: Git overwrites an untracked file in the way, and the index listing also names a path that `git rm --cached` removed.
+    // Research.md R2 P4, P15, and P17: Git overwrites an untracked file in the way. The listing names a path that `git rm --cached` removed and a changed working file.
     let ignoredReplaced = 0;
     if (p.mode === "hard") {
-      const way = await inTheWayCheck(ctx, resetCandidatesArgs(t, of), true);
+      const way = await inTheWayCheck(ctx, [resetCandidatesArgs(t, of)], true);
       if (!("value" in way)) return way;
       ignoredReplaced = way.value.ignored;
     }

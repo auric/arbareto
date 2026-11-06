@@ -233,9 +233,11 @@ export function upstreamOfArgs(headRef: string): string[] {
 
 // ---- Feature 010 reads (contract Δ3) ----
 
-// Plan.md D4 read 7 and research.md R2 P15: the index-to-target listing also names a path that `git rm --cached` removed. `diff-tree HEAD <target>` misses it.
+// Plan.md D4 read 7 and research.md R2 P15: the listing also names a path that `git rm --cached` removed. `diff-tree HEAD <target>` misses it.
+// Research.md R2 P17: without `--cached`, git-diff-index(1) compares the tree with the working files. `reset --hard` rewrites such a file also where the index equals the tree.
+// Feature 004 plan.md D3: `stash push` rolls the working files back to HEAD (git-stash(1)), so the switch passes HEAD.
 export function resetCandidatesArgs(target: string, objectFormat: ObjectFormat): string[] {
-  return read("diff-index", "--cached", "-R", "-z", "--no-renames", "--name-status", oid(target, objectFormat), "--");
+  return read("diff-index", "-R", "-z", "--no-renames", "--name-status", oid(target, objectFormat), "--");
 }
 
 // Plan.md D4 read 4: the commits that arrive. `rewrittenCountArgs` gives the commits that leave.

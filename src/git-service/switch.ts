@@ -11,12 +11,12 @@ import { createCollector, firstEnd, isDeadlineStop, stepUnits } from "./git-runn
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
-import { discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, sortFacts, untrackedOf } from "./switch-check";
+import { discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, nestedVerdict, sortFacts, untrackedOf } from "./switch-check";
 import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { indexState, readOut, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
-import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, ignoredFilesArgs, refPeelArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
+import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, ignoredFilesArgs, refPeelArgs, resetCandidatesArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
 import { oidList, parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
 import { conclude, heldElsewhere, killed, readWorktrees, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
 
@@ -156,15 +156,19 @@ function batches(paths: readonly string[], ctx: ObserveContext, args: (list: str
   return out;
 }
 
-// Plan.md D3 and research.md R4: the untracked-in-the-way check of Discard. Paths stay byte strings (`latin1`) until an argv or a `fileFacts` entry needs text.
-// `listing` reads the candidates in the `--name-status -z` form. Feature 010 plan.md D4 read 7: a Hard reset reads them from the index.
+// Plan.md D3 and research.md R4: the untracked-in-the-way check of Discard and Stash. Paths stay byte strings (`latin1`) until an argv or a `fileFacts` entry needs text.
+// Each of `listings` reads candidates in the `--name-status -z` form, and the check takes all of them (plan.md D3 note of 2026-11-06).
 // `ignored` counts the ignored files in the way, which Git replaces (feature 010 research.md R2 P4c). Without `countFolders`, an ignored folder counts as one.
-export async function inTheWayCheck(ctx: ObserveContext, listing: string[], countFolders = false): Promise<Fact<{ ignored: number }> | Refused> {
+export async function inTheWayCheck(ctx: ObserveContext, listings: readonly string[][], countFolders = false): Promise<Fact<{ ignored: number }> | Refused> {
   const w = ctx.workspace;
-  const diff = await readOut(ctx, listing, STATUS_LISTING_BYTES);
-  if ("limited" in diff) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
-  if (!("value" in diff)) return diff;
-  const c = discardCandidates(diff.value);
+  const outputs: Uint8Array[] = [];
+  for (const listing of listings) {
+    const diff = await readOut(ctx, listing, STATUS_LISTING_BYTES);
+    if ("limited" in diff) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
+    if (!("value" in diff)) return diff;
+    outputs.push(diff.value);
+  }
+  const c = discardCandidates(Buffer.concat(outputs));
   if (c === "malformed") return MALFORMED;
   if (c === "limit") return unavailable("limit");
   if (c.paths.length === 0) return { value: { ignored: 0 } };
@@ -205,18 +209,40 @@ export async function inTheWayCheck(ctx: ObserveContext, listing: string[], coun
   if (verdict === "malformed") return MALFORMED;
   if (verdict === "failed") return { code: "GIT_FAILED" };
   if (verdict !== null) return { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...verdict } };
-  if (!countFolders) return { value: { ignored: ordered.length } };
   // Git replaces each ignored file below an ignored folder, so a folder counts its listed files and not itself.
-  let ignored = ordered.length - sorted.folders.length;
+  let files = 0;
+  const nested: string[] = [];
   for (const batch of batches(sorted.folders, ctx, ignoredFilesArgs)) {
     const listed = await readOut(ctx, ignoredFilesArgs(batch.map((path) => texts.get(path)!)), STATUS_LISTING_BYTES);
     if ("limited" in listed) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
     if (!("value" in listed)) return listed;
-    const files = ignoredFilesOf(batch, listed.value);
-    if (files === "malformed") return MALFORMED;
-    ignored += files;
+    const found = ignoredFilesOf(batch, listed.value);
+    if (found === "malformed") return MALFORMED;
+    files += found.files;
+    nested.push(...found.nested);
   }
-  return { value: { ignored } };
+  // Feature 010 research.md R2 P18: Git deletes a nested repository in an ignored folder in the way, so it is no replaceable file.
+  if (nested.length > 0) {
+    const marks: string[][] = [];
+    for (const path of nested) {
+      let text: string;
+      try {
+        text = strict.decode(Buffer.from(path, "latin1"));
+      } catch {
+        return unavailable("path");
+      }
+      const parts = [...text.split("/"), ".git"];
+      if (!parts.every(isComponent)) return unavailable("path");
+      marks.push(parts);
+    }
+    const repos = await requestFacts(ctx.runner, ctx.operationId, w, false, marks.map((path) => ({ root: "worktreeRoot", path })), ctx.signal);
+    if (!Array.isArray(repos)) return "stop" in repos ? repos : { code: repos.code };
+    const found = nestedVerdict(nested, repos);
+    if (found === "unknown") return unavailable("unreadable");
+    if (found === "malformed") return MALFORMED;
+    return { refused: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", ...found } };
+  }
+  return { value: { ignored: countFolders ? ordered.length - sorted.folders.length + files : ordered.length } };
 }
 
 registerWorkbenchAction("switch", {
@@ -267,8 +293,10 @@ registerWorkbenchAction("switch", {
     }
     const stash = await stashValue(ctx);
     if (!("value" in stash)) return stash;
-    if (p.choice === "discard" && head.state !== "unborn") {
-      const way = await inTheWayCheck(ctx, changedPathsArgs(head.oid, target.value, ctx.workspace.objectFormat));
+    // Plan.md D3 note of 2026-11-06: `stash push` first rolls the working tree back to HEAD, then the checkout writes the target.
+    if (p.choice !== "keep" && head.state !== "unborn") {
+      const of = ctx.workspace.objectFormat;
+      const way = await inTheWayCheck(ctx, [changedPathsArgs(head.oid, target.value, of), resetCandidatesArgs(head.oid, of)]);
       if (!("value" in way)) return way;
     }
     const bound: SwitchBound = { target: target.value, tracked: { digest: status.value.digest, count: status.value.count }, stash: stash.value, unreachable };

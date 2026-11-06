@@ -304,6 +304,8 @@ export interface ServiceSeams {
   approvalClock?: () => number;
   // The in-process checkpoint observer of `src/git-service/submodule-update.ts` (T230). The service awaits it before each named contract §12 step.
   submoduleCheckpoint?: (checkpoint: SubmoduleCheckpoint) => Promise<void> | void;
+  // The row reads of the `updateSubmodules` observer at once (004 FR-112). 1 gives the one-at-a-time reference. The service uses SUBMODULE_WORK_PARALLEL without it.
+  updateLanes?: number;
   // The in-process checkpoint observer of `src/git-service/revert.ts` (feature 008 plan.md D13). The service awaits it before each working-file write.
   revertCheckpoint?: (checkpoint: RevertCheckpoint) => Promise<void> | void;
   // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`, lowered for a test (T022).
@@ -624,6 +626,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     ...(options.hunkCheckpoint === undefined ? {} : { hunkCheckpoint: options.hunkCheckpoint }),
     ...(options.approvalClock === undefined ? {} : { approvalClock: options.approvalClock }),
     ...(options.submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint: options.submoduleCheckpoint }),
+    ...(options.updateLanes === undefined ? {} : { updateLanes: options.updateLanes }),
     ...(options.revertCheckpoint === undefined ? {} : { revertCheckpoint: options.revertCheckpoint }),
     ...(options.historyViewCommits === undefined ? {} : { historyViewCommits: options.historyViewCommits }),
     ...(options.historyProbeRuns === undefined ? {} : { historyProbeRuns: options.historyProbeRuns }),

@@ -253,6 +253,8 @@ export interface SubmoduleUpdaterOptions {
   respond: (response: Response) => unknown;
   // Test seam only. Production never sets it.
   submoduleCheckpoint?: (checkpoint: SubmoduleCheckpoint) => Promise<void> | void;
+  // Test seam only. Production never sets it. The most row reads of the update observer at once. 1 gives the one-at-a-time reference of 004 FR-112.
+  updateLanes?: number;
 }
 
 export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
@@ -284,7 +286,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     const index = await listingOf(ctx, indexEntryArgs(), (bytes) => parseIndexListing(bytes, w.objectFormat));
     if (!("value" in index)) return isStop(index) ? index : { code: index.code };
     // Feature 004 contract Δ12 "Update reads": the preflight and the level reads read up to 8 rows at once and apply in row order.
-    const observer = o.reviews.observe(t, rowIds, a.review.scope, undefined, false, SUBMODULE_WORK_PARALLEL);
+    const observer = o.reviews.observe(t, rowIds, a.review.scope, undefined, false, o.updateLanes ?? SUBMODULE_WORK_PARALLEL);
     const read = await observer.top({ head: captured, indexEntries: index.value });
     if ("stop" in read) return read;
     const bound = observer.binding();

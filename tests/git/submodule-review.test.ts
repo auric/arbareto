@@ -979,7 +979,29 @@ async function reviewedTree(service: Service, w: TreeWorld): Promise<{ repositor
   const { repositoryId } = await service.register(w.sup);
   return { repositoryId, r: await reviewSubmodules(service, repositoryId) };
 }
-const withTree = (w: TreeWorld, name: string, body: (service: Service) => Promise<void>) => withService({ name, environment: serviceEnv(w.env) }, body);
+// `updateLanes` 1: the update observer reads one row at a time, as the one-at-a-time reference of 004 FR-112.
+const withTree = (w: TreeWorld, name: string, body: (service: Service) => Promise<void>, updateLanes?: number) =>
+  withService({ name, environment: serviceEnv(w.env), ...(updateLanes === undefined ? {} : { updateLanes }) }, body);
+
+// The most calls that ran at the same time, from the start and the duration of each call.
+function peakOf(calls: readonly { at: number; durationMs?: number }[]): number {
+  const edges = calls.flatMap((c) => [[c.at, 1], [c.at + (c.durationMs ?? 0), -1]] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let now = 0;
+  let peak = 0;
+  for (const [, step] of edges) peak = Math.max(peak, (now += step));
+  return peak;
+}
+
+// `updateSubmodules` with the token of `r`. `peak`: the most Git processes inside the submodules at once before the reconciliation reads, which read 8 rows at once in every service.
+// With `updateLanes` 1, the peak is 1.
+async function updateMeasured(service: Service, sup: string, repositoryId: string, r: SubmoduleReview): Promise<{ response: ServiceResponse; peak: number }> {
+  const requestId = sendUpdate(service, repositoryId, r);
+  const response = await service.response(requestId);
+  const operationId = await service.operationId(requestId);
+  const at = (service.progress as { requestId?: string; phase?: string }[]).findIndex((p) => p.requestId === requestId && p.phase === "reconciliation");
+  const end = at < 0 ? Number.POSITIVE_INFINITY : service.progressAt[at]!;
+  return { response, peak: peakOf(service.runner.calls.filter((c) => c.operationId === operationId && c.at < end && insideSubmodule(sup, c.arguments))) };
+}
 
 describe("row order (004 FR-077, contract Δ12 \"Row order\")", () => {
   caseTest("T136", "a(a/x) b c(c/y(c/y/z)): the review and the update list each nested row directly after its parent row, with its depth and its parent row", SHELL, () => {
@@ -1279,14 +1301,6 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
     const callsOf = (service: Service, operationId: string) => service.runner.calls.filter((c) => c.operationId === operationId);
     // The review reads of contract §12 "Review reads" run inside the submodules. The superproject trust listing runs its own reads in parallel.
     const insideOf = (w: TreeWorld, service: Service, operationId: string) => callsOf(service, operationId).filter((c) => insideSubmodule(w.sup, c.arguments));
-    // The most calls that ran at the same time, from the start and the duration of each call.
-    const peakOf = (calls: readonly { at: number; durationMs?: number }[]) => {
-      const edges = calls.flatMap((c) => [[c.at, 1], [c.at + (c.durationMs ?? 0), -1]] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-      let now = 0;
-      let peak = 0;
-      for (const [, step] of edges) peak = Math.max(peak, (now += step));
-      return peak;
-    };
     const pathMarks = (response: ServiceResponse) => markByPath({ response, rows: objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"]) } as SubmoduleReview);
     const markOracle = (w: TreeWorld, paths: readonly string[]) => Object.fromEntries(paths.map((path) => [path, statusBranchMark(statusOf(w, join(w.sup, ...path.split("/"))))]));
     const short = (marks: Record<string, object>) => Object.fromEntries(Object.entries(marks).map(([path, m]) => [path, shortUpstream(m)]));
@@ -1377,19 +1391,25 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
       treeGit(w, copy, ["checkout", "-q", "--", ".gitmodules"]);
       treeGit(w, join(copy, "d"), ["branch", "-q", "saved"]);
       treeGit(w, copy, ["config", "--unset", "submodule.f.update"]);
-      await withTree(w, "t148-order-update", async (service) => {
-        await review();
-        const { repositoryId } = await service.register(copy);
-        const r = await reviewSubmodules(service, repositoryId);
-        expect({ outcome: outcome(r.response), refusals: r.refusals.map((x) => x.reason), rows: r.rows.map((row) => row.path) }).toEqual({ outcome: SUCCEEDED, refusals: [], rows: ROWS });
-        await underTestSubmodule("submodule-update");
-        // The preflight observer reads one row at a time, so another order or another observed value gives STALE_REVIEW.
-        const updated = await updateSubmodules(service, repositoryId, r);
-        expect({ outcome: outcome(updated), rows: resultsOf(updated).map((row) => [row.path, row.state]) }).toEqual({
-          outcome: SUCCEEDED,
-          rows: ROWS.map((path) => [path, ["b", "d", "j"].includes(path) ? "moved" : "unchanged"]),
-        });
-      });
+      await withTree(
+        w,
+        "t148-order-update",
+        async (service) => {
+          await review();
+          const { repositoryId } = await service.register(copy);
+          const r = await reviewSubmodules(service, repositoryId);
+          expect({ outcome: outcome(r.response), refusals: r.refusals.map((x) => x.reason), rows: r.rows.map((row) => row.path) }).toEqual({ outcome: SUCCEEDED, refusals: [], rows: ROWS });
+          await underTestSubmodule("submodule-update");
+          // The preflight observer of this service reads one row at a time, so another order or another observed value gives STALE_REVIEW.
+          const { response: updated, peak } = await updateMeasured(service, copy, repositoryId, r);
+          expect({ outcome: outcome(updated), peak, rows: resultsOf(updated).map((row) => [row.path, row.state]) }).toEqual({
+            outcome: SUCCEEDED,
+            peak: 1,
+            rows: ROWS.map((path) => [path, ["b", "d", "j"].includes(path) ? "moved" : "unchanged"]),
+          });
+        },
+        1,
+      );
     });
 
     parallelCase("the list review runs at least 2 and at most 9 review Git processes at once, and a scoped review runs 1", async () => {
@@ -1900,11 +1920,11 @@ describe("submodule count (004 FR-114, contract Δ12 \"Submodule count\", \"Kept
           programs: oneByOne.programs,
           digests: [bindings[0]!.programs, bindings[0]!.programs],
         });
-        // The preflight observer lists one row at a time, so another program digest gives STALE_REVIEW.
+        // The preflight observer of this service reads and lists one row at a time, so another program digest gives STALE_REVIEW.
         await underTestSubmodule("submodule-update");
-        const updated = await updateSubmodules(service, repositoryId, ahead.r);
-        expect({ outcome: outcome(updated), rows: resultsOf(updated).map((row) => [row.path, row.state]) }).toEqual({ outcome: SUCCEEDED, rows: paths.map((path) => [path, "unchanged"]) });
-      });
+        const { response: updated, peak: updatePeak } = await updateMeasured(service, w.sup, repositoryId, ahead.r);
+        expect({ outcome: outcome(updated), peak: updatePeak, rows: resultsOf(updated).map((row) => [row.path, row.state]) }).toEqual({ outcome: SUCCEEDED, peak: 1, rows: paths.map((path) => [path, "unchanged"]) });
+      }, 1);
     } finally {
       listing.mockRestore();
       approvals.mockRestore();
@@ -2020,7 +2040,7 @@ describe("config total in row order (004 FR-112, FR-115)", () => {
 
   // `big`: the rows whose listing grows. `failing`: the row whose `config list` exits 128 (runner seam `exit`).
   // `held`: in the 8-lane review, the listing of this row starts only after every other listing exited (runner seam `holdStart`).
-  // Each run: a review with small listings gives the token, then the update preflight reads one row at a time, then the list review reads 8 rows at once.
+  // Each run: a review with small listings gives the token, then the update preflight of this service reads one row at a time, then the list review reads 8 rows at once.
   async function ordered(name: string, big: readonly number[], failing: number, held: number, code: string): Promise<void> {
     const { w, rows } = world();
     const files = big.map((i) => join(w.sup, ".git", "modules", rows[i]!.name, "config"));
@@ -2040,7 +2060,7 @@ describe("config total in row order (004 FR-112, FR-115)", () => {
           for (const file of files) appendFileSync(file, BLOCK);
           service.runner.inject.exit = (c) => (fails(c) ? 128 : undefined);
           try {
-            const one = await updateSubmodules(service, repositoryId, r);
+            const { response: one, peak } = await updateMeasured(service, w.sup, repositoryId, r);
             const read = await readOk(service, repositoryId);
             const from = service.runner.calls.length;
             const release = service.runner.holdStart(once(listing(w, rows[held]!.path)));
@@ -2053,18 +2073,18 @@ describe("config total in row order (004 FR-112, FR-115)", () => {
             } finally {
               release();
             }
-            results.push({ one: { state: one.state, code: one.code }, eight: { state: eight.state, code: eight.code, result: eight.result } });
+            results.push({ one: { state: one.state, code: one.code, peak }, eight: { state: eight.state, code: eight.code, result: eight.result } });
           } finally {
             service.runner.inject.exit = undefined;
             restore();
           }
         }
-      });
+      }, 1);
     } finally {
       restore();
     }
     console.log(`OBSERVATION T159 order ${name}: ${JSON.stringify(results)}`);
-    expect(results).toEqual(Array.from({ length: RUNS }, () => ({ one: { state: "failed", code }, eight: { state: "failed", code, result: undefined } })));
+    expect(results).toEqual(Array.from({ length: RUNS }, () => ({ one: { state: "failed", code, peak: 1 }, eight: { state: "failed", code, result: undefined } })));
   }
 
   orderCase("rows 0 to 19 pass 64 MiB at row 19, and row 20 fails first: OUTPUT_LIMIT with 1 lane and with 8 lanes, in each of 5 runs", () =>
@@ -2148,10 +2168,10 @@ describe("nested read window (004 FR-112)", () => {
       expect({ outcome: outcome(response), started }).toEqual({ outcome: SUCCEEDED, started: names.slice(1, 9) });
       const r: SubmoduleReview = { read, response, token: valuesOf(response.result, "submoduleReviewToken")[0] as string | undefined, rows: objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"]), programs: [], refusals: refusalsOf(response.result) };
       expect({ rows: r.rows.length, refusals: r.refusals.length, token: typeof r.token }).toEqual({ rows: 40, refusals: 0, token: "string" });
-      // The preflight observer reads one row at a time, so another order or another observed value gives STALE_REVIEW.
+      // The preflight observer of this service reads one row at a time, so another order or another observed value gives STALE_REVIEW.
       await underTestSubmodule("submodule-update");
-      const updated = await updateSubmodules(service, repositoryId, r);
-      expect({ outcome: outcome(updated), states: [...new Set(resultsOf(updated).map((row) => row.state))], rows: resultsOf(updated).length }).toEqual({ outcome: SUCCEEDED, states: ["unchanged"], rows: 40 });
-    });
+      const { response: updated, peak } = await updateMeasured(service, w.sup, repositoryId, r);
+      expect({ outcome: outcome(updated), peak, states: [...new Set(resultsOf(updated).map((row) => row.state))], rows: resultsOf(updated).length }).toEqual({ outcome: SUCCEEDED, peak: 1, states: ["unchanged"], rows: 40 });
+    }, 1);
   }, 20 * 60_000);
 });

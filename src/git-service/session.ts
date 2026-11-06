@@ -92,6 +92,8 @@ export interface SessionOptions {
   // Test seam only. Production never sets it. The service awaits it before each folder check and clone check of an update row,
   // and before the program re-check of a nested active-set read.
   submoduleCheckpoint?: SubmoduleUpdaterOptions["submoduleCheckpoint"];
+  // Test seam only. Production never sets it. The update observer then reads this many rows at once instead of SUBMODULE_WORK_PARALLEL.
+  updateLanes?: SubmoduleUpdaterOptions["updateLanes"];
   // Test seam only. Production never sets it. Feature 008 plan.md D13: the service awaits it before each working-file write of a revert run.
   revertCheckpoint?: WorkbenchOptions["revertCheckpoint"];
   // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`. Tests set a lower value.
@@ -128,7 +130,7 @@ function revealTarget(w: Workspace, bytes: Uint8Array): string | null {
   return NATIVE.path.join(w.worktreeRoot, ...(text.endsWith("/") ? text.slice(0, -1) : text).split("/"));
 }
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, revertCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, updateLanes, revertCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -235,7 +237,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const files = createFilePublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   const fileSets = createMultiPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   const committer = createCommitter({ runner, trust, reader, reviews, approvals, registry, exclusion, respond });
-  const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
+  const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }), ...(updateLanes === undefined ? {} : { updateLanes }) });
   const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
   const syncs = createSyncer({ runner, trust, reader, approvals, registry, exclusion, respond });
   const workbench = createWorkbench({ runner, trust, reader, comparisons, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }), ...(revertCheckpoint === undefined ? {} : { revertCheckpoint }) });

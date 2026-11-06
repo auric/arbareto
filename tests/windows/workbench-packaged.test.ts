@@ -772,12 +772,25 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
         await press(c, "Enter");
         await until<string | null>(c, "the Comfortable density", "document.documentElement.getAttribute('data-density')", (v) => v === "comfortable");
         await until<boolean>(c, "the detached branch button", `document.querySelector('header [data-slot="branch-button"]')?.textContent.includes('Detached at') ?? false`, (v) => v);
-        await c.evaluate(`new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))`);
-        const header = await c.evaluate<{ height: number; row: number; count: boolean; reason: boolean }>(
-          `(() => { const h = document.querySelector('header[data-section="header"]'); return { height: h.getBoundingClientRect().height, row: Number.parseFloat(getComputedStyle(h).minHeight), count: !!h.querySelector('[data-slot="tracking-count"]'), reason: h.textContent.includes('Pull, Push: No branch checked out.') }; })()`,
-        );
+        // `clientHeight` excludes the border. At 125 % scaling Chromium snaps the 1 px border to 1 device px, so the border box is not a whole CSS px.
+        // CSS Flexbox §9.4: with row-gap 0 each item lies inside its flex line, and the lines do not overlap. So vertically overlapping items share one line.
+        const measure = `new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => {
+          const h = document.querySelector('header[data-section="header"]');
+          const boxes = [...h.children].map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0).sort((a, b) => a.top - b.top);
+          let lines = 0, bottom = -Infinity;
+          for (const r of boxes) { if (r.top >= bottom) lines++; bottom = Math.max(bottom, r.bottom); }
+          done({ client: h.clientHeight, row: Number.parseFloat(getComputedStyle(h).minHeight), lines, tops: boxes.map((r) => r.top), count: !!h.querySelector('[data-slot="tracking-count"]'), reason: h.textContent.includes('Pull, Push: No branch checked out.') });
+        })))`;
+        type Header = { client: number; row: number; lines: number; tops: number[]; count: boolean; reason: boolean };
+        const header = await c.evaluate<Header>(measure);
         console.log(`HEADER 004: ${js(header)}`);
-        expect(header).toEqual({ height: header.row, row: header.row, count: false, reason: true });
+        expect({ ...header, tops: [] }).toEqual({ client: header.row, row: header.row, lines: 1, tops: [], count: false, reason: true });
+        // Control: at 900 CSS px the controls do not fit, so the last controls wrap to a second line.
+        await c.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 800, deviceScaleFactor: 0, mobile: false });
+        await until<number>(c, "the 900 px viewport", "innerWidth", (v) => v === 900);
+        const narrow = await c.evaluate<Header>(measure);
+        console.log(`HEADER 004 control 900: ${js(narrow)}`);
+        expect(narrow.lines).toBe(2);
       } finally {
         c.close();
         sockets.delete(c);

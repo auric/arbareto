@@ -550,6 +550,31 @@ describeGit("conflict actions abort, continue, and skip (T045)", () => {
     }
   }, TIMEOUT_MS);
 
+  // 004 FR-091: Choose ours and Choose theirs write the side and keep the path unmerged, so the oracle has no `git add`.
+  caseTest("T010", "010 FR-063: Choose ours and Choose theirs of a stopped cherry-pick and revert run checkout --<side>, keep f.txt unmerged, and equal Git's own checkout --<side> on a copy", SHELL, async () => {
+    const h = host("pick-choose");
+    for (const kind of KINDS) {
+      for (const side of ["ours", "theirs"] as const) {
+        const repo = pickStop(h, `choose-${kind}-${side}`, kind, "conflict");
+        const oracle = copyOf(h, repo);
+        await withSync(`t010-choose-${kind}-${side}`, async (service) => {
+          const r = await approved(service, repo);
+          const read = await service.readWorkspace(r.repositoryId);
+          const entry = read.result!.entries.find((e) => e.path === "f.txt" && e.category === "conflicted")!;
+          const review = await service.request<{ workbenchToken: string; plan: { operation: string; side: string } }>("reviewWorkbench", { action: "choose-side", side, snapshotId: read.result!.snapshotId, entryId: entry.entryId }, { repositoryId: r.repositoryId, repositoryGeneration: read.result!.generation });
+          expect({ kind, side, ...outcome(review), plan: { operation: review.result?.plan.operation, side: review.result?.plan.side } }).toEqual({ kind, side, ...SUCCEEDED, plan: { operation: STATE[kind], side } });
+          const from = service.runner.calls.length;
+          const done = await service.response<{ action: string; staged: boolean; operationState: string }>(service.send("runWorkbench", { workbenchToken: review.result!.workbenchToken, start: true }, { repositoryId: r.repositoryId }));
+          expect({ kind, side, ...outcome(done), result: done.result }).toEqual({ kind, side, ...SUCCEEDED, result: { action: "choose-side", staged: false, operationState: STATE[kind] } });
+          expect({ kind, side, calls: integrateCalls(service, from).map((c) => c.arguments) }).toEqual({ kind, side, calls: [["--no-lazy-fetch", "--literal-pathspecs", "checkout", "--no-recurse-submodules", `--${side}`, "--", "f.txt"]] });
+        });
+        gitRun(h, oracle, ["--literal-pathspecs", "checkout", `--${side}`, "--", "f.txt"], { env: INTEGRATE_ENV });
+        expect({ kind, side, state: stateOf(h, repo) }).toEqual({ kind, side, state: stateOf(h, oracle) });
+        expect({ kind, side, unmerged: unmergedPaths(h, repo) }).toEqual({ kind, side, unmerged: ["f.txt"] });
+      }
+    }
+  }, TIMEOUT_MS);
+
   caseTest("T010", "010 FR-060 and FR-062: Skip gives not-rebasing; an index equal to HEAD gives nothing-to-commit (P6, P13); a .git/sequencer folder gives sequence for Abort and Continue; no process starts and Git's state stays", SHELL, async () => {
     const h = host("pick-refusals");
     for (const kind of KINDS) {

@@ -3,12 +3,12 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, type ReactNode } from "react";
-import type { ChangeEntry } from "../../src/contracts/envelope";
+import { ReviewWorkbenchResult, RunWorkbenchResult, type ChangeEntry } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { fixtureId } from "./bridge-contract";
-import { answer, button, buttons, click, createWorld, keyboardFocus, mountWorkbench, oid, press, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, keyboardFocus, mountWorkbench, oid, press, REGISTRATION, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T068 (feature 003). Spec FR-030, FR-042 to FR-045. Plan D7, D12. Data-model §7, §8. Contract Δ3 `reviewSync` and `sync` abort, continue, skip.
 
@@ -384,6 +384,77 @@ describe("a stopped cherry-pick or revert (feature 010 FR-060 to FR-063)", () =>
     await open("sequencer-active");
     expect(row()).toBeNull();
     expect(text(band())).toContain(OUTSIDE);
+  });
+
+  // Spec FR-063: the resolve tools of 004 FR-089 to FR-097 send the requests of a merge. Plan D6: the review gives no theirs name in these states.
+  // Control: hide Open in merge tool while the review plan names cherry-picking or reverting; both pick cases must fail.
+  describe("the resolve tools of a conflicted file (FR-063)", () => {
+    const PATH = "src/app.ts";
+    const B64 = Buffer.from(PATH).toString("base64");
+    const NAMES = { ours: { oid: oid(1), refs: ["refs/heads/main"] }, theirs: null };
+    const file = (): ChangeEntry => ({ entryId: fixtureId(30), category: "conflicted", path: PATH, pathBytes: B64, xy: "UU", modes: ["100644", "100644", "100644", "100644"], oids: [oid(5), oid(6), oid(7)] }) as ChangeEntry;
+    const plan = (operation: string) => ({ path: B64, kind: { xy: "UU", text: "Both modified" }, stages: [1, 2, 3].map((stage) => ({ stage, mode: "100644", oid: oid(4 + stage) })), names: NAMES, operation });
+    const tools = (operation: World["operationState"]): Record<string, (args: unknown[]) => unknown> => ({
+      readComparison: (args) => {
+        const p = args[1] as { snapshotId: string; entryId: string };
+        const comparison = { comparisonId: crypto.randomUUID(), snapshotId: p.snapshotId, entryId: p.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: Buffer.from("diff --cc src/app.ts\n").toString("base64"), hunks: [], support: "state", fileAction: "resolve", remedy: null };
+        return { ...succeeded(comparison), entryId: p.entryId };
+      },
+      reviewWorkbench: (args) => {
+        const p = args[1] as { action: "choose-side" | "mergetool"; side?: "ours" | "theirs" };
+        const shown = p.action === "mergetool" ? { ...plan(operation), tool: { name: "vscode", scope: "global", origin: "file:C:/Users/me/.gitconfig" } } : { ...plan(operation), side: p.side };
+        return succeeded(ReviewWorkbenchResult.parse({ action: p.action, plan: shown, workbenchToken: TOKEN }));
+      },
+      runWorkbench: () => succeeded(RunWorkbenchResult.parse({ action: "choose-side", staged: false, operationState: operation })),
+    });
+
+    /** The review and the run that each tool click sends, without the random snapshot ID. */
+    async function sent(operation: World["operationState"]) {
+      const entry = file();
+      const w = createWorld({ operationState: operation, entries: [entry], ...(operation === "rebasing" ? { head: DETACHED } : {}) });
+      Object.assign(w.answers, tools(operation));
+      const double = await mountWorkbench(workbench, w);
+      await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
+      await click(document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${entry.entryId}"]`)!);
+      await settle();
+      const view = () => document.querySelector(`[data-section="comparison"] section[aria-label="Resolve ${PATH}"]`)!;
+      const out: unknown[] = [];
+      for (const [label, confirm] of [["Choose ours (main)", "Choose ours"], ["Choose theirs", "Choose theirs"], ["Open in merge tool", null]] as const) {
+        const from = double.calls.length;
+        await click(button(label, view()));
+        if (confirm !== null) await click(button(confirm, dialog()!));
+        await settle();
+        const own = double.calls.slice(from);
+        for (const kind of ["reviewWorkbench", "runWorkbench"]) {
+          const call = own.find((c) => c.operation === kind);
+          const payload = call?.args[1] as Record<string, unknown> | undefined;
+          out.push({ label, kind, target: call?.args[0], payload: payload === undefined ? undefined : { ...payload, ...("snapshotId" in payload ? { snapshotId: typeof payload.snapshotId } : {}) } });
+        }
+        await settle();
+      }
+      await unmountAll();
+      return out;
+    }
+
+    const target = { repositoryId: REGISTRATION.repositoryId, repositoryGeneration: 1 };
+    const MERGE = [
+      { label: "Choose ours (main)", kind: "reviewWorkbench", target, payload: { action: "choose-side", snapshotId: "string", entryId: fixtureId(30), side: "ours" } },
+      { label: "Choose ours (main)", kind: "runWorkbench", target: { repositoryId: REGISTRATION.repositoryId }, payload: { workbenchToken: TOKEN, start: true } },
+      { label: "Choose theirs", kind: "reviewWorkbench", target, payload: { action: "choose-side", snapshotId: "string", entryId: fixtureId(30), side: "theirs" } },
+      { label: "Choose theirs", kind: "runWorkbench", target: { repositoryId: REGISTRATION.repositoryId }, payload: { workbenchToken: TOKEN, start: true } },
+      { label: "Open in merge tool", kind: "reviewWorkbench", target, payload: { action: "mergetool", snapshotId: "string", entryId: fixtureId(30) } },
+      { label: "Open in merge tool", kind: "runWorkbench", target: { repositoryId: REGISTRATION.repositoryId }, payload: { workbenchToken: TOKEN, start: true } },
+    ];
+
+    test("during a merge, Choose ours, Choose theirs, and Open in merge tool each send their review and then the run of its token", async () => {
+      expect(await sent("merging")).toEqual(MERGE);
+    });
+
+    for (const k of KINDS) {
+      test(`${k.state}: Choose ours, Choose theirs, and Open in merge tool send the same requests as during a merge`, async () => {
+        expect(await sent(k.state)).toEqual(MERGE);
+      });
+    }
   });
 });
 

@@ -1428,7 +1428,7 @@ The configured location is `https://github.com/auric/arbareto` (plan.md About wi
 
 The maintainer keeps the repository private until version 1. Version 1 is the first working release that implements most Git Extensions features, except plugins. Local test packages need no public source. A public release needs an anonymously obtainable build commit (FR-037). T176 records an anonymous check. B-RELEASE stays blocked until that check passes.
 
-2026-10-24 (user decision, feature 007): the repository becomes public before the preview v0.1.0 release. That preview is a GitHub pre-release without an updater. Constitution 4.0.1 states that such a release is not a production release. The v1.0 release keeps the B-RELEASE gate and the T176 anonymous check.
+2026-10-24 (user decision, feature 007): the repository becomes public before the preview v0.1.0 release. That preview is a GitHub pre-release without an updater. Constitution 4.0.1 states that such a release is not a production release. The v1.0 release keeps the B-RELEASE gate and the T176 anonymous check. This decision replaces the rule "private until version 1" in the paragraph above. The repository is public since 2026-10-25 (spec.md Clarifications).
 
 ### Profile override live check (T360)
 

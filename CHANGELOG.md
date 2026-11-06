@@ -13,6 +13,7 @@ The first preview release for Windows 11 x64.
 - Blame of a file.
 - Commit message search, with steps through the matches in the full graph.
 - Working changes and a diff view. Stage and unstage files, folders, hunks, or selected lines.
+- Revert selected lines, hunks, files, or all unstaged changes, after a confirmation.
 - Delete files and folders from the Commit view.
 - Folders come first in every file tree. Show a folder in Explorer.
 - Edit an ignore file with a live preview.

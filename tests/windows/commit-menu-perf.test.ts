@@ -169,7 +169,9 @@ const filterField = `document.querySelector(${js(`input[aria-label="${FILTER_LAB
 // `changed` holds each `role=status` cell of the status region that changed after `arm`, so an outcome text equal to the last one still needs a new render of its cell.
 // The key log of SC-011 holds each probe keydown whose target is the history filter.
 // With `probe`, the first `click` after `arm` (the run button activation) moves the focus to the filter in a later task.
-// The later task lets the default action of the click (a form submit) run first. `probeFocus` then keeps the focus on the filter.
+// The later task lets the default action of the click (a form submit) run first. A `focusout` of the filter then puts the focus back in a later task, until the result holds.
+// The end calls the CDP binding DONE_BINDING, so the probe loop stops without a page poll.
+const DONE_BINDING = "__t018Done";
 const PAGE = `(() => {
   if (window.__t018 !== undefined) return true;
   window.__t018Keys = [];
@@ -179,21 +181,20 @@ const PAGE = `(() => {
   window.__t018 = {
     changed: new Set(),
     observer: null,
-    clicked: false,
-    probeFocus() {
-      const f = ${filterField};
-      if (this.clicked && f !== null && document.activeElement !== f) f.focus();
-      return this.value !== null;
-    },
+    unprobe: null,
     arm(checks, limit, kind, probe) {
       const armed = performance.now();
       let start = null;
       const onInput = (e) => { if (start === null) start = e.timeStamp; };
       addEventListener(kind, onInput, { capture: true });
-      this.clicked = false;
+      this.unprobe?.();
+      this.unprobe = null;
       if (probe) {
-        const onClick = () => { removeEventListener('click', onClick, { capture: true }); setTimeout(() => { this.clicked = true; this.probeFocus(); }, 0); };
+        const keep = () => { const f = ${filterField}; if (this.value === null && f !== null && document.activeElement !== f) f.focus(); };
+        const onFocusOut = (e) => { if (e.target?.getAttribute?.('aria-label') === ${js(FILTER_LABEL)}) setTimeout(keep, 0); };
+        const onClick = () => { removeEventListener('click', onClick, { capture: true }); setTimeout(() => { if (this.value !== null) return; addEventListener('focusout', onFocusOut, { capture: true }); keep(); }, 0); };
         addEventListener('click', onClick, { capture: true });
+        this.unprobe = () => { removeEventListener('click', onClick, { capture: true }); removeEventListener('focusout', onFocusOut, { capture: true }); };
       }
       this.changed = new Set();
       this.observer?.disconnect();
@@ -205,9 +206,12 @@ const PAGE = `(() => {
       const end = (ok, why) => {
         removeEventListener(kind, onInput, { capture: true });
         this.observer?.disconnect();
+        this.unprobe?.();
+        this.unprobe = null;
         const times = done.map((t) => (t === null || start === null ? null : t - start));
         const valid = ok && start >= armed && times.every((t) => t !== null && t >= 0);
-        this.value = { ok: valid, why: valid ? null : why ?? 'the event time lies before arm or after a check', armed, start, times };
+        this.value = { ok: valid, why: valid ? null : why ?? 'the event time lies before arm or after a check', armed, start, times, origin: performance.timeOrigin };
+        if (typeof window.${DONE_BINDING} === 'function') window.${DONE_BINDING}('');
       };
       const held = checks.findIndex((check) => check());
       if (held >= 0) {
@@ -266,40 +270,45 @@ function parses(check: string): string {
 }
 const step = (name: string) => console.log(`STEP ${TASK} ${name} ${new Date().toISOString()}`);
 
-type Timed = { ok: boolean; why: string | null; armed: number; start: number | null; times: (number | null)[] };
+type Timed = { ok: boolean; why: string | null; armed: number; start: number | null; times: (number | null)[]; origin: number };
 // Arms the page, runs `act`, and calls `during` until the page holds the result. `kind` is the DOM event that starts the time.
 // `during` starts together with `act`. CDP sends its input events in order, so each probe input reaches the page after the run press.
 // The key loop never waits for a page evaluation, so an input also waits in the queue of a main-thread task. Event Timing then holds that wait.
-async function timed(c: Cdp, name: string, checks: string[], act: () => Promise<void>, kind: "keydown" | "contextmenu" = "keydown", during?: () => Promise<void>): Promise<number> {
+async function timed(s: { c: Cdp; ipc: IpcLog }, name: string, checks: string[], act: () => Promise<void>, kind: "keydown" | "contextmenu" = "keydown", during?: () => Promise<void>): Promise<number> {
+  const c = s.c;
   step(name);
   checks.forEach(parses);
-  await c.evaluate(`(window.__t018Keys = [], window.__t018Events = [], window.__t018.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${STEP_LIMIT_MS}, ${js(kind)}, ${during !== undefined}))`);
+  const from = s.ipc.calls().length;
   let ended = false;
-  const acting = act();
-  acting.catch(() => (ended = true));
-  if (during !== undefined) {
-    const end = Date.now() + STEP_LIMIT_MS + 5_000;
-    const focusing = (async () => {
-      while (!ended && Date.now() < end) {
-        if (await c.evaluate<boolean>("window.__t018.probeFocus()")) break;
-        await Bun.sleep(PROBE_INTERVAL_MS);
-      }
+  let signalled = false;
+  const off = c.on("Runtime.bindingCalled", (p) => {
+    if (p.name === DONE_BINDING) signalled = ended = true;
+  });
+  try {
+    await c.evaluate(`(window.__t018Keys = [], window.__t018Events = [], window.__t018.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${STEP_LIMIT_MS}, ${js(kind)}, ${during !== undefined}))`);
+    const acting = act();
+    acting.catch(() => (ended = true));
+    if (during !== undefined) {
+      for (const end = Date.now() + STEP_LIMIT_MS + 5_000; !ended && Date.now() < end; await Bun.sleep(PROBE_INTERVAL_MS)) await during();
       ended = true;
-    })();
-    try {
-      while (!ended && Date.now() < end) {
-        await during();
-        await Bun.sleep(PROBE_INTERVAL_MS);
-      }
-    } finally {
-      ended = true;
-      await focusing;
     }
+    await acting;
+    if (during !== undefined && !signalled) throw new Error(`the page gave no ${DONE_BINDING} call within ${STEP_LIMIT_MS + 5_000} ms: ${js(await c.evaluate<unknown>(FACTS))}`);
+  } finally {
+    off();
   }
-  await acting;
   const r = (await until<Timed | null>(c, "the timed step", "window.__t018.value", (v) => v !== null, STEP_LIMIT_MS + 5_000))!;
   if (!r.ok || r.start === null || !r.times.every((t) => t !== null && t >= 0)) throw new Error(`a timed step is not valid: ${js(r)} ${js(await c.evaluate<unknown>(FACTS))}`);
-  return Math.max(...(r.times as number[]));
+  const ms = Math.max(...(r.times as number[]));
+  // Record, no budget. The start offset compares the CDP `wallTime` with the page `timeOrigin`, two wall clocks. The duration uses the CDP `MonotonicTime` only.
+  const press = r.origin + r.start;
+  const split = s.ipc
+    .calls()
+    .slice(from)
+    .filter((t) => t.wall * 1000 <= press + ms)
+    .map((t) => `${t.command} at ${r1(t.wall * 1000 - press)} ms for ${t.end === null ? "open" : `${r1((t.end - t.sent) * 1000)} ms`}`);
+  console.log(`IPC ${TASK}: ${name}: ${r1(ms)} ms; ${split.length === 0 ? "no call" : split.join("; ")}`);
+  return ms;
 }
 
 const median = (xs: number[]) => {
@@ -476,7 +485,10 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     git(["config", "--local", "user.email", FIXED_IDENTITY.email]);
     expect(git(["config", "--local", "--get", "user.name"]).trim()).toBe(FIXED_IDENTITY.name);
     expect(git(["config", "--local", "--get", "user.email"]).trim()).toBe(FIXED_IDENTITY.email);
-    expect(git(["var", "GIT_COMMITTER_IDENT"]).startsWith(`${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> `)).toBe(true);
+    // The `wsl.exe` environment of the app: empty WSLENV and no GIT_CONFIG_* variable. The distro Git has no user.name at another scope.
+    const ident = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", w.probe.paths.git!, "-C", dir, "var", "GIT_COMMITTER_IDENT"], { timeoutMs: WSL_CALL_MS });
+    console.log(`WSL ${TASK}: app-environment GIT_COMMITTER_IDENT exit ${ident.exitCode}: ${js(ident.stdout.trim() || ident.stderr.trim())}`);
+    expect({ exit: ident.exitCode, ident: ident.stdout.startsWith(`${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> `) }).toEqual({ exit: 0, ident: true });
     git(["update-index", "-q", "--refresh"], [0, 1]);
     const shape = [
       ["for-each-ref", "--format=%(objectname) %(refname)"],
@@ -538,6 +550,8 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
         throw new Error(`${(e as Error).message} tree=${js(tree)}`);
       }
       expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
+      await c.send("Runtime.enable");
+      await c.send("Runtime.addBinding", { name: DONE_BINDING });
       expect(await c.evaluate<boolean>(PAGE)).toBe(true);
       if (await c.evaluate<boolean>(`document.querySelector('[data-view="history"]')?.hidden !== false`)) await uia(app.pid, HISTORY_VIEW, ControlType.Button, invoke);
       await until<boolean>(c, "the History view", `document.querySelector('[data-view="history"]')?.hidden === false`, (v) => v);
@@ -602,7 +616,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     await until<boolean>(s.c, "no open menu, popover, or dialog", `!(${anyMenu}) && !(${anyPopover}) && !(${anyDialog})`, (v) => v);
     await idle(s);
   }
-  // One SC-011 probe: an x or a Backspace in the history filter. The pair keeps the field short. The page moves the focus (`probeFocus`).
+  // One SC-011 probe: an x or a Backspace in the history filter. The pair keeps the field short. The page moves the focus (`arm` with `probe`).
   const probe = (c: Cdp) => {
     let n = 0;
     return () => press(c, n++ % 2 === 0 ? "x" : "Backspace");
@@ -643,7 +657,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
         const byKey = async (k: number) => {
           const oid = (await oidAt(k))!;
           await selectRow(s, oid);
-          const ms = await timed(s.c, `shift-f10 row ${k}`, [menuOpen(oid)], () => press(s.c, "F10", MOD.Shift));
+          const ms = await timed(s, `shift-f10 row ${k}`, [menuOpen(oid)], () => press(s.c, "F10", MOD.Shift));
           opened.push(oid);
           await closeAll(s);
           return ms;
@@ -658,7 +672,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
           const element = await find(s.app.pid, name, MAX_WAIT_MS);
           let hr = 0;
           try {
-            const ms = await timed(s.c, `right-click row ${k}`, [menuOpen(oid)], async () => void (hr = showContextMenu(element)), "contextmenu");
+            const ms = await timed(s, `right-click row ${k}`, [menuOpen(oid)], async () => void (hr = showContextMenu(element)), "contextmenu");
             expect(hr).toBe(0);
             // Spec FR-010: a right-click selects the row as a click does.
             expect(await s.c.evaluate<string | null>(selectedRow)).toBe(oid);
@@ -707,7 +721,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
       const sample = async (a: (typeof actions)[number], label: string) => {
         await toItem(s, target, a.item);
         const before = usage(s.app.pid);
-        const ms = await timed(s.c, label, [a.done], () => press(s.c, "Enter"));
+        const ms = await timed(s, label, [a.done], () => press(s.c, "Enter"));
         const after = usage(s.app.pid);
         const reply = await s.ipc.body<{ state?: string; code?: string; result?: { reason?: string } }>(s.ipc.finished("review_workbench").at(-1)!).catch(() => null);
         console.log(`REVIEW ${TASK}: ${label}: ${js({ state: reply?.state, code: reply?.code, reason: reply?.result?.reason })}`);
@@ -765,7 +779,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
           await until<boolean>(s.c, "the focus on Mixed", `document.activeElement?.type === 'radio' && document.activeElement.checked`, (v) => v, 1_000);
           const before = usage(s.app.pid);
           // The next radio of the group is Hard. Down checks it, and the change starts the Hard review.
-          const ms = await timed(s.c, label, [reviewed(title, HARD_BUTTON)], () => press(s.c, "ArrowDown"));
+          const ms = await timed(s, label, [reviewed(title, HARD_BUTTON)], () => press(s.c, "ArrowDown"));
           const after = usage(s.app.pid);
           const reply = await s.ipc.body<{ state?: string; code?: string; result?: { plan?: { mode?: string; trackedChanges?: number; ignoredReplaced?: number } } }>(s.ipc.finished("review_workbench").at(-1)!);
           console.log(`REVIEW ${TASK}: ${label}: ${js({ state: reply.state, code: reply.code, plan: reply.result?.plan })}`);
@@ -805,7 +819,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
       await clearFilter(s.c);
       const { done, check } = await r.setup(run);
       const before = usage(s.app.pid);
-      const ms = await timed(s.c, `${sc}${r.label} ${tag}`, [outcomeShown(done, true)], r.trigger, "keydown", probe(s.c));
+      const ms = await timed(s, `${sc}${r.label} ${tag}`, [outcomeShown(done, true)], r.trigger, "keydown", probe(s.c));
       const after = usage(s.app.pid);
       sc011.push(await inputs(s.c, `${sc}${r.label} ${tag}`));
       check();

@@ -135,10 +135,6 @@ const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed
 const REVERT_FACTS: readonly ErrorCode[] = ["STALE_SELECTION", "WORKBENCH_UNAVAILABLE", "UNSUPPORTED_COMPARISON", "UNSUPPORTED_HUNK_PROFILE"];
 const FACT_REFUSALS: Readonly<Record<string, readonly ErrorCode[]>> = { delete: ["STALE_SELECTION"], "ignore-save": ["STALE_REVIEW"], ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, REVERT_FACTS])) };
 
-// ---- Shared reads (feature 011 plan.md D15: `ref-facts.ts` holds them) ----
-
-export { heldElsewhere, readWorktrees, refTarget, revCount, unavailable, unresolvedRefusal, type Refused };
-
 // Contract §8: a step whose process was ended can leave `index.lock`, so the reconciliation read checks it.
 export const killed = (ends: readonly StepEnd[]): boolean => ends.some((end) => end.exit === null || end.exit.exitCode === null);
 

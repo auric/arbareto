@@ -49,12 +49,13 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 | `push` | `PushResult` with `status` `deleted`, `rejected`, `remote-rejected`, `remote-failure`, or `none`. `oldObjectId` and `newObjectId` are the tracking ref before and after. `lease` is true. `upstreamWritten` and `upstreamNotSet` are false. |
 | `reason`, `reasonText` | As in 003. `reasonText` is display text only. A stale lease gives `reason: stale-lease`. |
 | `remoteGone` | `true` only when the gone recovery removed the stale ref (plan D8). Only this action carries it. |
-| `localNotDeleted` | `true` only when the remote delete or the gone recovery succeeded, and a local write failed or Cancel stopped it. Only this action carries it. |
+| `localNotDeleted` | `true` only when the remote delete or the gone recovery succeeded, and the fresh ref listing after the run still holds the local ref. Exit codes do not set it. Only this action carries it. A result without the fresh listing does not carry it. |
 | `remedy` | The terminal command and its text, as for a push. A URL with user information gives text only. |
 
 - The outcome events and their texts are in plan D6. The combined rows are in plan D7.
 - `expected` is the listing before, without `ref` after `deleted` or `remoteGone`. After local writes that all exited 0, it is also without the local ref.
 - Cancel never rolls back. The run reconciles from fresh reads.
+- A local write that did not exit 0 gives `failed-with-effects`. This applies also when the local ref is gone and only the section removal failed. Then the result has no `localNotDeleted`.
 
 ## 5. Combined partial outcomes
 
@@ -62,6 +63,7 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 | --- | --- | --- | --- |
 | deleted | deleted | `intended-effects-confirmed` | `push.status` `deleted` |
 | deleted | failed, or not run after Cancel | `failed-with-effects` | `localNotDeleted: true` |
+| deleted | ref deleted, section removal failed or not run after Cancel | `failed-with-effects` | `push.status` `deleted`, no `localNotDeleted` |
 | failed, rejected, stale, or canceled | not run | `no-effects` | the failure fields |
 | gone, stale ref removed | deleted | `intended-effects-confirmed` | `remoteGone: true` |
 | gone, stale ref removed | failed, or not run after Cancel | `failed-with-effects` | `remoteGone: true`, `localNotDeleted: true` |

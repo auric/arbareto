@@ -528,7 +528,9 @@ export function createSyncer(o: SyncerOptions) {
       let remoteGone = false;
       if (stale && b.sameUrl === true) {
         const listed = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-        const check = await networkStep(lsRemoteArgs(d.remote, d.ref), "sync-push", {}, remedy, listed);
+        // Contract Δ3 "Remedies": the remedy runs the step itself.
+        const lsRemedy = remedyOf("& {git} --no-lazy-fetch -C {root} ls-remote --exit-code -- {remote} {dst}", { remote: d.remote, dst: d.ref }, userInfo);
+        const check = await networkStep(lsRemoteArgs(d.remote, d.ref), "sync-push", {}, lsRemedy, listed);
         ends.push(check);
         const x = check.exit;
         const read = x !== null && x.exitCode !== null && x.deadline === undefined && !x.diagnosticLimit && !listed.limited;
@@ -552,7 +554,7 @@ export function createSyncer(o: SyncerOptions) {
         localDone = written.set;
       }
       enterReconciling(registry, operationId, ends.some((e) => e.exit?.deadline !== undefined), lastDescendants);
-      const marks = { ...(remoteGone ? { remoteGone: true as const } : {}), ...(localDone ? {} : { localNotDeleted: true as const }) };
+      const gone = remoteGone ? { remoteGone: true as const } : {};
       const pushResult = (after: Refs | null) => ({
         status,
         oldObjectId: before.value.get(refKey(lease.trackingRef)) ?? null,
@@ -563,7 +565,7 @@ export function createSyncer(o: SyncerOptions) {
         upstreamNotSet: false,
         outputTail: end.outputTail,
       });
-      const unread = { action: b.payload.action, push: pushResult(null), ...marks };
+      const unread = { action: b.payload.action, push: pushResult(null), ...gone };
       if (!(await processEnded(ends))) return unknown({ code: "GIT_FAILED" }, unread);
       const read = await readAfter(unread);
       if (read === null) return;
@@ -575,7 +577,9 @@ export function createSyncer(o: SyncerOptions) {
       if (local !== undefined && (deleted || remoteGone) && localDone) expected.delete(refKey(local.ref));
       const stateChanged = !Bun.deepEquals(observedHead, b.head, true) || state !== b.operationState;
       const changed = changes(before.value, after).length > 0 || stateChanged;
-      const result = { action: b.payload.action, push: pushResult(after), ...marks };
+      // Data-model §4 `localNotDeleted`: the fresh listing still holds the local ref. Exit codes do not decide it.
+      const stays = local !== undefined && (deleted || remoteGone) && after.has(refKey(local.ref));
+      const result = { action: b.payload.action, push: pushResult(after), ...gone, ...(stays ? { localNotDeleted: true as const } : {}) };
       if (deleted || remoteGone) {
         if (!localDone) return finish({ type: "failed-with-effects" }, result);
         return finish(changes(expected, after).length > 0 || stateChanged ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, result);

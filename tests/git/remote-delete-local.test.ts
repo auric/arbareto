@@ -5,7 +5,7 @@
 // The oracle is Git's own lease delete, `update-ref -d`, and `config --remove-section` on copies.
 
 import { expect } from "bun:test";
-import { renameSync } from "node:fs";
+import { renameSync, rmSync } from "node:fs";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { buildBase, copyOf, DELETE_ARGS, gitDelete, isUpdateRef, logHook, outcome, payloadOf, phaseAt, phasesOf, stateOf, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
@@ -186,6 +186,32 @@ describeGit("combined remote and local branch delete (011 T010)", () => {
     });
     const after = stateOf(a);
     expect({ remote: after.remote["refs/heads/feature"], tracking: after.refs[FEATURE], local: after.refs[LOCAL], section: after.config.includes('[branch "feature"]') }).toEqual({ remote: undefined, tracking: undefined, local: tip, section: true });
+  }, TIMEOUT_MS);
+
+  // Constitution I: the mark follows the fresh ref listing, not the exit codes of the local writes.
+  caseTest(TASK, "D7: a failed section removal after the local ref delete gives failed-with-effects without localNotDeleted; the local branch is gone, and its section stays", SHELL, async () => {
+    const a = own();
+    const tip = revParse(a.h, a.repo, LOCAL);
+    const expectOid = revParse(a.h, a.repo, FEATURE);
+    const lock = `${a.repo}/.git/config.lock`;
+    await withSync("t010-section-fails", async (service) => {
+      const r = await register(service, a.repo);
+      const review = await reviewed(service, r, payloadOf(FEATURE, LOCAL));
+      // git-config(1): a held `config.lock` fails each config write. Push and update-ref write no config.
+      a.h.write(lock, "");
+      const from = service.runner.calls.length;
+      let response: Awaited<ReturnType<typeof sync>>;
+      try {
+        response = await sync(service, r, review.syncReviewToken);
+      } finally {
+        rmSync(native(lock));
+      }
+      expect(remoteCalls(service, from).map((c) => c.arguments)).toEqual([DELETE_ARGS("origin", "refs/heads/feature", expectOid), ["--no-lazy-fetch", "update-ref", "--no-deref", "-d", LOCAL, tip], SECTION]);
+      expect(outcome(response)).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
+      expect({ status: response.result!.push!.status, localNotDeleted: (response.result as DeleteResult).localNotDeleted }).toEqual({ status: "deleted", localNotDeleted: undefined });
+    });
+    const after = stateOf(a);
+    expect({ remote: after.remote["refs/heads/feature"], tracking: after.refs[FEATURE], local: after.refs[LOCAL], section: after.config.includes('[branch "feature"]') }).toEqual({ remote: undefined, tracking: undefined, local: undefined, section: true });
   }, TIMEOUT_MS);
 
   caseTest(TASK, "D7: a network failure leaves both branches unchanged, runs no local write, and reports no sync-delete-local event", SHELL, async () => {

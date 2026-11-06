@@ -9,16 +9,13 @@ import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
 import { headRefExistsArgs, isObjectId, isRefName } from "./commands";
 import { createCollector } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
-import { deleteFacts, type DeleteFacts } from "./ref-facts";
+import { deleteFacts, heldElsewhere, readWorktrees, refTarget, unavailable, unresolvedRefusal, type DeleteFacts, type Refused } from "./ref-facts";
 import type { Head } from "./snapshot";
 import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { refKey } from "./sync-review";
 import { branchNameCheckArgs, createArgs, createSwitchArgs, deleteRefArgs, removeBranchSectionArgs, renameArgs } from "./workbench-commands";
-import { heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, unresolvedRefusal, conclude, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
-
-// Feature 011 plan.md D15: `ref-facts.ts` holds the delete facts.
-export { deleteFacts, type DeleteFacts };
+import { killed, registerWorkbenchAction, conclude, type StepEnd, type WorkbenchRun } from "./workbench-review";
 
 const HEADS = "refs/heads/";
 const short = (ref: string) => ref.slice(HEADS.length);

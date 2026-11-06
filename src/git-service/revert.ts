@@ -22,6 +22,7 @@ import { LOCKED_REMEDY } from "./index-lock";
 import { subHunk } from "./line-patch";
 import { prepareFiles, type Admitted, type FileItem } from "./multi-publish";
 import { contextOf, latin1, readBounded, strictUtf8 } from "./read-steps";
+import { unavailable, type Refused } from "./ref-facts";
 import type { Workspace } from "./registration";
 import { autocrlfOf, blobId, restoreEol, reverseLines } from "./revert-bytes";
 import type { LimitName } from "./snapshot";
@@ -29,7 +30,7 @@ import { policyOf } from "./status";
 import { createStatusParser, statusCollector } from "./status-parser";
 import { parseAttributes, parseEolListing, SUPPORT_REASONS, type EolInfo, type SupportAttributes } from "./support";
 import type { TrustListing } from "./trust";
-import { registerWorkbenchAction, unavailable, type Common, type Observation, type PayloadOf, type Refused, type StepEnd, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
+import { registerWorkbenchAction, type Common, type Observation, type PayloadOf, type StepEnd, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
 import { processEnd, wslIndexDigest } from "./wsl-files";
 
 type Action = "revert-lines" | "revert-files" | "revert-unstaged";

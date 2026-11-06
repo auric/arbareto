@@ -14,11 +14,12 @@ import { parseConfigPaths } from "./git-installation";
 import { createCollector, RunnerRefusal, type GitExit, type GitRunner } from "./git-runner";
 import type { Fact, Failure, Stop } from "./hunk-publish";
 import { latin1 } from "./read-steps";
+import { unavailable } from "./ref-facts";
 import type { Workspace } from "./registration";
 import { environmentValue, keyParts, parseConfigListing, redactUrlUserInfo, type ConfigEntry, type ServiceEnvironment } from "./trust";
 import { configFileArgs, configSetArgs, configUnsetArgs } from "./workbench-commands";
 import { configReading, configView, type ConfigView, type ConfigViewEntry } from "./workbench-parsers";
-import { conclude, registerWorkbenchAction, unavailable, type StepEnd } from "./workbench-review";
+import { conclude, registerWorkbenchAction, type StepEnd } from "./workbench-review";
 
 // Spec FR-060 in page order, as Git prints each key: section and variable in lowercase.
 export const SETTINGS_KEYS = [

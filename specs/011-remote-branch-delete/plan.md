@@ -226,7 +226,8 @@ Steps:
 | `deleted`; a local write failed, or Cancel stopped it | `failed-with-effects` | `localNotDeleted: true` | X24 |
 | `rejected` with the lease (stale), no gone fact | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`; `remedy` X27 | X22, plus X25 when combined |
 | `rejected` and `remoteGone`; local writes done, or none | `intended-effects-confirmed` | `remoteGone: true` | X23, then X26 when combined |
-| rejected with another reason | no-effects, failed, PUSH_REJECTED | reason, reasonText (display only) | E2, plus X25 when combined |
+| `rejected` and `remoteGone`; a local write failed, or Cancel stopped it | `failed-with-effects` | `remoteGone: true`, `localNotDeleted: true` | X23, then X25 |
+| `rejected` with another reason | `no-effects`, failed, `PUSH_REJECTED` | `reason`, `reasonText` (display only) | E2, plus X25 when combined |
 | `remote-rejected` or `remote-failure` | `no-effects`, failed, `PUSH_REJECTED` | `reason`, `reasonText` (display only) | E2, plus X25 when combined |
 | `none` with a nonzero exit, or a refused start | `no-effects`, failed, `GIT_FAILED` (or the runner code) | `remedy` with the command; the connect target | E3 with the remedy, plus X25 when combined |
 | Canceled, no ref changed | `no-effects`, canceled | `remedy` `CANCELED_PUSH_TEXT` (`sync.ts:36`) | E4, plus X25 when combined |
@@ -348,7 +349,7 @@ New texts:
 | X21 | outcome | Deleted {branch} and the remote branch {tracking}. |
 | X22 | outcome | {tracking} changed on {remote} since the last fetch, so Git deleted nothing. Fetch {remote}, then try again. |
 | X23 | outcome | {remote} lists no branch {name}. Arbareto deleted the remote-tracking branch {tracking}. |
-| X24 | outcome | Deleted the remote branch {tracking}. Arbareto could not delete {branch}, so it stays. |
+| X24 | outcome | Deleted the remote branch {tracking}. {branch} stays. |
 | X25 | outcome suffix | {branch} stays. |
 | X26 | outcome, combined after X23 | Deleted the local branch {branch}. |
 | X27 | details area remedy of X22 | Text: "This command fetches {remote} and removes the remote-tracking branches whose remote branch is gone." Command: `& {git} --no-lazy-fetch -C {root} fetch --prune -- {remote}` |

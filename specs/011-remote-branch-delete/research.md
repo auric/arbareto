@@ -86,6 +86,7 @@ Git documentation:
 - U5 (unverified): fixtures L and M hold no remote-tracking refs, so M-D adds them. T020 checks the fixture shape.
 - U6 (unverified): the native trust dialog returns the focus to the open in-app dialog (plan R8). T019 checks it through UIA.
 - U7 (unverified): the exact schema files that change. The design plan expects `mutation-request`, `renderer-envelope`, `review-sync-result`, `service-envelope`, `sync-result`, and `operation-result`. T004 decides with `bun run export:schemas --check`.
+- U8 (unverified): Git runs the pre-push hook when the lease rejects every ref. T001 probes it before T012 uses it.
 - A1 (assumption): 010 merges into `main` before any 011 code task starts. Every code task depends on it.
 
 ## R6 Budgets and the measurement method

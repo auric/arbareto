@@ -49,7 +49,7 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 | `push` | `PushResult` with `status` `deleted`, `rejected`, `remote-rejected`, `remote-failure`, or `none`. `oldObjectId` and `newObjectId` are the tracking ref before and after. `lease` is true. `upstreamWritten` and `upstreamNotSet` are false. |
 | `reason`, `reasonText` | As in 003. `reasonText` is display text only. A stale lease gives `reason: stale-lease`. |
 | `remoteGone` | `true` only when the gone recovery removed the stale ref (plan D8). Only this action carries it. |
-| `localNotDeleted` | `true` only when the remote delete succeeded and a local write failed or Cancel stopped it. Only this action carries it. |
+| `localNotDeleted` | `true` only when the remote delete or the gone recovery succeeded, and a local write failed or Cancel stopped it. Only this action carries it. |
 | `remedy` | The terminal command and its text, as for a push. A URL with user information gives text only. |
 
 - The outcome events and their texts are in plan D6. The combined rows are in plan D7.
@@ -64,7 +64,7 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 | deleted | failed, or not run after Cancel | `failed-with-effects` | `localNotDeleted: true` |
 | failed, rejected, stale, or canceled | not run | `no-effects` | the failure fields |
 | gone, stale ref removed | deleted | `intended-effects-confirmed` | `remoteGone: true` |
-| gone, stale ref removed | failed, or not run after Cancel | failed-with-effects | remoteGone: true, localNotDeleted: true |
+| gone, stale ref removed | failed, or not run after Cancel | `failed-with-effects` | `remoteGone: true`, `localNotDeleted: true` |
 
 ## 6. Refusal reasons
 

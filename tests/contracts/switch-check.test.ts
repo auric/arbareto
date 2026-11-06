@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import type { FileFact } from "../../src/contracts/channel";
 import { DISCARD_CHECK_PATHS } from "../../src/contracts/limits";
-import { discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, IN_THE_WAY_PATHS, nestedVerdict, sortFacts, untrackedOf } from "../../src/git-service/switch-check";
+import { assumedOf, discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, IN_THE_WAY_PATHS, nestedVerdict, sortFacts, untrackedOf } from "../../src/git-service/switch-check";
 
 printOrigin("../../src/git-service/switch-check.ts", import.meta.dir);
 
@@ -186,5 +186,18 @@ describe("ignored files below the folders in the way", () => {
     expect(nestedVerdict(["x"], [link(2)])).toBe("malformed");
     expect(nestedVerdict(["x", "y"], [ABSENT, { kind: "error", component: 1, code: "access-denied" }])).toBe("unknown");
     expect(() => nestedVerdict(["x"], [])).toThrow(TypeError);
+  });
+});
+
+// Feature 010 research.md R2 P19 and git-ls-files(1) `-t`, `-v`: a tag, a space, and the path. A lowercase tag marks the assume-unchanged bit.
+describe("assume-unchanged entries", () => {
+  test("each h entry becomes an M record of the --name-status -z form; other index tags give nothing", () => {
+    expect(Buffer.from(assumedOf(raw("H a.txt\0h p.txt\0S s.txt\0s both.txt\0M u.txt\0m v.txt\0h d/f\0")) as Uint8Array).toString("latin1")).toBe("M\0p.txt\0M\0d/f\0");
+    expect(Buffer.from(assumedOf(raw("")) as Uint8Array).toString("latin1")).toBe("");
+    expect(Buffer.from(assumedOf(raw(utf8("h ä b.txt\0"))) as Uint8Array).toString("latin1")).toBe(utf8("M\0ä b.txt\0"));
+  });
+
+  test("another tag, a missing space or path, or a missing NUL is malformed", () => {
+    for (const out of ["R a\0", "C a\0", "K a\0", "? a\0", "! a\0", "U a\0", "Ha\0", "h \0", "h\0", "h a", "hh a\0"]) expect({ out, r: assumedOf(raw(out)) }).toEqual({ out, r: "malformed" });
   });
 });

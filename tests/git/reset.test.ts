@@ -420,6 +420,60 @@ describeGit("reset current branch to here (T007)", () => {
     }
   }, TIMEOUT_MS);
 
+  // Research.md R2 P19: diff-index does not look at the working file of an assume-unchanged entry, but `reset --hard` does. Git keeps the bytes of a skip-worktree entry.
+  caseTest(TASK, "FR-043 and SC-002: an assume-unchanged entry with an untracked folder in place of its file, or an untracked file in place of its folder, refuses Hard with UNTRACKED_IN_WAY, and Git's own reset --hard on a copy loses those bytes; a skip-worktree entry in the same shape reviews, and Hard keeps the bytes as Git's own reset on a copy", SHELL, async () => {
+    const h = hostFor("t007-assumed");
+    const folder = [fc({ mark: 6, message: "m5\n", from: 4, files: { "k/k.txt": "k\n" } })];
+    const shapes: [string, string, (f: Fixture) => void, (f: Fixture) => string, string, (dir: string) => boolean, Buffer[]][] = [
+      [
+        "folder in place of a file",
+        "p.txt",
+        (f) => {
+          rmSync(native(`${f.repo}/p.txt`));
+          h.write(`${f.repo}/p.txt/keep.txt`, "keep\n");
+        },
+        (f) => f.c.m2,
+        "p.txt",
+        (dir) => h.read(`${dir}/p.txt/keep.txt`)?.toString() === "keep\n",
+        [],
+      ],
+      [
+        "file in place of a folder",
+        "k/k.txt",
+        (f) => {
+          rmSync(native(`${f.repo}/k`), { recursive: true });
+          h.write(`${f.repo}/k`, "k local\n");
+        },
+        (f) => tipOf(h, f),
+        "k",
+        (dir) => lstatSync(native(`${dir}/k`)).isFile() && h.read(`${dir}/k`)?.toString() === "k local\n",
+        folder,
+      ],
+    ];
+    for (const flag of ["--assume-unchanged", "--skip-worktree"] as const) {
+      for (const [name, entry, prepare, target, way, kept, extra] of shapes) {
+        const f = build(h, `bit${flag}-${way}`, extra);
+        gitRun(h, f.repo, ["update-index", flag, "--", entry]);
+        prepare(f);
+        const t = target(f);
+        const o = copyOf(h, f.repo);
+        gitRun(h, o, ["reset", "--quiet", "--no-recurse-submodules", "--hard", t, "--"]);
+        expect({ flag, name, kept: kept(o) }).toEqual({ flag, name, kept: flag === "--skip-worktree" });
+        const before = stateOf(h, f.repo);
+        await withSync(`t007-bit${flag}-${way}`, async (service) => {
+          const r = await approved(service, f.repo);
+          const from = service.runner.calls.length;
+          if (flag === "--assume-unchanged") {
+            expect({ flag, name, ...refusal(await review(service, r, RESET(t, "hard"))) }).toEqual({ flag, name, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths: [way], more: 0 } });
+            expect({ flag, name, steps: steps(service, from) }).toEqual({ flag, name, steps: [] });
+          } else expect({ flag, name, ...outcome(await run(service, r, RESET(t, "hard"))) }).toEqual({ flag, name, ...SUCCEEDED });
+        });
+        if (flag === "--assume-unchanged") expect({ flag, name, state: stateOf(h, f.repo) }).toEqual({ flag, name, state: before });
+        else expect({ flag, name, state: stateOf(h, f.repo), kept: kept(f.repo) }).toEqual({ flag, name, state: stateOf(h, o), kept: true });
+      }
+    }
+  }, TIMEOUT_MS);
+
   // Research.md R2 P18: Git prints a nested repository below an ignored folder as a record that ends with `/`.
   caseTest(TASK, "FR-043 and FR-044: an ignored folder in the way that holds a nested repository refuses Hard with UNTRACKED_IN_WAY and the repository folder, for a .git folder at the top or deeper and for a .git file; Git's own reset --hard on a copy deletes it; every byte stays", SHELL, async () => {
     const h = hostFor("t007-nested");

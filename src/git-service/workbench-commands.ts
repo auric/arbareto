@@ -240,6 +240,11 @@ export function resetCandidatesArgs(target: string, objectFormat: ObjectFormat):
   return read("diff-index", "-R", "-z", "--no-renames", "--name-status", oid(target, objectFormat), "--");
 }
 
+// Research.md R2 P19: `-v` gives a lowercase tag to an entry with the assume-unchanged bit (git-ls-files(1), git-update-index(1)).
+export function assumedArgs(): string[] {
+  return read("ls-files", "-z", "-v");
+}
+
 // Plan.md D4 read 4: the commits that arrive. `rewrittenCountArgs` gives the commits that leave.
 export function gainCountArgs(target: string, objectFormat: ObjectFormat): string[] {
   return read("rev-list", "--count", `HEAD..${oid(target, objectFormat)}`);

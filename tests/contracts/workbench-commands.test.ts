@@ -282,6 +282,7 @@ describe("commit menu argv (feature 010 plan.md D3 to D6)", () => {
   const throws = (f: () => unknown) => expect(f).toThrow(TypeError);
   const COMMIT_READS: [string, string[], string[]][] = [
     ["reset Hard in-the-way candidates (P15, P17)", wb.resetCandidatesArgs(A, "sha1"), [...R, "diff-index", "-R", "-z", "--no-renames", "--name-status", A, "--"]],
+    ["in-the-way assume-unchanged entries (P19)", wb.assumedArgs(), [...R, "ls-files", "-z", "-v"]],
     ["reset commits that leave", wb.rewrittenCountArgs(A, "sha1"), [...R, "rev-list", "--count", `${A}..HEAD`]],
     ["reset commits that arrive", wb.gainCountArgs(A, "sha1"), [...R, "rev-list", "--count", `HEAD..${A}`]],
     ["reset reflog-only count", wb.reflogOnlyCountArgs(A, "main", "sha1"), [...R, "rev-list", "--count", "HEAD", "--not", A, "--exclude=main", "--branches", "--tags", "--remotes"]],

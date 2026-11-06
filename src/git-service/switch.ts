@@ -11,12 +11,12 @@ import { createCollector, firstEnd, isDeadlineStop, stepUnits } from "./git-runn
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
-import { discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, nestedVerdict, sortFacts, untrackedOf } from "./switch-check";
+import { assumedOf, discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, nestedVerdict, sortFacts, untrackedOf } from "./switch-check";
 import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { indexState, readOut, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
-import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, ignoredFilesArgs, refPeelArgs, resetCandidatesArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
+import { assumedArgs, changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, ignoredFilesArgs, refPeelArgs, resetCandidatesArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
 import { oidList, parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
 import { conclude, heldElsewhere, killed, readWorktrees, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
 
@@ -25,6 +25,7 @@ export const STASH_REMEDY_TEXT = "The stash keeps the changes. This command appl
 const HEADS = "refs/heads/";
 const STASH = "refs/stash";
 const MALFORMED = { code: "MALFORMED_GIT_OUTPUT" } as const;
+const LISTING_LIMIT = { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" } as const;
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
@@ -161,14 +162,14 @@ function batches(paths: readonly string[], ctx: ObserveContext, args: (list: str
 // `ignored` counts the ignored files in the way, which Git replaces (feature 010 research.md R2 P4c). Without `countFolders`, an ignored folder counts as one.
 export async function inTheWayCheck(ctx: ObserveContext, listings: readonly string[][], countFolders = false): Promise<Fact<{ ignored: number }> | Refused> {
   const w = ctx.workspace;
-  const outputs: Uint8Array[] = [];
-  for (const listing of listings) {
-    const diff = await readOut(ctx, listing, STATUS_LISTING_BYTES);
-    if ("limited" in diff) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
-    if (!("value" in diff)) return diff;
-    outputs.push(diff.value);
-  }
-  const c = discardCandidates(Buffer.concat(outputs));
+  // 001 contract §5 "Deadline outcomes": the reads run at once, so a deadline decides first. The last read gives the assume-unchanged entries (P19).
+  const reads = await Promise.all([...listings, assumedArgs()].map((args) => readOut(ctx, args, STATUS_LISTING_BYTES)));
+  const end = firstEnd(reads.map((r) => ("limited" in r ? LISTING_LIMIT : "value" in r ? null : r)), isDeadlineStop);
+  if (end !== null) return end;
+  const outputs = reads.map((r) => ("value" in r ? r.value : new Uint8Array()));
+  const assumed = assumedOf(outputs.pop()!);
+  if (assumed === "malformed") return MALFORMED;
+  const c = discardCandidates(Buffer.concat([...outputs, assumed]));
   if (c === "malformed") return MALFORMED;
   if (c === "limit") return unavailable("limit");
   if (c.paths.length === 0) return { value: { ignored: 0 } };

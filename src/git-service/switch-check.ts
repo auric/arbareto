@@ -78,6 +78,21 @@ export function untrackedOf(entries: readonly string[], stdout: Uint8Array, obje
   return entries.filter((path) => !tracked.has(path));
 }
 
+// git-ls-files(1) `-t` and `-v`: each record is a tag, a space, and the path. A lowercase tag marks the assume-unchanged bit.
+// The read lists index entries only, so the tags are `H`, `S`, and `M`. `reset --hard` rewrites a changed `h` entry and keeps a skip-worktree entry (feature 010 research.md R2 P19).
+// The result is the `--name-status -z` form, with an `M` record for each `h` path.
+const INDEX_TAGS = "HSMhsm";
+export function assumedOf(stdout: Uint8Array): Uint8Array | "malformed" {
+  const records = fields(stdout);
+  if (records === null) return "malformed";
+  let out = "";
+  for (const record of records) {
+    if (record.length < 3 || record[1] !== " " || !INDEX_TAGS.includes(record[0]!)) return "malformed";
+    if (record[0] === "h") out += `M\0${record.slice(2)}\0`;
+  }
+  return Buffer.from(out, "latin1");
+}
+
 // `ls-files -z --others --ignored` below `folders`: one NUL-ended path per file. Each path must lie below one of `folders`.
 // Git prints a nested repository as its folder with a trailing `/`, also at a folder itself (feature 010 research.md R2 P18). `nested` holds these folders.
 export function ignoredFilesOf(folders: readonly string[], stdout: Uint8Array): { files: number; nested: string[] } | "malformed" {

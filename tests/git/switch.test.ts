@@ -347,6 +347,70 @@ caseTest(TASK, "FR-011 and SC-002: Stash and Discard with an untracked folder in
   }
 }, TIMEOUT_MS);
 
+// 010 research.md R2 P19: the rollback of `stash push` rewrites an assume-unchanged entry whose file the user replaced. Git keeps the bytes of a skip-worktree entry.
+caseTest(TASK, "FR-011 and SC-002: Stash and Discard with an assume-unchanged entry and an untracked folder in place of its file, or an untracked file in place of its folder, refuse with UNTRACKED_IN_WAY, and Git's own commands on a copy lose those bytes; with a skip-worktree entry in the same shape, Discard runs as Git's own commands and keeps the bytes", SHELL, async () => {
+  const shapes: [string, string, (f: WbFixture) => void, string, (f: WbFixture) => boolean][] = [
+    [
+      "folder in place of a file",
+      "c.txt",
+      (f) => {
+        rmSync(join(f.repo, "c.txt"));
+        mkdirSync(join(f.repo, "c.txt"));
+        put(f, "c.txt/keep.txt", "keep\n");
+      },
+      "c.txt",
+      (f) => existsSync(join(f.repo, "c.txt", "keep.txt")) && readFileSync(join(f.repo, "c.txt", "keep.txt"), "utf8") === "keep\n",
+    ],
+    [
+      "file in place of a folder",
+      "k/k.txt",
+      (f) => {
+        rmSync(join(f.repo, "k"), { recursive: true });
+        put(f, "k", "k local\n");
+      },
+      "k",
+      (f) => lstatSync(join(f.repo, "k")).isFile() && readFileSync(join(f.repo, "k"), "utf8") === "k local\n",
+    ],
+  ];
+  const DISCARD = [["stash", "push", "--quiet", "-m", MESSAGE], ["checkout", "-q", "--no-guess", "target", "--"], ["stash", "drop", "--quiet"]];
+  for (const flag of ["--assume-unchanged", "--skip-worktree"] as const) {
+    for (const [name, entry, prepare, way, kept] of shapes) {
+      const setup = (x: WbFixture) => {
+        if (entry === "k/k.txt") shared(x, entry);
+        git(x, ["update-index", flag, "--", entry]);
+        prepare(x);
+        put(x, "b.txt", "b changed\n");
+      };
+      const o = build("switch-clean");
+      setup(o);
+      for (const args of DISCARD) git(o, args);
+      expect({ flag, name, kept: kept(o) }).toEqual({ flag, name, kept: flag === "--skip-worktree" });
+      if (flag === "--assume-unchanged") {
+        for (const choice of ["stash", "discard"]) {
+          const f = build("switch-clean");
+          setup(f);
+          const before = stateOf(f);
+          await withSync(`t021-assumed-${way}-${choice}`, async (service) => {
+            const r = await open(service, f.repo);
+            const from = service.runner.calls.length;
+            expect({ name, choice, ...refusalOf(await review(service, r, switchTo(choice))) }).toEqual({ name, choice, state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths: [way], more: 0 } });
+            expect({ name, choice, steps: steps(service, from) }).toEqual({ name, choice, steps: [] });
+          });
+          expect({ name, choice, state: stateOf(f) }).toEqual({ name, choice, state: before });
+        }
+      } else {
+        const f = build("switch-clean");
+        setup(f);
+        await withSync(`t021-skip-${way}`, async (service) => {
+          const r = await open(service, f.repo);
+          expect({ name, ...outcome(await run(service, r, switchTo("discard"))) }).toEqual({ name, ...SUCCEEDED });
+        });
+        expect({ name, state: stateOf(f), kept: kept(f) }).toEqual({ name, state: stateOf(o), kept: true });
+      }
+    }
+  }
+}, TIMEOUT_MS);
+
 // 010 research.md R2 P18: the listing runs for each ignored folder in the way, to find a nested repository.
 caseTest(TASK, "FR-011: Discard with an ignored folder in the way reviews as replaceable after one ls-files --others --ignored read; an output above STATUS_LISTING_BYTES refuses with OUTPUT_LIMIT", SHELL, async () => {
   const f = build("switch-clean");
@@ -474,7 +538,7 @@ caseTest(TASK, "contract §6: a Discard ls-files batch that fits only under the 
     const calls = service.runner.calls.slice(from);
     expect(calls.filter((c) => c.refused !== undefined).map((c) => c.refused)).toEqual([]);
     expect({ ...outcome(response), reason: (response.result as { reason?: string } | undefined)?.reason }).toEqual({ state: "failed", code: "UNTRACKED_IN_WAY", reason: "untracked-in-way" });
-    const batches = calls.filter((c) => c.arguments[3] === "ls-files").map((c) => [...c.arguments]);
+    const batches = calls.filter((c) => c.arguments[3] === "ls-files" && c.arguments.includes("--stage")).map((c) => [...c.arguments]);
     const paths = batches.flatMap((args) => args.slice(args.indexOf("--") + 1));
     expect(unitsOf(selectedPath, [...STAGES, ...paths])).toBe(WINDOWS_COMMAND_LINE_UNITS);
     expect(batches.map((args) => unitsOf(executablePath, args) <= WINDOWS_COMMAND_LINE_UNITS)).toEqual([true, true]);

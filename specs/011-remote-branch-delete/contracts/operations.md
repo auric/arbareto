@@ -10,7 +10,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 ## Δ2 Envelope (001 §2)
 
-- `MUTATIONS` keeps `sync`. No new mutation operation and no new phase. The push step reports the existing phase `sync-push`.
+- `MUTATIONS` keeps `sync`. No new mutation operation. The push step and the gone check report the existing phase `sync-push`. The local writes of the combined delete report the new phase `sync-delete-local` before the first write.
 - Events carry no path, no URL, and no Git text.
 
 ## Δ3 Public operations (001 §3)

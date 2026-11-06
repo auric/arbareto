@@ -14,7 +14,7 @@ import * as approvalsModule from "../../src/git-service/approvals";
 import * as trustModule from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, removeTree, serviceEnv, useFixtureRoot } from "./fixture-root";
-import { countPath, deepWorld, flatName, flatWorld, folderWorld } from "./submodule-count-fixture";
+import { countPath, countWorld, deepWorld, flatName, flatWorld, folderWorld } from "./submodule-count-fixture";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
 import { gitPath, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService } from "./hunk-harness";
@@ -2074,6 +2074,43 @@ describe("config total in row order (004 FR-112, FR-115)", () => {
   orderCase("row 17 fails before the rows pass 64 MiB, and the listing of row 16 ends last: GIT_FAILED with 1 lane and with 8 lanes, in each of 5 runs", () =>
     ordered("t159-order-failed", Array.from({ length: 21 }, (_, i) => i).filter((i) => i !== 17), 17, 16, "GIT_FAILED"),
   );
+});
+
+// ---- Feature 004 FR-115: a nested listing with more gitlinks than the bound keeps none of them (contract Δ12 "Submodule bound") ----
+
+describe("nested listing bound (004 FR-115)", () => {
+  // One cloned row `p` whose commit records `n` gitlinks without a clone.
+  const nestedWorld = (name: string, n: number) => {
+    const w = countWorld(name, [{ path: "p", name: "p" }], { clone: false, nested: Array.from({ length: n }, (_, i) => ({ path: countPath(i), name: flatName(i) })) });
+    treeGit(w, w.sup, ["submodule", "update", "--init", "-q", "--", "p"]);
+    return w;
+  };
+  // The list review (8 lanes) and the review scoped to `p` (1 lane): the outcome, the count of rows below `p`, and the `limit` texts.
+  async function reviews(w: TreeWorld, name: string): Promise<unknown[]> {
+    const out: unknown[] = [];
+    await withTree(w, name, async (service) => {
+      await review();
+      const { repositoryId } = await service.register(w.sup);
+      for (const scope of [undefined, { path: "p" }]) {
+        const read = await readOk(service, repositoryId);
+        const response = await service.request("reviewSubmodules", { snapshotId: read.snapshotId, ...(scope === undefined ? {} : { scope }) }, { repositoryId, repositoryGeneration: read.generation });
+        const rows = objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"]);
+        out.push({ outcome: outcome(response), p: rows.filter((row) => row.path === "p").length, below: rows.filter((row) => row.path.startsWith("p/")).length, limit: refusalsOf(response.result).filter((x) => x.reason === "limit").map((x) => x.text) });
+      }
+    });
+    return out;
+  }
+
+  caseTest("T160", "a nested listing of 1,025 gitlinks keeps none of them and gives limit, with 8 lanes and with 1 lane", SHELL, async () => {
+    const results = await reviews(nestedWorld("t160-listing-1025", 1_025), "t160-listing-1025");
+    expect(results).toEqual([0, 1].map(() => ({ outcome: SUCCEEDED, p: 1, below: 0, limit: [TEXTS.limit] })));
+  }, 10 * 60_000);
+
+  // `p` and 1,024 rows below it pass the bound, so the count gives limit after the rows that fit (case 2b).
+  caseTest("T160", "a nested listing of 1,024 gitlinks keeps them: the review lists the 1,023 rows below p that fit the bound and gives limit, with 8 lanes and with 1 lane", SHELL, async () => {
+    const results = await reviews(nestedWorld("t160-listing-1024", 1_024), "t160-listing-1024");
+    expect(results).toEqual([0, 1].map(() => ({ outcome: SUCCEEDED, p: 1, below: 1_023, limit: [TEXTS.limit] })));
+  }, 10 * 60_000);
 });
 
 // ---- Feature 004 FR-112: the nested reads of a level run at most `lanes` ahead of the depth-first apply (contract Δ12 "Parallel reads") ----

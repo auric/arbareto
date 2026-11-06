@@ -409,7 +409,8 @@ function gitWritten(entry: ConfigEntry): boolean {
 type Tree = NonNullable<ReturnType<typeof parseTree>>;
 
 // `ls-tree -r -z`: `<mode> SP <type> SP <oid> TAB <path>` records.
-function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: { path: Uint8Array; oid: string }[]; gitmodules: boolean } | null {
+// `limit`: the tree records more gitlinks than SUBMODULE_REVIEW_SUBMODULES. Its rows and its parent row pass the bound, so the parse keeps no gitlink.
+function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: { path: Uint8Array; oid: string }[]; gitmodules: boolean } | "limit" | null {
   if (bytes.length > 0 && bytes[bytes.length - 1] !== NUL) return null;
   const gitlinks: { path: Uint8Array; oid: string }[] = [];
   let gitmodules = false;
@@ -419,8 +420,10 @@ function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: {
     const m = /^([0-7]{6}) (blob|tree|commit) (\S+)$/.exec(latin1(record.subarray(0, tab)));
     const path = record.slice(tab + 1);
     if (m === null || !isObjectId(m[3]!, objectFormat) || path.length === 0) return null;
-    if (m[1] === "160000" && m[2] === "commit") gitlinks.push({ path, oid: m[3]! });
-    else if (GITMODULES.equals(path) && m[2] === "blob") gitmodules = true;
+    if (m[1] === "160000" && m[2] === "commit") {
+      if (gitlinks.length === SUBMODULE_REVIEW_SUBMODULES) return "limit";
+      gitlinks.push({ path, oid: m[3]! });
+    } else if (GITMODULES.equals(path) && m[2] === "blob") gitmodules = true;
   }
   return { gitlinks, gitmodules };
 }
@@ -1288,6 +1291,12 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       listed?: Tree,
     ): Promise<{ gitlinks: { path: Uint8Array; oid: string }[]; modules: Gitmodules } | null> => {
       const parsed = listed ?? (await listTree(location, commit));
+      // The level applies the refusal in row order, as the count would.
+      if (parsed === "limit") {
+        observed.push({ tree: commit, limit: true });
+        refuseLimit();
+        return null;
+      }
       onLinks?.(parsed.gitlinks);
       observed.push({ tree: commit, gitlinks: parsed.gitlinks.map((g) => [Buffer.from(g.path).toString("base64"), g.oid]) });
       if (parsed.gitlinks.length === 0 || !parsed.gitmodules) return { gitlinks: parsed.gitlinks, modules: emptyModules() };

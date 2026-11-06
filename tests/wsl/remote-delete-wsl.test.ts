@@ -9,15 +9,17 @@
 // Control: give the oracle push of the success case the `main` commit as the expect. The state comparison must fail.
 
 import { expect } from "bun:test";
+import { CANCELED_PUSH_TEXT } from "../../src/git-service/sync";
 import { printOrigin } from "../origin";
 import { outcome, readOk, SUCCEEDED } from "../git/hunk-harness";
+import { DELETE_ARGS, LS_REMOTE_ARGS, pruneText } from "../git/remote-delete-harness";
 import { fc, gitOut, gitRun, importStream, refMap, type GitHost } from "../git/remote-fixtures";
 import type { RegistrationResult, Service } from "../git/service-harness";
 import { ANY_EXIT, remoteCalls, sendSync, until, type Reviewed, type SyncResult } from "../git/sync-harness";
-import { AFTER_CLOSE_MS, headOf, hostOf, L, localConfig, open, refusalOf, type Repo, request, RESPONSE_MS, steps, useWorkbenchWsl, W, withWsl } from "./workbench-wsl-harness";
+import { AFTER_CLOSE_MS, headOf, hostOf, L, localConfig, open, refusalOf, type Repo, request, RESPONSE_MS, useWorkbenchWsl, W, withWsl } from "./workbench-wsl-harness";
 import { inDistro, listScopes, pgrep, wslExec, type WslHost } from "./wsl-host";
 
-for (const module of ["sync", "sync-review", "remote-delete", "sync-commands", "sync-parsers"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+for (const module of ["sync", "sync-review"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 printOrigin("./remote-delete-wsl.test.ts", import.meta.dir);
 useWorkbenchWsl();
 
@@ -29,8 +31,8 @@ const HOOK_START_MS = 120_000;
 const DESTINATION = { remote: "origin", ref: FEATURE, trackingRef: TRACKING, setUpstream: false, upstreamRebase: false, source: "tracking-ref" };
 
 // Contract Δ3 `sync`: the argument arrays of the run, in order.
-const pushDelete = (expect: string) => [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", `--force-with-lease=${FEATURE}:${expect}`, "--", "origin", `:${FEATURE}`];
-const LS_REMOTE = [L, "ls-remote", "--exit-code", "--", "origin", FEATURE];
+const pushDelete = (expect: string) => DELETE_ARGS("origin", FEATURE, expect);
+const LS_REMOTE = LS_REMOTE_ARGS("origin", FEATURE);
 const dropTracking = (expect: string) => [L, "update-ref", "--no-deref", "-d", TRACKING, expect];
 const combined = (tip: string) => [pushDelete(tip), [L, "update-ref", "--no-deref", "-d", FEATURE, tip], [L, "config", "--local", "--remove-section", "branch.feature"]];
 
@@ -79,8 +81,8 @@ function oracle(x: World, args: string[][]): number[] {
 
 async function trusted(s: Service, w: WslHost, dir: string): Promise<RegistrationResult> {
   const r = await open(s, w, dir);
-  const trust = await request<{ approvalRequired: { sync: boolean } }>(s, "readTrust", {}, { repositoryId: r.repositoryId });
-  if (trust.result!.approvalRequired.sync) expect((await request(s, "approveTrust", { action: "push" }, { repositoryId: r.repositoryId })).state).toBe("succeeded");
+  expect((await request<{ approvalRequired: { sync: boolean } }>(s, "readTrust", {}, { repositoryId: r.repositoryId })).result!.approvalRequired.sync).toBe(true);
+  expect((await request(s, "approveTrust", { action: "push" }, { repositoryId: r.repositoryId })).state).toBe("succeeded");
   return r;
 }
 async function reviewDelete(s: Service, r: RegistrationResult, payload: { ref: string; local?: string }) {
@@ -94,6 +96,7 @@ async function reviewed(s: Service, r: RegistrationResult, payload: { ref: strin
   return response.result as Reviewed & { syncReviewToken: string };
 }
 const runDelete = (s: Service, r: RegistrationResult, token: string) => s.response<DeleteResult>(sendSync(s, r, token), RESPONSE_MS);
+const remoteArgs = (s: Service, from: number) => remoteCalls(s, from).map((c) => [...c.arguments]);
 const flagsOf = (result: DeleteResult) => ({ remoteGone: result.remoteGone, localNotDeleted: result.localNotDeleted });
 
 W("T018 SC-001: a remote-only delete with the lease equals the distro Git's own lease delete on a copy, and the configuration bytes stay", async (w) => {
@@ -109,7 +112,7 @@ W("T018 SC-001: a remote-only delete with the lease equals the distro Git's own 
     expect(outcome(done)).toEqual(SUCCEEDED);
     expect(done.result!.push).toMatchObject({ status: "deleted", oldObjectId: x.tip, newObjectId: null, lease: true, upstreamWritten: false, upstreamNotSet: false });
     expect(flagsOf(done.result!)).toEqual({ remoteGone: undefined, localNotDeleted: undefined });
-    expect(steps(s, from, ["remote"])).toEqual([pushDelete(x.tip)]);
+    expect(remoteArgs(s, from)).toEqual([pushDelete(x.tip)]);
   });
   const exits = oracle(x, [pushDelete(x.tip)]);
   expect(stateAt(x, x.root)).toEqual(stateAt(x, oracleOf(x)));
@@ -132,9 +135,9 @@ W("T018 SC-002: a remote branch that moved after the fetch refuses the lease wit
     expect(done.result!.push).toMatchObject({ status: "rejected", oldObjectId: x.tip, newObjectId: x.tip, lease: true });
     expect(flagsOf(done.result!)).toEqual({ remoteGone: undefined, localNotDeleted: undefined });
     // Feature 003 contract Δ3: a remedy is text only for a WSL Git, so the command is null.
-    expect({ text: typeof done.result!.remedy?.text, command: done.result!.remedy?.command }).toEqual({ text: "string", command: null });
+    expect(done.result!.remedy).toEqual({ text: pruneText("origin"), command: null });
     // Plan.md D8: the fetch URL equals the push URL, so the run checks the remote. The exact `<dst>` line keeps the stale outcome.
-    expect(steps(s, from, ["remote"])).toEqual([pushDelete(x.tip), LS_REMOTE]);
+    expect(remoteArgs(s, from)).toEqual([pushDelete(x.tip), LS_REMOTE]);
   });
   const exits = oracle(x, [pushDelete(x.tip), LS_REMOTE]);
   expect(stateAt(x, x.root)).toEqual(before);
@@ -148,7 +151,7 @@ W("T018 SC-003: the default branch of origin refuses with default-branch, and no
   await withWsl(w, "t018-default", async (s) => {
     const r = await trusted(s, w, workOf(x.root));
     const from = s.runner.calls.length;
-    expect(refusalOf(await reviewDelete(s, r, { ref: "refs/remotes/origin/main" }))).toEqual({ state: "failed", code: "SYNC_UNAVAILABLE", result: { reason: "default-branch" } });
+    expect(refusalOf(await reviewDelete(s, r, { ref: "refs/remotes/origin/main" }))).toEqual({ state: "failed", code: "SYNC_UNAVAILABLE", result: { reason: "default-branch", remote: "origin" } });
     expect(remoteCalls(s, from)).toEqual([]);
   });
   expect(stateAt(x, x.root)).toEqual(before);
@@ -167,7 +170,7 @@ W("T018 SC-004: the combined delete equals the distro Git's lease delete, update
     expect(outcome(done)).toEqual(SUCCEEDED);
     expect(done.result!.push).toMatchObject({ status: "deleted", oldObjectId: x.tip, newObjectId: null, lease: true });
     expect(flagsOf(done.result!)).toEqual({ remoteGone: undefined, localNotDeleted: undefined });
-    expect(steps(s, from, ["remote"])).toEqual(combined(x.tip));
+    expect(remoteArgs(s, from)).toEqual(combined(x.tip));
   });
   const exits = oracle(x, combined(x.tip));
   expect(stateAt(x, x.root)).toEqual(stateAt(x, oracleOf(x)));
@@ -184,9 +187,9 @@ W("T018 plan.md D8: a remote branch deleted after the fetch gives remoteGone; ls
     const from = s.runner.calls.length;
     const done = await runDelete(s, r, rv.syncReviewToken);
     expect(outcome(done)).toEqual(SUCCEEDED);
-    expect(done.result!.push).toMatchObject({ status: "rejected", oldObjectId: x.tip, newObjectId: null, lease: true });
+    expect(done.result!.push).toMatchObject({ status: "rejected", oldObjectId: x.tip, newObjectId: null, reasonText: "stale info", lease: true });
     expect(flagsOf(done.result!)).toEqual({ remoteGone: true, localNotDeleted: undefined });
-    expect(steps(s, from, ["remote"])).toEqual([pushDelete(x.tip), LS_REMOTE, dropTracking(x.tip)]);
+    expect(remoteArgs(s, from)).toEqual([pushDelete(x.tip), LS_REMOTE, dropTracking(x.tip)]);
   });
   const exits = oracle(x, [pushDelete(x.tip), LS_REMOTE, dropTracking(x.tip)]);
   expect(stateAt(x, x.root)).toEqual(stateAt(x, oracleOf(x)));
@@ -207,7 +210,9 @@ W("T018 SC-010: Cancel during a slow pre-receive hook of the remote ends cancele
     await until(() => /^\d+\n$/.test(x.h.read(pidFile)?.toString("utf8") ?? ""), "pre-receive hook start", HOOK_START_MS);
     const pid = x.h.read(pidFile)!.toString("utf8").trim();
     await s.cancel(operationId);
-    expect(outcome(await s.response(requestId, RESPONSE_MS))).toEqual({ state: "canceled", code: "CANCELED" });
+    const done = await s.response<DeleteResult>(requestId, RESPONSE_MS);
+    expect(outcome(done)).toEqual({ state: "canceled", code: "CANCELED" });
+    expect(done.result!.remedy).toEqual({ text: CANCELED_PUSH_TEXT, command: null });
     await Bun.sleep(AFTER_CLOSE_MS);
     // proc(5): `/proc/<pid>` exists while the process exists. test(1) exits 1 for an absent path.
     const hook = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", "/usr/bin/test", "-e", `/proc/${pid}`]).exitCode;

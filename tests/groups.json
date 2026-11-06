@@ -39,6 +39,7 @@
     "tests/wsl/history-wsl.test.ts": "builds or reads H200K",
     "tests/wsl/inspection-wsl.test.ts": "runs alone in the WSL distro",
     "tests/wsl/lifecycle.test.ts": "asserts a close below 10,000 ms",
+    "tests/wsl/remote-delete-wsl.test.ts": "WSL remote delete in the distro",
     "tests/wsl/revert-facts.test.ts": "runs Perl probes in the distro",
     "tests/wsl/revert-wsl-files.test.ts": "WSL replace in the distro",
     "tests/wsl/revert-wsl.test.ts": "WSL revert in the distro",

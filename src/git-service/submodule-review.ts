@@ -135,8 +135,6 @@ export interface PathForms {
   root: string;
   join(base: string, ...parts: string[]): string;
   resolve(base: string, path: string): string;
-  // The key of one folder. Linux names keep their letter case.
-  key(path: string): string;
   // The UNC form of a Linux path. Null: the path has no UNC form (contract §11 "Route").
   native(path: string): string | null;
   platform: GitPlatform;
@@ -147,8 +145,7 @@ export interface PathForms {
 
 export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installation: Pick<ReadInstallation, "selectedPath">): PathForms {
   if (w.wsl === undefined) {
-    const key = (path: string) => NATIVE.fold(resolve(path));
-    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, key, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined };
+    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined };
   }
   const { distro, guid, wslExecutable, path } = w.wsl;
   const route = routeWslPath(w.worktreeRoot, { listed: [distro], registry: [{ name: distro, guid, version: 2 }] });
@@ -158,7 +155,6 @@ export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installati
     root: route.linuxPath,
     join: (base, ...parts) => posix.join(base, ...parts),
     resolve: (base, linux) => posix.resolve(base, linux),
-    key: (linux) => posix.normalize(linux),
     native: (linux) => wslIdentityPath(distro, linux),
     platform: "posix",
     gitPath: path,
@@ -191,7 +187,8 @@ export const REFUSAL_TEXTS = {
   activeValue: (path: string, name: string) => `Submodule ${path} has a submodule.${name}.active value that is not true or false. Fix it in a terminal, then use Refresh.`,
   remoteName: (path: string, name: string) => `Submodule ${path} has a remote named ${name}, which Git can read as an option. Rename that remote in a terminal, then use Refresh.`,
   gitdirConfig: "This repository sets custom locations for submodule Git folders. Arbareto reads only the default location. Update the submodules in a terminal.",
-  limit: "This repository has more than 256 submodules or more than 8 nesting levels. Update them in a terminal.",
+  // Feature 004 contract Δ12 "Submodule bound": the 001 §12 text names SUBMODULE_REVIEW_SUBMODULES.
+  limit: "This repository has more than 1,024 submodules or more than 8 nesting levels. Update them in a terminal.",
   // Feature 004 contract Δ12.
   parentNotInitialized: (parent: string, path: string) => `Submodule ${parent} is not initialized. Update ${parent} first, then update submodule ${path}.`,
   inactive: (path: string) => `Submodule ${path} is not active, and Arbareto does not activate submodules. Activate it with the command, then update it again.`,
@@ -282,6 +279,8 @@ class Halt {
 const NUL = 0x00;
 const NEWLINE = 0x0a;
 const TAB = 0x09;
+// Feature 004 contract Δ12 "Submodule bound": one row can hold TRUST_INPUT_BYTES, so this total bounds the service memory of a review.
+const REVIEW_CONFIG_BYTES = 64 * 1024 * 1024;
 const latin1 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const sha256 = (value: unknown) => new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex");
@@ -410,7 +409,8 @@ function gitWritten(entry: ConfigEntry): boolean {
 type Tree = NonNullable<ReturnType<typeof parseTree>>;
 
 // `ls-tree -r -z`: `<mode> SP <type> SP <oid> TAB <path>` records.
-function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: { path: Uint8Array; oid: string }[]; gitmodules: boolean } | null {
+// `limit`: the tree records more gitlinks than SUBMODULE_REVIEW_SUBMODULES. Its rows and its parent row pass the bound, so the parse keeps no gitlink.
+function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: { path: Uint8Array; oid: string }[]; gitmodules: boolean } | "limit" | null {
   if (bytes.length > 0 && bytes[bytes.length - 1] !== NUL) return null;
   const gitlinks: { path: Uint8Array; oid: string }[] = [];
   let gitmodules = false;
@@ -420,14 +420,19 @@ function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: {
     const m = /^([0-7]{6}) (blob|tree|commit) (\S+)$/.exec(latin1(record.subarray(0, tab)));
     const path = record.slice(tab + 1);
     if (m === null || !isObjectId(m[3]!, objectFormat) || path.length === 0) return null;
-    if (m[1] === "160000" && m[2] === "commit") gitlinks.push({ path, oid: m[3]! });
-    else if (GITMODULES.equals(path) && m[2] === "blob") gitmodules = true;
+    if (m[1] === "160000" && m[2] === "commit") {
+      if (gitlinks.length === SUBMODULE_REVIEW_SUBMODULES) return "limit";
+      gitlinks.push({ path, oid: m[3]! });
+    } else if (GITMODULES.equals(path) && m[2] === "blob") gitmodules = true;
   }
   return { gitlinks, gitmodules };
 }
 
 // The Git directory, the hooks folder, and the `config list` entries of one submodule Git directory.
 type RepoConfig = Pick<Repo, "gitDir" | "hooks" | "entries">;
+// The reads of one row before `commitRepo` applies them. `bytes`: the size of its `config list` output.
+// `reached`: the result of the reach read of `plan`. Null: the row needs no reach read.
+type Fetched = { repo: Repo; mark: SubmoduleBranch | null; bytes: number; reached: boolean | null };
 
 // One submodule Git directory that the review reads.
 export interface Repo {
@@ -548,7 +553,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     }
     const scope = t.scope === undefined ? null : new TextEncoder().encode(t.scope.path);
     // Feature 004 contract Δ12: the review takes the trust listing own or shared. The update preflight always runs its own listing.
-    // Only the list review reads the branch marks ("Branch marks"), and only it reads several rows at once ("Parallel reads").
+    // Only the list review reads the branch marks ("Branch marks"). A scoped review reads one row at a time ("Parallel reads").
     const o = observe(t, undefined, scope, () => sharedListing({ trust, listingTuple }, t), scope === null, scope === null ? SUBMODULE_WORK_PARALLEL : 1);
     const read = await o.top({ head: s.head, indexEntries: s.indexEntries });
     if ("stop" in read) return { result: read.stop };
@@ -595,6 +600,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     // The branch marks by row ID. They stay out of `observed`, `programInputs`, and the binding.
     const marks = new Map<string, SubmoduleBranch>();
     let cachedListing: TrustListing | null = null;
+    // Feature 004 contract Δ12 "Submodule bound": the `config list` bytes that `top` binds, across all rows, in row order (FR-112). Null outside `top`.
+    let boundConfig: number | null = null;
 
     // Contract §3: trust gating follows the read rule of §7, before any Git process inside a submodule.
     const superTrust = async (): Promise<TrustListing> => {
@@ -702,7 +709,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       return parsed;
     };
 
-    const readConfig = async (location: SubmoduleLocation): Promise<RepoConfig> => {
+    // `bytes`: the size of the `config list` output.
+    const readConfig = async (location: SubmoduleLocation): Promise<RepoConfig & { bytes: number }> => {
       // Contract Δ12 "Review reads": the first line is the Git directory, the second line the hooks path.
       const paths = await git(submoduleGitPathsArgs(location));
       const lf = paths.out.indexOf(NEWLINE);
@@ -716,7 +724,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       if (config.code !== 0) throw failed("GIT_FAILED");
       const entries = parseConfigListing(config.out, false);
       if (entries === null) throw failed("MALFORMED_GIT_OUTPUT");
-      return { gitDir, hooks, entries };
+      return { gitDir, hooks, entries, bytes: config.out.length };
     };
 
     // `rev-parse --verify -q HEAD`. After a nonzero exit, HEAD names no commit only when `show-ref --exists` exits 2, or when the HEAD target fails the ref-name rules.
@@ -770,10 +778,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     };
 
     // `markRow`: the row ID of a checked-out row whose branch mark this read adds (contract Δ12 "Branch marks").
+    // `reach`: the target of the reach read of `plan` (contract Δ12 "Update reads"). The read runs when HEAD is another commit.
     // `fetchRepo` only reads, so it can run ahead of its row. `commitRepo` applies its result in row order.
-    const fetchRepo = async (location: SubmoduleLocation, markRow: string | null = null): Promise<{ repo: Repo; mark: SubmoduleBranch | null }> => {
+    const fetchRepo = async (location: SubmoduleLocation, markRow: string | null = null, reach: string | null = null): Promise<Fetched> => {
       const { head, headRef } = await readHead(location);
-      const { gitDir, hooks, entries } = await readConfig(location);
+      const { gitDir, hooks, entries, bytes } = await readConfig(location);
       let refHeld: boolean | null = null;
       let mark: SubmoduleBranch | null = null;
       if (head !== null) {
@@ -788,9 +797,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           refHeld = held.out.length > 0;
         }
       }
-      return { repo: { location, head, headRef, gitDir, hooks, entries, refHeld }, mark };
+      const reached = reach !== null && head !== null && head !== reach ? await reaches(location, reach) : null;
+      return { repo: { location, head, headRef, gitDir, hooks, entries, refHeld }, mark, bytes, reached };
     };
-    const commitRepo = ({ repo, mark }: { repo: Repo; mark: SubmoduleBranch | null }): Repo => {
+    const commitRepo = ({ repo, mark, bytes }: Fetched): Repo => {
+      if (boundConfig !== null && (boundConfig += bytes) > REVIEW_CONFIG_BYTES) throw failed("OUTPUT_LIMIT");
       if (mark !== null) marks.set(mark.rowId, mark);
       observed.push({ repo: { ...repo, entries: repo.entries.map((e) => Buffer.from(e.keyValueBytes).toString("base64")) } });
       return repo;
@@ -798,11 +809,10 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const readRepo = async (location: SubmoduleLocation, markRow: string | null = null): Promise<Repo> => commitRepo(await fetchRepo(location, markRow));
 
     // Git `is_tip_reachable`: exit 0 without output means that a ref or HEAD reaches the target. Anything else means none does.
+    // `plan` pushes the observed value, so the read can run ahead of its row.
     const reaches = async (location: SubmoduleLocation, target: string) => {
       const r = await git(submoduleReachArgs(location, target, objectFormat));
-      const reached = r.code === 0 && r.out.length === 0;
-      observed.push({ reach: target, reached });
-      return reached;
+      return r.code === 0 && r.out.length === 0;
     };
 
     // `cat-file --batch-check`: `<oid> missing` for an absent object, `<oid> <type> <size>` otherwise.
@@ -970,10 +980,33 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       let next = 0;
       const initialized = entries.map((e) => (e.components === null ? false : dotGit[next++]!));
       const topHeads = lv.depth === 0 ? await headsOf(entries.filter((e, i) => initialized[i] && e.components !== null).map((e) => e.link.path)) : null;
+      // Contract Δ12 "Submodule bound": a read keeps its result until this level applies it, so at most `lanes` reads of one window run ahead of the apply.
+      // The level takes the reads of a window in the order of their start, so each read that it takes has started.
+      const windowed = () => {
+        const later: (() => void)[] = [];
+        let open = 0;
+        return <T>(work: () => Promise<T>): (() => Promise<T>) => {
+          let read: (() => Promise<T>) | null = null;
+          const start = () => {
+            open++;
+            read = ahead(work);
+          };
+          if (open < lanes) start();
+          else later.push(start);
+          return () => {
+            open--;
+            later.shift()?.();
+            return read!();
+          };
+        };
+      };
+      // Pass B applies the row reads. The depth-first loop below applies the nested reads, whose `ls-tree` output can reach STATUS_LISTING_BYTES each.
+      const rowRead = windowed();
+      const nestedAhead = windowed();
       const nested: { pending: ObservedRow; repo: Repo; read: (() => ReturnType<typeof nestedRead>) | null }[] = [];
       // The nested reads of a row start when the row has its action (contract Δ12 "Parallel reads").
       const nest = (pending: ObservedRow, repo: Repo) => {
-        nested.push({ pending, repo, read: pending.row.action === "skip" ? null : ahead(() => nestedRead(pending, repo, recurse)) });
+        nested.push({ pending, repo, read: pending.row.action === "skip" ? null : nestedAhead(() => nestedRead(pending, repo, recurse)) });
       };
 
       // Pass A, in row order: the checks of each row that await nothing. A checked-out row starts its reads here.
@@ -1166,9 +1199,12 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
             continue;
           }
 
-          const fetched = ahead(() => fetchRepo({ worktree }, row.rowId));
+          // Contract Δ12 "Update reads": the reach read of `plan` starts with the other reads of the row. The condition is the entry condition of `plan` in the tail.
+          const reach = mode === "none" || (lv.depth === 0 && (topHeads?.get(latin1(link.path)) ?? link.oid) === link.oid) ? null : link.oid;
+          const fetched = rowRead(() => fetchRepo({ worktree }, row.rowId, reach));
           step.tail = async () => {
-            const repo = commitRepo(await fetched());
+            const read = await fetched();
+            const repo = commitRepo(read);
             pending.repo = repo;
             if (repo.head === null) {
               refuse("clone-interrupted", display, REFUSAL_TEXTS.cloneInterrupted(display), null, row);
@@ -1181,7 +1217,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
             } else {
               if (!modeRefused && mode !== "checkout") refuseMode(mode);
               if (row.head === link.oid) row.action = "none";
-              else await plan(pending, repo, link.oid);
+              else await plan(pending, repo, link.oid, read.reached);
               pending.writes = writing.has(row.action);
             }
             nest(pending, repo);
@@ -1260,6 +1296,12 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       listed?: Tree,
     ): Promise<{ gitlinks: { path: Uint8Array; oid: string }[]; modules: Gitmodules } | null> => {
       const parsed = listed ?? (await listTree(location, commit));
+      // The level applies the refusal in row order, as the count would.
+      if (parsed === "limit") {
+        observed.push({ tree: commit, limit: true });
+        refuseLimit();
+        return null;
+      }
       onLinks?.(parsed.gitlinks);
       observed.push({ tree: commit, gitlinks: parsed.gitlinks.map((g) => [Buffer.from(g.path).toString("base64"), g.oid]) });
       if (parsed.gitlinks.length === 0 || !parsed.gitmodules) return { gitlinks: parsed.gitlinks, modules: emptyModules() };
@@ -1272,14 +1314,16 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     };
 
     // Contract §12 "Plan": the action of a row with a HEAD commit, its notes, and the remotes of a fetching row.
-    async function plan(pending: ObservedRow, repo: Repo, target: string | null): Promise<void> {
+    // `known`: the reach read of the read-ahead. Null: `plan` runs the reach read.
+    async function plan(pending: ObservedRow, repo: Repo, target: string | null, known: boolean | null = null): Promise<void> {
       const { row } = pending;
       if (repo.head === null) return;
       if (target !== null && repo.head === target) {
         if (row.action !== "reuse") row.action = "none";
         return;
       }
-      const reached = target !== null && (await reaches(repo.location, target));
+      const reached = target !== null && (known ?? (await reaches(repo.location, target)));
+      if (target !== null) observed.push({ reach: target, reached });
       if (row.action !== "reuse") row.action = reached ? "checkout" : "fetch-checkout";
       if (repo.headRef?.startsWith("refs/heads/")) row.notes.push(NOTES.detaches(repo.headRef.slice("refs/heads/".length)));
       if (target !== null) row.notes.push(NOTES.moves(repo.head, target));
@@ -1582,6 +1626,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
 
     // Contract §12 "Review reads" from the superproject: the rows at every depth, the kept Git directories, and the programs.
     function top(input: SuperprojectInput): Promise<SubmoduleFact<Observed>> {
+      boundConfig = 0;
       return attempt(async () => {
         const superListing = await superTrust();
         programInputs.push(superListing.fingerprint);
@@ -1644,7 +1689,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         const programs = await programsOfAll(superListing, rows, rowless, true);
         hosts = hostsOf(rows);
         return { rows: treeOrder(rows), refusals: ordered(0), rowless, programs, config: superListing.entries, activeRefused: false, ...attachment(0), hosts };
-      });
+      }).finally(() => (boundConfig = null));
     }
 
     // Contract Δ12 and plan.md D13: a row that fetches inside its submodule names the host of each remote URL that differs from the host of its effective URL.
@@ -1698,8 +1743,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const read = await attempt(async (): Promise<Observed> => {
         const superListing = await superTrust();
         const location = { worktree: parent.worktree };
-        const config = await readConfig(location);
-        const { head, headRef } = await readHead(location);
+        // Contract Δ12 "Update reads": the two reads run at once. The first failure in the serial order decides.
+        const configRead = ahead(() => readConfig(location));
+        const headRead = ahead(() => readHead(location));
+        const config = await configRead();
+        const { head, headRef } = await headRead();
         const firstRow = rows.length;
         const firstRefusal = refusals.length;
         if (setsGitdir(config.entries)) refuseGitdir(parent.row.path, parent.parentWorktree, parent.localPath, parent.row.depth > 0);

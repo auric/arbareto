@@ -556,7 +556,7 @@
               "maximum": 9007199254740991
             },
             "paths": {
-              "maxItems": 256,
+              "maxItems": 1024,
               "type": "array",
               "items": {
                 "type": "string"
@@ -773,7 +773,7 @@
               ]
             },
             "submoduleResults": {
-              "maxItems": 256,
+              "maxItems": 1024,
               "type": "array",
               "items": {
                 "type": "object",

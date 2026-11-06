@@ -76,14 +76,16 @@ export const GIT_PROCESS_DEADLINE_MS = 30 * SECOND_MS;
 export const SUBMODULE_UPDATE_INACTIVITY_MS = 300 * SECOND_MS;
 export const SUBMODULE_UPDATE_CEILING_MS = 4 * 60 * 60 * SECOND_MS;
 export const STALL_NOTICE_MS = 15 * SECOND_MS;
-export const SUBMODULE_REVIEW_SUBMODULES = 256;
+// Feature 004 contract Δ12 "Submodule bound".
+export const SUBMODULE_REVIEW_SUBMODULES = 1_024;
 export const SUBMODULE_REVIEW_NESTING_LEVELS = 8;
 export const SUBMODULE_GITMODULES_BYTES = 1 * MIB;
 export const SUBMODULE_PROGRESS_EVENTS_PER_SECOND = 4;
 // Feature 005 contract Δ5: `readSubmoduleChange` and `readSubmoduleWork`.
 export const SUBMODULE_CHANGE_COMMITS = 50;
 export const SUBMODULE_CHANGE_OUTPUT_BYTES = 256 * KIB;
-export const SUBMODULE_WORK_TARGETS = SUBMODULE_REVIEW_SUBMODULES;
+// Feature 004 contract Δ12 "Submodule bound": the local-edit marks keep their own bound, apart from the review bound.
+export const SUBMODULE_WORK_TARGETS = 256;
 export const SUBMODULE_WORK_PARALLEL = 8;
 // Feature 004 contract Δ5: the folder rows of the Submodules group (renderer, spec FR-111).
 export const SUBMODULE_TREE_FOLDERS = 1_024;

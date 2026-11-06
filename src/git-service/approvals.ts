@@ -102,11 +102,11 @@ export function createApprovals(now: () => number = () => performance.now()) {
   const entries = new Map<string, Entry>();
 
   // Contract §9 acceptance order: a consumed approval answers the repeat before any other check.
-  function accept(key: ApprovalKey): Acceptance {
+  function accept(key: ApprovalKey, lifetime = true): Acceptance {
     const e = entries.get(keyOf(key));
     if (e === undefined) return { ok: false, code: "UNKNOWN_TARGET" };
     if (e.consumed !== null) return { ok: false, consumed: e.consumed };
-    if (now() - e.issuedAt > APPROVAL_LIFETIME_MS) return { ok: false, code: "APPROVAL_EXPIRED" };
+    if (lifetime && now() - e.issuedAt > APPROVAL_LIFETIME_MS) return { ok: false, code: "APPROVAL_EXPIRED" };
     return { ok: true, approval: e.approval };
   }
 
@@ -120,11 +120,12 @@ export function createApprovals(now: () => number = () => performance.now()) {
       return { ok: true };
     },
 
-    accept,
+    accept: (key: ApprovalKey): Acceptance => accept(key),
 
     // One use. False when the approval is not acceptable now.
-    consume(key: ApprovalKey, operationId: string): boolean {
-      if (!accept(key).ok) return false;
+    // `lifetime: false`: feature 004 contract Δ12 "Update token". Only the `updateSubmodules` consume after its preflight passes it.
+    consume(key: ApprovalKey, operationId: string, { lifetime = true }: { lifetime?: boolean } = {}): boolean {
+      if (!accept(key, lifetime).ok) return false;
       entries.get(keyOf(key))!.consumed = operationId;
       return true;
     },

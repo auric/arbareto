@@ -8,12 +8,17 @@
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { SUBMODULE_REVIEW_SUBMODULES } from "../../src/contracts/limits";
+import { join, relative, resolve } from "node:path";
+import { probeGit } from "../../src/git-service/git-installation";
 import type { ObserveContext } from "../../src/git-service/hunk-publish";
-import type { RetainedUpdate } from "../../src/git-service/reconcile";
-import { fixturePath, useFixtureRoot } from "./fixture-root";
-import { underTest } from "./hunk-harness";
+import type { RetainedUpdate, UpdateRowRead } from "../../src/git-service/reconcile";
+import { createRegistrations } from "../../src/git-service/registration";
+import { createTrust } from "../../src/git-service/trust";
+import { fixturePath, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { gitPath, underTest, withService } from "./hunk-harness";
+import { caseTest } from "./service-harness";
+import { countPath, flatName, nestedFlat } from "./submodule-count-fixture";
+import { commandOf, gitLocation, insideSubmodule, treeGit } from "./submodule-harness";
 
 type Reconcile = typeof import("../../src/git-service/reconcile");
 type Recovery = typeof import("../../src/git-service/recovery");
@@ -41,11 +46,12 @@ describe("submoduleLocks (contract §8 \"Observed locks\")", () => {
     expect(await submoduleLocks(ctx, null, [...modules, modules[0]!])).toEqual([`${gitDir}/index.lock`, `${gitDir}/config.lock`, `${modules[0]}/index.lock`, `${modules[0]}/HEAD.lock`, `${modules[1]}/HEAD.lock`]);
   });
 
-  test("the list holds at most 5 + 2 × 256 files", async () => {
+  // Feature 004 contract Δ12 "Submodule bound" (T159 case g): `SUBMODULE_FOREIGN_CAP` is 5 + 2 × 1,024 = 2,053. Literal values, so a bound of 256 turns the case red.
+  test("the list holds at most 5 + 2 × 1,024 files", async () => {
     const { submoduleLocks } = (await underTest("reconcile")) as Reconcile;
     const { gitDir, ctx } = workspaceAt("locks-cap");
     for (const file of ["index.lock", "HEAD.lock", "packed-refs.lock", "config.lock"]) writeFileSync(join(gitDir, file), "");
-    const modules = Array.from({ length: SUBMODULE_REVIEW_SUBMODULES + 4 }, (_, i) => `${gitDir}/modules/m${i}`);
+    const modules = Array.from({ length: 1_024 + 4 }, (_, i) => `${gitDir}/modules/m${i}`);
     for (const dir of modules) {
       mkdirSync(dir, { recursive: true });
       writeFileSync(`${dir}/index.lock`, "");
@@ -53,7 +59,7 @@ describe("submoduleLocks (contract §8 \"Observed locks\")", () => {
     }
     const locks = await submoduleLocks(ctx, null, modules);
     if (!Array.isArray(locks)) throw new Error(`no locks: ${JSON.stringify(locks)}`);
-    expect({ length: locks.length, first: locks[0], last: locks.at(-1) }).toEqual({ length: 5 + 2 * SUBMODULE_REVIEW_SUBMODULES, first: `${gitDir}/index.lock`, last: `${modules[SUBMODULE_REVIEW_SUBMODULES]}/index.lock` });
+    expect({ length: locks.length, first: locks[0], last: locks.at(-1) }).toEqual({ length: 2_053, first: `${gitDir}/index.lock`, last: `${modules[1_024]}/index.lock` });
   });
 });
 
@@ -315,4 +321,75 @@ describe("recovery of an unknown update (contract §8 \"Recovery statement\")", 
       kept: false,
     });
   });
+});
+
+// Feature 004 FR-113, contract Δ12 "Update reads": the reconciliation reads up to 8 rows at once and applies in row order (T152 case h).
+describe("parallel reconciliation reads (004 FR-113, contract Δ12 \"Update reads\")", () => {
+  // The most calls that ran at the same time, from the start and the duration of each call.
+  const peakOf = (calls: readonly { at: number; durationMs?: number }[]) => {
+    const edges = calls.flatMap((c) => [[c.at, 1], [c.at + (c.durationMs ?? 0), -1]] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let now = 0;
+    let peak = 0;
+    for (const [, step] of edges) peak = Math.max(peak, (now += step));
+    return peak;
+  };
+
+  caseTest("T152", "T152 case h: the reconciliation of 10 rows gives the same observations in row order with 1 and 8 lanes; 8 lanes run at least 2 Git processes at once and one config list in the parent, and a failing read of row 4 gives that failure", ["shell-double"], async () => {
+    const { observeUpdateRows } = (await underTest("reconcile")) as Reconcile;
+    // Row p and its 9 nested rows, in the index order of their paths.
+    const nested = Array.from({ length: 9 }, (_, i) => ({ path: countPath(i), name: flatName(i) })).sort((a, b) => (a.path < b.path ? -1 : 1));
+    const w = nestedFlat("t152-reconcile", 9);
+    const paths = ["p", ...nested.map((e) => `p/${e.path}`)];
+    const parent: UpdateRowRead = { components: ["p"], name: "p", kept: null, parent: null };
+    const reads: UpdateRowRead[] = [parent, ...nested.map((e) => ({ components: ["p", ...e.path.split("/")], name: e.name, kept: null, parent }))];
+    const atRow = (path: string) => (c: { arguments: readonly string[] }) => {
+      const location = gitLocation(c.arguments);
+      return location !== null && relative(join(w.sup, ...path.split("/")), resolve(w.sup, location)) === "";
+    };
+    const cmd = (c: { arguments: readonly string[] }) => commandOf(c.arguments).join(" ");
+    await withService({ name: "t152-reconcile", environment: serviceEnv(w.env) }, async (service) => {
+      const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+      if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+      const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+      const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", w.sup), installation: probed.installation, signal: new AbortController().signal });
+      if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+      const workspace = registrations.get(registered.result.repositoryId)!;
+      const trust = createTrust({ runner: service.runner, environment: serviceEnv(w.env) });
+      const observe = async (lanes: number) => {
+        const operationId = crypto.randomUUID();
+        const ctx = { runner: service.runner, trust, workspace, installation: probed.installation, operationId, signal: new AbortController().signal } as unknown as ObserveContext;
+        const read = await observeUpdateRows(ctx, reads, lanes);
+        const calls = service.runner.calls.filter((c) => c.operationId === operationId && insideSubmodule(w.sup, c.arguments));
+        return { read, peak: peakOf(calls), parentConfig: calls.filter((c) => atRow("p")(c) && cmd(c) === "config list --show-scope --show-origin -z").length };
+      };
+      const one = await observe(1);
+      const eight = await observe(8);
+      // Row 4 fails with GIT_FAILED after its HEAD read. Row 7 fails with MALFORMED_GIT_OUTPUT before that, without a process.
+      service.runner.inject.exit = (c) => (atRow(paths[4]!)(c) && cmd(c) === "rev-parse --absolute-git-dir" ? 128 : undefined);
+      service.runner.inject.stdout = (c) => (atRow(paths[7]!)(c) && cmd(c) === "rev-parse --verify -q HEAD" ? new TextEncoder().encode("x\n") : undefined);
+      let failing: Awaited<ReturnType<typeof observe>>;
+      try {
+        failing = await observe(8);
+      } finally {
+        service.runner.inject.exit = undefined;
+        service.runner.inject.stdout = undefined;
+      }
+      console.log(`OBSERVATION T152 case h: peak 1 lane ${one.peak}, 8 lanes ${eight.peak}`);
+      expect({
+        same: Bun.deepEquals(one.read, eight.read, true),
+        heads: "value" in eight.read ? eight.read.value.observations.map((o) => o.head) : eight.read,
+        gitDirs: "value" in eight.read ? eight.read.value.gitDirs.length : eight.read,
+        peaks: [one.peak, eight.peak >= 2, eight.peak <= 9],
+        parentConfig: [one.parentConfig, eight.parentConfig],
+        failing: failing.read,
+      }).toEqual({
+        same: true,
+        heads: paths.map((path) => treeGit(w, join(w.sup, ...path.split("/")), ["rev-parse", "HEAD"]).trim()),
+        gitDirs: 10,
+        peaks: [1, true, true],
+        parentConfig: [1, 1],
+        failing: { code: "GIT_FAILED" },
+      });
+    });
+  }, 5 * 60_000);
 });

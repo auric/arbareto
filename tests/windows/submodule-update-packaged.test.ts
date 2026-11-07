@@ -5,6 +5,7 @@
 // Spec SC-021. T145 runs this file on a fresh package and records the result in research.md R31.
 // The cases drive the page through the WebView2 CDP endpoint and UI Automation patterns. They send no OS input and never move the pointer.
 // Page timing uses the page clock: from the `timeStamp` of the click to the first animation frame whose page holds the result.
+// T145 records without a budget (`RECORD` lines): the Job CPU and peak committed memory of the app tree, the long tasks of each timed span, and the app cold runs.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { release } from "node:os";
@@ -14,8 +15,9 @@ import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixtu
 import { GIT } from "../git/git-binary";
 import { gitExit } from "../git/history-diff-fixtures";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
-import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { markParts, movedTwins, otherRepo } from "./submodule-tree-fixture";
+import type { JobAccounting } from "../git/win32";
+import { appEnv, descendants, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
+import { markParts, marksShown, movedTwins, otherRepo, replyMarks, sameMarks } from "./submodule-tree-fixture";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./submodule-tree-fixture.ts"]) printOrigin(helper, import.meta.dir);
@@ -34,6 +36,8 @@ const LIST_WAIT_MS = 600_000;
 const RUNS = 10;
 // Spec SC-021 and its amendment of 2026-11-04: the median time from the click to "Updating 1 of <n>". The T154, T158, and T161 controls set a value to 1.
 const UPDATE_MS: Record<number, number> = { 20: 10_000, 100: 36_000, 256: 85_000, 1_024: 310_000 };
+// T145, the feature 010 rule (commit-menu-perf.test.ts): app cold is the first timed run after a new app start. The OS file cache stays warm. A record without a budget.
+const COLD_SIZES: readonly number[] = [20, 100];
 
 // ---- App texts (the source of each value is named) ----
 
@@ -41,6 +45,8 @@ const UPDATE_MS: Record<number, number> = { 20: 10_000, 100: 36_000, 256: 85_000
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 // `markParts` of tests/windows/submodule-tree-fixture.ts.
 const NO_BRANCH = "no branch";
+// Contract Δ12 "Branch marks": the mark of a moved twin row, without `rowId`.
+const DETACHED = { state: "detached" };
 // The header status of a run in src/frontend/submodules/SubmodulesGroup.tsx.
 const updating = (n: number) => `Updating 1 of ${n.toLocaleString("en-US")}`;
 // The IPC commands of the list review, the update, and the 005 marks read (src/frontend/bridge.ts `command`).
@@ -79,15 +85,26 @@ const median = (xs: number[]) => {
 };
 const rounded = (xs: number[]) => xs.map((x) => Math.round(x * 10) / 10);
 
+// ---- T145 records without a budget: UI stalls and the Job accounting of the app tree ----
+
+// The Long Tasks API reports each main thread task above 50 ms. One observer per page.
+const LONG_TASKS = `(window.__t145Long === undefined && (window.__t145Long = [], window.__t145LongObserver = new PerformanceObserver((list) => { for (const e of list.getEntries()) window.__t145Long.push({ start: e.startTime, duration: e.duration }); }), window.__t145LongObserver.observe({ type: 'longtask' })), window.__t145Long.length = 0, true)`;
+type Stalls = { count: number; max: number; sum: number };
+// The long tasks that overlap the span from `start` to `end` of the page clock.
+async function stalls(c: Cdp, start: number, end: number): Promise<Stalls> {
+  const all = await c.evaluate<{ start: number; duration: number }[]>(`(window.__t145Long.push(...window.__t145LongObserver.takeRecords().map((e) => ({ start: e.startTime, duration: e.duration }))), window.__t145Long)`);
+  const d = all.filter((l) => l.start + l.duration >= start && l.start <= end).map((l) => l.duration);
+  return { count: d.length, max: d.length === 0 ? 0 : Math.max(...d), sum: d.reduce((a, b) => a + b, 0) };
+}
+const stallText = (x: Stalls) => `long tasks ${x.count}, max ${x.max.toFixed(1)} ms, sum ${x.sum.toFixed(1)} ms`;
+const cpuText = (before: JobAccounting, after: JobAccounting) => `CPU user ${(after.userMs - before.userMs).toFixed(1)} ms, kernel ${(after.kernelMs - before.kernelMs).toFixed(1)} ms, new processes ${after.processes - before.processes}`;
+
 // ---- Page facts of the Submodules group ----
 
 const GROUP = `document.querySelector('[data-slot=submodules-group]')`;
 const UPDATE = `${GROUP}?.querySelector('[data-submodules-update]')`;
 const CANCEL = `[...(${GROUP}?.querySelectorAll('[data-slot=group-header] button') ?? [])].find((e) => e.textContent === 'Cancel')`;
 const headerShows = (text: string) => `[...(${GROUP}?.querySelectorAll('[data-slot=group-header] [data-slot=header-status]') ?? [])].some((e) => e.textContent === ${js(text)})`;
-// True when `n` submodule rows show and each one has the branch mark `text` (spec FR-109).
-const marksShown = (n: number, text: string) =>
-  `(() => { const m = [...(${GROUP}?.querySelectorAll('[role=tree] [role=treeitem][data-path] [data-slot=branch-mark]') ?? [])]; return m.length === ${n} && m.every((e) => e.textContent === ${js(text)}); })()`;
 
 describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules start time", () => {
   // Bun 1.4.4 runs `afterAll` hooks in declaration order. This hook must come before the fixture root removal.
@@ -124,26 +141,43 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
   }
   const uia = <T>(pid: number, name: string, type: number | undefined, body: (element: Element) => T) => use(find(pid, name, MAX_WAIT_MS, type), body);
 
-  type Session = { app: OwnedProcess; c: Cdp; ipc: IpcLog };
-  // One app on its own profile below the fixture root (ARBARETO_PROFILE_ROOT, `appEnv`), with the CDP endpoint on a free port.
-  async function session(label: string, repo: string): Promise<Session> {
+  type Session = { app: OwnedProcess; c: Cdp; ipc: IpcLog; label: string };
+  // One app on the profile of `label` below the fixture root (ARBARETO_PROFILE_ROOT, `appEnv`), with the CDP endpoint on a free port.
+  function launch(label: string): { app: OwnedProcess; port: number } {
     const env = appEnv(fixtureDir(`${label}-app`), false);
     const port = freePort();
     env.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port}`;
     const app = startInstalledApp(installed!, env);
     owned.add(app);
     console.log(`STARTED ${TASK}: ${app.pid} ${label} port=${port} profile=${env.set.ARBARETO_PROFILE_ROOT}`);
+    return { app, port };
+  }
+  async function ready(label: string, app: OwnedProcess, port: number, repo: string, what: string): Promise<Session> {
+    const c = await connectPage(port, MAX_WAIT_MS);
+    sockets.add(c);
+    await until<string | null>(c, what, switcher, (v) => v === switcherLabel(repo), LIST_WAIT_MS);
+    // A hidden page runs no animation frame, so page timing needs the visible window.
+    expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
+    // T145: the WebView2 processes below the app root (PID and creation time) and the Job membership of each msedgewebview2.exe process.
+    const records = processRecords();
+    const webview = (r: { name: string }) => r.name.toLowerCase() === "msedgewebview2.exe";
+    const all = records.filter(webview);
+    console.log(`RECORD ${TASK}: ${label} WebView2 below the app [pid, in Job] ${js(descendants(app.pid, records).filter(webview).map((r) => [r.pid, app.holds(r.pid)]))}; msedgewebview2.exe in the Job ${all.filter((r) => app.holds(r.pid)).length} of ${all.length}`);
+    return { app, c, ipc: await watchIpc(c), label };
+  }
+  async function session(label: string, repo: string): Promise<Session> {
+    const { app, port } = launch(label);
     // A new profile holds no Git selection, so the boot view offers Select Git (uia.test.ts T241).
     await uia(app.pid, "Select Git", ControlType.Button, invoke);
     await uia(app.pid, "Use this Git", undefined, invoke);
     await uia(app.pid, OPEN_FOLDER, undefined, invoke);
     await pickFolder(app.pid, repo);
-    const c = await connectPage(port, MAX_WAIT_MS);
-    sockets.add(c);
-    await until<string | null>(c, "the open repository", switcher, (v) => v === switcherLabel(repo), LIST_WAIT_MS);
-    // A hidden page runs no animation frame, so page timing needs the visible window.
-    expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
-    return { app, c, ipc: await watchIpc(c) };
+    return ready(label, app, port, repo, "the open repository");
+  }
+  // T145 app cold: a new app on the profile of `label`. The profile keeps the Git selection and the recent entries. The app restores the last chosen repository `repo` (001 contract §3 `restoreWorkspace`).
+  async function restart(label: string, repo: string): Promise<Session> {
+    const { app, port } = launch(label);
+    return ready(label, app, port, repo, "the restored repository");
   }
   // The Windows folder picker: the Edit has the Name of its label, and its dialog window has the Name of the OK button.
   async function pickFolder(pid: number, repo: string): Promise<void> {
@@ -154,6 +188,11 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
   async function end(s: Session): Promise<void> {
     s.c.close();
     sockets.delete(s.c);
+    if (owned.has(s.app)) {
+      // T145: the totals of the app tree for the session. The peaks are committed bytes, not the working set.
+      const a = s.app.accounting();
+      console.log(`RECORD ${TASK}: ${s.label} session end: CPU user ${a.userMs.toFixed(1)} ms, kernel ${a.kernelMs.toFixed(1)} ms, processes ${a.processes}, peak Job committed bytes ${a.peakJobBytes}, peak process committed bytes ${a.peakProcessBytes}`);
+    }
     s.app.stop();
     owned.delete(s.app);
     expect(await waitExit(s.app)).not.toBeNull();
@@ -192,18 +231,22 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
     for (const p of paths) git(at(repo, p), ["switch", "-q", "--discard-changes", "--detach", head]);
   }
   // Switches away and back, so the next run starts from a new read of `repo`. Every row then shows the mark of a detached HEAD.
-  async function reopen(s: Session, repo: string, other: string, n: number): Promise<void> {
+  async function reopen(s: Session, repo: string, other: string, paths: readonly string[]): Promise<void> {
     await switchTo(s, other);
     await idle(s);
     await switchTo(s, repo);
-    await until<boolean>(s.c, `the marks of ${repo}`, marksShown(n, NO_BRANCH), (v) => v, LIST_WAIT_MS);
+    await until<boolean>(s.c, `the marks of ${repo}`, marksShown(paths, NO_BRANCH), (v) => v, LIST_WAIT_MS);
     await idle(s);
+    // Above `VIRTUAL_MIN` shown rows, the DOM holds only the mounted marks. The reply holds all of them.
+    expect(await replyMarks(s.ipc)).toEqual(sameMarks(paths, DETACHED));
   }
   // Activates Update submodules of the group with Enter. The time runs from the `click` event to the first animation frame with "Updating 1 of <n>".
-  async function timedUpdate(s: Session, n: number): Promise<number> {
+  // `record` holds the T145 records: the Job CPU from before the Enter key to the result in the test, and the long tasks of the timed span.
+  async function timedUpdate(s: Session, n: number): Promise<{ ms: number; record: string }> {
     const check = headerShows(updating(n));
     expect(await s.c.evaluate<boolean>(check)).toBe(false);
     await until<boolean>(s.c, "the enabled Update submodules", `((e) => e !== null && e !== undefined && !e.disabled && e.getAttribute('aria-disabled') !== 'true')(${UPDATE})`, (v) => v);
+    await s.c.evaluate(LONG_TASKS);
     await s.c.evaluate(`(() => {
       window.__t154 = null;
       const button = ${UPDATE};
@@ -211,8 +254,8 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
         const start = e.timeStamp;
         const step = () => {
           const now = performance.now();
-          if (${check}) return void (window.__t154 = { ok: true, ms: now - start });
-          if (now - start > ${LIST_WAIT_MS}) return void (window.__t154 = { ok: false, ms: now - start });
+          if (${check}) return void (window.__t154 = { ok: true, ms: now - start, start, end: now });
+          if (now - start > ${LIST_WAIT_MS}) return void (window.__t154 = { ok: false, ms: now - start, start, end: now });
           requestAnimationFrame(step);
         };
         requestAnimationFrame(step);
@@ -221,13 +264,16 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
       return true;
     })()`);
     await until<boolean>(s.c, "the Update submodules focus", `document.activeElement === (${UPDATE})`, (v) => v);
+    const before = s.app.accounting();
     await press(s.c, "Enter");
-    const r = (await until<{ ok: boolean; ms: number } | null>(s.c, "the timed update", "window.__t154", (v) => v !== null, LIST_WAIT_MS + 10_000))!;
+    const r = (await until<{ ok: boolean; ms: number; start: number; end: number } | null>(s.c, "the timed update", "window.__t154", (v) => v !== null, LIST_WAIT_MS + 10_000))!;
+    const after = s.app.accounting();
     if (!r.ok) throw new Error(`"${updating(n)}" did not show within ${LIST_WAIT_MS} ms of the click`);
+    const record = `${cpuText(before, after)}; ${stallText(await stalls(s.c, r.start, r.end))}`;
     // The run stops at its first step. The rows stay for the next run.
     await s.c.evaluate(`((e) => (e.click(), true))(${CANCEL})`);
     await idle(s);
-    return r.ms;
+    return { ms: r.ms, record };
   }
 
   // ---- Fixture (no app) ----
@@ -262,29 +308,41 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
       async () => {
         const m = movedTwins(GIT!, fixtureDir(`sc021-${n}`), n);
         const other = otherRepo(GIT!, fixtureDir(`sc021-${n}-other`));
-        const s = await session(`sc021-${n}`, other);
+        let s = await session(`sc021-${n}`, other);
         try {
           // The open registers a recent entry for the switches.
           await openFolder(s, m.repo);
-          await until<boolean>(s.c, `the marks of ${m.repo}`, marksShown(n, NO_BRANCH), (v) => v, LIST_WAIT_MS);
+          await until<boolean>(s.c, `the marks of ${m.repo}`, marksShown(m.paths, NO_BRANCH), (v) => v, LIST_WAIT_MS);
           await idle(s);
+          expect(await replyMarks(s.ipc)).toEqual(sameMarks(m.paths, DETACHED));
           const times: number[] = [];
           // Run 0 is the warm-up run.
           for (let run = 0; run <= RUNS; run++) {
-            const ms = await timedUpdate(s, n);
+            const { ms, record } = await timedUpdate(s, n);
             if (run > 0) times.push(ms);
             else console.log(`OBSERVATION ${TASK}: SC-021 ${n} warm-up run ${ms.toFixed(1)} ms`);
+            console.log(`RECORD ${TASK}: SC-021 ${n} run ${run}: ${ms.toFixed(1)} ms; ${record}`);
             detachAll(m.repo, m.paths, m.head);
-            if (run < RUNS) await reopen(s, m.repo, other, n);
+            if (run < RUNS) await reopen(s, m.repo, other, m.paths);
           }
           const mid = median(times);
           console.log(`OBSERVATION ${TASK}: SC-021 ${n} rows: runs ${js(rounded(times))} ms, median ${mid.toFixed(1)} ms, max ${Math.max(...times).toFixed(1)} ms, budget ${budget} ms`);
+          // T145 app cold: the first timed run of a new app. The last run leaves `m.repo` open, so the next app restores it. The marks come from the new read.
+          if (COLD_SIZES.includes(n)) {
+            await end(s);
+            s = await restart(`sc021-${n}`, m.repo);
+            await until<boolean>(s.c, `the marks of ${m.repo}`, marksShown(m.paths, NO_BRANCH), (v) => v, LIST_WAIT_MS);
+            await idle(s);
+            const { ms, record } = await timedUpdate(s, n);
+            console.log(`RECORD ${TASK}: SC-021 ${n} cold (app cold, OS file cache warm, no budget): ${ms.toFixed(1)} ms; ${record}`);
+            detachAll(m.repo, m.paths, m.head);
+          }
           expect({ n, runs: times.length, median: mid <= budget }).toEqual({ n, runs: RUNS, median: true });
         } finally {
           await end(s);
         }
       },
-      caseTimeout(40 + 20 * (RUNS + 1), (RUNS + 2) * 4 * LIST_WAIT_MS),
+      caseTimeout(60 + 20 * (RUNS + 2), (RUNS + 4) * 4 * LIST_WAIT_MS),
     );
   }
 });

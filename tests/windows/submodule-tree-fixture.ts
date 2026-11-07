@@ -7,8 +7,10 @@
 
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { SubmoduleBranch, SubmodulePlanRow } from "../../src/contracts/submodules";
 import { FIXED_IDENTITY, FIXTURE_ROOT, ownedGit } from "../git/fixture-root";
 import { gitExit } from "../git/history-diff-fixtures";
+import type { IpcLog } from "./cdp";
 
 // Git transport rules (git-config(1) `protocol.allow`): Git 2.38.1 and later refuse the file transport for a submodule clone without this value.
 const CONFIG = ["-c", `user.name=${FIXED_IDENTITY.name}`, "-c", `user.email=${FIXED_IDENTITY.email}`, "-c", "core.autocrlf=false", "-c", "protocol.file.allow=always"];
@@ -285,3 +287,50 @@ export function markParts(exe: string, dir: string): string[] {
   if (ab === null) return [name, "upstream gone"];
   return [name, `${ab[1]} ahead, ${ab[2]} behind`];
 }
+
+// ---- Page checks of the twin sets ----
+
+// src/frontend/submodules/SubmodulesGroup.tsx `VIRTUAL_MIN` (plan D20 "Group"): above this count of shown rows, only the rows near the view are mounted.
+export const VIRTUAL_MIN = 200;
+
+/**
+ * A page expression: true when the rows of `paths` show with the branch mark `text` (spec FR-109). The marks come with the rows (FR-110).
+ * The one top folder row counts all rows of `paths`. Each mounted submodule row is a row of `paths` with the mark `text`.
+ * Up to `VIRTUAL_MIN` shown rows, all rows are mounted, so the mounted submodule rows must also number `paths.length`.
+ */
+export function marksShown(paths: readonly string[], text: string): string {
+  const top = paths[0]!.split("/")[0]!;
+  if (!paths.every((p) => p.startsWith(`${top}/`))) throw new Error(`a path is outside the top folder ${top}`);
+  const all = paths.length + folderCount(paths) <= VIRTUAL_MIN;
+  // SubmodulesGroup.tsx `num`: the folder count text is the en-US form.
+  const count = paths.length.toLocaleString("en-US");
+  return `(() => {
+    const items = [...(document.querySelector('[data-slot=submodules-group]')?.querySelectorAll('[role=tree] [role=treeitem]') ?? [])];
+    const top = items.find((e) => e.dataset.path === undefined && e.getAttribute('aria-description') === ${JSON.stringify(top)} && e.getAttribute('aria-level') === '1' && e.getAttribute('aria-setsize') === '1');
+    if (top?.querySelector('[data-slot=folder-count]')?.textContent !== ${JSON.stringify(count)}) return false;
+    const paths = new Set(${JSON.stringify(paths)});
+    const rows = items.filter((e) => e.dataset.path !== undefined);
+    return rows.length > 0 && ${all ? `rows.length === ${paths.length} &&` : ""} rows.every((e) => paths.has(e.dataset.path) && e.querySelector('[data-slot=branch-mark]')?.textContent === ${JSON.stringify(text)});
+  })()`;
+}
+
+type ReviewReply = { state: string; result?: { rows: Pick<SubmodulePlanRow, "rowId" | "path">[]; branches: SubmoduleBranch[] } };
+export type ReplyMarks = { rows: string[]; count: number; marks: Record<string, object> };
+
+/** The branch marks of the last sent `review_submodules` call, by row path (contract Δ12 "Branch marks"). No call may be pending. */
+export async function replyMarks(ipc: IpcLog): Promise<ReplyMarks> {
+  if (ipc.pending("review_submodules").length > 0) throw new Error("a review_submodules call is pending");
+  const call = ipc.calls().findLast((c) => c.command === "review_submodules");
+  if (call === undefined || call.end === null) throw new Error("no review_submodules reply arrived");
+  const reply = await ipc.body<ReviewReply>(call);
+  if (reply.state !== "succeeded" || reply.result === undefined) throw new Error(`the last review_submodules reply is ${reply.state}`);
+  const pathOf = new Map(reply.result.rows.map((r) => [r.rowId, r.path]));
+  return {
+    rows: reply.result.rows.map((r) => r.path).toSorted(),
+    count: reply.result.branches.length,
+    marks: Object.fromEntries(reply.result.branches.map(({ rowId, ...mark }) => [pathOf.get(rowId) ?? `no row ${rowId}`, mark])),
+  };
+}
+
+/** The `replyMarks` value when each row of `paths` has the mark `mark`, without its `rowId`. */
+export const sameMarks = (paths: readonly string[], mark: object): ReplyMarks => ({ rows: paths.toSorted(), count: paths.length, marks: Object.fromEntries(paths.map((p) => [p, mark])) });

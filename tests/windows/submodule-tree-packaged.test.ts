@@ -6,6 +6,7 @@
 // The cases drive the page through the WebView2 CDP endpoint and UI Automation patterns. They send no OS input and never move the pointer.
 // Page timing uses the page clock: from the `timeStamp` of the input event to the first animation frame whose page holds the result.
 // With ARBARETO_TREE_SHOTS_DIR set, the Q30 case writes the PNG files of the board states Main, BranchMarks, Dark, and Collapsed there.
+// T145 records without a budget (`RECORD` lines): the Job CPU and peak committed memory of the app tree, the long tasks of each timed span, and the app cold runs.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -17,8 +18,9 @@ import { REPO } from "../groups";
 import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
-import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { BOARD_TOP, BOARD_TREE, boardWorld, folderCount, folderWorld, ICONS, markParts, otherRepo, twinWorlds, wideWorld } from "./submodule-tree-fixture";
+import type { JobAccounting } from "../git/win32";
+import { appEnv, descendants, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
+import { BOARD_TOP, BOARD_TREE, boardWorld, folderCount, folderWorld, ICONS, markParts, marksShown, otherRepo, replyMarks, sameMarks, twinWorlds, VIRTUAL_MIN, wideWorld } from "./submodule-tree-fixture";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./submodule-tree-fixture.ts", "../../src/contracts/limits.ts"]) printOrigin(helper, import.meta.dir);
@@ -39,7 +41,7 @@ const RUNS = 10;
 const SIZES = [20, 256] as const;
 // Spec SC-020, amended 2026-11-04 (T161): the twins of 1,024 rows have a list budget and no SC-018 budget.
 const LIST_SIZES = [...SIZES, 1_024] as const;
-// Spec SC-018: (median time to the last branch mark) - (median time to the last row of the detached twin), per submodule row. The T144 control sets it to 1.
+// Spec SC-018: (median time to the last branch mark) - (median time to the last row of the detached twin), per submodule row. The value can be negative. The T144 control sets it to -Infinity, in a run without the LIST_MS control.
 const MARK_MS_PER_ROW = 30;
 // Spec SC-020: the median time from the Enter keydown to the last branch mark, for each twin. The T150 and T161 controls set each value to 1.
 const LIST_MS: Record<(typeof LIST_SIZES)[number], number> = { 20: 6_500, 256: 55_000, 1_024: 190_000 };
@@ -51,6 +53,8 @@ const INPUT_WARMUP_CYCLES = 1;
 const INPUT_CYCLES = 20;
 // The Event Timing API reports no entry below its 16 ms minimum `durationThreshold`, so such an input counts as 16 ms.
 const EVENT_THRESHOLD_MS = 16;
+// T145, the feature 010 rule (commit-menu-perf.test.ts): app cold is the first timed run after a new app start. The OS file cache stays warm. A record without a budget.
+const COLD_SIZES: readonly number[] = SIZES;
 
 // ---- App texts (the source of each value is named) ----
 
@@ -59,6 +63,11 @@ const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 // src/frontend/submodules/SubmodulesGroup.tsx, plan D15 "Tree rows".
 const TREE_BOUND = `The submodule paths have more than ${SUBMODULE_TREE_FOLDERS.toLocaleString("en-US")} folders, so the group shows no folder rows.`;
 const NO_BRANCH = "no branch";
+// Contract Δ12 "Branch marks" of the twin rows, without `rowId`. git-clone(1) sets `origin/main` as the upstream of `main`. The fixture check gives 0 ahead, 0 behind.
+const TWIN_MARK: Record<string, object> = {
+  main: { state: "branch", ref: "refs/heads/main", upstream: "refs/remotes/origin/main", track: { state: "counts", ahead: 0, behind: 0 } },
+  [NO_BRANCH]: { state: "detached" },
+};
 
 // ---- CDP keys ----
 
@@ -101,6 +110,20 @@ const median = (xs: number[]) => {
 const p95 = (xs: number[]) => xs.toSorted((a, b) => a - b)[Math.max(0, Math.ceil(0.95 * xs.length) - 1)]!;
 const rounded = (xs: number[]) => xs.map((x) => Math.round(x * 10) / 10);
 
+// ---- T145 records without a budget: UI stalls and the Job accounting of the app tree ----
+
+// The Long Tasks API reports each main thread task above 50 ms. One observer per page.
+const LONG_TASKS = `(window.__t145Long === undefined && (window.__t145Long = [], window.__t145LongObserver = new PerformanceObserver((list) => { for (const e of list.getEntries()) window.__t145Long.push({ start: e.startTime, duration: e.duration }); }), window.__t145LongObserver.observe({ type: 'longtask' })), window.__t145Long.length = 0, true)`;
+type Stalls = { count: number; max: number; sum: number };
+// The long tasks that overlap the span from `start` to `end` of the page clock.
+async function stalls(c: Cdp, start: number, end: number): Promise<Stalls> {
+  const all = await c.evaluate<{ start: number; duration: number }[]>(`(window.__t145Long.push(...window.__t145LongObserver.takeRecords().map((e) => ({ start: e.startTime, duration: e.duration }))), window.__t145Long)`);
+  const d = all.filter((l) => l.start + l.duration >= start && l.start <= end).map((l) => l.duration);
+  return { count: d.length, max: d.length === 0 ? 0 : Math.max(...d), sum: d.reduce((a, b) => a + b, 0) };
+}
+const stallText = (x: Stalls) => `long tasks ${x.count}, max ${x.max.toFixed(1)} ms, sum ${x.sum.toFixed(1)} ms`;
+const cpuText = (before: JobAccounting, after: JobAccounting) => `CPU user ${(after.userMs - before.userMs).toFixed(1)} ms, kernel ${(after.kernelMs - before.kernelMs).toFixed(1)} ms, new processes ${after.processes - before.processes}`;
+
 // ---- Page facts of the Submodules group ----
 
 const GROUP = `document.querySelector('[data-slot=submodules-group]')`;
@@ -114,9 +137,6 @@ const factsOf = (element: string) =>
 const SHAPE = `${ITEMS}.map((e) => [e.dataset.path === undefined ? 'folder' : 'submodule', e.querySelector('[data-slot=row-label]')?.textContent ?? '', Number(e.getAttribute('aria-level')), e.dataset.path === undefined ? Number((e.querySelector('[data-slot=folder-count]')?.textContent ?? '').replaceAll(',', '')) : null])`;
 const NAMES = `Object.fromEntries(${ITEMS}.filter((e) => e.dataset.path !== undefined).map((e) => [e.dataset.path, e.getAttribute('aria-label')]))`;
 const BOUND_LINE = `${GROUP}?.querySelector('[data-slot=tree-bound]')?.textContent ?? null`;
-// True when `n` submodule rows show and each one has the branch mark `text` (spec FR-109). The marks come with the rows (FR-110).
-const marksShown = (n: number, text: string) =>
-  `(() => { const m = [...(${GROUP}?.querySelectorAll('[role=tree] [role=treeitem][data-path] [data-slot=branch-mark]') ?? [])]; return m.length === ${n} && m.every((e) => e.textContent === ${js(text)}); })()`;
 const rowNamed = (label: string) => `${ITEMS}.find((e) => e.getAttribute('aria-label') === ${js(label)})`;
 const rowAt = (path: string) => `${ITEMS}.find((e) => e.dataset.path === ${js(path)})`;
 // Plan D15 "Tree rows": "<full path>, <branch or no branch>, <count part>, <state>, <observed line>", without empty parts.
@@ -160,26 +180,43 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
   }
   const uia = <T>(pid: number, name: string, type: number | undefined, body: (element: Element) => T) => use(find(pid, name, MAX_WAIT_MS, type), body);
 
-  type Session = { app: OwnedProcess; c: Cdp; ipc: IpcLog };
-  // One app on its own profile below the fixture root (ARBARETO_PROFILE_ROOT, `appEnv`), with the CDP endpoint on a free port.
-  async function session(label: string, repo: string): Promise<Session> {
+  type Session = { app: OwnedProcess; c: Cdp; ipc: IpcLog; label: string };
+  // One app on the profile of `label` below the fixture root (ARBARETO_PROFILE_ROOT, `appEnv`), with the CDP endpoint on a free port.
+  function launch(label: string): { app: OwnedProcess; port: number } {
     const env = appEnv(fixtureDir(`${label}-app`), false);
     const port = freePort();
     env.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port}`;
     const app = startInstalledApp(installed!, env);
     owned.add(app);
     console.log(`STARTED ${TASK}: ${app.pid} ${label} port=${port} profile=${env.set.ARBARETO_PROFILE_ROOT}`);
+    return { app, port };
+  }
+  async function ready(label: string, app: OwnedProcess, port: number, repo: string, what: string): Promise<Session> {
+    const c = await connectPage(port, MAX_WAIT_MS);
+    sockets.add(c);
+    await until<string | null>(c, what, switcher, (v) => v === switcherLabel(repo), LIST_WAIT_MS);
+    // A hidden page runs no animation frame, so page timing needs the visible window.
+    expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
+    // T145: the WebView2 processes below the app root (PID and creation time) and the Job membership of each msedgewebview2.exe process.
+    const records = processRecords();
+    const webview = (r: { name: string }) => r.name.toLowerCase() === "msedgewebview2.exe";
+    const all = records.filter(webview);
+    console.log(`RECORD ${TASK}: ${label} WebView2 below the app [pid, in Job] ${js(descendants(app.pid, records).filter(webview).map((r) => [r.pid, app.holds(r.pid)]))}; msedgewebview2.exe in the Job ${all.filter((r) => app.holds(r.pid)).length} of ${all.length}`);
+    return { app, c, ipc: await watchIpc(c), label };
+  }
+  async function session(label: string, repo: string): Promise<Session> {
+    const { app, port } = launch(label);
     // A new profile holds no Git selection, so the boot view offers Select Git (uia.test.ts T241).
     await uia(app.pid, "Select Git", ControlType.Button, invoke);
     await uia(app.pid, "Use this Git", undefined, invoke);
     await uia(app.pid, OPEN_FOLDER, undefined, invoke);
     await pickFolder(app.pid, repo);
-    const c = await connectPage(port, MAX_WAIT_MS);
-    sockets.add(c);
-    await until<string | null>(c, "the open repository", switcher, (v) => v === switcherLabel(repo), LIST_WAIT_MS);
-    // A hidden page runs no animation frame, so page timing needs the visible window.
-    expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
-    return { app, c, ipc: await watchIpc(c) };
+    return ready(label, app, port, repo, "the open repository");
+  }
+  // T145 app cold: a new app on the profile of `label`. The profile keeps the Git selection and the recent entries. The app restores the last chosen repository `repo` (001 contract §3 `restoreWorkspace`).
+  async function restart(label: string, repo: string): Promise<Session> {
+    const { app, port } = launch(label);
+    return ready(label, app, port, repo, "the restored repository");
   }
   // The Windows folder picker: the Edit has the Name of its label, and its dialog window has the Name of the OK button.
   async function pickFolder(pid: number, repo: string): Promise<void> {
@@ -190,6 +227,11 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
   async function end(s: Session): Promise<void> {
     s.c.close();
     sockets.delete(s.c);
+    if (owned.has(s.app)) {
+      // T145: the totals of the app tree for the session. The peaks are committed bytes, not the working set.
+      const a = s.app.accounting();
+      console.log(`RECORD ${TASK}: ${s.label} session end: CPU user ${a.userMs.toFixed(1)} ms, kernel ${a.kernelMs.toFixed(1)} ms, processes ${a.processes}, peak Job committed bytes ${a.peakJobBytes}, peak process committed bytes ${a.peakProcessBytes}`);
+    }
     s.app.stop();
     owned.delete(s.app);
     expect(await waitExit(s.app)).not.toBeNull();
@@ -228,9 +270,11 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
     }
   }
   // Opens `repo` from the recent entries by Enter. The time runs from the Enter `keydown` to the first animation frame in which `check` holds.
-  async function timedSwitch(s: Session, repo: string, check: string): Promise<number> {
+  // `record` holds the T145 records: the Job CPU from before the Enter key to the result in the test, and the long tasks of the timed span.
+  async function timedSwitch(s: Session, repo: string, check: string): Promise<{ ms: number; record: string }> {
     await toRecent(s, repo);
     expect(await s.c.evaluate<boolean>(check)).toBe(false);
+    await s.c.evaluate(LONG_TASKS);
     await s.c.evaluate(`(() => {
       window.__t144 = null;
       addEventListener('keydown', (e) => {
@@ -238,24 +282,28 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
         const start = e.timeStamp;
         const step = () => {
           const now = performance.now();
-          if (${check}) return void (window.__t144 = { ok: true, ms: now - start });
-          if (now - start > ${LIST_WAIT_MS}) return void (window.__t144 = { ok: false, ms: now - start });
+          if (${check}) return void (window.__t144 = { ok: true, ms: now - start, start, end: now });
+          if (now - start > ${LIST_WAIT_MS}) return void (window.__t144 = { ok: false, ms: now - start, start, end: now });
           requestAnimationFrame(step);
         };
         requestAnimationFrame(step);
       }, { capture: true, once: true });
       return true;
     })()`);
+    const before = s.app.accounting();
     await press(s.c, "Enter");
-    const r = (await until<{ ok: boolean; ms: number } | null>(s.c, "the timed open", "window.__t144", (v) => v !== null, LIST_WAIT_MS + 10_000))!;
+    const r = (await until<{ ok: boolean; ms: number; start: number; end: number } | null>(s.c, "the timed open", "window.__t144", (v) => v !== null, LIST_WAIT_MS + 10_000))!;
+    const after = s.app.accounting();
     if (!r.ok) throw new Error(`the check did not hold within ${LIST_WAIT_MS} ms of the Enter keydown: ${check}`);
-    return r.ms;
+    return { ms: r.ms, record: `${cpuText(before, after)}; ${stallText(await stalls(s.c, r.start, r.end))}` };
   }
-  // Each submodule row name holds the mark parts that Git gives for its folder (spec SC-018, plan D15 "Tree rows").
-  async function expectMarks(s: Session, repo: string, paths: readonly string[]): Promise<Record<string, string>> {
+  // Each mounted row name of `paths` holds the mark parts that Git gives for its folder (spec SC-018, plan D15 "Tree rows").
+  // Up to `VIRTUAL_MIN` of `shown` rows, every row is mounted, so every row of `paths` must have a name.
+  async function expectMarks(s: Session, repo: string, paths: readonly string[], shown: number): Promise<Record<string, string>> {
     const names = await s.c.evaluate<Record<string, string>>(NAMES);
-    const wrong = paths.map((p) => ({ path: p, name: names[p], parts: markParts(GIT!, join(repo, ...p.split("/"))) })).filter((r) => !nameMatches(r.name, [r.path, ...r.parts]));
-    expect(wrong).toEqual([]);
+    const mounted = paths.filter((p) => names[p] !== undefined);
+    const wrong = mounted.map((p) => ({ path: p, name: names[p], parts: markParts(GIT!, join(repo, ...p.split("/"))) })).filter((r) => !nameMatches(r.name, [r.path, ...r.parts]));
+    expect({ some: mounted.length > 0, all: shown > VIRTUAL_MIN || mounted.length === paths.length, wrong }).toEqual({ some: true, all: true, wrong: [] });
     return names;
   }
   async function shot(c: Cdp, state: string): Promise<void> {
@@ -332,7 +380,7 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
         await openFolder(s, b.repo);
         await until<number>(s.c, "the board rows", `${ITEMS}.length`, (v) => v === BOARD_TREE.length, LIST_WAIT_MS);
         expect(await s.c.evaluate<unknown>(SHAPE)).toEqual(BOARD_TREE);
-        const names = await expectMarks(s, b.repo, b.checkedOut);
+        const names = await expectMarks(s, b.repo, b.checkedOut, BOARD_TREE.length);
         console.log(`NAMES ${TASK}: ${js(names)}`);
         // ICONS has no clone, so its row has no mark (data-model §15).
         expect(await s.c.evaluate<boolean>(`${rowAt(ICONS)}?.querySelector('[data-slot=branch-mark]') === null`)).toBe(true);
@@ -387,13 +435,16 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
       async () => {
         const t = twinWorlds(GIT!, fixtureDir(`sc018-${n}`), n);
         const other = otherRepo(GIT!, fixtureDir(`sc018-${n}-other`));
-        const s = await session(`sc018-${n}`, other);
+        let s = await session(`sc018-${n}`, other);
         try {
           // Each open registers a recent entry. Each fixture opens once before the runs, and its marks equal the Git status headers.
           for (const [repo, text] of [[t.branch, "main"], [t.detached, NO_BRANCH]] as const) {
             await openFolder(s, repo);
-            await until<boolean>(s.c, `the marks of ${repo}`, marksShown(n, text), (v) => v, LIST_WAIT_MS);
-            await expectMarks(s, repo, t.paths);
+            await until<boolean>(s.c, `the marks of ${repo}`, marksShown(t.paths, text), (v) => v, LIST_WAIT_MS);
+            await expectMarks(s, repo, t.paths, n + folderCount(t.paths));
+            // Above `VIRTUAL_MIN` shown rows, the DOM holds only the mounted marks. The reply holds all of them.
+            await idle(s);
+            expect(await replyMarks(s.ipc)).toEqual(sameMarks(t.paths, TWIN_MARK[text]!));
             await switchTo(s, other);
             await idle(s);
           }
@@ -401,9 +452,10 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           // Run 0 is the warm-up run. A and B alternate, so a drift of the host reaches both.
           for (let run = 0; run <= RUNS; run++) {
             for (const [key, repo, text] of [["branch", t.branch, "main"], ["detached", t.detached, NO_BRANCH]] as const) {
-              const ms = await timedSwitch(s, repo, marksShown(n, text));
+              const { ms, record } = await timedSwitch(s, repo, marksShown(t.paths, text));
               if (run > 0) times[key].push(ms);
               else console.log(`OBSERVATION ${TASK}: SC-018 ${n} ${key} warm-up run ${ms.toFixed(1)} ms`);
+              console.log(`RECORD ${TASK}: SC-018 ${n} ${key} run ${run}: ${ms.toFixed(1)} ms; ${record}`);
               await switchTo(s, other);
               await idle(s);
             }
@@ -413,12 +465,24 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           const perRow = (a - b) / n;
           console.log(`OBSERVATION ${TASK}: SC-018 ${n} rows: branch runs ${js(rounded(times.branch))} ms, median ${a.toFixed(1)} ms; detached runs ${js(rounded(times.detached))} ms, median ${b.toFixed(1)} ms; ${perRow.toFixed(2)} ms per row, budget ${MARK_MS_PER_ROW} ms`);
           console.log(`OBSERVATION ${TASK}: SC-020 ${n} rows: branch median ${a.toFixed(1)} ms, detached median ${b.toFixed(1)} ms, budget ${LIST_MS[n]} ms`);
+          // T145 app cold: one run per twin, each the first timed run of a new app. The app ends with `other` open, so the next app restores it.
+          if (COLD_SIZES.includes(n)) {
+            for (const [key, repo, text] of [["branch", t.branch, "main"], ["detached", t.detached, NO_BRANCH]] as const) {
+              await end(s);
+              s = await restart(`sc018-${n}`, other);
+              await idle(s);
+              const { ms, record } = await timedSwitch(s, repo, marksShown(t.paths, text));
+              console.log(`RECORD ${TASK}: SC-018 ${n} ${key} cold (app cold, OS file cache warm, no budget): ${ms.toFixed(1)} ms; ${record}`);
+              await switchTo(s, other);
+              await idle(s);
+            }
+          }
           expect({ n, perRow: !sc018 || perRow <= MARK_MS_PER_ROW, branch: a <= LIST_MS[n], detached: b <= LIST_MS[n] }).toEqual({ n, perRow: true, branch: true, detached: true });
         } finally {
           await end(s);
         }
       },
-      caseTimeout(40, (2 * RUNS + 4) * 3 * LIST_WAIT_MS),
+      caseTimeout(80, (2 * RUNS + 10) * 3 * LIST_WAIT_MS),
     );
   }
 
@@ -474,14 +538,26 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
       `SC-019: with ${k.rows.toLocaleString("en-US")} submodule rows and 1,024 open folder rows, ${INPUT_P95_MS} ms for 95% of the tree keys and ${INPUT_MAX_MS} ms for every key (${INPUT_CYCLES * k.cycle.length} inputs after ${INPUT_WARMUP_CYCLES} warm-up cycle)`,
       async () => {
         const f = k.build();
-        const s = await session(`sc019-${k.rows}`, f.repo);
+        const other = otherRepo(GIT!, fixtureDir(`sc019-${k.rows}-other`));
+        const s = await session(`sc019-${k.rows}`, other);
         try {
+          // The IPC log starts in `session`, so the review of the fixture runs after it.
+          await openFolder(s, f.repo);
           // T147: the tree mounts only the rows in view. The first row and the root set size show that the top folders are listed.
           const head = factsOf(`${ITEMS}[0]`);
           await until<RowFacts | null>(s.c, "the tree rows", head, (v) => v?.path === k.first.path, LIST_WAIT_MS);
           expect({ line: await s.c.evaluate<string | null>(BOUND_LINE), first: await s.c.evaluate<RowFacts | null>(head) }).toEqual({ line: null, first: k.first });
           console.log(`OBSERVATION ${TASK}: SC-019 ${k.rows} rows: mounted rows ${await s.c.evaluate<number>(`${ITEMS}.length`)} of ${k.rows + 1_024}`);
+          // T145 pass condition: the review ends without `OUTPUT_LIMIT`, as the response code or as the code of an `unread` mark (contract §9, Δ12 "Branch marks").
+          await idle(s);
+          const call = s.ipc.calls().findLast((c) => c.command === "review_submodules");
+          if (call === undefined || call.end === null) throw new Error("no review_submodules reply arrived");
+          const reply = await s.ipc.body<{ state: string; code?: string; result?: { rows: unknown[]; branches: { code?: string }[] } }>(call);
+          const review = { state: reply.state, code: reply.code ?? null, rows: reply.result?.rows.length ?? null, unreadLimit: (reply.result?.branches ?? []).filter((b) => b.code === "OUTPUT_LIMIT").length };
+          console.log(`RECORD ${TASK}: SC-019 ${k.rows} rows review reply ${js(review)}`);
+          expect(review).toEqual({ state: "succeeded", code: null, rows: k.rows, unreadLimit: 0 });
           // W3C Event Timing: the duration of each keydown runs from the event to the next paint after its handlers.
+          await s.c.evaluate(LONG_TASKS);
           await s.c.evaluate(`(() => {
             window.__t144Keys = [];
             window.__t144Events = [];
@@ -498,14 +574,17 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           await until<boolean>(s.c, "the tree focus", `document.activeElement === (${first})`, (v) => v);
           const durations: number[] = [];
           for (let cycle = 0; cycle < INPUT_WARMUP_CYCLES + INPUT_CYCLES; cycle++) {
-            await s.c.evaluate("(window.__t144Keys = [], window.__t144Events = [], true)");
+            await s.c.evaluate(`(window.__t144Keys = [], window.__t144Events = [], ${LONG_TASKS})`);
+            const before = s.app.accounting();
             for (const [key, want] of k.cycle) {
               await press(s.c, key);
               await until<RowFacts | null>(s.c, `cycle ${cycle} ${key}`, FOCUS, (v) => js(v) === js(want));
             }
             await s.c.evaluate("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => done(true), 50))))");
-            const { keys, events } = await s.c.evaluate<{ keys: number[]; events: { start: number; duration: number }[] }>("(window.__t144Take(window.__t144Observer.takeRecords()), { keys: window.__t144Keys, events: window.__t144Events })");
+            const after = s.app.accounting();
+            const { keys, events, now } = await s.c.evaluate<{ keys: number[]; events: { start: number; duration: number }[]; now: number }>("(window.__t144Take(window.__t144Observer.takeRecords()), { keys: window.__t144Keys, events: window.__t144Events, now: performance.now() })");
             expect({ cycle, keys: keys.length }).toEqual({ cycle, keys: k.cycle.length });
+            console.log(`RECORD ${TASK}: SC-019 ${k.rows} rows cycle ${cycle}${cycle < INPUT_WARMUP_CYCLES ? " (warm-up)" : ""}: ${cpuText(before, after)}; ${stallText(await stalls(s.c, keys[0]!, now))}`);
             if (cycle >= INPUT_WARMUP_CYCLES) durations.push(...keys.map((key) => events.find((e) => e.start === key)?.duration ?? EVENT_THRESHOLD_MS));
           }
           console.log(`OBSERVATION ${TASK}: SC-019 ${k.rows} rows: ${durations.length} inputs, p95 ${p95(durations)} ms, max ${Math.max(...durations)} ms, durations ${js(durations)}`);
@@ -515,7 +594,7 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           await end(s);
         }
       },
-      caseTimeout(30 + (INPUT_WARMUP_CYCLES + INPUT_CYCLES) * k.cycle.length, LIST_WAIT_MS),
+      caseTimeout(40 + (INPUT_WARMUP_CYCLES + INPUT_CYCLES) * k.cycle.length, 4 * LIST_WAIT_MS),
     );
   }
 });

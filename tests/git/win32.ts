@@ -180,15 +180,20 @@ export function terminateRecorded(pid: number, created: bigint): boolean {
   }
 }
 
-// Microsoft Learn `JOBOBJECTINFOCLASS` and `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`: `ActiveProcesses` is at byte 40 of 48.
+// Microsoft Learn `JOBOBJECTINFOCLASS` and `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`: `TotalUserTime` at byte 0 and `TotalKernelTime` at byte 8 (LARGE_INTEGER, 100 ns units), `TotalProcesses` at byte 36, `ActiveProcesses` at byte 40 of 48.
 const JOB_ACCOUNTING_CLASS = 1;
 const JOB_ACCOUNTING_BYTES = 48;
+const JOB_USER_TIME_OFFSET = 0;
+const JOB_KERNEL_TIME_OFFSET = 8;
+const JOB_TOTAL_OFFSET = 36;
 const JOB_ACTIVE_OFFSET = 40;
 const JOB_POLL_MS = 10;
-// Microsoft Learn `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`: 144 bytes on x64, `BasicLimitInformation.LimitFlags` at byte 16.
+// Microsoft Learn `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`: 144 bytes on x64, `BasicLimitInformation.LimitFlags` at byte 16, `PeakProcessMemoryUsed` at byte 128, `PeakJobMemoryUsed` at byte 136 (SIZE_T, committed bytes).
 const JOB_EXTENDED_LIMIT_CLASS = 9;
 const JOB_EXTENDED_LIMIT_BYTES = 144;
 const JOB_LIMIT_FLAGS_OFFSET = 16;
+const JOB_PEAK_PROCESS_OFFSET = 128;
+const JOB_PEAK_JOB_OFFSET = 136;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 // Microsoft Learn `JOBOBJECT_BASIC_PROCESS_ID_LIST`: two DWORD counts, then one ULONG_PTR per PID from byte 8 on x64.
 const JOB_PID_LIST_CLASS = 3;
@@ -198,9 +203,20 @@ const ERROR_MORE_DATA = 234;
 const MAXIMUM_WAIT_OBJECTS = 64;
 const WAIT_FAILED = 0xffff_ffff;
 
+// Microsoft Learn "Job Objects": the totals count each process that ever was in the Job, also the ended ones and the members of nested Jobs.
+export interface JobAccounting {
+  userMs: number;
+  kernelMs: number;
+  // `TotalProcesses`: every process that joined the Job.
+  processes: number;
+  peakJobBytes: number;
+  peakProcessBytes: number;
+}
+
 export interface ProcessTree {
   // True when the live process `pid` is in the Job (`IsProcessInJob`).
   holds(pid: number): boolean;
+  accounting(): JobAccounting;
   // Ends every process of the tree and waits a bounded time for their exits.
   end(): void;
   // Ends the Job and waits on the process handles of its members until the Job lists none. Returns the PIDs that the Job still lists at the bound.
@@ -251,7 +267,23 @@ export function ownTree(pid: number, killOnClose = false): ProcessTree {
       capacity = new DataView(info.buffer).getUint32(0, true);
     }
   };
+  const query = (infoClass: number, bytes: number) => {
+    const info = new Uint8Array(bytes);
+    if (!kernel32().QueryInformationJobObject(job, infoClass, ptr(info), bytes, null)) throw new Error(`QueryInformationJobObject ${infoClass} failed: ${kernel32().GetLastError()}`);
+    return new DataView(info.buffer);
+  };
   return {
+    accounting() {
+      const basic = query(JOB_ACCOUNTING_CLASS, JOB_ACCOUNTING_BYTES);
+      const extended = query(JOB_EXTENDED_LIMIT_CLASS, JOB_EXTENDED_LIMIT_BYTES);
+      return {
+        userMs: Number(basic.getBigInt64(JOB_USER_TIME_OFFSET, true)) / 10_000,
+        kernelMs: Number(basic.getBigInt64(JOB_KERNEL_TIME_OFFSET, true)) / 10_000,
+        processes: basic.getUint32(JOB_TOTAL_OFFSET, true),
+        peakJobBytes: Number(extended.getBigUint64(JOB_PEAK_JOB_OFFSET, true)),
+        peakProcessBytes: Number(extended.getBigUint64(JOB_PEAK_PROCESS_OFFSET, true)),
+      };
+    },
     holds(pid) {
       const handle = openProcess(pid, 0);
       if (handle === null) return false;

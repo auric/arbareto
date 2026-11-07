@@ -33,6 +33,10 @@ The first preview release for Windows 11 x64.
 - Reset the current branch to a commit: Soft, Mixed, or Hard. Hard asks for a confirmation first.
 - Cherry-pick a commit or revert it. Abort or continue a stopped cherry-pick or revert.
 - A sidebar with branches, remote-tracking branches, tags, worktrees, and submodules. Add and remove worktrees. Update submodules.
+- The Submodules group shows a folder tree. Each folder shows the count of all submodules below it, nested ones included.
+- Each checked-out submodule shows its branch, or "no branch" for a detached HEAD. A branch with an upstream shows its ahead and behind counts. A gone upstream is marked.
+- Update submodules works with up to 1,024 submodules, nested ones included.
+- The fold-out panel "Keys in the tree" below the Submodules group lists the tree keys and the submodule menu items. It starts open. Arbareto keeps its open or closed state after a restart.
 - Git settings by scope: system, global, and local.
 - Repositories inside WSL 2 distros, through the Git of the distro. Global Git settings of the distro can be saved.
 - A repository trust prompt before Arbareto runs programs that the repository configures.

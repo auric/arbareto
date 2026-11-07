@@ -42,6 +42,7 @@ These features work on the `main` branch today.
 - Delete a remote branch from its menu, after a confirmation. The local branch Delete dialog can also delete its remote branch. Git refuses the delete when the remote branch changed since the last fetch.
 - A commit menu in History: check out a commit, create a branch or a tag, and copy the commit ID. Reset the current branch to a commit, cherry-pick a commit, or revert it. Abort or continue a stopped cherry-pick or revert.
 - A sidebar with branches, remote-tracking branches, tags, worktrees, and submodules. Add and remove worktrees. Update submodules.
+- Submodules show as a folder tree. Each checked-out submodule shows its branch, or "no branch" for a detached HEAD. A branch with an upstream shows its ahead and behind counts. Update submodules works with up to 1,024 submodules.
 - Git settings by scope: system, global, and local.
 - Repositories inside WSL 2 distros, through the Git of the distro.
 - A repository trust prompt before Arbareto runs programs that the repository configures.

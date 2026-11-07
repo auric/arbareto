@@ -84,6 +84,10 @@ The user approved the mockup boards Main, Collapsed, Dark, and BranchMarks of th
 - Q: How large can the output tails of an update result get? → A: User decision 2026-11-04: at most 4 MiB in total, in row order. Later failed rows keep `exitCode` with an empty tail (FR-115).
 - Q: Do the budgets cover 256 and 1,024 rows? → A: User decision 2026-11-04: yes. SC-020 and SC-021 add these points before the packaged run. WSL records them without a budget.
 
+### Session 2026-11-07
+
+- Q: Does the Submodules group show the "Keys in the tree" panel of the approved Collapsed board? → A: User decision 2026-11-07: "Add it before v0.1.0". The panel names the keys and the menu items that the app has (FR-116).
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows a read-only references sidebar and a docked commit panel. Feature 002 shows the full history of all branches. Feature 003 adds Fetch, Pull, Push, Clone, and the conflict actions Abort, Continue, Skip, and Mark resolved. This feature adds the daily branch and commit work around them: switch branches, run branch actions, merge, rebase, commit with fine staging, resolve conflicted files, and manage worktrees. It also edits Git settings, makes trust prompts calmer, and makes the submodule update a single click. Git Extensions is the reference for the functions. The design follows the mockup boards of 2026-10-16.
@@ -318,6 +322,7 @@ A developer opens a repository with many submodules in folders. The Submodules g
 5. **Given** a submodule with a detached HEAD. **When** the group shows. **Then** the row shows "no branch" and no count.
 6. **Given** a submodule branch whose upstream no longer exists. **When** the group shows. **Then** the row shows the gone mark with the tooltip "The upstream <upstream> no longer exists.".
 7. **Given** a repository with 20 checked-out submodules. **When** I open it. **Then** the Submodules group shows every row with its branch mark within the SC-020 time.
+8. **Given** the Submodules group open with rows. **When** the group shows. **Then** the panel "Keys in the tree" shows below the tree with six keys and their actions. Tab moves from the tree past the panel. The accessible description of the tree gives the panel text. Note (2026-11-07, user decision): "Add it before v0.1.0" (FR-116).
 
 ---
 
@@ -548,6 +553,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-113**: Update submodules MUST run each update step alone and in row order. The steps are clone, connect, checkout, register, fetch, and the fallback fetch. The checks of a step MUST run right before it. Only the reads of one level read MUST run at the same time. A level read MUST run after the step of its parent row. It MUST end before the first step of a nested row. The reconciliation reads after the last step MUST also read up to 8 rows at once. They MUST apply in row order.
 - **FR-114**: Each submodule MUST count once toward the submodule bound of 001 contract §5. The Git directory of a reviewed submodule MUST NOT count a second time. The review MUST decide this only from Git's own printed Git directory. The compare MUST be exact. A name folder on the way to such a Git directory MUST count only when Git accepts it. Name folders that do not count MUST stay within a walk bound of 1,024 name folders. A larger walk MUST give reason `limit`. Every other folder and every row MUST count as before.
 - **FR-115**: The submodule review bound MUST be 1,024 submodules at all depths, counted by FR-114. The folder row bound of FR-111 MUST stay 1,024 folders. An Update submodules request that the service accepts within the approval lifetime MUST keep its review token through its preflight. Commit, staging, sync, and workbench tokens MUST keep the 60-second check at their consume step. The output tails of one update result MUST hold at most 4 MiB in total, in row order. A later failed row MUST keep its `exitCode` with an empty tail and its remedy. The 4 MiB stderr bound of each operation MUST stay. The config bytes that one review binds MUST hold at most 64 MiB in total, across all rows. A larger total MUST end the review with `OUTPUT_LIMIT`. The 005 local-edit marks read MUST keep its bound of 256 submodules.
+- **FR-116**: While the Submodules tree shows rows, the group MUST show the panel "Keys in the tree" below the tree. The panel MUST NOT scroll with the rows. It MUST state each FR-108 key with its action, and the items of the FR-081 row menu. Its texts MUST match the keys and the menu that the app has. The panel MUST hold no Tab stop. The tree MUST take the panel text as its accessible description. In the constrained profile, the panel MUST hide. It MUST also hide when the group region would fall below its pane minimum. The accessible description MUST stay in both cases. Note (2026-11-07, user decision): "Add it before v0.1.0". The approved Collapsed board shows the panel (research.md R31).
 
 #### Spell check (moved to a later feature)
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { Copy01Icon, Delete02Icon, FolderGitIcon, GitBranchIcon, GitCompareArrowsIcon, GitMergeIcon, PencilEdit02Icon, PlusSignIcon, Upload04Icon } from "@hugeicons/core-free-icons";
-import type { IconSvgElement } from "@hugeicons/react";
+import { Alert02Icon, Copy01Icon, Delete02Icon, FolderGitIcon, GitBranchIcon, GitCompareArrowsIcon, GitMergeIcon, PencilEdit02Icon, PlusSignIcon, Upload04Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { unknownReadText, useCopy } from "../app/RepositoryStates";
@@ -22,7 +22,6 @@ import type { AddSelection } from "../worktrees/AddWorktreePanel";
 import { CHECKOUT_BUTTON, CHECKOUT_DISCARD_BUTTON, CHECKOUT_TITLE } from "../history/commit-texts";
 import type { useSync } from "../sync/useSync";
 import { LeaseCommits } from "../sync/ForcePushConfirm";
-import { WarningIcon } from "../app/NoticeBand";
 import { RemoteDeleteConfirm, type RemoteDeletePlan } from "./RemoteDeleteConfirm";
 import { OUTCOME, RD, refusalText, remoteRefusalText, STASH, T } from "./texts";
 
@@ -687,7 +686,7 @@ function DeleteConfirm({ overlay: o, onCancel, onCheck, onConfirm }: { overlay: 
             </p>
           ) : (
             <p id={reasonId} role="alert" className="flex items-start gap-2 [overflow-wrap:anywhere]">
-              <WarningIcon />
+              <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-removed" />
               <span>{remote.error}</span>
             </p>
           )
@@ -698,7 +697,7 @@ function DeleteConfirm({ overlay: o, onCancel, onCheck, onConfirm }: { overlay: 
             {combined.lease.count > 0 ? <LeaseCommits lease={combined.lease} label={RD.list(tracking)} /> : null}
             <p>{combined.local.reflogKeeps ? T.reflogKeeps(combined.local.oid) : T.noReflog(combined.local.oid)}</p>
             <p className="flex items-start gap-2 rounded-sm bg-warning-fill p-2 [overflow-wrap:anywhere]">
-              <WarningIcon />
+              <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-warning" />
               <span>{RD.warning(tracking)}</span>
             </p>
           </>

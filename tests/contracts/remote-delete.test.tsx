@@ -265,6 +265,33 @@ describe("remote confirmation (plan D2, FR-006, SC-008)", () => {
   });
 });
 
+// T017 dev check against the approved boards Local-checked and Local-refused.
+describe("local dialog marks (plan D3, boards Local-checked and Local-refused)", () => {
+  const X7 = "Other people can lose work. The delete stops if origin/feature changed since the last fetch.";
+  const iconOf = (scope: Element) => [...scope.querySelectorAll("p")].find((p) => text(p) === X7)?.querySelector("svg")?.getAttribute("class") ?? null;
+  async function checkedLocal(answerWith: unknown) {
+    const double = await mountWorkbench(workbench, deleteWorld());
+    await del("feature");
+    await click(document.querySelector<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')!);
+    await answer(double.pending("reviewSync"), answerWith as never);
+    return document.querySelector<HTMLElement>('[role="dialog"]')!;
+  }
+
+  test("the X7 notice of the checked plan has the icon of the remote dialog X7 notice", async () => {
+    const remoteIcon = iconOf((await remoteDialog()).dialog);
+    unmountAll();
+    const localIcon = iconOf(await checkedLocal(reviewed(plan(2, 2, true))));
+    expect(remoteIcon).not.toBeNull();
+    expect(localIcon).toBe(remoteIcon);
+  });
+
+  test("a refusal under the check box has the danger icon of the commit menu refusals", async () => {
+    const dialog = await checkedLocal(refused("SYNC_UNAVAILABLE", { reason: "default-branch", remote: "origin" }));
+    const icon = dialog.querySelector('[role="alert"] svg')!.getAttribute("class")!.split(" ");
+    expect(icon).toEqual(expect.arrayContaining(["text-removed", "size-(--icon-size)", "mt-px"]));
+  });
+});
+
 describe("refusals (plan D4, FR-004, SC-011)", () => {
   const names = { tracking: "origin/feature", branch: "feature" };
   // Contract Δ3: the service sends `remote` exactly with these two reasons. The second remote name proves that the text takes it from the refusal.

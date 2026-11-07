@@ -203,11 +203,10 @@ async function leaseOf(ctx: ObserveContext, trackingRef: string, head: string): 
 // Plan.md D5 and feature 011 plan.md D4 read 10: the count of a `rev-list` selection and its first SYNC_LEASE_COMMITS commits, with their subjects from `cat-file --batch-command -Z`.
 export async function commitsOf(ctx: ObserveContext, countArgs: string[], listArgs: string[]): Promise<Fact<Pick<Lease, "count" | "commits">>> {
   const objectFormat = ctx.workspace.objectFormat;
-  const counted = await readOut(ctx, countArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  const [counted, listed] = await Promise.all([readOut(ctx, countArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM), readOut(ctx, listArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM)]);
   if ("limited" in counted) return { code: "MALFORMED_GIT_OUTPUT" };
   if (!("value" in counted)) return counted;
   const count = parseRevListCount(counted.value);
-  const listed = await readOut(ctx, listArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("limited" in listed) return { code: "MALFORMED_GIT_OUTPUT" };
   if (!("value" in listed)) return listed;
   const text = Buffer.from(listed.value).toString("latin1");
@@ -456,14 +455,13 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
   // Research R16 m: Git stops `git remote` and every `%(upstream)` or `%(push)` read on such a value, so this check comes before read 3.
   if (invalidRemoteValue(entries)) return unavailable("invalid-config");
 
-  const head = await settled(signal, captureHead(ctx.runner, ctx));
+  // Reads 2 and 3 run together. The checks keep the read order, so the first failing check decides.
+  const [head, state, remotes] = await Promise.all([settled(signal, captureHead(ctx.runner, ctx)), settled(signal, ctx.reader.operationState(ctx, false)), remoteList(ctx)]);
   if (isStop(head) || "code" in head) return head;
   if ("failed" in head) return { code: head.failed };
-  const state = await settled(signal, ctx.reader.operationState(ctx, false));
   if (typeof state === "object") return "refused" in state ? { code: state.refused } : state;
   if (state === "canceled" || state === "deadline") return { stop: state };
 
-  const remotes = await remoteList(ctx);
   if (!("value" in remotes)) return remotes;
   const bound = (b: Bound): Observation => ({
     binding: { payload, head, operationState: state, trust: { fingerprint: listing.fingerprint, sync: listing.approvalRequired.sync }, ...b },

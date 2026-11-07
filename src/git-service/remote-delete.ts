@@ -53,17 +53,25 @@ export async function observeRemoteDelete(ctx: SyncContext, payload: DeletePaylo
   if (!f.remotes.includes(remote)) return unavailable("remote-missing");
   if (mirrored(entries, remote)) return unavailable("mirror");
 
+  // Reads 5 to 9 run together, then the `deleteFacts` reads and read 10. The checks keep the read order, so the first failing check decides.
+  const symref = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+  // git-check-ref-format(1): no ref has a name that fails the rule, so no symref can name the default branch.
+  const named = isRefName(`${REMOTES}${remote}/HEAD`);
+  const [tracked, step, early, pushOut, fetchOut] = await Promise.all([
+    refTarget(ctx, ref),
+    named ? stepOf(ctx, remoteHeadArgs(remote), symref) : null,
+    payload.local === undefined ? null : localOf(ctx, payload.local, head, ref),
+    readOut(ctx, pushUrlArgs(remote), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM),
+    readOut(ctx, fetchUrlArgs(remote), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM),
+  ]);
+
   // Read 5.
-  const tracked = await refTarget(ctx, ref);
   if (!("value" in tracked)) return "refused" in tracked ? fromRefused(tracked) : tracked;
   const expect = tracked.value;
 
   // Read 6. Contract Δ3 `SyncRefused`: both refusals name the remote for the texts X13 and X14.
   const unknownDefault: Observation = { refused: "SYNC_UNAVAILABLE", reason: "default-unknown", remote };
-  // git-check-ref-format(1): no ref has a name that fails the rule, so no symref can name the default branch.
-  if (!isRefName(`${REMOTES}${remote}/HEAD`)) return unknownDefault;
-  const symref = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-  const step = await stepOf(ctx, remoteHeadArgs(remote), symref);
+  if (step === null) return unknownDefault;
   if (!("exit" in step)) return step;
   // builtin/symbolic-ref.c `check_symref`: `-q` exits 1 for an absent or a non-symbolic ref (research.md R2 P13).
   if (step.exit.exitCode === 1) return unknownDefault;
@@ -72,30 +80,19 @@ export async function observeRemoteDelete(ctx: SyncContext, payload: DeletePaylo
   if (target === null) return { code: "MALFORMED_GIT_OUTPUT" };
   if (target === refKey(ref)) return { refused: "SYNC_UNAVAILABLE", reason: "default-branch", remote };
 
-  // Read 7.
-  let local: Bound["local"];
-  if (payload.local !== undefined) {
-    const localRef = payload.local;
-    if (head.state !== "detached" && head.target === localRef) return fromRefused(localUnavailable("current-branch"));
-    const worktrees = await readWorktrees(ctx);
-    if (!("value" in worktrees)) return worktrees;
-    const held = heldElsewhere(worktrees.value.records, localRef, head);
-    if (held !== null) return fromRefused(held);
-    const branch = localRef.slice(HEADS.length);
-    const recordOut = await readOut(ctx, pushRecordArgs(branch), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
-    if ("limited" in recordOut) return { code: "OUTPUT_LIMIT" };
-    if (!("value" in recordOut)) return recordOut;
-    const record = parsePushRecord(recordOut.value, branch, of);
-    if (record === null) return { code: "MALFORMED_GIT_OUTPUT" };
-    if (record === "absent") return { refused: "UNKNOWN_TARGET" };
-    if (record.upstream !== ref) return unavailable("not-upstream");
-    const facts = await deleteFacts(ctx, localRef, { entries });
-    if (!("value" in facts)) return "refused" in facts ? fromRefused(facts) : facts;
-    local = { ref: localRef, ...facts.value, worktrees: worktrees.value.digest };
-  }
+  // Read 7. The tip of `early` is the first `deleteFacts` read, and read 10 needs it.
+  if (early !== null && !("value" in early)) return early;
+  const tip = early?.value;
+  const tips = tip === undefined ? [expect] : [expect, tip.oid];
+  const branch = tip === undefined ? null : tip.ref.slice(HEADS.length);
+  const tracking = ref.slice(REMOTES.length);
+  const [local, commits] = await Promise.all([
+    tip === undefined ? undefined : deleteFacts(ctx, tip.ref, { entries }, tip.oid).then((facts) => ("value" in facts ? { value: { ref: tip.ref, ...facts.value, worktrees: tip.worktrees } } : facts)),
+    commitsOf(ctx, onlyTipsCountArgs(tips, branch, tracking, of), onlyTipsListArgs(tips, branch, tracking, of)),
+  ]);
+  if (local !== undefined && !("value" in local)) return "refused" in local ? fromRefused(local) : local;
 
   // Read 8: O-11, exactly one push URL.
-  const pushOut = await readOut(ctx, pushUrlArgs(remote), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("limited" in pushOut) return { code: "OUTPUT_LIMIT" };
   if (!("value" in pushOut)) return pushOut;
   const urls = parsePushUrls(pushOut.value);
@@ -103,23 +100,36 @@ export async function observeRemoteDelete(ctx: SyncContext, payload: DeletePaylo
   if ("reason" in urls) return unavailable(urls.reason);
 
   // Read 9: plan.md D8 checks the fetch URL only when it names the push URL byte for byte (research.md R2 P16).
-  const fetchOut = await readOut(ctx, fetchUrlArgs(remote), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("limited" in fetchOut) return { code: "OUTPUT_LIMIT" };
   if (!("value" in fetchOut)) return fetchOut;
   const sameUrl = Buffer.from(fetchOut.value).equals(Buffer.from(pushOut.value));
 
   // Read 10: one count over both tips, because two counts miss the commits that only the two refs hold (research.md R2 P14).
-  const tips = local === undefined ? [expect] : [expect, local.oid];
-  const branch = local === undefined ? null : local.ref.slice(HEADS.length);
-  const tracking = ref.slice(REMOTES.length);
-  const commits = await commitsOf(ctx, onlyTipsCountArgs(tips, branch, tracking, of), onlyTipsListArgs(tips, branch, tracking, of));
   if (!("value" in commits)) return commits;
 
   return bound({
     remotes: [remote],
     destination: { remote, ref: dst, trackingRef: ref, url: urls.url, setUpstream: false, upstreamRebase: false, source: "tracking-ref" },
     lease: { trackingRef: ref, expect, ...commits.value },
-    ...(local === undefined ? {} : { local }),
+    ...(local === undefined ? {} : { local: local.value }),
     sameUrl,
   });
+}
+
+// Read 7 up to the tip read of `deleteFacts`. The checks keep the read order.
+async function localOf(ctx: SyncContext, localRef: string, head: Head, ref: string): Promise<Observation | { value: { ref: string; oid: string; worktrees: string } }> {
+  if (head.state !== "detached" && head.target === localRef) return fromRefused(localUnavailable("current-branch"));
+  const branch = localRef.slice(HEADS.length);
+  const [worktrees, recordOut, tip] = await Promise.all([readWorktrees(ctx), readOut(ctx, pushRecordArgs(branch), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM), refTarget(ctx, localRef)]);
+  if (!("value" in worktrees)) return worktrees;
+  const held = heldElsewhere(worktrees.value.records, localRef, head);
+  if (held !== null) return fromRefused(held);
+  if ("limited" in recordOut) return { code: "OUTPUT_LIMIT" };
+  if (!("value" in recordOut)) return recordOut;
+  const record = parsePushRecord(recordOut.value, branch, ctx.workspace.objectFormat);
+  if (record === null) return { code: "MALFORMED_GIT_OUTPUT" };
+  if (record === "absent") return { refused: "UNKNOWN_TARGET" };
+  if (record.upstream !== ref) return unavailable("not-upstream");
+  if (!("value" in tip)) return "refused" in tip ? fromRefused(tip) : tip;
+  return { value: { ref: localRef, oid: tip.value, worktrees: worktrees.value.digest } };
 }

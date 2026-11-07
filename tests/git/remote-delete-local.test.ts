@@ -8,7 +8,7 @@ import { expect } from "bun:test";
 import { renameSync, rmSync } from "node:fs";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
-import { buildBase, copyOf, DELETE_ARGS, gitDelete, isUpdateRef, logHook, outcome, payloadOf, phaseAt, phasesOf, stateOf, STEP_REMEDY, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
+import { buildBase, copyOf, DELETE_ARGS, fileUrl, gitDelete, isUpdateRef, logHook, outcome, payloadOf, phaseAt, phasesOf, stateOf, STEP_REMEDY, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
 import { gitOut, gitRun, revParse } from "./remote-fixtures";
 import { caseTest, type Service } from "./service-harness";
 import { callsFrom, native, refusalOf, register, remoteCalls, reviewed, reviewSync, sendSync, sync, TIMEOUT_MS, until, withSync, type SyncResult } from "./sync-harness";
@@ -124,6 +124,55 @@ describeGit("combined remote and local branch delete (011 T010)", () => {
         expect({ name, code: refused.code, result: shown }).toEqual({ name, code: expected.code, result: expected.result });
         if (name === "other-worktree") expect(native(String(result!.worktree)).toLowerCase()).toBe(native(`${a.repo}-wt`).toLowerCase());
         expect({ name, calls: remoteCalls(service, from) }).toEqual({ name, calls: [] });
+        expect({ name, state: stateOf(a) }).toEqual({ name, state: before });
+      }
+    });
+  }, TIMEOUT_MS);
+
+  // Plan.md D4: the reads start together, but the first failing check in the read order decides. Each pair also refuses alone with each reason.
+  // The read 8 push URL read ends before the local section read starts, so config-in-include fails later in time than push-urls.
+  caseTest(TASK, "D4 order: read 6 default-branch wins over a local branch that another worktree holds, and config-in-include wins over the earlier-read push-urls", SHELL, async () => {
+    const otherWorktree = { code: "WORKBENCH_UNAVAILABLE", result: { reason: "other-worktree", worktree: "" } };
+    const cases: [string, (c: Copy) => void, [string, string | undefined, { code: string; result: Record<string, unknown> }][]][] = [
+      [
+        "default-branch and other-worktree",
+        (c) => {
+          gitRun(c.h, c.repo, ["branch", "-q", "--track", "side", "origin/main"]);
+          gitRun(c.h, c.repo, ["worktree", "add", "-q", "--", `${c.repo}-wt`, "side"]);
+        },
+        [
+          ["refs/remotes/origin/main", "refs/heads/side", { code: "SYNC_UNAVAILABLE", result: { reason: "default-branch", remote: "origin" } }],
+          [FEATURE, "refs/heads/side", otherWorktree],
+        ],
+      ],
+      [
+        "config-in-include and push-urls",
+        (c) => {
+          c.h.write(`${c.repo}/.git/inc.cfg`, '[branch "feature"]\n\tdescription = included\n');
+          gitRun(c.h, c.repo, ["config", "--local", "include.path", "inc.cfg"]);
+          gitRun(c.h, c.repo, ["config", "--add", "remote.origin.pushurl", c.origin]);
+          gitRun(c.h, c.repo, ["config", "--add", "remote.origin.pushurl", fileUrl(c.origin)]);
+        },
+        [
+          [FEATURE, LOCAL, { code: "WORKBENCH_UNAVAILABLE", result: { reason: "config-in-include" } }],
+          [FEATURE, undefined, { code: "SYNC_UNAVAILABLE", result: { reason: "push-urls" } }],
+        ],
+      ],
+    ];
+    await withSync("t010-order", async (service) => {
+      for (const [name, setup, reviews] of cases) {
+        const a = own();
+        setup(a);
+        const before = stateOf(a);
+        const r = await register(service, a.repo);
+        for (const [ref, local, expected] of reviews) {
+          const from = service.runner.calls.length;
+          const refused = refusalOf(await reviewSync(service, r, payloadOf(ref, local)));
+          const result = refused.result as Record<string, unknown> | undefined;
+          const shown = result?.reason === "other-worktree" ? { ...result, worktree: "" } : result;
+          expect({ name, ref, local, code: refused.code, result: shown }).toEqual({ name, ref, local, code: expected.code, result: expected.result });
+          expect({ name, ref, local, calls: remoteCalls(service, from) }).toEqual({ name, ref, local, calls: [] });
+        }
         expect({ name, state: stateOf(a) }).toEqual({ name, state: before });
       }
     });

@@ -8,6 +8,7 @@ import { describe, expect } from "bun:test";
 import { existsSync, mkdirSync } from "node:fs";
 import { CANCELED_PUSH_TEXT } from "../../src/git-service/sync";
 import { startHttpRemote } from "../support/http-remote";
+import type { RecordedCall } from "./bun-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit, fixtureGitPath } from "./git-binary";
 import { buildBase, copyOf, DELETE_ARGS, fileUrl, gitDelete, isLsRemote, isPush, LONG_COMMITS, moveRemote, NETWORK_LIMITS, outcome, payloadOf, phasesOf, pruneText, stateOf, STEP_REMEDY, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
@@ -83,6 +84,34 @@ describeGit("remote branch delete (011 T009)", () => {
       expect(lease.commits.map((c) => c.subject)).toEqual(Array.from({ length: 100 }, (_, i) => `long ${LONG_COMMITS - 1 - i}`));
       expect(outcome(await sync(service, r, review.syncReviewToken))).toEqual(SUCCEEDED);
       expect(stateOf(a).remote["refs/heads/long"]).toBeUndefined();
+    });
+  }, TIMEOUT_MS);
+
+  // SC-009b: the reads whose arguments are known start together. A serial read starts only after the read before it ends.
+  caseTest(TASK, "SC-009b: the combined review starts the worktree list before read 5 ends, and starts the lease count and the lease list before either one ends", SHELL, async () => {
+    const a = own();
+    gitRun(a.h, a.repo, ["branch", "-q", "--track", "feature", "origin/feature"]);
+    await withSync("t009-waves", async (service) => {
+      const r = await register(service, a.repo);
+      const from = service.runner.calls.length;
+      await reviewed(service, r, payloadOf(FEATURE, "refs/heads/feature"));
+      const calls = callsFrom(service, from);
+      const one = (what: string, match: (c: RecordedCall) => boolean): RecordedCall => {
+        const found = calls.filter(match);
+        expect({ what, calls: found.length }).toEqual({ what, calls: 1 });
+        return found[0]!;
+      };
+      const is = (c: RecordedCall, subcommand: string, ...args: string[]) => subcommandOf(c.arguments) === subcommand && args.every((arg) => c.arguments.includes(arg));
+      const tracked = one("read 5", (c) => is(c, "for-each-ref") && c.arguments.at(-1) === FEATURE);
+      const worktrees = one("worktree list", (c) => is(c, "worktree", "list"));
+      const count = one("lease count", (c) => is(c, "rev-list", "--count", "--exclude=origin/feature"));
+      const list = one("lease list", (c) => is(c, "rev-list", "--max-count=100", "--exclude=origin/feature"));
+      const end = (c: RecordedCall) => c.at + c.durationMs!;
+      expect({
+        worktreesBeforeRead5Ends: worktrees.at < end(tracked),
+        read5BeforeWorktreesEnd: tracked.at < end(worktrees),
+        leaseReadsOverlap: Math.max(count.at, list.at) < Math.min(end(count), end(list)),
+      }).toEqual({ worktreesBeforeRead5Ends: true, read5BeforeWorktreesEnd: true, leaseReadsOverlap: true });
     });
   }, TIMEOUT_MS);
 

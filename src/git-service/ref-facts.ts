@@ -64,18 +64,18 @@ export function heldElsewhere(records: readonly WorktreeRecord[], ref: string, h
   return held !== undefined ? unavailable("other-worktree", { worktree: held.path }) : unresolvedRefusal(records);
 }
 
-// Data-model §4 `reflogKeeps`. builtin/reflog.c `cmd_reflog_exists`: exit 0 when the reflog exists, 1 when it does not.
-async function headReflogKeeps(ctx: ObserveContext, tip: string): Promise<Fact<boolean>> {
+// Data-model §4 `reflogKeeps`: the entries of the HEAD reflog. builtin/reflog.c `cmd_reflog_exists`: exit 0 when the reflog exists, 1 when it does not.
+async function headReflog(ctx: ObserveContext): Promise<Fact<string[]>> {
   const exists = await stepOf(ctx, headReflogExistsArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }));
   if (!("exit" in exists)) return exists;
-  if (exists.exit.exitCode === 1) return { value: false };
+  if (exists.exit.exitCode === 1) return { value: [] };
   if (exists.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   // `-n` caps the entries at REFLOG_SCAN_ENTRIES, so more bytes break the grammar.
   const read = await readOut(ctx, headReflogArgs(), REFLOG_SCAN_ENTRIES * 65);
   if ("limited" in read) return { code: "MALFORMED_GIT_OUTPUT" };
   if (!("value" in read)) return read;
   const oids = oidList(read.value, ctx.workspace.objectFormat);
-  return oids === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: oids.includes(tip) };
+  return oids === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: oids };
 }
 
 // The count of local file keys that `keep` takes. The listing of the review counts the included files too (git-config(1) `--no-includes`).
@@ -95,20 +95,24 @@ export interface DeleteFacts {
   section: boolean;
 }
 
-// Plan.md D4 delete reads after the worktree check. Feature 004 plan.md D10 "Also delete the branch" reads them too.
-export async function deleteFacts(ctx: ObserveContext, ref: string, listing: Pick<TrustListing, "entries">): Promise<Fact<DeleteFacts> | Refused> {
-  const tip = await refTarget(ctx, ref);
-  if (!("value" in tip)) return tip;
-  const count = await revCount(ctx, unmergedCountArgs(tip.value, short(ref), ctx.workspace.objectFormat));
-  if (!("value" in count)) return count;
-  const keeps = await headReflogKeeps(ctx, tip.value);
-  if (!("value" in keeps)) return keeps;
+// Plan.md D4 delete reads after the worktree check. Feature 004 plan.md D10 "Also delete the branch" reads them too. `known`: the tip from a `refTarget` read of the caller.
+// The reads run together. The checks keep the read order, so the first failing check decides.
+export async function deleteFacts(ctx: ObserveContext, ref: string, listing: Pick<TrustListing, "entries">, known?: string): Promise<Fact<DeleteFacts> | Refused> {
   // builtin/branch.c `delete_branch_config` removes the `branch.<name>` section. A key prints as section, subsection, and a variable without a dot.
   const inSection = (e: ConfigEntry) => e.scope === "local" && e.key.slice(0, e.key.lastIndexOf(".")) === `branch.${short(ref)}`;
   const listed = listing.entries.filter(inSection).length;
-  const own = listed === 0 ? { value: 0 } : await localSectionKeys(ctx, inSection);
+  const tipRead: Promise<Fact<string> | Refused> = known === undefined ? refTarget(ctx, ref) : Promise.resolve({ value: known });
+  const [tip, count, reflog, own] = await Promise.all([
+    tipRead,
+    tipRead.then<Fact<number> | Refused>((t) => ("value" in t ? revCount(ctx, unmergedCountArgs(t.value, short(ref), ctx.workspace.objectFormat)) : t)),
+    headReflog(ctx),
+    listed === 0 ? { value: 0 } : localSectionKeys(ctx, inSection),
+  ]);
+  if (!("value" in tip)) return tip;
+  if (!("value" in count)) return count;
+  if (!("value" in reflog)) return reflog;
   if (!("value" in own)) return own;
   // `config --local --remove-section` changes the local file alone. A key of an included file would stay, and Git exits 128 when the local file holds no key.
   if (own.value < listed) return unavailable("config-in-include");
-  return { value: { oid: tip.value, onlyHere: count.value, reflogKeeps: keeps.value, section: own.value > 0 } };
+  return { value: { oid: tip.value, onlyHere: count.value, reflogKeeps: reflog.value.includes(tip.value), section: own.value > 0 } };
 }

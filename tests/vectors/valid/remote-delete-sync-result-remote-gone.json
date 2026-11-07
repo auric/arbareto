@@ -1,0 +1,5 @@
+{
+  "schema": "sync-result",
+  "expected": "valid",
+  "text": "{\"action\":\"delete-remote-branch\",\"push\":{\"status\":\"rejected\",\"oldObjectId\":\"0123456789abcdef0123456789abcdef01234567\",\"newObjectId\":null,\"reasonText\":\"stale info\",\"lease\":true,\"upstreamWritten\":false,\"upstreamNotSet\":false,\"outputTail\":\"\"},\"remoteGone\":true}"
+}

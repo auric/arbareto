@@ -1,0 +1,5 @@
+{
+  "schema": "review-sync-result",
+  "expected": "valid",
+  "text": "{\"action\":\"delete-remote-branch\",\"plan\":{\"remotes\":[\"origin\"],\"destination\":{\"remote\":\"origin\",\"ref\":\"refs/heads/feature\",\"trackingRef\":\"refs/remotes/origin/feature\",\"url\":\"https://example.test/r.git\",\"setUpstream\":false,\"upstreamRebase\":false,\"source\":\"tracking-ref\"},\"lease\":{\"trackingRef\":\"refs/remotes/origin/feature\",\"expect\":\"0123456789abcdef0123456789abcdef01234567\",\"count\":2,\"commits\":[{\"objectId\":\"89abcdef0123456789abcdef0123456789abcdef\",\"subject\":\"Fix the parser\"},{\"objectId\":\"0123456789abcdef0123456789abcdef01234567\",\"subject\":null}]},\"local\":{\"ref\":\"refs/heads/feature\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\",\"reflogKeeps\":true}},\"syncReviewToken\":\"0f0f0f0f-0000-4000-8000-000000000301\"}"
+}

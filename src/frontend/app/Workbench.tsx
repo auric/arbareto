@@ -1793,12 +1793,14 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     blockedReason: mutationReason,
     blockedRunning: running,
     onNotice: setNotice,
+    onRefusal: setPaneStatus,
     onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
     onRebase: (entry, opener) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }, opener),
     onAddWorktree: (selection, opener) => worktrees.startAdd(opener, selection),
     onOpenWorktree: (path) => void (repositoryId === null ? undefined : ignore.guard(() => void bridge.openWorktree({ repositoryId, path }).then(openedWorktree))),
     push: { reason: quietSync ?? reasons.pushReason, quiet: quietSync !== null, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
+    sync,
   });
   // Feature 010 plan.md D1 and D13: the History commit menu. It blocks with the reason of the 004 actions.
   const commitMenu = useCommitActions({

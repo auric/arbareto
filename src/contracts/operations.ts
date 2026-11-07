@@ -205,15 +205,18 @@ export const PHASES = [
   "revert-commit",
   "sync-cherry-pick",
   "sync-revert",
+  // Feature 011 contract Δ2: the local writes of the combined remote branch delete.
+  "sync-delete-local",
 ] as const;
 export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;
-// Feature 003 to 010 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
+// Feature 003 to 011 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
+// `update-ref` and `config` print no progress, so `sync-delete-local` carries none.
 const SYNC_COUNTERS = ["percent", "remoteIndex", "remoteCount"];
 const PHASE_COUNTERS: Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(["sync-fetch", "sync-merge", "sync-rebase", "sync-push", "sync-continue", "clone", "pageant", "sync-cherry-pick", "sync-revert"].map((phase) => [phase, SYNC_COUNTERS])),
   ...Object.fromEntries(
-    ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "ignore-save", "preview", "revert-index", "reset", "tag", "cherry-pick", "revert-commit"].map((phase) => [phase, []]),
+    ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "ignore-save", "preview", "revert-index", "reset", "tag", "cherry-pick", "revert-commit", "sync-delete-local"].map((phase) => [phase, []]),
   ),
   config: ["keyIndex", "keyCount"],
   "stage-files": ["fileIndex", "fileCount"],

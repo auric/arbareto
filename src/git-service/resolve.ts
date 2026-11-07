@@ -10,13 +10,14 @@ import { isObjectId } from "./commands";
 import { createCollector, stepUnits } from "./git-runner";
 import { settled, stepOf, wholeWorking, type Fact } from "./hunk-publish";
 import { latin1, strictUtf8 } from "./read-steps";
+import { unavailable, type Refused } from "./ref-facts";
 import type { OperationState, WorkingVersion } from "./snapshot";
 import { changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { readOut } from "./sync-review";
 import type { ConfigEntry } from "./trust";
 import { chooseSideArgs, mergetoolArgs, stagesArgs } from "./workbench-commands";
-import { conclude, killed, registerWorkbenchAction, unavailable, type Common, type Observation, type PayloadOf, type Refused, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
+import { conclude, killed, registerWorkbenchAction, type Common, type Observation, type PayloadOf, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
 import type { WslWhole } from "./wsl-files";
 
 type ResolvePayload = PayloadOf<"choose-side" | "mergetool">;

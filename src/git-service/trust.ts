@@ -377,7 +377,7 @@ const MERGE_TOOL = { reads: false, commit: false, sync: false, workbench: false,
 
 // Contract §12 "Trust" and feature 003 plan.md D11: the transport programs that a fetch or a push can run (probe S6).
 // git-config(1): Git runs `core.sshCommand` and `remote.<name>.uploadpack` through the shell.
-function programKey(p: KeyParts): ProgramKey | null {
+export function programKey(p: KeyParts): ProgramKey | null {
   const { section, subsection, variable } = p;
   if (section === "core" && subsection === null && variable === "sshcommand") return { form: "shell", ...TRANSPORT };
   if (section === "core" && subsection === null && variable === "askpass") return { form: "direct", ...TRANSPORT };
@@ -672,9 +672,9 @@ function createPlaces(runner: GitRunner, target: ListingTarget, roots: Roots, id
 // Contract §7 "Mutation trust": the hook events that `git commit` can run.
 const COMMIT_EVENTS: ReadonlySet<string> = new Set(["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction", "pre-auto-gc"]);
 // Feature 003 plan.md D11: the hook events that fetch, push, merge, rebase, and Continue can run.
-const SYNC_EVENTS: ReadonlySet<string> = new Set([...COMMIT_EVENTS, "pre-push", "pre-merge-commit", "post-merge", "post-checkout", "pre-rebase", "post-rewrite"]);
+export const SYNC_EVENTS: ReadonlySet<string> = new Set([...COMMIT_EVENTS, "pre-push", "pre-merge-commit", "post-merge", "post-checkout", "pre-rebase", "post-rewrite"]);
 // Feature 004 plan.md D12 `workbench`: the hook events that switch, the branch actions, merge, and rebase can run.
-const WORKBENCH_EVENTS: ReadonlySet<string> = new Set([
+export const WORKBENCH_EVENTS: ReadonlySet<string> = new Set([
   "post-checkout",
   "post-merge",
   "pre-merge-commit",

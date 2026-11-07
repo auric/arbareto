@@ -9,6 +9,7 @@ import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import type { SubmoduleRowResult } from "../../contracts/submodules";
 import { WarningIcon } from "../app/NoticeBand";
 import { CopyButton } from "../app/RepositoryStates";
+import { TextTooltip } from "../components/text-tooltip";
 import { folderName } from "../app/RepositorySwitcher";
 import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
 import { Button } from "../components/ui/button";
@@ -35,13 +36,15 @@ export type StatusOperation = {
   opens?: boolean;
   /** Feature 003 FR-052: `resolve` is Mark resolved. */
   direction?: "stage" | "unstage" | "resolve";
-  /** Feature 003: the action of a `sync` and the remotes of its review plan, in `git remote` order (contract Δ3). */
-  sync?: { action: SyncAction; remotes: readonly string[] };
+  /** Feature 003: the action of a `sync` and the remotes of its review plan, in `git remote` order (contract Δ3). Feature 011: the names of a remote branch delete. */
+  sync?: { action: SyncAction; remotes: readonly string[]; names?: SyncNames };
   /** The latest progress event, or null before the first one. */
   progress: ProgressEvent | null;
   /** The terminal response, or null while the operation runs. */
   response: BridgeResponse | null;
 };
+/** Feature 011 plan.md D13: `tracking` is the short remote-tracking name, `name` the remote branch name, `branch` the local branch of a combined delete. */
+export type SyncNames = { tracking: string; remote: string; name: string; branch: string | null };
 export type StatusRegionHandle = {
   /** The F6 target of the status region, or null when the region is no F6 stop. */
   entry(): HTMLElement | null;
@@ -112,6 +115,9 @@ type Outcome = {
   remotes?: { name: string; state: string; outputTail: string }[];
   /** Feature 003 data-model §5 `status`, `lease`, and `reasonText`. */
   push?: { status: string; lease: boolean; reasonText: string | null };
+  /** Feature 011 data-model §4. */
+  remoteGone?: boolean;
+  localNotDeleted?: boolean;
   /** Feature 003 data-model §6 and §7: the integration state and the mode source of a pull or integrate result. */
   integration?: string;
   modeSource?: string | null;
@@ -142,6 +148,8 @@ export const SYNC_NAMES: Record<SyncAction, string> = {
   abort: "Abort",
   continue: "Continue",
   skip: "Skip",
+  // Feature 011 plan.md D13 X18.
+  "delete-remote-branch": "Delete remote branch",
 };
 function textsOf(op: StatusOperation): [name: string, running: string, heading: string] {
   if (op.texts !== undefined) return op.texts;
@@ -279,6 +287,8 @@ function outcomeOf(response: BridgeResponse | null | undefined): Outcome {
     lingeringDescendants: typeof r.lingeringDescendants === "number" ? r.lingeringDescendants : undefined,
     failure: isText(r.failure) ? r.failure : undefined,
     path: isText(r.path) ? r.path : undefined,
+    remoteGone: r.remoteGone === true,
+    localNotDeleted: r.localNotDeleted === true,
   };
 }
 
@@ -326,7 +336,7 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
   }
   if (op.outcome !== undefined) return { lead: op.outcome, tail: "" };
   const outcome = outcomeOf(response);
-  const sync = op.kind === "sync" ? syncOutcome(name, response, outcome, head) : null;
+  const sync = op.kind === "sync" ? syncOutcome(name, response, outcome, head, op.sync?.names) : null;
   if (sync !== null) return sync;
   const totals = op.kind === "updateSubmodules" ? submoduleTotals(response, outcome) : null;
   if (totals !== null) return { lead: totals, tail: "" };
@@ -376,7 +386,30 @@ function syncStepText(op: StatusOperation): string | null {
   if (action === "fetch" || action === "fetch-all") return `Fetching from ${remote}…`;
   if (action === "pull") return `Pulling from ${remote}…`;
   if (action === "push" || action === "force-push") return `Pushing to ${remote}…`;
+  const names = op.sync?.names;
+  if (action === "delete-remote-branch" && names !== undefined) return phase === "sync-delete-local" && names.branch !== null ? `Deleting ${names.branch}…` : `Deleting the remote branch on ${names.remote}…`;
   return null;
+}
+
+/** Feature 011 plan.md D6 and D7: the outcome texts X20 to X26 and E2 to E4. Null keeps the 003 line. */
+function deleteOutcome(name: string, response: BridgeResponse, outcome: Outcome, names: SyncNames): Line | null {
+  const { tracking, remote, branch } = names;
+  const stays = branch === null ? "" : ` ${branch} stays.`;
+  const push = outcome.push;
+  // A full delete shows only for a success outcome. `localNotDeleted` has its own texts. Other effects take the generic line.
+  const stated = outcome.localNotDeleted || response.state === "succeeded" || response.state === "completed-with-effects";
+  if ((outcome.remoteGone || push?.status === "deleted") && !stated) return null;
+  if (outcome.remoteGone) {
+    const gone = `${remote} lists no branch ${names.name}. Arbareto deleted the remote-tracking branch ${tracking}.`;
+    return { lead: branch === null ? gone : `${gone}${outcome.localNotDeleted ? stays : ` Deleted the local branch ${branch}.`}`, tail: "" };
+  }
+  if (push?.status === "deleted") return { lead: outcome.localNotDeleted || branch === null ? `Deleted the remote branch ${tracking}.${outcome.localNotDeleted ? stays : ""}` : `Deleted ${branch} and the remote branch ${tracking}.`, tail: "" };
+  if (response.state === "unknown") return null;
+  if (response.state === "canceled") return { lead: `${name} canceled. ${PUSH_CANCELED}${stays}`, tail: "" };
+  if (response.code === "PUSH_REJECTED" && push?.status === "rejected" && outcome.reason === "stale-lease") return { lead: `${tracking} changed on ${remote} since the last fetch, so Git deleted nothing. Fetch ${remote}, then try again.${stays}`, tail: "" };
+  if (response.code === "PUSH_REJECTED" && push !== undefined) return { lead: REMOTE_REJECTED, tail: `${push.reasonText === null ? "" : `: ${push.reasonText}`}.${stays}` };
+  if (branch === null || response.state === "succeeded") return null;
+  return { lead: `${name} ${response.state === "rejected" ? "did not start" : "did not complete"}: `, code: response.code ?? response.state, tail: `${outcome.reason === undefined ? "" : ` ${outcome.reason}`}.${stays}` };
 }
 
 // Feature 003 data-model §6 `modeSource`: the value that selected the pull mode. `branch` names the branch of HEAD.
@@ -389,7 +422,8 @@ const MODE_SOURCE: Record<string, (head: Head | null) => string | null> = {
 export const MODE_REQUIRED_TEXT = "Pull fetched. Choose Rebase or Merge for this pull.";
 
 /** Feature 003: the outcome lines that differ from the 001 texts. */
-function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome, head: Head | null): Line | null {
+function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome, head: Head | null, names: SyncNames | undefined): Line | null {
+  if (names !== undefined) return deleteOutcome(name, response, outcome, names);
   // Data-model §8: `mode-required` is a `succeeded` pull that integrated nothing.
   if (response.state === "succeeded" && outcome.integration === "mode-required") return { lead: MODE_REQUIRED_TEXT, tail: "" };
   const source = response.state === "succeeded" && typeof outcome.modeSource === "string" ? MODE_SOURCE[outcome.modeSource]?.(head) : null;
@@ -442,6 +476,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   const liveText = line === null ? "" : plain(line);
   const running = op !== null && response === null;
   const stalled = running && op.progress?.stalled === true;
+  const fullText = stalled ? `${liveText} ${STALL_SENTENCE}` : liveText;
   const percent = running && (op.kind === "updateSubmodules" || op.kind === "sync") ? op.progress?.counters.percent : undefined;
   const current = area !== null && area.requestId === requestId ? area : null;
   const notice = stall !== null && stall.requestId === requestId ? stall : null;
@@ -706,11 +741,14 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
             {workbenchNotice}
           </span>
         )}
-        <span ref={textRef} role="status" tabIndex={-1} className={cn("min-w-0 flex-1 truncate", refusal !== null && !running && "sr-only")}>
-          {/* A line with a code is one added element, so the outcome stays one live-node change. */}
-          <span>{line === null ? null : line.code === undefined ? plain(line) : <span>{lineNode(line)}</span>}</span>
-          {stalled ? <span> {STALL_SENTENCE}</span> : null}
-        </span>
+        {/* Feature 011 plan.md D13: a cut line keeps its full text in the tooltip and in its accessible name. */}
+        <TextTooltip text={fullText} disabled={!truncated}>
+          <span ref={textRef} role="status" tabIndex={-1} aria-label={truncated ? fullText : undefined} className={cn("min-w-0 flex-1 truncate", refusal !== null && !running && "sr-only")}>
+            {/* A line with a code is one added element, so the outcome stays one live-node change. */}
+            <span>{line === null ? null : line.code === undefined ? plain(line) : <span>{lineNode(line)}</span>}</span>
+            {stalled ? <span> {STALL_SENTENCE}</span> : null}
+          </span>
+        </TextTooltip>
         {percent === undefined ? null : <span className="shrink-0 tabular-nums">{percent}%</span>}
         <span role="status" className="min-w-0 flex-1 truncate">
           {refusal === null ? null : (

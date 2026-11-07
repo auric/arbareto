@@ -15,7 +15,8 @@
             "force-push",
             "abort",
             "continue",
-            "skip"
+            "skip",
+            "delete-remote-branch"
           ]
         },
         "plan": {
@@ -91,7 +92,8 @@
                     "push-default-upstream",
                     "push-default-branch",
                     "push-default-triangular",
-                    "panel"
+                    "panel",
+                    "tracking-ref"
                   ]
                 }
               },
@@ -259,6 +261,30 @@
               ],
               "additionalProperties": false,
               "title": "NeedsDestination"
+            },
+            "local": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "reflogKeeps": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ref",
+                "oid",
+                "reflogKeeps"
+              ],
+              "additionalProperties": false,
+              "title": "PlanLocal"
             }
           },
           "required": [
@@ -309,7 +335,15 @@
             "rebase-exec",
             "nothing-to-commit",
             "sequence",
-            "SYNC_REMOTES"
+            "default-branch",
+            "default-unknown",
+            "no-remote-branch",
+            "not-upstream",
+            "SYNC_REMOTES",
+            "current-branch",
+            "other-worktree",
+            "head-unresolved",
+            "config-in-include"
           ]
         },
         "unmerged": {
@@ -337,6 +371,16 @@
           ],
           "additionalProperties": false,
           "title": "SyncRemedy"
+        },
+        "worktree": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "remote": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "additionalProperties": false,

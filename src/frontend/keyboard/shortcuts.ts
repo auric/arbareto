@@ -179,7 +179,8 @@ export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: re
   rebase: { aria: "Control+Shift+E", text: "Ctrl+Shift+E", scopes: BRANCH_ROWS },
   createBranch: { aria: "Control+B", text: "Ctrl+B", scopes: [...BRANCH_ROWS, "historyRow"] },
   rename: { aria: "F2", text: "F2", scopes: ["localBranchRow"] },
-  delete: { aria: "Delete", text: "Del", scopes: ["localBranchRow"] },
+  // Feature 011 plan.md D1: Del on a remote-tracking row starts the remote branch delete.
+  delete: { aria: "Delete", text: "Del", scopes: BRANCH_ROWS },
   stageLines: { aria: "S", text: "S", scopes: ["diff"] },
   unstageLines: { aria: "U", text: "U", scopes: ["diff"] },
   stageEntry: { aria: "Space", text: "Space", scopes: ["fileList"] },

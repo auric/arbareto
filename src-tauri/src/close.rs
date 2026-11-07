@@ -127,6 +127,8 @@ pub enum Mutation {
     CreateTag,
     CherryPick,
     RevertCommit,
+    // Feature 011 contract Δ6.
+    DeleteRemoteBranch,
 }
 
 impl Mutation {
@@ -160,6 +162,7 @@ impl Mutation {
                 A::Abort => Mutation::Abort,
                 A::Continue => Mutation::Continue,
                 A::Skip => Mutation::Skip,
+                A::DeleteRemoteBranch => Mutation::DeleteRemoteBranch,
                 _ => return None,
             },
             (StartedKind::Workbench, None, Some(action)) => match action {
@@ -207,7 +210,8 @@ impl Mutation {
             | M::ForcePush
             | M::Abort
             | M::Continue
-            | M::Skip => StartedKind::Sync,
+            | M::Skip
+            | M::DeleteRemoteBranch => StartedKind::Sync,
             M::Switch
             | M::CreateBranch
             | M::RenameBranch
@@ -279,6 +283,7 @@ impl Mutation {
             Mutation::CreateTag => "Create tag",
             Mutation::CherryPick => "Cherry-pick",
             Mutation::RevertCommit => "Revert commit",
+            Mutation::DeleteRemoteBranch => "Delete remote branch",
         }
     }
 }
@@ -614,8 +619,16 @@ mod tests {
             (StartedKind::Sync, None, Some(A::Abort), "Abort"),
             (StartedKind::Sync, None, Some(A::Continue), "Continue"),
             (StartedKind::Sync, None, Some(A::Skip), "Skip"),
+            // Feature 011 contract Δ6 and plan.md D9.
+            (
+                StartedKind::Sync,
+                None,
+                Some(A::DeleteRemoteBranch),
+                "Delete remote branch",
+            ),
         ] {
             let mutation = Mutation::of(kind, direction, action).expect("a valid frame");
+            assert_eq!(mutation.kind(), Some(kind), "{name}");
             let text = prompt(&[mutation]).text;
             assert_eq!(
                 text,
@@ -728,6 +741,8 @@ mod tests {
             (StartedKind::Workbench, Some(Stage), Some(A::Switch)),
             (StartedKind::Sync, None, Some(A::Switch)),
             (StartedKind::Sync, None, Some(A::Mergetool)),
+            // Feature 011 plan.md D9.
+            (StartedKind::Workbench, None, Some(A::DeleteRemoteBranch)),
             (StartedKind::ApplyFiles, None, None),
             (StartedKind::ApplyFiles, Some(Resolve), None),
             (StartedKind::ApplyFiles, Some(Stage), Some(A::Switch)),

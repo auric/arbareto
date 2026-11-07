@@ -13,6 +13,7 @@ import { objectStream } from "./history-view";
 import { stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import { lastBool, trackedChanges, trackingRefOf } from "./merge-rebase";
 import { latin1 } from "./read-steps";
+import { revCount, unavailable, type Refused } from "./ref-facts";
 import type { Head } from "./snapshot";
 import { detachCommit, inTheWayCheck, trackedStatus } from "./switch";
 import { changedRefs, changes } from "./sync";
@@ -20,7 +21,7 @@ import { observe, parentsOf } from "./sync-integrate";
 import { indexMatches, indexState, readOut, refKey } from "./sync-review";
 import type { ConfigEntry } from "./trust";
 import { cherryPickArgs, commitIsAncestorArgs, forceNoteCountArgs, gainCountArgs, parentsArgs, reflogOnlyCountArgs, resetArgs, resetCandidatesArgs, revertCommitArgs, rewrittenCountArgs, tagArgs, tagNameCheckArgs } from "./workbench-commands";
-import { conclude, killed, registerWorkbenchAction, revCount, unavailable, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
+import { conclude, killed, registerWorkbenchAction, type Observation, type PayloadOf, type WorkbenchRun } from "./workbench-review";
 
 type Branch = Extract<Head, { state: "branch" }>;
 const HEADS = "refs/heads/";

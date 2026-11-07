@@ -144,7 +144,51 @@ Git documentation:
 
 ### Packaged and perf runs (T021)
 
-Pending.
+Run 2 on 2026-11-07, packaged NSIS build, warm, in the foreground, alone, under the test gate and the full-run lock. Each case ran once, so no Kernel-Power 42 event repeated a case. The driver, the case logs, and the record draft are in local scratch `f011-pkg`.
+
+- Build: commit `f15e91fc` on `011-code`, with no tracked changes. Installed `arbareto.exe` SHA-256 `828852892f9cbfbff0f0c82b67b9b896856ab87a91d3d4334c79ff1baedc74e5`. It equals the built exe after the NSIS marker patch (1 hit). The `APP` lines of all 15 cases name this hash, and the `ORIGIN` lines name the l4 files.
+- OS: Windows 11 Pro 26H2, build 26300.9711. Git: 2.56.0.windows.2. Bun: 1.4.4. Text size: 100%. WSL: `Ubuntu-26.04` with Git 2.55.0.
+- Control: a clone of `f15e91fc` gives the first focus to the danger button of `AlertConfirm` (`RevertConfirm.tsx`). Its installed SHA-256 is `1a4c97875fca1be7025960a9b0bc69cfb5c278a436d1f271325333539769e392`. The FR-006 Cancel focus case failed with exit 1, 0 pass, and 1 fail. Red line: `error: the DOM focus on Cancel did not happen within 10000 ms: "Delete remote branch"`.
+- T019: 7 cases pass, 0 fail, and the text-size case skips 2 tests.
+- FR-001, FR-006: X1 has its UIA name and ends group 2. Pass.
+- FR-006: the remote dialog gives Cancel the first focus (UIA `HasKeyboardFocus`), has no default button, and Escape changes nothing. Pass.
+- FR-010: the checked local Delete dialog gives Cancel the first focus. Pass.
+- U6: after the trust ask for a pre-push hook, the focus returns to the check box "Also delete the remote branch origin/feature". Pass.
+- SC-008, FR-016: Dark, Light, and forced colors keep named controls, visible focus, and texts at 4.5:1. Each danger button keeps a border in forced colors. Pass. Forced colors is the CDP `forced-colors` emulation, not a Windows contrast theme.
+- FR-016: in Compact and Comfortable, the menu and both dialogs lie inside the window with no horizontal overflow. Pass.
+- SC-008 at 150% and 225% text: 2 skips, because the OS text size is 100%. These two cases stay unverified, as for feature 010.
+- US1, US2: one remote delete and one combined delete by keyboard through a local bare remote. The Git listings confirm both. Pass.
+- The focus cases prove the provider focus, which is the DOM focus source. The system focus stays unverified, because Windows Terminal owned the foreground.
+- Fixtures: M (5,000 commits, 32 refs, 10,000 files, commit graph) and M-D (88 remote-tracking refs, 87 remote heads, 150 commits that only `d01` holds). Both came from the perf fixture cache.
+
+| Measure | Median (budget) | Every-run max (budget) | Cold (budget) |
+|---|---|---|---|
+| SC-009a menu paint, 40 opens | p95 12.8 ms (100 ms); every open 9.9 to 14.9 ms | 14.9 ms (500 ms) | 25.3 ms (200 ms) |
+| SC-009b remote (X1) | 245.9 ms (500 ms) | 391.6 ms (1 s) | 271.2 ms (1 s) |
+| SC-009b combined (X9 click) | 295.1 ms (500 ms) | 430.6 ms (1 s) | - |
+| SC-009c remote only | 866 ms (1.5 s) | 966.1 ms (3 s) | 753.7 ms (3 s) |
+| SC-009d combined | 926.1 ms (2 s) | 1,913 ms (4 s) | 1,493.2 ms (4 s) |
+
+- Every T020 budget passes. The test measures one cold run per measure SC-009a to SC-009d. SC-009b measures its cold run on the remote form.
+- SC-009e: each SC-009c run has 77 to 116 history-filter inputs, and each SC-009d run has 88 to 231. Input p95 is at most 24 ms, and max is at most 32 ms (001 SC-005: p95 100 ms, every input 500 ms).
+- Records, no budget: CPU 0.281 s to 10.5 s per run, and process-tree private bytes 676 MB to 957 MB (88 runs of SC-009b to SC-009d, Windows and WSL).
+
+WSL records in `Ubuntu-26.04`, no budget (spec clarification). The repository shape hashes in the distro equal the Windows hashes for `for-each-ref` and `status --porcelain=v2`.
+
+| Record | Median | Every-run max | Cold |
+|---|---|---|---|
+| SC-009b WSL remote | 1,847.5 ms | 1,971.5 ms | 1,699.4 ms |
+| SC-009b WSL combined | 2,173 ms | 2,264.3 ms | - |
+| SC-009c WSL remote only | 3,670.6 ms | 3,789.6 ms | 3,640 ms |
+| SC-009d WSL combined | 4,632.6 ms | 4,870 ms | 4,962.1 ms |
+
+- SC-009e in WSL: 324 to 384 inputs per SC-009c run and 434 to 490 per SC-009d run. Input p95 is at most 24 ms, and max is at most 40 ms.
+
+Run 1 at `6b97a4c2`, on the same host and tools, gave the "before" values. Its control also turned red. Three cases failed:
+
+- SC-008, FR-016 themes: a test defect. The checked dialog focus check did not press Tab after the UIA toggle. Fixed in `f15e91fc`.
+- FR-016 densities: a test defect. The density check did not wait for the checked item and the unmounted menu. Fixed in `f15e91fc`.
+- SC-009b combined: median 995.9 ms (500 ms) and every-run max 1,388.9 ms (1 s). The review ran 19 Git processes in series. Fixed in `5dad4994`: the independent reads start together. Run 2 gives 295.1 ms; the remote form went from 472.8 ms to 245.9 ms.
 
 ### Requirement-to-test map (T022)
 

@@ -24,6 +24,8 @@ export const isUpdateRef = (call: { arguments: readonly string[] }) => subcomman
 export const payloadOf = (ref: string, local?: string) => ({ action: "delete-remote-branch", ref, ...(local === undefined ? {} : { local }) });
 // The stale-lease remedy of plan.md D13 X27.
 export const pruneText = (remote: string) => `This command fetches ${remote} and removes the remote-tracking branches whose remote branch is gone.`;
+// The terminal remedy of a failed push step.
+export const STEP_REMEDY = "This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again.";
 
 export interface Base {
   h: GitHost;
@@ -75,13 +77,13 @@ export const fileUrl = (path: string) => `file://${path.startsWith("/") ? "" : "
 
 // The state that a delete may change: the refs of the clone and of the remote, HEAD, and the local configuration bytes.
 export function stateOf(c: Copy) {
-  const [config] = gitOut(c.h, c.repo, ["rev-parse", "--git-path", "config"]).trimEnd().split("\n");
-  const path = /^(?:[A-Za-z]:|\/)/.test(config!) ? config! : `${c.repo}/${config}`;
+  const [path] = gitOut(c.h, c.repo, ["rev-parse", "--path-format=absolute", "--git-path", "config"]).trimEnd().split("\n");
   return {
     refs: refMap(c.h, c.repo) as Record<string, string | undefined>,
     remote: refMap(c.h, c.origin) as Record<string, string | undefined>,
     head: gitOut(c.h, c.repo, ["symbolic-ref", "-q", "HEAD"]).trim(),
-    config: c.h.read(path)!.toString("utf8"),
+    // Raw bytes: two invalid UTF-8 runs decode to the same U+FFFD text.
+    config: c.h.read(path!)!,
   };
 }
 

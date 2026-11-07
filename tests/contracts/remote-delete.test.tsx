@@ -178,6 +178,29 @@ describe("entry points (plan D1, FR-001)", () => {
     expect(double.count("reviewSync")).toBe(0);
   });
 
+  // T022 map gap: the unavailable X1 in the menu of a remote-tracking row.
+  test("during a merge, X1 in the menu stays focusable, is aria-disabled, states the blocked reason as the other items do, and a click starts no review", async () => {
+    const double = await mountWorkbench(workbench, deleteWorld({ operationState: "merging" }));
+    await contextMenu(await sidebarRow("origin/feature"));
+    const items = openMenuItems();
+    const x1 = items.find((i) => itemLabel(i) === "Delete remote branch…")!;
+    const create = items.find((i) => itemLabel(i) === "Create branch here…")!;
+    const reasonOf = (item: HTMLElement) => {
+      const id = item.getAttribute("aria-describedby");
+      return id === null ? null : text(document.getElementById(id)!);
+    };
+    expect(x1.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => x1.focus());
+    expect(document.activeElement).toBe(x1);
+    expect(reasonOf(x1)).toBe("A merge, a rebase, a cherry-pick, or a revert is in progress. Finish it with Mark resolved and the actions in the Notices band.");
+    expect(reasonOf(x1)).toBe(reasonOf(create));
+    const shown = (item: HTMLElement) => item.querySelector<HTMLElement>('[data-slot="menu-reason"]')?.hidden ?? null;
+    expect(shown(x1)).not.toBeNull();
+    expect(shown(x1)).toBe(shown(create));
+    await click(x1);
+    expect(double.count("reviewSync")).toBe(0);
+  });
+
   test("the trust ask of the review names push", async () => {
     const double = await mountWorkbench(workbench, deleteWorld());
     await del("origin/feature");
@@ -334,6 +357,30 @@ describe("refusals (plan D4, FR-004, SC-011)", () => {
       expect(double.count("sync")).toBe(0);
     });
   }
+
+  // Board 11 (user approval): the refusal of Del on a remote row shows in the refusal slot with its icon, never in the 004 notice slot.
+  const statusSlots = () => [...footer().querySelectorAll<HTMLElement>('[role="status"]')];
+  test("Del with the refusal X13 shows it in the refusal slot with its icon, and only there", async () => {
+    const double = await mountWorkbench(workbench, deleteWorld());
+    await del("origin/feature");
+    await answer(double.pending("reviewSync"), refused("SYNC_UNAVAILABLE", { reason: "default-branch", remote: "origin" }));
+    const holding = statusSlots().filter((s) => text(s).includes(X13));
+    expect(holding).toHaveLength(1);
+    expect(holding[0]!.querySelector("svg")).not.toBeNull();
+  });
+
+  test("a later delete clears the old refusal, so its outcome line shows in full", async () => {
+    const double = await mountWorkbench(workbench, deleteWorld());
+    await del("origin/feature");
+    await answer(double.pending("reviewSync"), refused("SYNC_UNAVAILABLE", { reason: "default-branch", remote: "origin" }));
+    await del("origin/feature");
+    await answer(double.pending("reviewSync"), reviewed(plan(3)));
+    await click(button("Delete remote branch", alertDialog()!));
+    await answer(double.pending("sync")!, ended("succeeded", { push: push("deleted") }));
+    expect(text(footer())).not.toContain(X13);
+    const outcome = statusSlots().find((s) => text(s).includes("Deleted the remote branch origin/feature."));
+    expect(outcome?.className.split(" ")).not.toContain("sr-only");
+  });
 });
 
 describe("run steps and outcomes (plan D6, D7, FR-008, FR-012, FR-013)", () => {

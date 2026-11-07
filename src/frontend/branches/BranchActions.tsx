@@ -68,6 +68,8 @@ export type BranchActionsOptions = {
   blockedRunning?: boolean;
   /** Shows a text in the status bar. Null clears it. */
   onNotice(text: ReactNode): void;
+  /** Shows a refusal in the status bar refusal slot. Null clears it. */
+  onRefusal(text: string | null): void;
   onOpenWorktree(path: string): void;
   /** The 003 push of the current branch and its unavailable reason. `quiet` marks the running or the reconcile reason (003 plan D12). */
   push: { reason: string | null; quiet?: boolean; run(): void };
@@ -101,7 +103,7 @@ const RUN_TEXTS: Record<string, [string, string, string]> = {
 
 /** The branch actions of the toolbar list, the references sidebar, and the history labels. It returns the actions and their overlays. */
 export function useBranchActions(options: BranchActionsOptions) {
-  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, blockedRunning = false, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, onAddWorktree, askTrust, sync } = options;
+  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, blockedRunning = false, onNotice, onRefusal, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, onAddWorktree, askTrust, sync } = options;
   const snapshot = () => workbench.getState().branches;
   const branches = useSyncExternalStore(workbench.subscribe, snapshot, snapshot);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
@@ -152,6 +154,7 @@ export function useBranchActions(options: BranchActionsOptions) {
     const t = target();
     if (t === null) return;
     onNotice(null);
+    onRefusal(null);
     const texts = RUN_TEXTS[action]!;
     const response = await trackOperation("runWorkbench", undefined, (onProgress) => bridge.runWorkbench({ repositoryId: t.repositoryId }, { workbenchToken: token, start: true }, onProgress), (op) => onOperation({ ...op, texts }));
     workbench.ended("runWorkbench", response);
@@ -302,11 +305,12 @@ export function useBranchActions(options: BranchActionsOptions) {
   function startRemoteDelete(entry: BranchEntry) {
     if (sync === undefined) return;
     void once(async () => {
+      onRefusal(null);
       const response = await sync.review({ action: "delete-remote-branch", ref: entry.ref });
       if (response === null) return;
       const reviewed = syncReviewedOf(response);
       if (reviewed !== null) return setOverlay({ kind: "remote-delete", entry, plan: reviewed.plan, token: reviewed.token });
-      onNotice(remoteRefusalText(response, { tracking: entry.name, branch: null }));
+      onRefusal(remoteRefusalText(response, { tracking: entry.name, branch: null }));
     });
   }
 
@@ -519,6 +523,7 @@ export function useBranchActions(options: BranchActionsOptions) {
             const remote = overlay.remote;
             // Data-model §7: a checked box sends `sync` with the sync token, never `runWorkbench`.
             if (remote?.checked) {
+              onRefusal(null);
               if (remote.plan !== null && remote.token !== null) sync?.startReviewed("delete-remote-branch", remote.plan, remote.token);
               return;
             }
@@ -532,6 +537,7 @@ export function useBranchActions(options: BranchActionsOptions) {
           onCancel={() => setOverlay(null)}
           onConfirm={() => {
             setOverlay(null);
+            onRefusal(null);
             sync?.startReviewed("delete-remote-branch", overlay.plan, overlay.token);
           }}
         />

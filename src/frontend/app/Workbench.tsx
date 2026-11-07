@@ -1791,6 +1791,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     blockedReason: mutationReason,
     blockedRunning: running,
     onNotice: setNotice,
+    onRefusal: setPaneStatus,
     onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
     onRebase: (entry, opener) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }, opener),
     onAddWorktree: (selection, opener) => worktrees.startAdd(opener, selection),

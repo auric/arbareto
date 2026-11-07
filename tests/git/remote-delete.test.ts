@@ -5,14 +5,15 @@
 // The oracle is Git's own lease delete on a copy with its own copy of the remote.
 
 import { describe, expect } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { CANCELED_PUSH_TEXT } from "../../src/git-service/sync";
+import { startHttpRemote } from "../support/http-remote";
 import { useFixtureRoot } from "./fixture-root";
-import { describeGit } from "./git-binary";
-import { buildBase, copyOf, DELETE_ARGS, fileUrl, gitDelete, isLsRemote, isPush, LONG_COMMITS, moveRemote, NETWORK_LIMITS, outcome, payloadOf, phasesOf, pruneText, stateOf, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
-import { gitRun, revParse } from "./remote-fixtures";
+import { describeGit, fixtureGitPath } from "./git-binary";
+import { buildBase, copyOf, DELETE_ARGS, fileUrl, gitDelete, isLsRemote, isPush, LONG_COMMITS, moveRemote, NETWORK_LIMITS, outcome, payloadOf, phasesOf, pruneText, stateOf, STEP_REMEDY, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
+import { buildCredentialRemote, fc, gitOut, gitRun, HTTP_PASSWORD, HTTP_USER, importStream, nativeEnv, revParse } from "./remote-fixtures";
 import { caseTest, type Service } from "./service-harness";
-import { callsFrom, native, refusalOf, register, remoteCalls, reviewed, reviewSync, sendSync, subcommandOf, sync, TIMEOUT_MS, until, withSync, type SyncResult } from "./sync-harness";
+import { callsFrom, gitExe, helperGlobal, hostFor, native, refusalOf, register, remoteCalls, reviewed, reviewSync, sendSync, subcommandOf, sync, TIMEOUT_MS, until, withSync, type SyncResult } from "./sync-harness";
 
 useFixtureRoot();
 
@@ -37,6 +38,12 @@ describeGit("remote branch delete (011 T009)", () => {
       const ref = `refs/remotes/origin/${name}`;
       const dst = `refs/heads/${name}`;
       const expectOid = revParse(a.h, a.repo, ref);
+      // Spec FR-009: a local branch that tracks the deleted branch keeps its upstream.
+      // It starts at `main`: research.md R2 P14 drops the commits that a local branch holds from the lease count.
+      for (const c of [a, b]) {
+        gitRun(c.h, c.repo, ["branch", "-q", "keep", "main"]);
+        gitRun(c.h, c.repo, ["branch", "-q", "--set-upstream-to", `origin/${name}`, "keep"]);
+      }
       const before = stateOf(a);
       await withSync(`t009-success-${name.replace("/", "-")}`, async (service) => {
         const r = await register(service, a.repo);
@@ -59,6 +66,8 @@ describeGit("remote branch delete (011 T009)", () => {
       const oracle = stateOf(b);
       expect({ name, refs: after.refs, remote: after.remote, head: after.head }).toEqual({ name, refs: oracle.refs, remote: oracle.remote, head: oracle.head });
       expect({ name, config: after.config }).toEqual({ name, config: before.config });
+      const upstream = (key: string) => gitOut(a.h, a.repo, ["config", "--get", `branch.keep.${key}`]);
+      expect({ name, remote: upstream("remote"), merge: upstream("merge") }).toEqual({ name, remote: "origin\n", merge: `${dst}\n` });
       expect(after.refs[ref]).toBeUndefined();
     }
   }, TIMEOUT_MS);
@@ -158,9 +167,37 @@ describeGit("remote branch delete (011 T009)", () => {
       await approve(service, r.repositoryId);
       const response = await sync(service, r, (await reviewed(service, r, payloadOf(FEATURE))).syncReviewToken);
       expect({ ...outcome(response), status: response.result!.push!.status }).toEqual({ state: "failed", code: "GIT_FAILED", status: "none" });
-      expect(response.result!.remedy!.text).toBe("This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again.");
+      expect(response.result!.remedy!.text).toBe(STEP_REMEDY);
     });
     expect(stateOf(a)).toEqual(before);
+  }, TIMEOUT_MS);
+
+  // Spec FR-008: the loopback HTTP remote asks for credentials, and the only helper fails.
+  caseTest(TASK, "FR-008: a credential helper that exits non-zero gives GIT_FAILED with status none and the terminal remedy; the remote branch stays", SHELL, async () => {
+    const h = hostFor("t009-credential-fails");
+    const project = `${h.root}/http`;
+    mkdirSync(native(project), { recursive: true });
+    const bare = buildCredentialRemote(h, project);
+    importStream(h, bare, [fc({ mark: 2, ref: "refs/heads/feature", message: "feature\n", files: { "f.txt": "f\n" } })]);
+    const clone = `${h.root}/clone`;
+    gitRun(h, h.root, ["clone", "-q", "--", bare, clone]);
+    const tip = revParse(h, bare, "refs/heads/feature");
+    const global = helperGlobal(h, HTTP_USER, HTTP_PASSWORD);
+    // helperGlobal names this script. The replacement gives no credential and exits 1.
+    h.write(`${h.root}/credential-helper.sh`, "#!/bin/sh\nexit 1\n");
+    const server = startHttpRemote({ git: fixtureGitPath(gitExe()), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
+    try {
+      gitRun(h, clone, ["remote", "set-url", "origin", `${server.url}/cred.git`]);
+      await withSync("t009-credential-fails", async (service) => {
+        const r = await register(service, clone);
+        const response = await sync(service, r, (await reviewed(service, r, payloadOf(FEATURE))).syncReviewToken);
+        expect({ ...outcome(response), status: response.result!.push!.status }).toEqual({ state: "failed", code: "GIT_FAILED", status: "none" });
+        expect(response.result!.remedy!.text).toBe(STEP_REMEDY);
+      }, { environment: nativeEnv({ GIT_CONFIG_GLOBAL: global }) });
+    } finally {
+      await server.stop();
+    }
+    expect(revParse(h, bare, "refs/heads/feature")).toBe(tip);
   }, TIMEOUT_MS);
 
   // Research.md R2 P13 and spec FR-004: only the local symref names the default branch, so these refusals start no network process.

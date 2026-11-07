@@ -57,7 +57,7 @@ describeGit("gone recovery (011 T012)", () => {
     gitRun(b.h, b.repo, ["update-ref", "--no-deref", "-d", FEATURE, expectOid]);
     const after = stateOf(a);
     expect({ refs: after.refs, remote: after.remote, head: after.head }).toEqual((({ refs, remote, head }) => ({ refs, remote, head }))(stateOf(b)));
-    expect(after.config).toBe(before.config);
+    expect(after.config).toEqual(before.config);
   }, TIMEOUT_MS);
 
   caseTest(TASK, "D8: a moved remote branch keeps the stale outcome; the exact ls-remote line names it, so no update-ref runs", SHELL, async () => {

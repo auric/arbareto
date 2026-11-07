@@ -8,7 +8,7 @@ import { expect } from "bun:test";
 import { renameSync, rmSync } from "node:fs";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
-import { buildBase, copyOf, DELETE_ARGS, gitDelete, isUpdateRef, logHook, outcome, payloadOf, phaseAt, phasesOf, stateOf, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
+import { buildBase, copyOf, DELETE_ARGS, gitDelete, isUpdateRef, logHook, outcome, payloadOf, phaseAt, phasesOf, stateOf, STEP_REMEDY, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
 import { gitOut, gitRun, revParse } from "./remote-fixtures";
 import { caseTest, type Service } from "./service-harness";
 import { callsFrom, native, refusalOf, register, remoteCalls, reviewed, reviewSync, sendSync, sync, TIMEOUT_MS, until, withSync, type SyncResult } from "./sync-harness";
@@ -72,7 +72,7 @@ describeGit("combined remote and local branch delete (011 T010)", () => {
     gitRun(a.h, bytes, ["config", "--local", "--remove-section", "branch.feature"]);
     const after = stateOf(a);
     expect({ refs: after.refs, remote: after.remote, head: after.head }).toEqual((({ refs, remote, head }) => ({ refs, remote, head }))(stateOf(b)));
-    expect(after.config).toBe(a.h.read(`${bytes}/.git/config`)!.toString("utf8"));
+    expect(after.config).toEqual(a.h.read(`${bytes}/.git/config`)!);
     expect(after.config.includes('[branch "feature"]')).toBe(false);
   }, TIMEOUT_MS);
 
@@ -226,6 +226,7 @@ describeGit("combined remote and local branch delete (011 T010)", () => {
       const response = await service.response<DeleteResult>(requestId);
       renameSync(native(`${a.origin}-away`), native(a.origin));
       expect({ ...outcome(response), status: response.result!.push!.status, localNotDeleted: response.result!.localNotDeleted }).toEqual({ state: "failed", code: "GIT_FAILED", status: "none", localNotDeleted: undefined });
+      expect(response.result!.remedy!.text).toBe(STEP_REMEDY);
       expect(callsFrom(service, from).filter(isUpdateRef)).toEqual([]);
       expect(phasesOf(service, requestId)).not.toContain("sync-delete-local");
     });

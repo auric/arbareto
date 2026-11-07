@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect } from "bun:test";
 import { readdirSync } from "node:fs";
-import { STALL_NOTICE_MS } from "../../src/contracts/limits";
+import { STALL_NOTICE_MS, SUBMODULE_WORK_PARALLEL } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
@@ -14,7 +14,8 @@ import { GIT } from "../git/git-binary";
 import { psQuote, valuesOf } from "../git/hunk-harness";
 import { withFsCalls, type FsCall } from "../git/service-harness";
 import { commandOf, isTrackCall, objectsWith, oracleExcept, shortUpstream, statusBranchMark } from "../git/submodule-harness";
-import type { SubmodulePlanRow, SubmoduleRowResult } from "../../src/contracts/submodules";
+import { SUBMODULE_PROGRESS_PHASES, type SubmodulePlanRow, type SubmoduleRowResult } from "../../src/contracts/submodules";
+import { countPath } from "../git/submodule-count-fixture";
 import { buildF31, distroGit, distroSubmoduleOracle, distroSubmoduleState, globalConfig, startSession, writeLinux, type F31, type WslRepo, type WslSession } from "./fixtures";
 import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_EXE, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
@@ -39,14 +40,16 @@ useWslFolder();
 let runners: BunRunner[] = [];
 let caseHost: WslHost | undefined;
 // Each dispose ends the WSL scopes of the runner through `wsl.exe`, so the hook takes the case bound.
-// An F31 folder holds up to 2 GB. Its Linux page cache stays until the files go, so each case removes its F31 folders.
+// An F31 folder holds up to 2 GB. Its Linux page cache stays until the files go, so each case removes its F31 folders and its `markWorld` folders.
+// The T162 folders hold 1,124 clones, so the removal gets 300 seconds.
 afterEach(async () => {
   for (const runner of runners) await runner.dispose();
   runners = [];
   const host = caseHost;
   caseHost = undefined;
   if (host === undefined) return;
-  inDistro(host.distro, ["/usr/bin/find", host.folder, "-mindepth", "1", "-maxdepth", "1", "-name", "f31-*", "-exec", "/usr/bin/rm", "-rf", "--one-file-system", "--", "{}", "+"], { timeoutMs: 120_000 });
+  const names = ["f31-*", "t141-*", "t155-*", "t162-*"].flatMap((name, i) => (i === 0 ? ["-name", name] : ["-o", "-name", name]));
+  inDistro(host.distro, ["/usr/bin/find", host.folder, "-mindepth", "1", "-maxdepth", "1", "(", ...names, ")", "-exec", "/usr/bin/rm", "-rf", "--one-file-system", "--", "{}", "+"], { timeoutMs: 300_000 });
 }, CASE_TIMEOUT_MS);
 
 // Prints the ORIGIN line of each module under test and loads it.
@@ -57,7 +60,7 @@ async function underTest(): Promise<void> {
   }
 }
 
-const wslCase = (name: string, body: (host: WslHost) => Promise<void>) =>
+const wslCase = (name: string, body: (host: WslHost) => Promise<void>, timeoutMs = CASE_TIMEOUT_MS) =>
   wslTest(
     name,
     NEEDS,
@@ -65,13 +68,14 @@ const wslCase = (name: string, body: (host: WslHost) => Promise<void>) =>
       caseHost = host;
       return body(host);
     },
-    CASE_TIMEOUT_MS,
+    timeoutMs,
   );
 
-function setup(host: WslHost): { runner: BunRunner; s: WslSession } {
+// `updateLanes`: the test-only row reads of the update observer at once (004 FR-112). The service uses SUBMODULE_WORK_PARALLEL without it.
+function setup(host: WslHost, updateLanes?: number): { runner: BunRunner; s: WslSession } {
   const runner = createBunRunner({ git: GIT ?? "git", directory: fixtureDir(`runner-${crypto.randomUUID()}`), environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });
   runners.push(runner);
-  return { runner, s: startSession(runner) };
+  return { runner, s: startSession(runner, updateLanes === undefined ? {} : { updateLanes }) };
 }
 
 interface Prepared {
@@ -98,7 +102,7 @@ async function prepare(s: WslSession, f: F31): Promise<Prepared> {
   return { repositoryId, generation: snapshot.generation, trustId: (approved.result as { trustId: string }).trustId, token: valuesOf(review.result, "submoduleReviewToken")[0] as string };
 }
 
-const sendUpdate = (s: WslSession, p: Prepared) => s.request("updateSubmodules", { submoduleReviewToken: p.token, start: true }, { repositoryId: p.repositoryId, repositoryGeneration: p.generation });
+const sendUpdate = (s: WslSession, p: Omit<Prepared, "trustId">) => s.request("updateSubmodules", { submoduleReviewToken: p.token, start: true }, { repositoryId: p.repositoryId, repositoryGeneration: p.generation });
 const rowOf = (result: unknown, path: string) => objectsWith<SubmoduleRowResult>(result, ["rowId", "state", "fetched"]).filter((row) => row.path === path);
 const operationOf = (s: WslSession, requestId: string) => s.progressOf(requestId)[0]?.operationId;
 const headOf = (f: F31, path: string) => distroGit({ host: f.sup.host, dir: `${f.sup.dir}/${path}` }, ["rev-parse", "HEAD"]).trim();
@@ -125,8 +129,34 @@ async function until(condition: () => boolean, what: string, timeoutMs: number):
 const SC018_ROWS = 20;
 const SC018_RUNS = 3;
 
-// T141: `<root>/super` with one submodule of `<root>/leaf.git` at each path. The distro Git's own update leaves each one detached at the tip of `origin/main`.
-function markWorld(host: WslHost, name: string, paths: readonly string[]): { root: string; sup: WslRepo } {
+// T155: the rows, the moved rows, and the runs of the WSL update-time record. Spec SC-021 sets no WSL budget. The T155 control sets SC021_MOVED to 19.
+const SC021_ROWS = 20;
+const SC021_MOVED = 20;
+const SC021_RUNS = 3;
+const T155_WAIT_MS = 600_000;
+const T155_TIMEOUT_MS = 3_600_000;
+
+// T162: `built` rows in the fixture, and `rows` in each review. Spec SC-020 and SC-021 set no WSL budget at 1,024 rows. The T162 control sets the second `built` to 1,023.
+const T162_POINTS = [
+  { rows: 100, built: 100 },
+  { rows: 1_024, built: 1_024 },
+] as const;
+// tasks.md T162: a 1,024-row run takes about 8 and 16 minutes. Each wait gets 45 minutes, and the case gets 4 hours.
+const T162_WAIT_MS = 2_700_000;
+const T162_TIMEOUT_MS = 14_400_000;
+
+interface MarkWorld {
+  root: string;
+  sup: WslRepo;
+  // The tip of `main` of `<root>/leaf.git`: each gitlink and each HEAD after the build.
+  main: string;
+  // The tip of `release/2.x`, 3 commits after `main`, which each clone holds. Null without `release`.
+  release: string | null;
+}
+
+// T141, T155, T162: `<root>/super` with one submodule of `<root>/leaf.git` at each path. The distro Git's own update leaves each one detached at the tip of `origin/main`.
+// The distro Git clones 8 rows at once, and the wsl.exe call count does not grow with the rows. `release`: `leaf.git` also gets `release/2.x` before the clones.
+function markWorld(host: WslHost, name: string, paths: readonly string[], options: { release?: boolean; timeoutMs?: number } = {}): MarkWorld {
   const root = `${host.folder}/${name}-${crypto.randomUUID().slice(0, 8)}`;
   writeLinux(host, globalConfig(host), '[user]\n\tname = Arbareto Fixture\n\temail = fixture@arbareto.invalid\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n[protocol "file"]\n\tallow = always\n');
   inDistro(host.distro, ["/usr/bin/mkdir", "-p", "--", `${root}/src/leaf`, `${root}/src/super`]);
@@ -138,6 +168,12 @@ function markWorld(host: WslHost, name: string, paths: readonly string[]): { roo
   for (const n of [1, 2]) distroGit(leaf, ["commit", "-q", "--allow-empty", "-m", `leaf ${n}`]);
   distroGit(leaf, ["push", "-q", `${root}/leaf.git`, "HEAD:refs/heads/main"]);
   const tip = distroGit(leaf, ["rev-parse", "HEAD"]).trim();
+  let release: string | null = null;
+  if (options.release === true) {
+    for (const n of [1, 2, 3]) distroGit(leaf, ["commit", "-q", "--allow-empty", "-m", `release ${n}`]);
+    distroGit(leaf, ["push", "-q", `${root}/leaf.git`, "HEAD:refs/heads/release/2.x"]);
+    release = distroGit(leaf, ["rev-parse", "HEAD"]).trim();
+  }
   distroGit(work, ["init", "-q", "-b", "main"]);
   writeLinux(host, `${work.dir}/.gitmodules`, paths.map((p) => `[submodule "${p}"]\n\tpath = ${p}\n\turl = ../leaf.git\n`).join(""));
   distroGit(work, ["add", "--", ".gitmodules"]);
@@ -146,8 +182,18 @@ function markWorld(host: WslHost, name: string, paths: readonly string[]): { roo
   distroGit(work, ["push", "-q", `${root}/super.git`, "HEAD:refs/heads/main"]);
   distroGit(top, ["clone", "-q", `${root}/super.git`, "super"]);
   const sup = { host, dir: `${root}/super` };
-  distroGit(sup, ["submodule", "update", "--init", "-q"], { timeoutMs: 300_000 });
-  return { root, sup };
+  distroGit(sup, ["submodule", "update", "--init", "--jobs", "8", "-q"], { timeoutMs: options.timeoutMs ?? 300_000 });
+  return { root, sup, main: tip, release };
+}
+
+// One distro Git process runs the fixed `script` in every initialized submodule of `sup`. `git-submodule(1)` "foreach": a nonzero exit in a row ends it nonzero.
+const eachRow = (sup: WslRepo, script: string, timeoutMs = 300_000) => void distroGit(sup, ["submodule", "foreach", "-q", script], { timeoutMs });
+
+// T155, T162: the moved twin. The superproject commits each path of `moved` at the `release/2.x` tip, which each clone holds. Each HEAD stays where it is.
+function moveRows(m: MarkWorld, moved: readonly string[]): void {
+  if (m.release === null) throw new Error("no release/2.x tip");
+  distroGit(m.sup, ["update-index", "-z", "--index-info"], { input: Buffer.from(moved.map((p) => `160000 ${m.release} 0\t${p}\0`).join("")) });
+  distroGit(m.sup, ["commit", "-q", "-m", "move"]);
 }
 
 // Registration and trust approval, as `prepare` does.
@@ -160,13 +206,48 @@ async function registerTrusted(s: WslSession, sup: WslRepo): Promise<string> {
   return repositoryId;
 }
 
-// A fresh snapshot, then the timed list review.
-async function listReview(s: WslSession, repositoryId: string): Promise<{ review: Awaited<ReturnType<WslSession["response"]>>; ms: number }> {
-  const read = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }));
+// A fresh snapshot, then the timed list review. `update` holds the review token for `sendUpdate`.
+async function listReview(s: WslSession, repositoryId: string, timeoutMs?: number): Promise<{ review: Awaited<ReturnType<WslSession["response"]>>; ms: number; update: Omit<Prepared, "trustId"> }> {
+  const read = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }), timeoutMs);
   const snapshot = read.result as { snapshotId: string; generation: number };
   const at = performance.now();
-  const review = await s.response(s.request("reviewSubmodules", { snapshotId: snapshot.snapshotId }, { repositoryId, repositoryGeneration: snapshot.generation }));
-  return { review, ms: performance.now() - at };
+  const review = await s.response(s.request("reviewSubmodules", { snapshotId: snapshot.snapshotId }, { repositoryId, repositoryGeneration: snapshot.generation }), timeoutMs);
+  const ms = performance.now() - at;
+  return { review, ms, update: { repositoryId, generation: snapshot.generation, token: valuesOf(review.result, "submoduleReviewToken")[0] as string } };
+}
+
+const median = (list: number[]) => [...list].sort((a, b) => a - b)[Math.floor(list.length / 2)]!;
+const reviewRows = (review: { result?: unknown }) => objectsWith<SubmodulePlanRow>(review.result, ["rowId", "action"]).length;
+
+// Contract §12 "Progress": the first `fetch` or `update` event of the request. Its counters give the "Updating <i> of <n>" header text of `SubmodulesGroup.tsx`.
+function firstStep(s: WslSession, requestId: string): { at: number; counters: { rowIndex: number; rowCount: number } } | undefined {
+  const found = s.progressAt(requestId).find((p) => (SUBMODULE_PROGRESS_PHASES as readonly (string | undefined)[]).includes(p.event.phase));
+  return found && { at: found.at, counters: (found.event as unknown as { counters: { rowIndex: number; rowCount: number } }).counters };
+}
+
+// T155, T162: the update of SC-021, sent at the return of `listReview`. `first`: the start of the first update process, which the service runs with the `network` policy.
+// `preflight`: from the `preflight` event to the first step event. `stopAtStep`: Cancel after the first step event, as T154 does after "Updating 1 of <n>".
+async function timedUpdate(s: WslSession, runner: BunRunner, update: Omit<Prepared, "trustId">, timeoutMs: number, stopAtStep = false) {
+  const at = performance.now();
+  const requestId = sendUpdate(s, update);
+  if (stopAtStep) {
+    await until(() => firstStep(s, requestId) !== undefined || s.responded(requestId), "first update step event", timeoutMs);
+    if (firstStep(s, requestId) !== undefined) s.request("cancel", { operationId: operationOf(s, requestId) });
+  }
+  const response = await s.response(requestId, timeoutMs);
+  const total = performance.now() - at;
+  const operationId = operationOf(s, requestId);
+  const step = firstStep(s, requestId);
+  const preflightAt = s.progressAt(requestId).find((p) => p.event.phase === "preflight")?.at;
+  const firstCall = runner.calls.find((c) => c.operationId === operationId && c.environmentPolicy === "network");
+  return {
+    response,
+    total,
+    step: step && { ms: step.at - at, counters: step.counters },
+    first: firstCall === undefined ? null : firstCall.at - at,
+    preflight: step === undefined || preflightAt === undefined ? null : step.at - preflightAt,
+    steps: runner.calls.filter((c) => c.operationId === operationId && c.environmentPolicy === "network").length,
+  };
 }
 
 describe("WSL submodule update with Git 2.55.0 (T232)", () => {
@@ -409,23 +490,19 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     // The SC-018 difference in the distro: a branch with an upstream in every row, then every HEAD detached at the same commit.
     const paths = Array.from({ length: SC018_ROWS }, (_, i) => `m${i}`);
     const t = markWorld(host, "t141-time", paths);
-    const each = (args: string[]) => {
-      for (const path of paths) distroGit({ host, dir: `${t.sup.dir}/${path}` }, args);
-    };
-    each(["checkout", "-q", "-B", "main", "--track", "origin/main"]);
+    eachRow(t.sup, "git checkout -q -B main --track origin/main");
     const timed = await registerTrusted(s, t.sup);
     await listReview(s, timed);
     const times: Record<"branch" | "detached", number[]> = { branch: [], detached: [] };
     for (let run = 0; run < SC018_RUNS; run++) {
       for (const mode of ["branch", "detached"] as const) {
-        each(mode === "branch" ? ["checkout", "-q", "main"] : ["checkout", "-q", "--detach"]);
+        eachRow(t.sup, mode === "branch" ? "git checkout -q main" : "git checkout -q --detach");
         const { review: r, ms } = await listReview(s, timed);
         const rows = objectsWith<SubmodulePlanRow>(r.result, ["rowId", "action"]).length;
         expect({ mode, state: r.state, rows, marks: (valuesOf(r.result, "branches")[0] as unknown[]).length }).toEqual({ mode, state: "succeeded", rows: 20, marks: 20 });
         times[mode].push(ms);
       }
     }
-    const median = (list: number[]) => [...list].sort((a, b) => a - b)[Math.floor(list.length / 2)]!;
     const perRow = (mode: "branch" | "detached") => median(times[mode]) / SC018_ROWS;
     console.log(
       `OBSERVATION T151: WSL ${host.distro} SC-020 list time of ${SC018_ROWS} rows, median of ${SC018_RUNS}: branch ${median(times.branch).toFixed(1)} ms, detached ${median(times.detached).toFixed(1)} ms`,
@@ -434,6 +511,88 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
       `OBSERVATION T141: WSL ${host.distro} list review of ${SC018_ROWS} rows, median of ${SC018_RUNS}: branch ${perRow("branch").toFixed(1)} ms per row, detached ${perRow("detached").toFixed(1)} ms per row, difference ${(perRow("branch") - perRow("detached")).toFixed(1)} ms per row (runs: ${JSON.stringify(times)})`,
     );
   });
+
+  // T155: spec SC-021 (WSL record without a budget), FR-112. The update steps run one at a time. The lanes apply only to the preflight and level reads.
+  wslCase(
+    "update time: Update all moves each of 20 moved rows, and the time to the first update process, the total, and the preflight are recorded for 1 and 8 lanes",
+    async (host) => {
+      await underTest();
+      const paths = Array.from({ length: SC021_ROWS }, (_, i) => countPath(i));
+      const m = markWorld(host, "t155-moved", paths, { release: true });
+      moveRows(m, paths.slice(0, SC021_MOVED));
+      const lanes: { n: number; runner: BunRunner; s: WslSession; repositoryId: string; runs: { first: number; total: number; preflight: number; steps: number }[] }[] = [];
+      for (const n of [1, SUBMODULE_WORK_PARALLEL]) {
+        const { runner, s } = setup(host, n);
+        lanes.push({ n, runner, s, repositoryId: await registerTrusted(s, m.sup), runs: [] });
+      }
+      for (let run = 0; run < SC021_RUNS; run++) {
+        for (const l of lanes) {
+          eachRow(m.sup, `git checkout -q --detach ${m.main}`);
+          const { update } = await listReview(l.s, l.repositoryId, T155_WAIT_MS);
+          const u = await timedUpdate(l.s, l.runner, update, T155_WAIT_MS);
+          const rows = objectsWith<SubmoduleRowResult>(u.response.result, ["rowId", "state", "fetched"]);
+          expect({ lanes: l.n, state: u.response.state, code: u.response.code, rows: rows.length, moved: rows.filter((r) => r.state === "moved").length, timed: u.first !== null && u.preflight !== null }).toEqual({
+            lanes: l.n,
+            state: "succeeded",
+            code: undefined,
+            rows: 20,
+            moved: 20,
+            timed: true,
+          });
+          l.runs.push({ first: u.first!, total: u.total, preflight: u.preflight!, steps: u.steps });
+        }
+      }
+      const text = (l: (typeof lanes)[number]) => `${l.n === 1 ? "1 lane" : `${l.n} lanes`}: first update process ${median(l.runs.map((r) => r.first)).toFixed(1)} ms, total ${median(l.runs.map((r) => r.total)).toFixed(1)} ms, preflight ${median(l.runs.map((r) => r.preflight)).toFixed(1)} ms`;
+      console.log(`OBSERVATION T155: WSL ${host.distro} SC-021 update of ${SC021_ROWS} moved rows, median of ${SC021_RUNS}: ${lanes.map(text).join("; ")} (runs: ${JSON.stringify(Object.fromEntries(lanes.map((l) => [l.n, l.runs])))})`);
+    },
+    T155_TIMEOUT_MS,
+  );
+
+  // T162: spec SC-020, SC-021 (WSL record without a budget), FR-115. tasks.md T154: Cancel follows the first "Updating 1 of <n>", and each HEAD is then detached at `main` again.
+  wslCase(
+    "1,024 rows: the list time of the 100-row and 1,024-row twins, and the Update all time to Updating 1 of <n> on their moved twins, are recorded after one warm-up",
+    async (host) => {
+      await underTest();
+      const { runner, s } = setup(host);
+      const records: { rows: number; detached: number; branch: number; update: number }[] = [];
+      for (const point of T162_POINTS) {
+        const paths = Array.from({ length: point.built }, (_, i) => countPath(i));
+        const m = markWorld(host, `t162-${point.built}`, paths, { release: true, timeoutMs: T162_WAIT_MS });
+        const repositoryId = await registerTrusted(s, m.sup);
+        const listed = async (mode: string) => {
+          const { review, ms } = await listReview(s, repositoryId, T162_WAIT_MS);
+          expect({ mode, state: review.state, rows: reviewRows(review) }).toEqual({ mode, state: "succeeded", rows: point.rows });
+          return ms;
+        };
+        // The detached twin: the build leaves each HEAD detached at `main`.
+        await listed("warm-up");
+        const detached = await listed("detached");
+        eachRow(m.sup, "git checkout -q -B main --track origin/main", T162_WAIT_MS);
+        const branch = await listed("branch");
+        eachRow(m.sup, "git checkout -q --detach", T162_WAIT_MS);
+        moveRows(m, paths);
+        const updated = async () => {
+          const { review, update } = await listReview(s, repositoryId, T162_WAIT_MS);
+          expect({ state: review.state, rows: reviewRows(review) }).toEqual({ state: "succeeded", rows: point.rows });
+          const u = await timedUpdate(s, runner, update, T162_WAIT_MS, true);
+          eachRow(m.sup, `git checkout -q --detach ${m.main}`, T162_WAIT_MS);
+          expect(u.step?.counters).toEqual({ rowIndex: 1, rowCount: point.rows });
+          return u.step!.ms;
+        };
+        await updated();
+        records.push({ rows: point.rows, detached, branch, update: await updated() });
+      }
+      const [small, big] = records as [(typeof records)[number], (typeof records)[number]];
+      const perRow = (key: "detached" | "branch" | "update") => ((big[key] - small[key]) / (big.rows - small.rows)).toFixed(2);
+      console.log(
+        `OBSERVATION T162: WSL ${host.distro} SC-020 list time, one counted run after one warm-up: ${records.map((r) => `${r.rows} rows detached ${r.detached.toFixed(1)} ms, branch ${r.branch.toFixed(1)} ms`).join("; ")}; per added row detached ${perRow("detached")} ms, branch ${perRow("branch")} ms`,
+      );
+      console.log(
+        `OBSERVATION T162: WSL ${host.distro} SC-021 time to Updating 1 of <n>, one counted run after one warm-up: ${records.map((r) => `${r.rows} rows ${r.update.toFixed(1)} ms`).join("; ")}; per added row ${perRow("update")} ms`,
+      );
+    },
+    T162_TIMEOUT_MS,
+  );
 
   for (const ending of ["cancel", "close"] as const) {
     wslCase(`F31 big-clone: after ${ending === "cancel" ? "Cancel" : "a simulated close"} during the clone, pgrep finds no process of the operation, and no arbareto-* scope remains`, async (host) => {

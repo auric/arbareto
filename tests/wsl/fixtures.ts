@@ -387,15 +387,20 @@ export interface PublicProgress {
 const RESPONSE_WAIT_MS = 120_000;
 
 // `markers`: the recovery markers of the handshake, as the shell loads them.
-export function startSession(runner: BunRunner, options: Pick<SessionOptions, "readRawIndex" | "historyProbeRuns"> & { markers?: object[] } = {}) {
+export function startSession(runner: BunRunner, options: Pick<SessionOptions, "readRawIndex" | "historyProbeRuns" | "updateLanes"> & { markers?: object[] } = {}) {
   const { markers = [], ...sessionOptions } = options;
   const responses: PublicResponse[] = [];
   const progress: PublicProgress[] = [];
+  // The `performance.now()` of each progress frame at the writer, by its index in `progress`.
+  const progressTimes: number[] = [];
   const session = createSession({
     writer: {
       write: (frame) => {
         if ("response" in frame) responses.push(frame.response as PublicResponse);
-        if ("progress" in frame) progress.push(frame.progress as PublicProgress);
+        if ("progress" in frame) {
+          progress.push(frame.progress as PublicProgress);
+          progressTimes.push(performance.now());
+        }
       },
       flush: async () => {},
     },
@@ -434,9 +439,11 @@ export function startSession(runner: BunRunner, options: Pick<SessionOptions, "r
     }
   };
   const progressOf = (requestId: string) => progress.filter((p) => p.requestId === requestId);
+  const progressAt = (requestId: string) => progress.flatMap((event, i) => (event.requestId === requestId ? [{ event, at: progressTimes[i]! }] : []));
+  const responded = (requestId: string) => responses.some((r) => r.requestId === requestId);
   // Registration as the shell sends it after the folder picker: only the native bootstrap ID.
   const chooseRepository = (path: string) => request("chooseRepository", { bootstrapId: runner.addContext("repositoryDiscovery", path) });
-  return { session, request, response, progressOf, chooseRepository };
+  return { session, request, response, progressOf, progressAt, responded, chooseRepository };
 }
 
 export type WslSession = ReturnType<typeof startSession>;

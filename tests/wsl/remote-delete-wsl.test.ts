@@ -79,10 +79,12 @@ function oracle(x: World, args: string[][]): number[] {
   return args.map((a) => gitRun(x.h, workOf(oracleOf(x)), ["-c", rewrite, ...a], { allowExit: ANY_EXIT }).exitCode);
 }
 
+// Feature 003 plan.md D11: the work clone holds no hook, transport program, or `protocol` entry, so no trust class needs approval.
+// The pre-receive hook of the cancel case lies in the bare remote, outside the listing of the work clone.
+const NO_APPROVAL = { reads: false, commit: false, sync: false, workbench: false, mergetool: false };
 async function trusted(s: Service, w: WslHost, dir: string): Promise<RegistrationResult> {
   const r = await open(s, w, dir);
-  expect((await request<{ approvalRequired: { sync: boolean } }>(s, "readTrust", {}, { repositoryId: r.repositoryId })).result!.approvalRequired.sync).toBe(true);
-  expect((await request(s, "approveTrust", { action: "push" }, { repositoryId: r.repositoryId })).state).toBe("succeeded");
+  expect((await request<{ approvalRequired: Record<string, boolean> }>(s, "readTrust", {}, { repositoryId: r.repositoryId })).result!.approvalRequired).toEqual(NO_APPROVAL);
   return r;
 }
 async function reviewDelete(s: Service, r: RegistrationResult, payload: { ref: string; local?: string }) {

@@ -14,7 +14,7 @@ import { redactUrlUserInfo } from "../contracts/submodules";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import type { Approvals } from "./approvals";
 import { batchCommandArgs, isObjectId, isRefName, type ObjectFormat } from "./commands";
-import { createCollector, isChannelPath } from "./git-runner";
+import { createCollector, isChannelPath, isDeadlineStop, settleSteps } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
 import { objectStream } from "./history-view";
 import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
@@ -169,6 +169,13 @@ export async function readOut(ctx: ObserveContext, args: string[], maxBytes: num
   return step.exit.exitCode === 0 ? { value: out.take() } : { code: "GIT_FAILED" };
 }
 
+// Parallel reads of one review. Every read ends before the wave returns or throws (`settleSteps`).
+// 001 contract §5 "Deadline outcomes": a deadline closes the Job of every sibling, so it decides before the checks in read order. `operationState` gives the string `deadline`.
+export async function readWave<T extends readonly unknown[] | []>(work: T): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> } | Stop> {
+  const ends = await settleSteps(work, isDeadlineStop);
+  return ends.some((end) => isDeadlineStop(end) || end === "deadline") ? { stop: "deadline" } : ends;
+}
+
 // Contract Δ3 read 3 and Δ5 `SYNC_REMOTES`.
 export async function remoteList(ctx: ObserveContext): Promise<Fact<string[]> | { refused: ErrorCode; reason?: "SYNC_REMOTES" }> {
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, separator: LF });
@@ -203,7 +210,9 @@ async function leaseOf(ctx: ObserveContext, trackingRef: string, head: string): 
 // Plan.md D5 and feature 011 plan.md D4 read 10: the count of a `rev-list` selection and its first SYNC_LEASE_COMMITS commits, with their subjects from `cat-file --batch-command -Z`.
 export async function commitsOf(ctx: ObserveContext, countArgs: string[], listArgs: string[]): Promise<Fact<Pick<Lease, "count" | "commits">>> {
   const objectFormat = ctx.workspace.objectFormat;
-  const [counted, listed] = await Promise.all([readOut(ctx, countArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM), readOut(ctx, listArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM)]);
+  const reads = await readWave([readOut(ctx, countArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM), readOut(ctx, listArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM)]);
+  if (isStop(reads)) return reads;
+  const [counted, listed] = reads;
   if ("limited" in counted) return { code: "MALFORMED_GIT_OUTPUT" };
   if (!("value" in counted)) return counted;
   const count = parseRevListCount(counted.value);
@@ -456,7 +465,9 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
   if (invalidRemoteValue(entries)) return unavailable("invalid-config");
 
   // Reads 2 and 3 run together. The checks keep the read order, so the first failing check decides.
-  const [head, state, remotes] = await Promise.all([settled(signal, captureHead(ctx.runner, ctx)), settled(signal, ctx.reader.operationState(ctx, false)), remoteList(ctx)]);
+  const reads = await readWave([settled(signal, captureHead(ctx.runner, ctx)), settled(signal, ctx.reader.operationState(ctx, false)), remoteList(ctx)]);
+  if (isStop(reads)) return reads;
+  const [head, state, remotes] = reads;
   if (isStop(head) || "code" in head) return head;
   if ("failed" in head) return { code: head.failed };
   if (typeof state === "object") return "refused" in state ? { code: state.refused } : state;

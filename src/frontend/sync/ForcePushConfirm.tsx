@@ -45,7 +45,7 @@ export function LeaseCommits({ lease, label }: { lease: ForcePlan["lease"]; labe
           </li>
         ))}
       </ul>
-      {more > 0 ? <p>{more === 1 ? "and 1 more commit" : `and ${more} more commits`}</p> : null}
+      {more > 0 ? <p>{more === 1 ? "and 1 more commit" : `and ${more.toLocaleString("en-US")} more commits`}</p> : null}
     </>
   );
 }

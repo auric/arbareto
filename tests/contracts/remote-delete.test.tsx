@@ -18,6 +18,7 @@ printOrigin("../../src/frontend/branches/BranchActions.tsx", import.meta.dir);
 printOrigin("../../src/frontend/branches/RemoteDeleteConfirm.tsx", import.meta.dir);
 printOrigin("../../src/frontend/branches/texts.ts", import.meta.dir);
 printOrigin("../../src/frontend/status/OperationStatus.tsx", import.meta.dir);
+printOrigin("../../src/frontend/sync/ForcePushConfirm.tsx", import.meta.dir);
 printOrigin("../../src/frontend/sync/useSync.ts", import.meta.dir);
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children: ReactNode }) => <>{children}</> }));
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre>{patch}</pre> }));
@@ -236,6 +237,12 @@ describe("remote confirmation (plan D2, FR-006, SC-008)", () => {
     expect(text(dialog)).toContain("Another branch, tag, or remote-tracking branch here holds every commit of origin/feature.");
     expect(dialog.querySelector("ul")).toBeNull();
     expect(text(dialog)).not.toContain("more commit");
+  });
+
+  test("a count above 999 groups its digits in X4 and in the line of the commits that the list leaves out", async () => {
+    const { dialog } = await remoteDialog(plan(1334));
+    expect(text(dialog)).toContain("1,334 commits are on no other branch, tag, or remote-tracking branch here:");
+    expect(text(dialog)).toContain("and 1,234 more commits");
   });
 
   test("Cancel has the first focus; no default button: no form, no submit button, no access key", async () => {

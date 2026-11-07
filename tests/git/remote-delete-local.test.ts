@@ -6,12 +6,15 @@
 
 import { expect } from "bun:test";
 import { renameSync, rmSync } from "node:fs";
+import type { CallMatch, RecordedCall } from "./bun-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { buildBase, copyOf, DELETE_ARGS, fileUrl, gitDelete, isUpdateRef, logHook, outcome, payloadOf, phaseAt, phasesOf, stateOf, STEP_REMEDY, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
 import { gitOut, gitRun, revParse } from "./remote-fixtures";
-import { caseTest, type Service } from "./service-harness";
-import { callsFrom, native, refusalOf, register, remoteCalls, reviewed, reviewSync, sendSync, sync, TIMEOUT_MS, until, withSync, type SyncResult } from "./sync-harness";
+import { caseTest, siblingDeadline, type Service } from "./service-harness";
+import { callsFrom, native, refusalOf, register, remoteCalls, reviewed, reviewSync, sendSync, subcommandOf, sync, TIMEOUT_MS, until, withSync, type SyncResult } from "./sync-harness";
+
+type CallLike = Parameters<CallMatch>[0];
 
 useFixtureRoot();
 
@@ -176,6 +179,43 @@ describeGit("combined remote and local branch delete (011 T010)", () => {
         expect({ name, state: stateOf(a) }).toEqual({ name, state: before });
       }
     });
+  }, TIMEOUT_MS);
+
+  // 001 contract §5 "Deadline outcomes": the deadline closes the Job of the sibling, so the sibling ends with `exitCode` null. The deadline decides, not the sibling.
+  caseTest(TASK, "§5 deadline first: a read at its deadline while an earlier sibling read still runs gives DEADLINE in each parallel review wave, and no process outlives the review", SHELL, async () => {
+    const is = (subcommand: string, ...args: string[]) => (c: CallLike) => subcommandOf(c.arguments) === subcommand && args.every((arg) => c.arguments.includes(arg));
+    const last = (subcommand: string, end: string, ...args: string[]) => (c: CallLike) => is(subcommand, ...args)(c) && c.arguments.at(-1) === end;
+    const refs = "--format=%(refname)%00%(objectname)";
+    const unmerged = (c: CallLike) => is("rev-list", "--count", "--exclude=feature")(c) && !c.arguments.includes("--exclude=origin/feature");
+    const remote = payloadOf(FEATURE);
+    const combined = payloadOf(FEATURE, LOCAL);
+    const cases: [string, object | "delete-branch", CallMatch, CallMatch][] = [
+      ["reads 2 and 3", remote, last("remote", "remote"), last("symbolic-ref", "HEAD")],
+      ["reads 5 to 9", combined, is("remote", "get-url", "--push"), last("for-each-ref", FEATURE, refs)],
+      ["read 7", combined, last("for-each-ref", LOCAL, refs), is("worktree", "list")],
+      ["deleteFacts", combined, is("reflog", "exists"), unmerged],
+      ["read 10", remote, is("rev-list", "--max-count=100"), is("rev-list", "--count", "--exclude=origin/feature")],
+      // `cat-file` starts after the lease reads end. A target that starts in the same task as the unmerged count also gives that count the 1 ms deadline.
+      ["deleteFacts and read 10", combined, is("cat-file", "--batch-command"), is("reflog", "exists")],
+      ["004 delete-branch", "delete-branch", is("reflog", "exists"), unmerged],
+    ];
+    const a = own();
+    const seen: unknown[] = [];
+    await withSync("t010-deadline", async (service) => {
+      const r = await register(service, a.repo);
+      for (const [name, payload, target, sibling] of cases) {
+        const from = service.runner.calls.length;
+        const release = siblingDeadline(service, target, sibling);
+        const response = await (payload === "delete-branch"
+          ? service.request("reviewWorkbench", { action: "delete-branch", ref: LOCAL }, { repositoryId: r.repositoryId, repositoryGeneration: r.generation })
+          : reviewSync(service, r, payload)
+        ).finally(release);
+        const calls = callsFrom(service, from).filter((c) => c.operationId === response.operationId);
+        const endOf = (c: RecordedCall | undefined) => c?.exit?.deadline ?? (c?.exit?.exitCode === null ? "closed" : String(c?.exit?.exitCode));
+        seen.push({ name, ...outcome(response), exits: [calls.find(target), calls.find(sibling)].map(endOf), running: calls.filter((c) => c.exit === undefined && c.refused === undefined).length });
+      }
+    });
+    expect(seen).toEqual(cases.map(([name]) => ({ name, state: "failed", code: "DEADLINE", exits: ["deadline", "closed"], running: 0 })));
   }, TIMEOUT_MS);
 
   caseTest(TASK, "data-model §2: an external commit on the local branch after the review gives STALE_REVIEW; no push starts", SHELL, async () => {

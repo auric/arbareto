@@ -7,10 +7,10 @@
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, REFLOG_SCAN_ENTRIES, TRUST_INPUT_BYTES, WORKTREE_LISTING_BYTES, WORKTREE_RECORDS } from "../contracts/limits";
 import { createCollector } from "./git-runner";
-import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
+import { isStop, stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import type { Head } from "./snapshot";
 import { parseRevListCount } from "./sync-parsers";
-import { listRefs, readOut, refKey } from "./sync-review";
+import { listRefs, readOut, readWave, refKey } from "./sync-review";
 import { parseConfigListing, type ConfigEntry, type TrustListing } from "./trust";
 import { headReflogArgs, headReflogExistsArgs, localConfigArgs, unmergedCountArgs, worktreeListArgs } from "./workbench-commands";
 import { oidList, parseWorktrees, type WorktreeRecord } from "./workbench-parsers";
@@ -96,18 +96,20 @@ export interface DeleteFacts {
 }
 
 // Plan.md D4 delete reads after the worktree check. Feature 004 plan.md D10 "Also delete the branch" reads them too. `known`: the tip from a `refTarget` read of the caller.
-// The reads run together. The checks keep the read order, so the first failing check decides.
+// The reads run together in one `readWave`. Then the checks keep the read order, so the first failing check decides.
 export async function deleteFacts(ctx: ObserveContext, ref: string, listing: Pick<TrustListing, "entries">, known?: string): Promise<Fact<DeleteFacts> | Refused> {
   // builtin/branch.c `delete_branch_config` removes the `branch.<name>` section. A key prints as section, subsection, and a variable without a dot.
   const inSection = (e: ConfigEntry) => e.scope === "local" && e.key.slice(0, e.key.lastIndexOf(".")) === `branch.${short(ref)}`;
   const listed = listing.entries.filter(inSection).length;
   const tipRead: Promise<Fact<string> | Refused> = known === undefined ? refTarget(ctx, ref) : Promise.resolve({ value: known });
-  const [tip, count, reflog, own] = await Promise.all([
+  const reads = await readWave([
     tipRead,
     tipRead.then<Fact<number> | Refused>((t) => ("value" in t ? revCount(ctx, unmergedCountArgs(t.value, short(ref), ctx.workspace.objectFormat)) : t)),
     headReflog(ctx),
     listed === 0 ? { value: 0 } : localSectionKeys(ctx, inSection),
   ]);
+  if (isStop(reads)) return reads;
+  const [tip, count, reflog, own] = reads;
   if (!("value" in tip)) return tip;
   if (!("value" in count)) return count;
   if (!("value" in reflog)) return reflog;

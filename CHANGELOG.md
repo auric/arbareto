@@ -27,6 +27,7 @@ The first preview release for Windows 11 x64.
 - Recovery from a rejected push, with force push with lease after a confirmation.
 - Clone a repository.
 - Branches: switch, create, rename, delete, merge, and rebase. Resolve a conflicted file, or open it in your merge tool.
+- Delete a remote branch from its menu, after a confirmation. The local branch Delete dialog can also delete its remote branch. Git refuses the delete when the remote branch changed since the last fetch.
 - A merge or a rebase with conflicts lists the conflicted files first and offers Resolve conflicts.
 - A commit menu in History: check out a commit, create a branch or a tag, and copy the commit ID.
 - Reset the current branch to a commit: Soft, Mixed, or Hard. Hard asks for a confirmation first.

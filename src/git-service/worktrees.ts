@@ -7,12 +7,13 @@
 import { IdentityReply } from "../contracts/channel";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, IDENTITY_PATHS, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { wslIdentityPath } from "../contracts/wsl-route";
-import { deleteFacts, deleteSteps, nameRefusal, newName, type DeleteFacts } from "./branch-ops";
+import { deleteSteps, nameRefusal, newName } from "./branch-ops";
 import { isObjectId, isRefName, type ObjectFormat } from "./commands";
 import { RunnerRefusal, stepUnits, type EnvironmentPolicy, type GitRunner, type ProcessContext, type SyncRunner } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { NO_FILE, sameIdentity, type PhysicalIdentity } from "./identity";
 import { contextOf, latin1, strictUtf8 } from "./read-steps";
+import { deleteFacts, heldElsewhere, readWorktrees, refTarget, unavailable, type DeleteFacts, type Refused } from "./ref-facts";
 import type { Workspace } from "./registration";
 import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
@@ -20,7 +21,7 @@ import { readOut, refKey } from "./sync-review";
 import { refCommit } from "./switch";
 import { worktreeAddExistingArgs, worktreeAddNewArgs, worktreeAddTrackArgs, worktreeIndexArgs, worktreeLayoutArgs, worktreePruneArgs, worktreeRemoveArgs, worktreeStatusArgs } from "./workbench-commands";
 import { parseWorktreeStatus, trackingRemotes, type WorktreeRecord } from "./workbench-parsers";
-import { conclude, heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, type PayloadOf, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
+import { conclude, killed, registerWorkbenchAction, type PayloadOf, type StepEnd, type WorkbenchRun } from "./workbench-review";
 
 const HEADS = "refs/heads/";
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");

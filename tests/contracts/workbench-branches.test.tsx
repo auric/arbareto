@@ -648,13 +648,14 @@ describe("branch context menu (FR-014, FR-017, FR-020, 002 FR-049)", () => {
     expect(push.contains(document.getElementById(push.getAttribute("aria-describedby")!))).toBe(true);
     await press(document.activeElement!, "Escape");
     await contextMenu(await sidebarRow("origin/login-page"));
-    expect(groups()).toEqual([["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…"], ["Create branch here…", "Add worktree for this branch…"], ["Copy branch name"]]);
+    // Feature 011 plan D1: group 2 of a remote-tracking branch ends with Delete remote branch….
+    expect(groups()).toEqual([["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…"], ["Create branch here…", "Add worktree for this branch…", "Delete remote branch…"], ["Copy branch name"]]);
   });
 
   test("a remote branch menu holds the FR-014 subset", async () => {
     await mountWorkbench(workbench, branchWorld());
     await contextMenu(await sidebarRow("origin/login-page"));
-    expect(openMenuItems().map(itemLabel)).toEqual(["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…", "Create branch here…", "Add worktree for this branch…", "Copy branch name"]);
+    expect(openMenuItems().map(itemLabel)).toEqual(["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…", "Create branch here…", "Add worktree for this branch…", "Delete remote branch…", "Copy branch name"]);
   });
 
   test("the current branch keeps Show only this branch's history, and its unavailable items state their reasons", async () => {
@@ -943,5 +944,154 @@ describe("integration with the status bar and the panels (plan D15)", () => {
     await click(button("Refresh"));
     await settle();
     expect(double.count("readBranches")).toBe(start + 1);
+  });
+});
+
+// tasks.md T016 (feature 011, WP5). Story US2. Spec FR-010, FR-011, FR-016, SC-008. Plan D3, D13. Data-model §3 and §7.
+describe("local Delete with the remote check box (feature 011 plan D3)", () => {
+  const SYNC_TOKEN = fixtureId(0x301);
+  const FEATURE = local("feature", { upstream: "refs/remotes/origin/feature" });
+  const ORPHAN = local("orphan", { upstream: "refs/remotes/origin/orphan" });
+  const ORIGIN_FEATURE = remote("origin/feature", { localName: "feature", oid: oid(2) });
+  const DELETE_PLAN = { oid: oid(4), onlyHere: 0, reflogKeeps: true, heldBy: null, current: false };
+  const DESTINATION = { remote: "origin", ref: "refs/heads/feature", trackingRef: "refs/remotes/origin/feature", url: "https://example.test/r.git", setUpstream: false, upstreamRebase: false, source: "tracking-ref" };
+  const syncPlan = (count: number, reflogKeeps = true) => ({
+    remotes: ["origin"],
+    destination: DESTINATION,
+    lease: { trackingRef: "refs/remotes/origin/feature", expect: oid(2), count, commits: Array.from({ length: count }, (_, i) => ({ objectId: oid(0x100 + i), subject: `Login change ${i + 1}` })) },
+    local: { ref: "refs/heads/feature", oid: oid(4), reflogKeeps },
+  });
+  const syncReviewed = (count: number, reflogKeeps = true) => succeeded({ action: "delete-remote-branch", plan: syncPlan(count, reflogKeeps), syncReviewToken: SYNC_TOKEN });
+  const X9 = "Also delete the remote branch origin/feature";
+  const X16 = "origin/feature is no longer the upstream of feature. Close this dialog, then try again.";
+  const X7 = "Other people can lose work. The delete stops if origin/feature changed since the last fetch.";
+  const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]')!;
+  const box = () => [...dialog().querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((b) => text(b.closest("label") ?? b) === X9) ?? null;
+  const syncReviews = (double: { calls: { operation: string; args: unknown[] }[] }) => double.calls.filter((c) => c.operation === "reviewSync").map((c) => c.args[1]);
+  const describedBy = (element: Element) => text(document.getElementById(element.getAttribute("aria-describedby") ?? "") ?? document.createElement("i"));
+
+  function featureWorld(review: (payload: Record<string, unknown>) => unknown = (p) => reviewed("delete-branch", { ref: p.ref, ...DELETE_PLAN })) {
+    const world = branchWorld(review);
+    // The sidebar rows come from `readRefs`, the menus and dialogs from `readBranches`.
+    world.branches.push(
+      { name: "feature", objectId: oid(4), upstream: "refs/remotes/origin/feature", upstreamObjectId: oid(2), track: { state: "counts", ahead: 0, behind: 0 }, current: false },
+      { name: "orphan", objectId: oid(4), upstream: "refs/remotes/origin/orphan", upstreamObjectId: null, track: { state: "gone" }, current: false },
+    );
+    world.remotes.push({ name: "origin/feature", objectId: oid(2) });
+    world.answers.readBranches = () => succeeded({ entries: [FEATURE, LOGIN, MAIN, ORPHAN, ORIGIN_FEATURE, ORIGIN_MAIN] });
+    return world;
+  }
+  async function openDelete(name = "feature", world = featureWorld()) {
+    const double = await mountWorkbench(workbench, world);
+    const row = await sidebarRow(name);
+    await act(async () => row.focus());
+    await press(row, "Delete");
+    await settle();
+    return double;
+  }
+
+  test("X9 shows only for a listed remote upstream, and not without a token", async () => {
+    await openDelete();
+    expect(box()).not.toBeNull();
+    await unmountAll();
+    await openDelete("orphan");
+    expect(dialog()).not.toBeNull();
+    expect(dialog().querySelector('input[type="checkbox"]')).toBeNull();
+    await unmountAll();
+    await openDelete("login-form");
+    expect(dialog().querySelector('input[type="checkbox"]')).toBeNull();
+    await unmountAll();
+    await openDelete("feature", featureWorld(() => ({ requestId: fixtureId(0x5ff), state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason: "config-in-include" } })));
+    expect(text(dialog())).toContain("An included configuration file sets branch.feature.");
+    expect(dialog().querySelector('input[type="checkbox"]')).toBeNull();
+  });
+
+  test("X9 is unchecked by default, the 004 plan shows, and Delete runs the workbench token", async () => {
+    const double = await openDelete();
+    expect(box()!.checked).toBe(false);
+    expect(text(dialog())).toContain("Deleting feature loses no commit.");
+    expect(double.count("reviewSync")).toBe(0);
+    expect(text(document.activeElement!)).toBe("Cancel");
+    await click(button("Delete", dialog()));
+    expect(double.calls.find((c) => c.operation === "runWorkbench")?.args[1]).toEqual({ workbenchToken: TOKEN, start: true });
+    expect(double.count("sync")).toBe(0);
+  });
+
+  test("checking sends { ref, local } and shows X12; Delete stays visible, disabled, and focusable, with the reason under the check box", async () => {
+    const double = await openDelete();
+    await click(box()!);
+    expect(syncReviews(double)).toEqual([{ action: "delete-remote-branch", ref: "refs/remotes/origin/feature", local: "refs/heads/feature" }]);
+    const del = button("Delete", dialog());
+    expect(del.getAttribute("aria-disabled")).toBe("true");
+    expect(del.hasAttribute("disabled")).toBe(false);
+    expect(describedBy(del)).toBe("Loading…");
+    const reason = document.getElementById(del.getAttribute("aria-describedby")!)!;
+    expect(box()!.compareDocumentPosition(reason) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(reason.compareDocumentPosition(del) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => del.focus());
+    expect(document.activeElement).toBe(del);
+    await click(del);
+    expect(double.count("runWorkbench")).toBe(0);
+    expect(double.count("sync")).toBe(0);
+  });
+
+  test("a refusal shows as an alert under the check box and keeps Delete disabled and focusable", async () => {
+    const double = await openDelete();
+    await click(box()!);
+    await answer(double.pending("reviewSync"), { requestId: fixtureId(0x5ff), state: "rejected", code: "SYNC_UNAVAILABLE", result: { reason: "not-upstream" } });
+    const alert = dialog().querySelector<HTMLElement>('[role="alert"]')!;
+    expect(text(alert)).toBe(X16);
+    expect(box()!.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const del = button("Delete", dialog());
+    expect(del.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(del)).toBe(X16);
+    await click(del);
+    expect(double.count("runWorkbench")).toBe(0);
+    expect(double.count("sync")).toBe(0);
+  });
+
+  test("checked and reviewed: X10, the list named X30, the reflog line, and X7; Delete sends sync and never runWorkbench", async () => {
+    const double = await openDelete();
+    await click(box()!);
+    await answer(double.pending("reviewSync"), syncReviewed(4));
+    const shown = text(dialog());
+    expect(shown).toContain("feature and origin/feature have 4 commits that no other branch, tag, or remote-tracking branch has. The delete loses them.");
+    const list = dialog().querySelector<HTMLElement>('ul[aria-label="Commits only on origin/feature"]')!;
+    expect(list.querySelectorAll("li")).toHaveLength(4);
+    expect(shown).toContain(`Git's HEAD reflog keeps commit ${oid(4).slice(0, 12)} for a limited time.`);
+    expect(shown).toContain(X7);
+    expect(shown).not.toContain("Deleting feature loses no commit.");
+    await click(button("Delete", dialog()));
+    expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: SYNC_TOKEN, start: true });
+    expect(double.count("runWorkbench")).toBe(0);
+  });
+
+  test("one commit takes the singular X10; a count of 0 states X11 with no list, and the no-reflog line", async () => {
+    let double = await openDelete();
+    await click(box()!);
+    await answer(double.pending("reviewSync"), syncReviewed(1));
+    expect(text(dialog())).toContain("feature and origin/feature have 1 commit that no other branch, tag, or remote-tracking branch has. The delete loses them.");
+    await unmountAll();
+    double = await openDelete();
+    await click(box()!);
+    await answer(double.pending("reviewSync"), syncReviewed(0, false));
+    expect(text(dialog())).toContain("Deleting feature and origin/feature loses no commit.");
+    expect(dialog().querySelector("ul")).toBeNull();
+    expect(text(dialog())).toContain(`No reflog keeps commit ${oid(4).slice(0, 12)} after the delete.`);
+  });
+
+  test("unchecking restores the 004 plan and the workbench token, and a late review answer changes nothing", async () => {
+    const double = await openDelete();
+    await click(box()!);
+    const review = double.pending("reviewSync")!;
+    await click(box()!);
+    expect(box()!.checked).toBe(false);
+    await answer(review, syncReviewed(4));
+    expect(text(dialog())).toContain("Deleting feature loses no commit.");
+    expect(text(dialog())).not.toContain(X7);
+    expect(button("Delete", dialog()).getAttribute("aria-disabled")).not.toBe("true");
+    await click(button("Delete", dialog()));
+    expect(double.calls.find((c) => c.operation === "runWorkbench")?.args[1]).toEqual({ workbenchToken: TOKEN, start: true });
+    expect(double.count("sync")).toBe(0);
   });
 });

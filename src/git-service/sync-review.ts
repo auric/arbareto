@@ -7,18 +7,19 @@
 import { constants } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import type { ServiceRequest } from "../contracts/envelope";
-import type { ErrorCode, SyncUnavailableReason } from "../contracts/errors";
+import type { ErrorCode, SyncUnavailableReason, WorkbenchUnavailableReason } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, SYNC_LEASE_COMMITS, SYNC_REBASE_TODO_BYTES, SYNC_REFS_BYTES, SYNC_REFS_RECORDS, SYNC_REMOTES } from "../contracts/limits";
 import { buildRemedyCommand } from "../contracts/remedy-command";
 import { redactUrlUserInfo } from "../contracts/submodules";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import type { Approvals } from "./approvals";
 import { batchCommandArgs, isObjectId, isRefName, type ObjectFormat } from "./commands";
-import { createCollector, isChannelPath } from "./git-runner";
+import { createCollector, isChannelPath, isDeadlineStop, settleSteps } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
 import { objectStream } from "./history-view";
 import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import { isMissing } from "./read-steps";
+import { deletePayloadValid, observeRemoteDelete } from "./remote-delete";
 import type { Head, OperationState } from "./snapshot";
 import { gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
 import { autoSetupRemote, decidePull, defaultRemote, decidePushDestination, holdsExec, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRebaseHead, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
@@ -41,7 +42,8 @@ export interface BoundDestination {
   setUpstream: boolean;
   // Contract Δ3 Set upstream: true when a selected Set upstream also writes `branch.<name>.rebase`.
   upstreamRebase: boolean;
-  source: PushDestination["source"] | "panel";
+  // Feature 011 contract Δ3: a remote branch delete takes its destination from the remote-tracking ref.
+  source: PushDestination["source"] | "panel" | "tracking-ref";
 }
 
 export interface Lease {
@@ -76,6 +78,10 @@ export interface SyncBinding {
   todo?: string | null;
   // `pull` and `integrate`: the last value of each `MODE_KEYS` key. A key without an entry is absent.
   modeConfig?: Record<string, string | null>;
+  // Feature 011 data-model §2, combined delete: the local branch facts. `worktrees` is the digest of the worktree listing.
+  local?: { ref: string; oid: string; onlyHere: number; reflogKeeps: boolean; section: boolean; worktrees: string };
+  // Feature 011 plan.md D8: `remote get-url --all` equals `remote get-url --push --all` byte for byte.
+  sameUrl?: boolean;
 }
 
 export interface NeedsDestination {
@@ -90,11 +96,13 @@ export interface NeedsDestination {
 export type Observation =
   | { binding: SyncBinding; entries: readonly ConfigEntry[] }
   | { panel: NeedsDestination; operationState: OperationState }
-  | { refused: ErrorCode; reason?: SyncUnavailableReason | "SYNC_REMOTES"; unmerged?: number; remedy?: { text: string; command: string | null } }
+  // Feature 011 data-model §6: a combined delete refuses with a local branch reason, and `worktree` names the worktree of `other-worktree` and `head-unresolved`.
+  // `remote` names the resolved remote of `default-branch` and `default-unknown`.
+  | { refused: ErrorCode; reason?: SyncUnavailableReason | WorkbenchUnavailableReason | "SYNC_REMOTES"; unmerged?: number; remedy?: { text: string; command: string | null }; worktree?: string; remote?: string }
   | Stop
   | Failure;
 
-type Bound = Pick<SyncBinding, "remotes" | "destination" | "lease" | "upstream" | "index" | "skippedCommit" | "todo" | "modeConfig">;
+export type Bound = Pick<SyncBinding, "remotes" | "destination" | "lease" | "upstream" | "index" | "skippedCommit" | "todo" | "modeConfig" | "local" | "sameUrl">;
 
 const HEADS = "refs/heads/";
 const LF = 0x0a;
@@ -116,7 +124,7 @@ const skipped = (entries: readonly ConfigEntry[], remote: string) => {
   return skip;
 };
 
-const mirrored = (entries: readonly ConfigEntry[], remote: string) => {
+export const mirrored = (entries: readonly ConfigEntry[], remote: string) => {
   const value = lastValue(entries, `remote.${remote}.mirror`);
   return value !== undefined && parseMaybeBool(value) === 1;
 };
@@ -161,6 +169,13 @@ export async function readOut(ctx: ObserveContext, args: string[], maxBytes: num
   return step.exit.exitCode === 0 ? { value: out.take() } : { code: "GIT_FAILED" };
 }
 
+// Parallel reads of one review. Every read ends before the wave returns or throws (`settleSteps`).
+// 001 contract §5 "Deadline outcomes": a deadline closes the Job of every sibling, so it decides before the checks in read order. `operationState` gives the string `deadline`.
+export async function readWave<T extends readonly unknown[] | []>(work: T): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> } | Stop> {
+  const ends = await settleSteps(work, isDeadlineStop);
+  return ends.some((end) => isDeadlineStop(end) || end === "deadline") ? { stop: "deadline" } : ends;
+}
+
 // Contract Δ3 read 3 and Δ5 `SYNC_REMOTES`.
 export async function remoteList(ctx: ObserveContext): Promise<Fact<string[]> | { refused: ErrorCode; reason?: "SYNC_REMOTES" }> {
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, separator: LF });
@@ -181,25 +196,33 @@ export async function remoteList(ctx: ObserveContext): Promise<Fact<string[]> | 
   return names === null || names.includes("") ? { code: "MALFORMED_GIT_OUTPUT" } : { value: names };
 }
 
-// Plan.md D5: the commits that the force push removes from the remote branch, with their subjects from `cat-file --batch-command -Z`.
+// Plan.md D5: the commits that the force push removes from the remote branch.
 async function leaseOf(ctx: ObserveContext, trackingRef: string, head: string): Promise<Fact<Lease> | { refused: ErrorCode; reason?: SyncUnavailableReason }> {
   const objectFormat = ctx.workspace.objectFormat;
   const refs = await listRefs(ctx, trackingRef);
   if (!("value" in refs)) return refs;
   const expect = refs.value.get(refKey(trackingRef));
   if (expect === undefined) return { refused: "SYNC_UNAVAILABLE", reason: "no-lease" };
-  const counted = await readOut(ctx, leaseCountArgs(expect, head, objectFormat), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  const commits = await commitsOf(ctx, leaseCountArgs(expect, head, objectFormat), leaseCommitsArgs(expect, head, objectFormat));
+  return "value" in commits ? { value: { trackingRef, expect, ...commits.value } } : commits;
+}
+
+// Plan.md D5 and feature 011 plan.md D4 read 10: the count of a `rev-list` selection and its first SYNC_LEASE_COMMITS commits, with their subjects from `cat-file --batch-command -Z`.
+export async function commitsOf(ctx: ObserveContext, countArgs: string[], listArgs: string[]): Promise<Fact<Pick<Lease, "count" | "commits">>> {
+  const objectFormat = ctx.workspace.objectFormat;
+  const reads = await readWave([readOut(ctx, countArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM), readOut(ctx, listArgs, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM)]);
+  if (isStop(reads)) return reads;
+  const [counted, listed] = reads;
   if ("limited" in counted) return { code: "MALFORMED_GIT_OUTPUT" };
   if (!("value" in counted)) return counted;
   const count = parseRevListCount(counted.value);
-  const listed = await readOut(ctx, leaseCommitsArgs(expect, head, objectFormat), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("limited" in listed) return { code: "MALFORMED_GIT_OUTPUT" };
   if (!("value" in listed)) return listed;
   const text = Buffer.from(listed.value).toString("latin1");
   const oids = text === "" ? [] : text.endsWith("\n") ? text.slice(0, -1).split("\n") : null;
   // Both reads take object IDs, so the list is the start of the counted set.
   if (count === null || oids === null || !oids.every((oid) => isObjectId(oid, objectFormat)) || oids.length !== Math.min(count, SYNC_LEASE_COMMITS)) return { code: "MALFORMED_GIT_OUTPUT" };
-  if (oids.length === 0) return { value: { trackingRef, expect, count, commits: [] } };
+  if (oids.length === 0) return { value: { count, commits: [] } };
   const stream = objectStream(oids, objectFormat);
   const step = await stepOf(ctx, batchCommandArgs(), stream, new TextEncoder().encode(oids.map((oid) => `contents ${oid}\0`).join("")));
   if (!("exit" in step)) return step;
@@ -212,7 +235,7 @@ async function leaseOf(ctx: ObserveContext, trackingRef: string, head: string): 
     // Contract Δ3 read 6: a commit object above HISTORY_COMMIT_OBJECT_BYTES gives `subject` null.
     commits.push({ objectId: oids[i]!, subject: answer === "large" ? null : answer.subject });
   }
-  return { value: { trackingRef, expect, count, commits } };
+  return { value: { count, commits } };
 }
 
 // git-ls-files(1) `--stage`: `<mode> SP <object> SP <stage> TAB <path>`.
@@ -430,6 +453,7 @@ async function observePull(ctx: ObserveContext, payload: Extract<ReviewPayload, 
 // Contract Δ3 `reviewSync` reads 1 to 8. `list` gives the trust listing: shared or own for a review, own for `sync`.
 export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list: () => Promise<ListingOutcome>): Promise<Observation> {
   const { trust, workspace: w, installation, signal } = ctx;
+  if (payload.action === "delete-remote-branch" && !deletePayloadValid(payload)) return { refused: "INVALID_REQUEST" };
   const listed = await settled(signal, list());
   if (!("ok" in listed)) return listed;
   if (!listed.ok) return "stop" in listed ? { stop: listed.stop } : { code: listed.code };
@@ -440,14 +464,15 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
   // Research R16 m: Git stops `git remote` and every `%(upstream)` or `%(push)` read on such a value, so this check comes before read 3.
   if (invalidRemoteValue(entries)) return unavailable("invalid-config");
 
-  const head = await settled(signal, captureHead(ctx.runner, ctx));
+  // Reads 2 and 3 run together. The checks keep the read order, so the first failing check decides.
+  const reads = await readWave([settled(signal, captureHead(ctx.runner, ctx)), settled(signal, ctx.reader.operationState(ctx, false)), remoteList(ctx)]);
+  if (isStop(reads)) return reads;
+  const [head, state, remotes] = reads;
   if (isStop(head) || "code" in head) return head;
   if ("failed" in head) return { code: head.failed };
-  const state = await settled(signal, ctx.reader.operationState(ctx, false));
   if (typeof state === "object") return "refused" in state ? { code: state.refused } : state;
   if (state === "canceled" || state === "deadline") return { stop: state };
 
-  const remotes = await remoteList(ctx);
   if (!("value" in remotes)) return remotes;
   const bound = (b: Bound): Observation => ({
     binding: { payload, head, operationState: state, trust: { fingerprint: listing.fingerprint, sync: listing.approvalRequired.sync }, ...b },
@@ -471,6 +496,7 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
   }
   if (payload.action === "abort" || payload.action === "continue" || payload.action === "skip") return observeConflictAction(ctx, payload.action, state, bound);
   if (payload.action === "pull" || payload.action === "integrate") return observePull(ctx, payload, { head, state, remotes: remotes.value, entries, branch }, bound);
+  if (payload.action === "delete-remote-branch") return observeRemoteDelete(ctx, payload, { head, state, remotes: remotes.value, entries }, bound);
 
   if (head.state === "unborn") return unavailable("unborn");
   if (head.state === "detached" || branch === null) return unavailable("detached");
@@ -538,6 +564,7 @@ export function planOf(b: SyncBinding) {
     ...(p.action === "pull" || p.action === "integrate" ? { mode: p.mode ?? null } : {}),
     ...operationStateOf(b.operationState),
     ...(b.skippedCommit === undefined ? {} : { skippedCommit: b.skippedCommit }),
+    ...(b.local === undefined ? {} : { local: { ref: b.local.ref, oid: b.local.oid, reflogKeeps: b.local.reflogKeeps } }),
   };
 }
 
@@ -570,6 +597,8 @@ export function createSyncReviewer(o: SyncReviewerOptions) {
           ...(observed.reason === undefined ? {} : { reason: observed.reason }),
           ...(observed.unmerged === undefined ? {} : { unmerged: observed.unmerged }),
           ...(observed.remedy === undefined ? {} : { remedy: observed.remedy }),
+          ...(observed.worktree === undefined ? {} : { worktree: observed.worktree }),
+          ...(observed.remote === undefined ? {} : { remote: observed.remote }),
         };
         return { result: "failed", code: observed.refused, ...(Object.keys(value).length === 0 ? {} : { value }) };
       }

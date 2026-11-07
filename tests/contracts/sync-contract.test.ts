@@ -123,6 +123,11 @@ describe("contract Δ9 codes", () => {
       // Feature 010 contract Δ9.
       "nothing-to-commit",
       "sequence",
+      // Feature 011 contract Δ9.
+      "default-branch",
+      "default-unknown",
+      "no-remote-branch",
+      "not-upstream",
     ]);
     expect([...E.PUSH_REJECTED_REASONS]).toEqual(["rejected", "stale-lease", "remote-rejected", "remote-failure"]);
     expect([...E.PUTTY_UNAVAILABLE_REASONS]).toEqual(["missing", "unreadable", "version", "exit", "not-ready"]);
@@ -467,7 +472,9 @@ describe("contract Δ3 results", () => {
 
   test("a refused reviewSync names its Δ9 reason or the unmerged count", () => {
     const R = C.ReviewSyncResult;
-    for (const reason of [...(E.SYNC_UNAVAILABLE_REASONS ?? []), "SYNC_REMOTES"]) expect(ok(R, { reason })).toBe(true);
+    // Feature 011 contract Δ3: `default-branch` and `default-unknown` also name the remote.
+    const named = (reason: string) => (reason === "default-branch" || reason === "default-unknown" ? { reason, remote: "origin" } : { reason });
+    for (const reason of [...(E.SYNC_UNAVAILABLE_REASONS ?? []), "SYNC_REMOTES"]) expect(ok(R, named(reason))).toBe(true);
     expect(ok(R, { unmerged: 3 })).toBe(true);
     expect(ok(R, { reason: "detached-head" })).toBe(false);
     expect(ok(R, { reason: "stale-lease" })).toBe(false);
@@ -707,7 +714,8 @@ describe("contract Δ6 private requests", () => {
   test("a started frame of kind sync carries its action and no direction, and only applyFile carries resolve", () => {
     const started = { type: "started", callId: id(), operationId: id(), repositoryId: id(), worktreeRoot: REPO, commonDirectory: `${REPO}${isWindows ? "\\" : "/"}.git` };
     for (const action of C.SYNC_ACTIONS ?? []) expect(ok(channel.MutationRequest, { ...started, kind: "sync", action })).toBe(true);
-    expect([...(C.SYNC_ACTIONS ?? [])]).toEqual(["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip"]);
+    // Feature 011 contract Δ1 adds delete-remote-branch.
+    expect([...(C.SYNC_ACTIONS ?? [])]).toEqual(["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip", "delete-remote-branch"]);
     expect(ok(channel.MutationRequest, { ...started, kind: "sync" })).toBe(false);
     expect(ok(channel.MutationRequest, { ...started, kind: "sync", action: "prune" })).toBe(false);
     expect(ok(channel.MutationRequest, { ...started, kind: "sync", action: "push", direction: "stage" })).toBe(false);

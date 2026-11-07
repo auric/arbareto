@@ -2048,6 +2048,29 @@
               ],
               "additionalProperties": false,
               "title": "ReviewSkip"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "delete-remote-branch"
+                },
+                "ref": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "local": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$"
+                }
+              },
+              "required": [
+                "action",
+                "ref"
+              ],
+              "additionalProperties": false,
+              "title": "ReviewDeleteRemoteBranch"
             }
           ],
           "title": "ReviewSyncPayload"

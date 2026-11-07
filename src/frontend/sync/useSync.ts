@@ -8,7 +8,7 @@ import type { BridgeResponse, createBridge } from "../bridge";
 import { branchName } from "../history/HistoryView";
 import { shortRef } from "../refs/ReferencesSidebar";
 import { isObject } from "../lib/utils";
-import { SYNC_NAMES, type StatusOperation } from "../status/OperationStatus";
+import { SYNC_NAMES, type StatusOperation, type SyncNames } from "../status/OperationStatus";
 import type { ConflictPlan } from "./ConflictActions";
 import type { ForcePlan } from "./ForcePushConfirm";
 import type { ReviewPayload } from "./PullSplitButton";
@@ -27,10 +27,19 @@ type Plan = {
   destination?: { remote: string; ref: string; trackingRef: string | null };
   lease?: ForcePlan["lease"];
   needsDestination?: NeedsDestination;
+  /** Feature 011 data-model §3: the local branch of the combined remote branch delete. */
+  local?: { ref: string; oid: string; reflogKeeps: boolean };
 } & ConflictPlan;
 type Reviewed = { action: SyncAction; plan: Plan; syncReviewToken?: unknown };
 /** Data-model §5 and §7: the result fields that decide the notice. */
 type Result = { push?: { status: string; lease: boolean }; integration?: { state: string } };
+
+/** Feature 011 plan.md D13: the names of the status texts of a remote branch delete. */
+function namesOf(action: SyncAction, plan: Plan): { names?: SyncNames } {
+  const d = plan.destination;
+  if (action !== "delete-remote-branch" || d === undefined || d.trackingRef === null) return {};
+  return { names: { tracking: shortRef(d.trackingRef), remote: d.remote, name: branchName(d.ref), branch: plan.local === undefined ? null : branchName(plan.local.ref) } };
+}
 
 const isReviewed = (value: unknown): value is Reviewed => isObject(value) && isObject(value.plan) && Array.isArray(value.plan.remotes);
 const PUSHING: readonly SyncAction[] = ["push", "force-push"];
@@ -91,7 +100,7 @@ export function useSync({ bridge, target, repositoryId, headTarget, headOid, onO
   async function start(action: SyncAction, plan: Plan, token: string, fromNotice: boolean) {
     const t = target();
     if (t === null) return;
-    let op: StatusOperation = { requestId: crypto.randomUUID(), kind: "sync", sync: { action, remotes: plan.remotes }, progress: null, response: null };
+    let op: StatusOperation = { requestId: crypto.randomUUID(), kind: "sync", sync: { action, remotes: plan.remotes, ...namesOf(action, plan) }, progress: null, response: null };
     onOperation(op);
     const response = await bridge.sync({ repositoryId: t.repositoryId }, { syncReviewToken: token, start: true }, (event) => {
       op = { ...op, progress: event };
@@ -164,8 +173,22 @@ export function useSync({ bridge, target, repositoryId, headTarget, headOid, onO
     }
   }
 
+  /** Feature 011 plan.md D15: a review that starts nothing. The caller shows the plan or the refusal. */
+  async function review(payload: ReviewPayload): Promise<BridgeResponse | null> {
+    const t = target();
+    // The second review takes the generation of the full read after the approval.
+    return t === null ? null : reviewWithTrust(() => bridge.reviewSync(target() ?? t, payload), syncTrust(payload.action, operationState), askTrust);
+  }
+
   return {
     run: (payload: ReviewPayload) => void run(payload),
+    review,
+    /** Feature 011 plan.md D15: starts a plan that `review` gave. A second start while one runs does nothing. */
+    startReviewed: (action: SyncAction, plan: Plan, token: string) => {
+      if (busy.current) return;
+      busy.current = true;
+      void start(action, plan, token, false).finally(() => void (busy.current = false));
+    },
     /** Contract Δ3 abort, continue, and skip. Resolves with a refused review response, else null. */
     conflictAction: (action: "abort" | "continue" | "skip") => run({ action }),
     modeChoice: modeChoice !== null,

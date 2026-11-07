@@ -19,14 +19,15 @@ import { enterReconciling, isStop, notEntered, settled, type Failure, type Obser
 import type { OperationRegistry } from "./operations";
 import { contextOf } from "./read-steps";
 import type { Workspace } from "./registration";
-import type { ReadInstallation } from "./snapshot";
+import type { Head, OperationState, ReadInstallation } from "./snapshot";
 import { trackStall } from "./stall";
 import { stepStderr } from "./submodule-update";
-import { fetchArgs, pushArgs, upstreamArgs } from "./sync-commands";
+import { fetchArgs, lsRemoteArgs, pushArgs, trackingDeleteArgs, upstreamArgs } from "./sync-commands";
 import { runIntegration, type StepPhase } from "./sync-integrate";
-import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, type FetchFlag, type FetchList, type FetchUpdate, type PushStatus } from "./sync-parsers";
+import { createFetchParser, FETCH_FLAGS, parseLsRemote, parsePushPorcelain, trackingOf, type FetchFlag, type FetchList, type FetchUpdate, type PushStatus } from "./sync-parsers";
 import { lastValue, listRefs, observeSync, refKey, refText, type Observation, type SyncBinding, type SyncContext } from "./sync-review";
 import type { ConfigEntry, Trust } from "./trust";
+import { deleteRefArgs, removeBranchSectionArgs } from "./workbench-commands";
 import { processEnd } from "./wsl-files";
 
 // Contract Δ3 "Remedies".
@@ -35,6 +36,8 @@ export const STEP_REMEDY_TEXT = "This command runs the step in a terminal, where
 export const CANCELED_PUSH_TEXT = "The remote can hold this push. Fetch to see the remote state.";
 // Contract Δ3 Set upstream.
 export const UPSTREAM_REMEDY_TEXT = "The push succeeded, but Arbareto could not set the upstream. This command sets it.";
+// Feature 011 plan.md D13 X27.
+export const staleDeleteText = (remote: string) => `This command fetches ${remote} and removes the remote-tracking branches whose remote branch is gone.`;
 
 const HEADS = "refs/heads/";
 const ZERO_OID = /^0+$/;
@@ -142,30 +145,6 @@ export function fetchObserved(before: Refs, all: readonly FetchUpdate[], after: 
     else expected.set(refKey(u.ref), u.newObjectId);
   }
   return changes(expected, after);
-}
-
-// remote.c `query_refspecs` and refspec.c `match_name_with_pattern`: the first fetch refspec of `remote` whose source matches `dst` names the tracking ref.
-// A matching negative refspec names none (remote.c `omit_name_by_refspec`). Git's push updates this ref (transport.c `transport_update_tracking_ref`).
-export function trackingOf(entries: readonly ConfigEntry[], remote: string, dst: string): string | null {
-  const specs = entries.filter((e) => e.key === `remote.${remote}.fetch` && e.value !== null).map((e) => e.value!);
-  const match = (src: string, dstPattern: string | null): string | null => {
-    const star = src.indexOf("*");
-    if (star < 0) return src === dst ? dstPattern : null;
-    const prefix = src.slice(0, star);
-    const suffix = src.slice(star + 1);
-    if (dst.length < prefix.length + suffix.length || !dst.startsWith(prefix) || !dst.endsWith(suffix)) return null;
-    return dstPattern === null ? "" : dstPattern.replace("*", dst.slice(prefix.length, dst.length - suffix.length));
-  };
-  if (specs.some((s) => s.startsWith("^") && match(s.slice(1), null) !== null)) return null;
-  for (const spec of specs) {
-    if (spec.startsWith("^")) continue;
-    const body = spec.startsWith("+") ? spec.slice(1) : spec;
-    const colon = body.indexOf(":");
-    if (colon < 0 || colon === body.length - 1) continue;
-    const found = match(body.slice(0, colon), body.slice(colon + 1));
-    if (found !== null) return found;
-  }
-  return null;
 }
 
 // Contract §7 "URL user information": a remedy for such a URL is text only (contract Δ3 "Remedies").
@@ -412,6 +391,41 @@ export function createSyncer(o: SyncerOptions) {
       return finish(observed.length > 0 || moved ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, result);
     };
 
+    // Contract Δ3 `sync` step 3 before a push process. Null: the push may start.
+    const pushPageant = async (remote: string): Promise<Ending | null> => {
+      const reply = await pageant(remote, {}).catch((error: unknown) => {
+        if (error instanceof RunnerRefusal) return { result: "refused" as const, code: error.code };
+        throw error;
+      });
+      if (reply !== null && reply.result === "refused") return { code: reply.code };
+      if (reply !== null && reply.result === "failed") return { code: "PUTTY_UNAVAILABLE", result: { reason: reply.reason, program: reply.program, path: reply.path } };
+      return signal.aborted ? { stop: "canceled" } : null;
+    };
+
+    // Contract Δ3 `sync` step 7 after a push process: refs, HEAD, the operation state, and the trust listing. Null: the outcome is unknown, and `unknown` reported it.
+    const readAfter = async (failed: unknown): Promise<{ after: Refs; head: Head; state: OperationState; entries: readonly ConfigEntry[] } | null> => {
+      const [after, observedHead, state, listed] = await Promise.all([
+        listRefs(q),
+        settled(q.signal, captureHead(q.runner, q)),
+        settled(q.signal, q.reader.operationState(q, false)),
+        settled(q.signal, o.trust.listTrust({ operationId, signal: q.signal, workspace: w })),
+      ]);
+      const fail = (f: Failure | Stop) => {
+        unknown(f, failed);
+        return null;
+      };
+      // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads, so a deadline decides first.
+      if ([after, observedHead, state, listed].some(isReadDeadline)) return fail({ stop: "deadline" });
+      if (!("value" in after)) return fail(after);
+      if (isStop(observedHead) || "code" in observedHead) return fail(observedHead);
+      if ("failed" in observedHead) return fail({ code: observedHead.failed });
+      if (typeof state === "object") return fail("refused" in state ? { code: state.refused } : state);
+      if (state === "canceled" || state === "deadline") return fail({ stop: "deadline" });
+      if (!("ok" in listed)) return fail(listed);
+      if (!listed.ok) return fail("stop" in listed ? { stop: listed.stop } : { code: listed.code });
+      return { after: after.value, head: observedHead, state, entries: listed.listing.entries };
+    };
+
     // ---- push and force-push (data-model §5 and §8) ----
     const runPush = async (entries: readonly ConfigEntry[]) => {
       const d = b.destination!;
@@ -419,13 +433,8 @@ export function createSyncer(o: SyncerOptions) {
       const branch = head.target.slice(HEADS.length);
       const before = await listRefs(ctx);
       if (!("value" in before)) return refuse(before);
-      const reply = await pageant(d.remote, {}).catch((error: unknown) => {
-        if (error instanceof RunnerRefusal) return { result: "refused" as const, code: error.code };
-        throw error;
-      });
-      if (reply !== null && reply.result === "refused") return refuse({ code: reply.code });
-      if (reply !== null && reply.result === "failed") return refuse({ code: "PUTTY_UNAVAILABLE", result: { reason: reply.reason, program: reply.program, path: reply.path } });
-      if (signal.aborted) return refuse({ stop: "canceled" });
+      const refused = await pushPageant(d.remote);
+      if (refused !== null) return refuse(refused);
       const refspec = `${HEADS}${branch}:${d.ref}`;
       const lease = b.lease?.expect ?? null;
       const userInfo = holdsUserInfo(entries, d.remote, [d.url]);
@@ -457,35 +466,22 @@ export function createSyncer(o: SyncerOptions) {
         outputTail: end.outputTail,
       });
       if (!(await processEnded([end, ...upstream.ends]))) return unknown({ code: "GIT_FAILED" }, { action: b.payload.action, push: pushResult(null, false) });
-      const [after, observedHead, state, listed] = await Promise.all([
-        listRefs(q),
-        settled(q.signal, captureHead(q.runner, q)),
-        settled(q.signal, q.reader.operationState(q, false)),
-        settled(q.signal, o.trust.listTrust({ operationId, signal: q.signal, workspace: w })),
-      ]);
-      const failed = { action: b.payload.action, push: pushResult(null, false) };
-      // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads, so a deadline decides first.
-      if ([after, observedHead, state, listed].some(isReadDeadline)) return unknown({ stop: "deadline" }, failed);
-      if (!("value" in after)) return unknown(after, failed);
-      if (isStop(observedHead) || "code" in observedHead) return unknown(observedHead, failed);
-      if ("failed" in observedHead) return unknown({ code: observedHead.failed }, failed);
-      if (typeof state === "object") return unknown("refused" in state ? { code: state.refused } : state, failed);
-      if (state === "canceled" || state === "deadline") return unknown({ stop: "deadline" }, failed);
-      if (!("ok" in listed)) return unknown(listed, failed);
-      if (!listed.ok) return unknown("stop" in listed ? { stop: listed.stop } : { code: listed.code }, failed);
+      const read = await readAfter({ action: b.payload.action, push: pushResult(null, false) });
+      if (read === null) return;
+      const { after, head: observedHead, state } = read;
 
       // Data-model §5 `upstreamWritten`: the values of `branch.<name>.remote`, `.merge`, or `.rebase` changed.
       const upstreamKeys = [`branch.${branch}.remote`, `branch.${branch}.merge`, `branch.${branch}.rebase`];
       const upstreamOf = (list: readonly ConfigEntry[]) => upstreamKeys.map((k) => list.filter((e) => e.key === k).map((e) => e.value));
-      const upstreamWritten = !Bun.deepEquals(upstreamOf(entries), upstreamOf(listed.listing.entries), true);
+      const upstreamWritten = !Bun.deepEquals(upstreamOf(entries), upstreamOf(read.entries), true);
       // FR-018: Git's push sets the tracking ref of the destination to the pushed commit.
       const expected = new Map(before.value);
       if (succeeded && tracking !== null) expected.set(refKey(tracking), head.oid);
       const stateChanged = !Bun.deepEquals(observedHead, b.head, true) || state !== b.operationState;
-      const changed = changes(before.value, after.value).length > 0 || stateChanged || upstreamWritten;
-      const result = { action: b.payload.action, push: pushResult(after.value, upstreamWritten) };
+      const changed = changes(before.value, after).length > 0 || stateChanged || upstreamWritten;
+      const result = { action: b.payload.action, push: pushResult(after, upstreamWritten) };
       if (succeeded) {
-        const unexpected = changes(expected, after.value).length > 0 || stateChanged || (upstreamWritten && !d.setUpstream);
+        const unexpected = changes(expected, after).length > 0 || stateChanged || (upstreamWritten && !d.setUpstream);
         const done = upstreamNotSet ? { ...result, remedy: upstreamRemedy(writes) } : result;
         return finish(unexpected ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, done);
       }
@@ -504,6 +500,105 @@ export function createSyncer(o: SyncerOptions) {
       return finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, { ...result, remedy });
     };
 
+    // ---- delete-remote-branch (feature 011 plan.md D6 to D8, data-model §4 and §5) ----
+    const runDelete = async (entries: readonly ConfigEntry[]) => {
+      const d = b.destination!;
+      const lease = b.lease!;
+      const local = b.local;
+      const of = w.objectFormat;
+      const before = await listRefs(ctx);
+      if (!("value" in before)) return refuse(before);
+      const refused = await pushPageant(d.remote);
+      if (refused !== null) return refuse(refused);
+      const refspec = `:${d.ref}`;
+      const userInfo = holdsUserInfo(entries, d.remote, [d.url]);
+      const remedy = remedyOf("& {git} --no-lazy-fetch -C {root} push --force-with-lease={lease} -- {remote} {refspec}", { lease: `${d.ref}:${lease.expect}`, remote: d.remote, refspec }, userInfo);
+      const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+      const end = await networkStep(pushArgs(d.remote, null, d.ref, lease.expect, of), "sync-push", {}, remedy, out);
+      const ends: { exit: GitExit | null }[] = [end];
+      const deadline = end.exit?.deadline !== undefined;
+      const exited = end.exit !== null && end.exit.exitCode !== null && !out.limited && !end.exit.diagnosticLimit && !deadline;
+      const line = exited ? parsePushPorcelain(out.take(), refspec, end.exit!.exitCode!, `(delete):${d.ref}`) : null;
+      const status: PushStatus = line?.status ?? "none";
+      const deleted = exited && status === "deleted";
+      // Research.md R3 transport.c `print_ref_status`: of the `[rejected]` lines of a delete, only a lease refusal names the source `(delete)`.
+      const stale = exited && status === "rejected" && line?.alias === true;
+
+      // Plan.md D8: the gone check runs only after a stale lease, and only when the fetch URL names the push URL byte for byte.
+      let remoteGone = false;
+      if (stale && b.sameUrl === true) {
+        const listed = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+        // Contract Δ3 "Remedies": the remedy runs the step itself.
+        const lsRemedy = remedyOf("& {git} --no-lazy-fetch -C {root} ls-remote --exit-code -- {remote} {dst}", { remote: d.remote, dst: d.ref }, userInfo);
+        const check = await networkStep(lsRemoteArgs(d.remote, d.ref), "sync-push", {}, lsRemedy, listed);
+        ends.push(check);
+        const x = check.exit;
+        const read = x !== null && x.exitCode !== null && x.deadline === undefined && !x.diagnosticLimit && !listed.limited;
+        // git-ls-remote(1) `--exit-code`: exit 2 when no ref matches. A pattern matches a ref tail, so exit 0 needs no exact `<dst>` line (research.md R2 P15).
+        const lines = read && x.exitCode === 0 ? parseLsRemote(listed.take(), of) : null;
+        if (read && (x.exitCode === 2 || (lines !== null && !lines.some((l) => l.ref === refKey(d.ref))))) {
+          const removal = await writeUpstream([trackingDeleteArgs(lease.trackingRef, lease.expect, of)]);
+          ends.push(...removal.ends);
+          remoteGone = removal.set;
+        }
+      }
+
+      // Plan.md D7: the local writes follow the remote part. `update-ref` with the bound tip refuses a moved branch (004 FR-019).
+      let localDone = true;
+      if (local !== undefined && (deleted || remoteGone)) {
+        const name = local.ref.slice(HEADS.length);
+        const now = registry.get(operationId)?.state;
+        if (now === "running" || now === "cancel-requested") registry.progress(operationId, "sync-delete-local");
+        const written = await writeUpstream([deleteRefArgs(name, local.oid, of), ...(local.section ? [removeBranchSectionArgs(name)] : [])]);
+        ends.push(...written.ends);
+        localDone = written.set;
+      }
+      enterReconciling(registry, operationId, ends.some((e) => e.exit?.deadline !== undefined), lastDescendants);
+      const gone = remoteGone ? { remoteGone: true as const } : {};
+      const pushResult = (after: Refs | null) => ({
+        status,
+        oldObjectId: before.value.get(refKey(lease.trackingRef)) ?? null,
+        newObjectId: after === null ? null : (after.get(refKey(lease.trackingRef)) ?? null),
+        reasonText: line?.reasonText ?? null,
+        lease: true,
+        upstreamWritten: false,
+        upstreamNotSet: false,
+        outputTail: end.outputTail,
+      });
+      const unread = { action: b.payload.action, push: pushResult(null), ...gone };
+      if (!(await processEnded(ends))) return unknown({ code: "GIT_FAILED" }, unread);
+      const read = await readAfter(unread);
+      if (read === null) return;
+      const { after, head: observedHead, state } = read;
+
+      // Data-model §4 `expected`: the listing before, without the tracking ref after the remote part and without the local ref after its writes.
+      const expected = new Map(before.value);
+      if (deleted || remoteGone) expected.delete(refKey(lease.trackingRef));
+      if (local !== undefined && (deleted || remoteGone) && localDone) expected.delete(refKey(local.ref));
+      const stateChanged = !Bun.deepEquals(observedHead, b.head, true) || state !== b.operationState;
+      const changed = changes(before.value, after).length > 0 || stateChanged;
+      // Data-model §4 `localNotDeleted`: the fresh listing still holds the local ref. Exit codes do not decide it.
+      const stays = local !== undefined && (deleted || remoteGone) && after.has(refKey(local.ref));
+      const result = { action: b.payload.action, push: pushResult(after), ...gone, ...(stays ? { localNotDeleted: true as const } : {}) };
+      if (deleted || remoteGone) {
+        if (!localDone) return finish({ type: "failed-with-effects" }, result);
+        return finish(changes(expected, after).length > 0 || stateChanged ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, result);
+      }
+      if (end.canceled) {
+        if (changed) return finish({ type: "failed-with-effects" }, result);
+        return finish({ type: "no-effects", observed: "canceled" }, { ...result, remedy: { text: CANCELED_PUSH_TEXT, command: null } });
+      }
+      keepTarget("url", d.url);
+      const reason = stale ? "stale-lease" : status === "rejected" || status === "remote-rejected" || status === "remote-failure" ? status : null;
+      // Plan.md D13 X27: after a stale lease, a fetch with prune shows the remote state.
+      const prune = { ...remedyOf("& {git} --no-lazy-fetch -C {root} fetch --prune -- {remote}", { remote: d.remote }, userInfo), text: staleDeleteText(d.remote) };
+      const stated = reason === null ? { ...result, remedy } : { ...result, reason, ...(stale ? { remedy: prune } : {}) };
+      if (changed) return finish({ type: "failed-with-effects" }, stated);
+      if (reason !== null) return finish({ type: "no-effects", observed: "failed", code: "PUSH_REJECTED" }, stated);
+      const code: ErrorCode | undefined = deadline ? undefined : end.refused ?? (out.limited || end.exit?.diagnosticLimit ? "OUTPUT_LIMIT" : exited && line === null ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED");
+      return finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, stated);
+    };
+
     owners.set(operationId, w.repositoryId);
     // Contract Δ3 `sync` step 2: every bound value again, from an own trust listing.
     const again = await observeSync(ctx, b.payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
@@ -517,6 +612,7 @@ export function createSyncer(o: SyncerOptions) {
     const entries = (again as Extract<Observation, { binding: unknown }>).entries;
     if (b.payload.action === "fetch" || b.payload.action === "fetch-all") await runFetch(entries);
     else if (b.payload.action === "push" || b.payload.action === "force-push") await runPush(entries);
+    else if (b.payload.action === "delete-remote-branch") await runDelete(entries);
     else {
       const enter = (deadline: boolean) => enterReconciling(registry, operationId, deadline, lastDescendants);
       await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter, step: networkStep, remedyOf, processEnded, keepTarget, fetchStep, fetchRemedy, notStarted, fetchVerdict, fetchObserved, changes });

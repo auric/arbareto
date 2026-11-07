@@ -6,8 +6,8 @@
 
 import type { MutationStarted, ProcessContext } from "../contracts/channel";
 import type { Phase, Response, ServiceRequest } from "../contracts/envelope";
-import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
-import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_UPDATE_CEILING_MS, WORKTREE_LISTING_BYTES, WORKTREE_RECORDS } from "../contracts/limits";
+import type { ErrorCode } from "../contracts/errors";
+import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_UPDATE_CEILING_MS } from "../contracts/limits";
 import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand, type RemedyValue } from "../contracts/remedy-command";
 import type { StallRemedy } from "../contracts/submodules";
@@ -15,7 +15,7 @@ import type { ComparisonReader } from "./comparison";
 import type { Exclusion } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
-import { enterReconciling, isStop, settled, type Fact, type Failure, type ObserveContext, type PublishContext, type Stop } from "./hunk-publish";
+import { enterReconciling, isStop, settled, type Failure, type PublishContext, type Stop } from "./hunk-publish";
 import { reviewIgnoreSave, runIgnoreSave, type IgnoreSaveBound } from "./ignore";
 import type { OperationRegistry } from "./operations";
 import { contextOf } from "./read-steps";
@@ -26,11 +26,9 @@ import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
 import { runMarked, STEP_REMEDY_TEXT } from "./sync";
 import { observe, type Observed } from "./sync-integrate";
-import { parseRevListCount } from "./sync-parsers";
-import { listRefs, readOut, refKey, type ReviewOutcome } from "./sync-review";
+import { heldElsewhere, readWorktrees, refTarget, revCount, unavailable, unresolvedRefusal, type Refused } from "./ref-facts";
+import type { ReviewOutcome } from "./sync-review";
 import type { ListingOutcome, Trust, TrustListing } from "./trust";
-import { worktreeListArgs } from "./workbench-commands";
-import { parseWorktrees, type WorktreeRecord } from "./workbench-parsers";
 import { processEnd } from "./wsl-files";
 
 export type WorkbenchPayload = Extract<ServiceRequest, { operation: "reviewWorkbench" }>["payload"];
@@ -61,12 +59,8 @@ export interface Common {
   listing: TrustListing;
 }
 
-// A refusal before any token. `result` holds the reason and its facts.
-export type Refused = { refused: ErrorCode; result?: Record<string, unknown> };
 // `token: false`: the review gives the plan and issues no token (feature 010 plan.md D3 open review).
 export type Observation<B> = { bound: B; plan: Record<string, unknown>; token?: false } | Refused | Failure | Stop;
-
-export const unavailable = (reason: WorkbenchUnavailableReason, extra: Record<string, unknown> = {}): Refused => ({ refused: "WORKBENCH_UNAVAILABLE", result: { reason, ...extra } });
 
 // One `integrate` step. `exit` is null when no process started or the runner refused it.
 export interface StepEnd {
@@ -140,49 +134,6 @@ const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed
 // It also keeps the run result in RunWorkbenchResult, which has no form for a review refusal value.
 const REVERT_FACTS: readonly ErrorCode[] = ["STALE_SELECTION", "WORKBENCH_UNAVAILABLE", "UNSUPPORTED_COMPARISON", "UNSUPPORTED_HUNK_PROFILE"];
 const FACT_REFUSALS: Readonly<Record<string, readonly ErrorCode[]>> = { delete: ["STALE_SELECTION"], "ignore-save": ["STALE_REVIEW"], ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, REVERT_FACTS])) };
-
-// ---- Shared reads ----
-
-// The exact listing lookup of one ref, as `merge` and `rebase` read their source. A missing ref gives UNKNOWN_TARGET (contract Δ3).
-export async function refTarget(ctx: ObserveContext, ref: string): Promise<Fact<string> | Refused> {
-  const refs = await listRefs(ctx, ref);
-  if (!("value" in refs)) return refs;
-  const oid = refs.value.get(refKey(ref));
-  return oid === undefined ? { refused: "UNKNOWN_TARGET" } : { value: oid };
-}
-
-// One `rev-list --count` read. Its output is one count and LF, so more bytes break the grammar.
-export async function revCount(ctx: ObserveContext, args: string[]): Promise<Fact<number>> {
-  const out = await readOut(ctx, args, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
-  if ("limited" in out) return { code: "MALFORMED_GIT_OUTPUT" };
-  if (!("value" in out)) return out;
-  const n = parseRevListCount(out.value);
-  return n === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: n };
-}
-
-// Contract Δ3 `readWorktrees` with its Δ5 bounds. `digest` binds the listing bytes.
-export async function readWorktrees(ctx: ObserveContext): Promise<Fact<{ records: WorktreeRecord[]; digest: string }>> {
-  const read = await readOut(ctx, worktreeListArgs(), WORKTREE_LISTING_BYTES);
-  if ("limited" in read) return { code: "OUTPUT_LIMIT", reason: "WORKTREE_LISTING_BYTES" };
-  if (!("value" in read)) return read;
-  const records = parseWorktrees(read.value, ctx.workspace.objectFormat);
-  if (records === null) return { code: "MALFORMED_GIT_OUTPUT" };
-  if (records.length > WORKTREE_RECORDS) return { code: "OUTPUT_LIMIT", reason: "WORKTREE_RECORDS" };
-  return { value: { records, digest: new Bun.CryptoHasher("sha256").update(read.value).digest("hex") } };
-}
-
-// Data-model §8: Git names no branch for a `headUnresolved` record, so that record can hold any branch.
-export function unresolvedRefusal(records: readonly WorktreeRecord[]): Refused | null {
-  const unknown = records.find((r) => r.headUnresolved);
-  return unknown === undefined ? null : unavailable("head-unresolved", { worktree: unknown.path });
-}
-
-// The refusal for a `ref` that another worktree holds, or null. A worktree record holds one branch, so the current record holds only the HEAD branch.
-export function heldElsewhere(records: readonly WorktreeRecord[], ref: string, head: Head): Refused | null {
-  if (head.state !== "detached" && head.target === ref) return null;
-  const held = records.find((r) => r.branchKey === refKey(ref));
-  return held !== undefined ? unavailable("other-worktree", { worktree: held.path }) : unresolvedRefusal(records);
-}
 
 // Contract §8: a step whose process was ended can leave `index.lock`, so the reconciliation read checks it.
 export const killed = (ends: readonly StepEnd[]): boolean => ends.some((end) => end.exit === null || end.exit.exitCode === null);

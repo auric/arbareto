@@ -11,12 +11,12 @@ import { createCollector, firstEnd, type GitRunner } from "./git-runner";
 import { sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
 import { isStop, type ObserveContext } from "./hunk-publish";
 import { encodedBytes, runRead, type ReadStep } from "./read-steps";
+import { readWorktrees } from "./ref-facts";
 import type { LimitName } from "./snapshot";
 import { trackingArgs } from "./sync-commands";
 import { parseTracking, type TrackingEntry } from "./sync-parsers";
 import { branchListArgs } from "./workbench-commands";
 import { localNameOf, parseBranches } from "./workbench-parsers";
-import { readWorktrees } from "./workbench-review";
 
 // Data-model §1. `invalidUtf8`: the ref bytes are no valid UTF-8, so `ref` is display text only.
 export interface BranchEntry {

@@ -10,6 +10,7 @@ import { batchCommandArgs, isObjectId, isOneLevelRefName, isRefName } from "./co
 import { createCollector, firstEnd, isDeadlineStop, stepUnits } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
+import { heldElsewhere, readWorktrees, unavailable, type Refused } from "./ref-facts";
 import type { Head } from "./snapshot";
 import { assumedOf, discardCandidates, ignoredFilesOf, ignoreRead, inTheWay, nestedVerdict, sortFacts, untrackedOf } from "./switch-check";
 import { changedRefs, changes } from "./sync";
@@ -18,7 +19,7 @@ import { indexState, readOut, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
 import { assumedArgs, changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, ignoredFilesArgs, refPeelArgs, resetCandidatesArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
 import { oidList, parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
-import { conclude, heldElsewhere, killed, readWorktrees, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
+import { conclude, killed, registerWorkbenchAction, type StepEnd } from "./workbench-review";
 
 export const STASH_REMEDY_TEXT = "The stash keeps the changes. This command applies them again.";
 

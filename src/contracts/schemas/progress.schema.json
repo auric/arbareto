@@ -66,7 +66,8 @@
         "cherry-pick",
         "revert-commit",
         "sync-cherry-pick",
-        "sync-revert"
+        "sync-revert",
+        "sync-delete-local"
       ]
     },
     "counters": {

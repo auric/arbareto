@@ -11,8 +11,9 @@ import { isWindows, NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
 import { RunnerRefusal, type DeleteEntryReply, type DeleteFolderReply, type FileDeleteExpected, type FileDeleteReply, type FileFact, type WalkStop } from "./git-runner";
 import { contextOf, strictUtf8 } from "./read-steps";
+import { unavailable } from "./ref-facts";
 import type { Workspace } from "./registration";
-import { registerWorkbenchAction, unavailable, type Observation, type PayloadOf, type StepEnd, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
+import { registerWorkbenchAction, type Observation, type PayloadOf, type StepEnd, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
 
 type Payload = PayloadOf<"delete">;
 

@@ -16,6 +16,7 @@ import {
   parseTracking,
   SYNC_FETCH_LISTED_REFS,
 } from "../../src/git-service/sync-parsers";
+import * as sync from "../../src/git-service/sync-parsers";
 import { RECORDED } from "./sync-recorded";
 
 printOrigin("../../src/git-service/sync-parsers.ts", import.meta.dir);
@@ -182,6 +183,71 @@ describe("push porcelain", () => {
 
   test("an unterminated output gives MALFORMED_GIT_OUTPUT", () => {
     expect(parsePushPorcelain(bytes(`To x\n=\t${SPEC}\t[up to date]`), SPEC, 0)).toBeNull();
+  });
+});
+
+// Feature 011 plan.md D5 (T007). The status lines are the stdout bytes of research.md R2. The `To` line names a neutral path in place of the probe's local path.
+describe("remote branch delete porcelain (feature 011)", () => {
+  const out = (...lines: string[]) => bytes(lines.map((l) => `${l}\n`).join(""));
+  const TO = "To ../remote.git";
+  const del = (dst: string) => [`:${dst}`, `(delete):${dst}`] as const;
+  const parse = (stdout: Uint8Array, dst: string, exit: number) => sync.parsePushPorcelain(stdout, del(dst)[0], exit, del(dst)[1]);
+
+  const probes: [string, Uint8Array, string, number, ReturnType<typeof parsePushPorcelain>][] = [
+    ["P1 delete", out(TO, "-\t:refs/heads/feature\t[deleted]", "Done"), "refs/heads/feature", 0, { status: "deleted", reasonText: null }],
+    ["P3 receive.denyDeletes", out(TO, "!\t:refs/heads/feature3\t[remote rejected] (deletion prohibited)", "Done"), "refs/heads/feature3", 1, { status: "remote-rejected", reasonText: "deletion prohibited" }],
+    ["P7 a declined local pre-push hook", bytes(""), "refs/heads/feature8", 1, { status: "none", reasonText: null }],
+    // Research.md R3 `transport.c:773` and `remote.c:1105-1110`: a refusal that prints the peer ref names the source `(delete)`.
+    ["P8 a stale lease, remote moved", out(TO, "!\t(delete):refs/heads/feature4\t[rejected] (stale info)", "Done"), "refs/heads/feature4", 1, { status: "rejected", reasonText: "stale info", alias: true }],
+    ["P9 a stale lease, remote branch absent", out(TO, "!\t(delete):refs/heads/feature6\t[rejected] (stale info)", "Done"), "refs/heads/feature6", 1, { status: "rejected", reasonText: "stale info", alias: true }],
+    ["P10 an equal lease", out(TO, "-\t:refs/heads/feature4\t[deleted]", "Done"), "refs/heads/feature4", 0, { status: "deleted", reasonText: null }],
+    // Research.md R3 `transport.c:743` prints no source ref (R5 U2: no probe caused it).
+    ["no delete capability", out(TO, "!\t:refs/heads/x\t[rejected] (remote does not support deleting refs)", "Done"), "refs/heads/x", 1, { status: "rejected", reasonText: "remote does not support deleting refs" }],
+  ];
+  for (const [name, stdout, dst, exit, expected] of probes) test(name, () => expect(parse(stdout, dst, exit)).toEqual(expected));
+
+  test("the alias matches only with its own destination", () => {
+    expect(parse(out(TO, "!\t(delete):refs/heads/other\t[rejected] (stale info)", "Done"), "refs/heads/feature4", 1)).toEqual({ status: "none", reasonText: null });
+    expect(sync.parsePushPorcelain(out(TO, "!\t(delete):refs/heads/feature4\t[rejected] (stale info)", "Done"), ":refs/heads/feature4", 1)).toEqual({ status: "none", reasonText: null });
+  });
+
+  test("two matching lines give MALFORMED_GIT_OUTPUT", () => {
+    expect(parse(out(TO, "-\t:refs/heads/feature\t[deleted]", "!\t(delete):refs/heads/feature\t[rejected] (stale info)", "Done"), "refs/heads/feature", 1)).toBeNull();
+    expect(parse(out(TO, "-\t:refs/heads/feature\t[deleted]", TO, "-\t:refs/heads/feature\t[deleted]", "Done"), "refs/heads/feature", 0)).toBeNull();
+  });
+
+  test("a deleted line of another destination with exit 0 gives MALFORMED_GIT_OUTPUT", () => {
+    expect(parse(out(TO, "-\t:refs/heads/other\t[deleted]", "Done"), "refs/heads/feature", 0)).toBeNull();
+  });
+
+  // Plan.md D5: the push `SUCCESS` set holds no `deleted`, so a `-` line never makes a push succeed.
+  test("the flag - gives deleted for a push refspec too", () => {
+    expect(parsePushPorcelain(out(TO, `-\t${"refs/heads/main:refs/heads/main"}\t[deleted]`, "Done"), "refs/heads/main:refs/heads/main", 0)).toEqual({ status: "deleted", reasonText: null });
+  });
+});
+
+// Feature 011 plan.md D5 (T007): `symbolic-ref -q` and `ls-remote --exit-code`. Each result holds byte strings (`latin1`).
+describe("symref and ls-remote lines (feature 011)", () => {
+  test("parseSymref takes exactly one refs/ line", () => {
+    expect(sync.parseSymref(bytes("refs/remotes/origin/main\n"))).toBe("refs/remotes/origin/main");
+    expect(sync.parseSymref(bytes("refs/remotes/origin/fëature\n"))).toBe(Buffer.from("refs/remotes/origin/fëature", "utf8").toString("latin1"));
+    for (const text of ["", "refs/remotes/origin/main", "origin/main\n", "refs/a\nrefs/b\n", "\n", "\nrefs/a\n"]) expect({ text, parsed: sync.parseSymref(bytes(text)) }).toEqual({ text, parsed: null });
+  });
+
+  test("parseLsRemote parses exact lines", () => {
+    expect(sync.parseLsRemote(bytes(""), "sha1")).toEqual([]);
+    expect(sync.parseLsRemote(bytes(`${A1}\trefs/heads/keep\n`), "sha1")).toEqual([{ objectId: A1, ref: "refs/heads/keep" }]);
+    expect(sync.parseLsRemote(bytes(`${A2}\trefs/heads/keep\n`), "sha256")).toEqual([{ objectId: A2, ref: "refs/heads/keep" }]);
+    for (const text of [`${A1}\trefs/heads/keep`, `${A1} refs/heads/keep\n`, `${A1}\t\n`, `${A2}\trefs/heads/keep\n`, `ref: refs/heads/main\tHEAD\n`, `${A1}\trefs/heads/a\tb\n`]) {
+      expect({ text, parsed: sync.parseLsRemote(bytes(text), "sha1") }).toEqual({ text, parsed: null });
+    }
+  });
+
+  // Research.md R2 P15: a pattern matches a ref tail, so only an exact `<dst>` line names the branch.
+  test("P15: a tail match parses, and it is no exact line of the destination", () => {
+    const lines = sync.parseLsRemote(bytes(`${A1}\trefs/heads/x/refs/heads/keep\n${B1}\trefs/heads/a/keep\n`), "sha1");
+    expect(lines).toEqual([{ objectId: A1, ref: "refs/heads/x/refs/heads/keep" }, { objectId: B1, ref: "refs/heads/a/keep" }]);
+    expect(lines!.some((l) => l.ref === "refs/heads/keep")).toBe(false);
   });
 });
 

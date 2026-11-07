@@ -192,4 +192,52 @@ Run 1 at `6b97a4c2`, on the same host and tools, gave the "before" values. Its c
 
 ### Requirement-to-test map (T022)
 
-Pending. T022 maps every FR and SC to its tests (spec SC-011).
+Review 2026-11-07 by the reviewer on `f15e91fc`. The map below adds the later fixes and tests up to `b2006241`. Test files are in `tests/git/`, `tests/contracts/`, `tests/wsl/`, and `tests/windows/`.
+
+| ID | Test file and case | Coverage |
+|---|---|---|
+| FR-001 | `remote-delete.test.tsx` X1 menu cases, History remote label, Del starts the review, "during a merge, X1 in the menu stays focusable, is aria-disabled, states the blocked reason…"; `remote-delete-packaged.test.ts` "FR-001, FR-006: X1 ends group 2…" (t1 pass) | yes |
+| FR-002 | `remote-delete.test.ts` "SC-001…", "D4 read 10…"; `remote-delete-local.test.ts` "§5 deadline first…" (reads 2 and 3, read 10); `remote-delete-contract.test.ts` "contract Δ3 plan" (4); `sync-commands.test.ts` "no review read contacts a remote" | yes |
+| FR-003 | `remote-delete.test.ts` "D4 read 3…"; `remote-delete.test.tsx` "X15 no-remote-branch gives its text" | yes |
+| FR-004 | `remote-delete.test.ts` "SC-003…"; `remote-delete-local.test.ts` "D4 order: read 6 default-branch wins…"; `remote-delete.test.tsx` X13/X14, "Del with the refusal X13 shows it in the refusal slot…", "a later delete clears the old refusal…"; `sync-parsers.test.ts` "parseSymref…"; `remote-delete-wsl.test.ts` "T018 SC-003…" | yes |
+| FR-005 | `remote-delete.test.ts` refusals before any network process; `remote-delete-local.test.ts` "D4 order: … config-in-include wins over the earlier-read push-urls"; `sync-parsers.test.ts` "push URLs (O-11)" (5); `remote-delete.test.tsx` "X17 UNKNOWN_TARGET…", Del during a merge | yes |
+| FR-006 | `remote-delete.test.tsx` "remote confirmation (plan D2, FR-006, SC-008)" (9, with "a count above 999 groups its digits…"); `remote-delete.test.ts` "D4 read 10…"; `remote-delete-packaged.test.ts` "FR-006: the remote dialog gives Cancel…" (t2 pass, control c1 red) | yes |
+| FR-007 | `sync-commands.test.ts` lease cases; `remote-delete.test.ts` "SC-002…"; `remote-delete-contract.test.ts` invalid vectors; `remote-delete-wsl.test.ts` "T018 SC-002…" | yes |
+| FR-008 | `sync-parsers.test.ts` "remote branch delete porcelain (feature 011)"; `remote-delete.test.ts` "P3 to P6…", "P7…", "FR-008: a credential helper that exits non-zero gives GIT_FAILED with status none and the terminal remedy…"; `remote-delete-local.test.ts` "D7: a network failure…" (asserts STEP_REMEDY); `remote-delete.test.tsx` "remote only: a failed push gives E3" | yes |
+| FR-009 | `remote-delete.test.ts` "SC-001: …" (branch `keep` keeps `branch.keep.remote` and `.merge`; config bytes equal); `remote-delete-wsl.test.ts` "T018 SC-001…" | yes |
+| FR-010 | `workbench-branches.test.tsx` "local Delete with the remote check box (feature 011 plan D3)" (6); `remote-delete.test.tsx` "local dialog marks" (2); `remote-delete-packaged.test.ts` "FR-010: the local Delete dialog…" (t3 pass) | yes |
+| FR-011 | `remote-delete-local.test.ts` SC-004 and D7 cases, D4 order, STALE_REVIEW, not-upstream, "§5 deadline first…" (reads 5 to 9, read 7, `deleteFacts`, the 004 delete-branch review); `remote-delete-gone.test.ts` "D7: the combined form…"; `remote-delete.test.tsx` combined cases | yes |
+| FR-012 | `remote-delete-gone.test.ts` P18, D8, P16, P15, hook case; `remote-delete.test.ts` "P9 and P16…"; `sync-commands.test.ts` "gone check"; `sync-parsers.test.ts` parseLsRemote, P15; `remote-delete.test.tsx` X23; `remote-delete-wsl.test.ts` "T018 plan.md D8…" | yes |
+| FR-013 | `remote-delete.test.ts` "Δ8: Cancel…"; `remote-delete-local.test.ts` "D7: Cancel…"; `remote-delete.test.tsx` E4, E4 + X25; `remote-delete-wsl.test.ts` "T018 SC-010…" | yes |
+| FR-014 | `sync-trust.test.ts` "011 SC-007…"; `remote-delete.test.ts` trust required, P7; `trust-classes.test.ts` (2); `remote-delete.test.tsx` trust ask names push; `remote-delete-packaged.test.ts` "U6: with a pre-push hook…" (t4 pass) | yes |
+| FR-015 | `remote-delete-wsl.test.ts` all 6 T018 cases (6/0, control red) | yes |
+| FR-016 | `remote-delete.test.tsx` X2 to X30, E2 to E4, wrap, tooltip; `workbench-branches.test.tsx` X9 to X12; cargo `close.rs`, `schema.rs` (28/0); `remote-delete-packaged.test.ts` t5 themes, t6 densities pass; t7 text size skipped | yes, with the text-size skip accepted (010 precedent) |
+| SC-001 | `remote-delete.test.ts` "SC-001…"; `remote-delete-wsl.test.ts` "T018 SC-001…" | yes |
+| SC-002 | `remote-delete.test.ts` "SC-002…", "P9 and P16…"; `remote-delete-gone.test.ts` "D8: a moved remote branch…"; `remote-delete-wsl.test.ts` "T018 SC-002…" | yes |
+| SC-003 | `remote-delete.test.ts` "SC-003…"; `remote-delete-wsl.test.ts` "T018 SC-003…" | yes |
+| SC-004 | `remote-delete-local.test.ts` SC-004, D6 step 7, D7, P14; `remote-delete-gone.test.ts` combined; `remote-delete-wsl.test.ts` "T018 SC-004…" | yes |
+| SC-005 | `sync-credentials.test.ts` "011 SC-005…"; `remote-delete.test.ts` "FR-008: a credential helper…" | yes |
+| SC-006 | config bytes compared as a Buffer in `remote-delete.test.ts`, `remote-delete-local.test.ts`, `remote-delete-wsl.test.ts` (harness `stateOf` uses `rev-parse --path-format=absolute --git-path config`) | yes |
+| SC-007 | `sync-trust.test.ts` "011 SC-007…"; `remote-delete.test.ts` trust cases; `remote-delete-packaged.test.ts` "U6…" (t4 pass) | yes |
+| SC-008 | `remote-delete-packaged.test.ts` t2, t3, t5, t6, t8 pass (t5 forced colors through the CDP emulation, not a Windows contrast theme); contract focus cases; t7 text size skipped (machine at 100 %) | yes, with the text-size skip accepted (010 precedent) |
+| SC-009a | `remote-delete-perf.test.ts` "SC-009a, U5…" (r1 pass) | yes |
+| SC-009b | `remote-delete-perf.test.ts` "SC-009b…" (r2 pass, combined median 295.1 ms); `remote-delete.test.ts` "SC-009b: the combined review starts the worktree list before read 5 ends…"; WSL record w1 | yes |
+| SC-009c | `remote-delete-perf.test.ts` "SC-009c, SC-009e…" (r3 pass); WSL record w2 | yes |
+| SC-009d | `remote-delete-perf.test.ts` "SC-009d, SC-009e…" (r4 pass); WSL record w3 | yes |
+| SC-009e | inside the r3 and r4 cases (pass) | yes |
+| SC-010 | `remote-delete-wsl.test.ts` "T018 SC-001…", "T018 SC-004…", "T018 SC-010…" | yes |
+| SC-011 | `remote-delete.test.tsx` "refusals (plan D4, FR-004, SC-011)"; `remote-delete-local.test.ts` "§5 deadline first…" (the deadline decides, not the exit of the closed sibling); T022 review of `observeRemoteDelete`, `localOf`, `deleteFacts`, `commitsOf`, `observeSync`, `runDelete`, `parsePushPorcelain`, `deleteOutcome` at `f15e91fc` | yes |
+
+- Coverage marks: the map gives test coverage. The pass or fail result of a budget is in R7 "Packaged and perf runs (T021)", run 2.
+- Totals: 31 IDs (16 FR, 15 SC). 29 are yes, 2 are yes with the accepted text-size skip, and 0 have no test. SC-011 passes.
+- The "§5 deadline first" case follows 001 contract §5 "Deadline outcomes". It covers seven parallel read waves of the remote, the combined, and the 004 delete-branch reviews. It is new in `b2006241`.
+- Control: the reviewer removed FR-009 from the map. The coverage check then printed "missing FR-009".
+
+Review findings and outcomes:
+
+- 0 CRITICAL and 0 HIGH findings.
+- M1: in a parallel review wave, a read at its deadline did not decide first. Fixed by `b2006241`.
+- L1: each parallel review wave now waits for all its reads. Fixed by `b2006241`.
+- L2: the dialogs printed counts above 999 without digit groups. Fixed by `b2006241` for the remote confirmation, and by the feature close fix for the force-push count "It removes {n} commits".
+- L3: accepted. A cut commit subject keeps its full text in the DOM and in the accessible name. A focusable row would add Tab stops to the list.
+- Evidence: the T021 run 2 results above (build `f15e91fc`) and the T018 WSL run at `e609153c` (6 pass, 0 fail, control red).

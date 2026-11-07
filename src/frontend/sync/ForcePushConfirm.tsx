@@ -50,7 +50,7 @@ export function LeaseCommits({ lease, label }: { lease: ForcePlan["lease"]; labe
   );
 }
 
-const commits = (n: number) => (n === 1 ? "1 commit" : `${n} commits`);
+const commits = (n: number) => (n === 1 ? "1 commit" : `${n.toLocaleString("en-US")} commits`);
 
 /** The modal confirmation of Force push with lease. Cancel has the initial focus (FR-024). */
 export function ForcePushConfirm({ plan, branch, onConfirm, onCancel, finalFocus }: ForcePushConfirmProps) {

@@ -18,7 +18,7 @@ import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixtu
 import { GIT } from "../git/git-binary";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { BOARD_TOP, BOARD_TREE, boardWorld, folderCount, folderWorld, ICONS, markParts, otherRepo, twinWorlds, wideWorld } from "./submodule-tree-fixture";
+import { BOARD_TOP, BOARD_TREE, boardWorld, folderCount, folderWorld, ICONS, markParts, marksShown, otherRepo, replyMarks, sameMarks, twinWorlds, VIRTUAL_MIN, wideWorld } from "./submodule-tree-fixture";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./submodule-tree-fixture.ts", "../../src/contracts/limits.ts"]) printOrigin(helper, import.meta.dir);
@@ -59,6 +59,11 @@ const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 // src/frontend/submodules/SubmodulesGroup.tsx, plan D15 "Tree rows".
 const TREE_BOUND = `The submodule paths have more than ${SUBMODULE_TREE_FOLDERS.toLocaleString("en-US")} folders, so the group shows no folder rows.`;
 const NO_BRANCH = "no branch";
+// Contract Δ12 "Branch marks" of the twin rows, without `rowId`. git-clone(1) sets `origin/main` as the upstream of `main`. The fixture check gives 0 ahead, 0 behind.
+const TWIN_MARK: Record<string, object> = {
+  main: { state: "branch", ref: "refs/heads/main", upstream: "refs/remotes/origin/main", track: { state: "counts", ahead: 0, behind: 0 } },
+  [NO_BRANCH]: { state: "detached" },
+};
 
 // ---- CDP keys ----
 
@@ -114,9 +119,6 @@ const factsOf = (element: string) =>
 const SHAPE = `${ITEMS}.map((e) => [e.dataset.path === undefined ? 'folder' : 'submodule', e.querySelector('[data-slot=row-label]')?.textContent ?? '', Number(e.getAttribute('aria-level')), e.dataset.path === undefined ? Number((e.querySelector('[data-slot=folder-count]')?.textContent ?? '').replaceAll(',', '')) : null])`;
 const NAMES = `Object.fromEntries(${ITEMS}.filter((e) => e.dataset.path !== undefined).map((e) => [e.dataset.path, e.getAttribute('aria-label')]))`;
 const BOUND_LINE = `${GROUP}?.querySelector('[data-slot=tree-bound]')?.textContent ?? null`;
-// True when `n` submodule rows show and each one has the branch mark `text` (spec FR-109). The marks come with the rows (FR-110).
-const marksShown = (n: number, text: string) =>
-  `(() => { const m = [...(${GROUP}?.querySelectorAll('[role=tree] [role=treeitem][data-path] [data-slot=branch-mark]') ?? [])]; return m.length === ${n} && m.every((e) => e.textContent === ${js(text)}); })()`;
 const rowNamed = (label: string) => `${ITEMS}.find((e) => e.getAttribute('aria-label') === ${js(label)})`;
 const rowAt = (path: string) => `${ITEMS}.find((e) => e.dataset.path === ${js(path)})`;
 // Plan D15 "Tree rows": "<full path>, <branch or no branch>, <count part>, <state>, <observed line>", without empty parts.
@@ -251,11 +253,13 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
     if (!r.ok) throw new Error(`the check did not hold within ${LIST_WAIT_MS} ms of the Enter keydown: ${check}`);
     return r.ms;
   }
-  // Each submodule row name holds the mark parts that Git gives for its folder (spec SC-018, plan D15 "Tree rows").
-  async function expectMarks(s: Session, repo: string, paths: readonly string[]): Promise<Record<string, string>> {
+  // Each mounted row name of `paths` holds the mark parts that Git gives for its folder (spec SC-018, plan D15 "Tree rows").
+  // Up to `VIRTUAL_MIN` of `shown` rows, every row is mounted, so every row of `paths` must have a name.
+  async function expectMarks(s: Session, repo: string, paths: readonly string[], shown: number): Promise<Record<string, string>> {
     const names = await s.c.evaluate<Record<string, string>>(NAMES);
-    const wrong = paths.map((p) => ({ path: p, name: names[p], parts: markParts(GIT!, join(repo, ...p.split("/"))) })).filter((r) => !nameMatches(r.name, [r.path, ...r.parts]));
-    expect(wrong).toEqual([]);
+    const mounted = paths.filter((p) => names[p] !== undefined);
+    const wrong = mounted.map((p) => ({ path: p, name: names[p], parts: markParts(GIT!, join(repo, ...p.split("/"))) })).filter((r) => !nameMatches(r.name, [r.path, ...r.parts]));
+    expect({ some: mounted.length > 0, all: shown > VIRTUAL_MIN || mounted.length === paths.length, wrong }).toEqual({ some: true, all: true, wrong: [] });
     return names;
   }
   async function shot(c: Cdp, state: string): Promise<void> {
@@ -332,7 +336,7 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
         await openFolder(s, b.repo);
         await until<number>(s.c, "the board rows", `${ITEMS}.length`, (v) => v === BOARD_TREE.length, LIST_WAIT_MS);
         expect(await s.c.evaluate<unknown>(SHAPE)).toEqual(BOARD_TREE);
-        const names = await expectMarks(s, b.repo, b.checkedOut);
+        const names = await expectMarks(s, b.repo, b.checkedOut, BOARD_TREE.length);
         console.log(`NAMES ${TASK}: ${js(names)}`);
         // ICONS has no clone, so its row has no mark (data-model §15).
         expect(await s.c.evaluate<boolean>(`${rowAt(ICONS)}?.querySelector('[data-slot=branch-mark]') === null`)).toBe(true);
@@ -392,8 +396,11 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           // Each open registers a recent entry. Each fixture opens once before the runs, and its marks equal the Git status headers.
           for (const [repo, text] of [[t.branch, "main"], [t.detached, NO_BRANCH]] as const) {
             await openFolder(s, repo);
-            await until<boolean>(s.c, `the marks of ${repo}`, marksShown(n, text), (v) => v, LIST_WAIT_MS);
-            await expectMarks(s, repo, t.paths);
+            await until<boolean>(s.c, `the marks of ${repo}`, marksShown(t.paths, text), (v) => v, LIST_WAIT_MS);
+            await expectMarks(s, repo, t.paths, n + folderCount(t.paths));
+            // Above `VIRTUAL_MIN` shown rows, the DOM holds only the mounted marks. The reply holds all of them.
+            await idle(s);
+            expect(await replyMarks(s.ipc)).toEqual(sameMarks(t.paths, TWIN_MARK[text]!));
             await switchTo(s, other);
             await idle(s);
           }
@@ -401,7 +408,7 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           // Run 0 is the warm-up run. A and B alternate, so a drift of the host reaches both.
           for (let run = 0; run <= RUNS; run++) {
             for (const [key, repo, text] of [["branch", t.branch, "main"], ["detached", t.detached, NO_BRANCH]] as const) {
-              const ms = await timedSwitch(s, repo, marksShown(n, text));
+              const ms = await timedSwitch(s, repo, marksShown(t.paths, text));
               if (run > 0) times[key].push(ms);
               else console.log(`OBSERVATION ${TASK}: SC-018 ${n} ${key} warm-up run ${ms.toFixed(1)} ms`);
               await switchTo(s, other);

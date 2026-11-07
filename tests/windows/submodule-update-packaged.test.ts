@@ -15,7 +15,7 @@ import { GIT } from "../git/git-binary";
 import { gitExit } from "../git/history-diff-fixtures";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { markParts, movedTwins, otherRepo } from "./submodule-tree-fixture";
+import { markParts, marksShown, movedTwins, otherRepo, replyMarks, sameMarks } from "./submodule-tree-fixture";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./submodule-tree-fixture.ts"]) printOrigin(helper, import.meta.dir);
@@ -41,6 +41,8 @@ const UPDATE_MS: Record<number, number> = { 20: 10_000, 100: 36_000, 256: 85_000
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 // `markParts` of tests/windows/submodule-tree-fixture.ts.
 const NO_BRANCH = "no branch";
+// Contract Δ12 "Branch marks": the mark of a moved twin row, without `rowId`.
+const DETACHED = { state: "detached" };
 // The header status of a run in src/frontend/submodules/SubmodulesGroup.tsx.
 const updating = (n: number) => `Updating 1 of ${n.toLocaleString("en-US")}`;
 // The IPC commands of the list review, the update, and the 005 marks read (src/frontend/bridge.ts `command`).
@@ -85,9 +87,6 @@ const GROUP = `document.querySelector('[data-slot=submodules-group]')`;
 const UPDATE = `${GROUP}?.querySelector('[data-submodules-update]')`;
 const CANCEL = `[...(${GROUP}?.querySelectorAll('[data-slot=group-header] button') ?? [])].find((e) => e.textContent === 'Cancel')`;
 const headerShows = (text: string) => `[...(${GROUP}?.querySelectorAll('[data-slot=group-header] [data-slot=header-status]') ?? [])].some((e) => e.textContent === ${js(text)})`;
-// True when `n` submodule rows show and each one has the branch mark `text` (spec FR-109).
-const marksShown = (n: number, text: string) =>
-  `(() => { const m = [...(${GROUP}?.querySelectorAll('[role=tree] [role=treeitem][data-path] [data-slot=branch-mark]') ?? [])]; return m.length === ${n} && m.every((e) => e.textContent === ${js(text)}); })()`;
 
 describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules start time", () => {
   // Bun 1.4.4 runs `afterAll` hooks in declaration order. This hook must come before the fixture root removal.
@@ -192,12 +191,14 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
     for (const p of paths) git(at(repo, p), ["switch", "-q", "--discard-changes", "--detach", head]);
   }
   // Switches away and back, so the next run starts from a new read of `repo`. Every row then shows the mark of a detached HEAD.
-  async function reopen(s: Session, repo: string, other: string, n: number): Promise<void> {
+  async function reopen(s: Session, repo: string, other: string, paths: readonly string[]): Promise<void> {
     await switchTo(s, other);
     await idle(s);
     await switchTo(s, repo);
-    await until<boolean>(s.c, `the marks of ${repo}`, marksShown(n, NO_BRANCH), (v) => v, LIST_WAIT_MS);
+    await until<boolean>(s.c, `the marks of ${repo}`, marksShown(paths, NO_BRANCH), (v) => v, LIST_WAIT_MS);
     await idle(s);
+    // Above `VIRTUAL_MIN` shown rows, the DOM holds only the mounted marks. The reply holds all of them.
+    expect(await replyMarks(s.ipc)).toEqual(sameMarks(paths, DETACHED));
   }
   // Activates Update submodules of the group with Enter. The time runs from the `click` event to the first animation frame with "Updating 1 of <n>".
   async function timedUpdate(s: Session, n: number): Promise<number> {
@@ -266,8 +267,9 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
         try {
           // The open registers a recent entry for the switches.
           await openFolder(s, m.repo);
-          await until<boolean>(s.c, `the marks of ${m.repo}`, marksShown(n, NO_BRANCH), (v) => v, LIST_WAIT_MS);
+          await until<boolean>(s.c, `the marks of ${m.repo}`, marksShown(m.paths, NO_BRANCH), (v) => v, LIST_WAIT_MS);
           await idle(s);
+          expect(await replyMarks(s.ipc)).toEqual(sameMarks(m.paths, DETACHED));
           const times: number[] = [];
           // Run 0 is the warm-up run.
           for (let run = 0; run <= RUNS; run++) {
@@ -275,7 +277,7 @@ describe.skipIf(process.platform !== "win32")("T154 packaged Update submodules s
             if (run > 0) times.push(ms);
             else console.log(`OBSERVATION ${TASK}: SC-021 ${n} warm-up run ${ms.toFixed(1)} ms`);
             detachAll(m.repo, m.paths, m.head);
-            if (run < RUNS) await reopen(s, m.repo, other, n);
+            if (run < RUNS) await reopen(s, m.repo, other, m.paths);
           }
           const mid = median(times);
           console.log(`OBSERVATION ${TASK}: SC-021 ${n} rows: runs ${js(rounded(times))} ms, median ${mid.toFixed(1)} ms, max ${Math.max(...times).toFixed(1)} ms, budget ${budget} ms`);

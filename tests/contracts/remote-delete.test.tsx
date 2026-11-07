@@ -253,13 +253,28 @@ describe("remote confirmation (plan D2, FR-006, SC-008)", () => {
     expect(title.className).toContain("[overflow-wrap:anywhere]");
     expect(title.className).not.toContain("truncate");
   });
+
+  test("a cut commit subject keeps its full text in the tooltip and in the list item", async () => {
+    const { dialog } = await remoteDialog();
+    const item = dialog.querySelector('ul[aria-label="Commits only on origin/feature"] li')!;
+    const subject = [...item.querySelectorAll<HTMLElement>("span")].find((s) => text(s) === "Sample change 1")!;
+    expect(subject.className).toContain("truncate");
+    expect(text(item)).toContain("Sample change 1");
+    expect(subject.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(subject)).toEqual(["Sample change 1"]);
+  });
 });
 
 describe("refusals (plan D4, FR-004, SC-011)", () => {
-  const names = { tracking: "origin/feature", branch: "feature", remote: "origin" };
+  const names = { tracking: "origin/feature", branch: "feature" };
+  // Contract Δ3: the service sends `remote` exactly with these two reasons. The second remote name proves that the text takes it from the refusal.
+  const X13 = "origin/feature is the default branch of origin. Arbareto does not delete the default branch of a remote.";
+  const X14 = "Arbareto cannot tell the default branch of origin. Fetch origin, or run git remote set-head origin --auto, then try again.";
   const cases: [string, string, Record<string, unknown>, string][] = [
-    ["X13 default-branch", "SYNC_UNAVAILABLE", { reason: "default-branch" }, "origin/feature is the default branch of origin. Arbareto does not delete the default branch of a remote."],
-    ["X14 default-unknown", "SYNC_UNAVAILABLE", { reason: "default-unknown" }, "Arbareto cannot tell the default branch of origin. Fetch origin, or run git remote set-head origin --auto, then try again."],
+    ["X13 default-branch", "SYNC_UNAVAILABLE", { reason: "default-branch", remote: "origin" }, X13],
+    ["X14 default-unknown", "SYNC_UNAVAILABLE", { reason: "default-unknown", remote: "origin" }, X14],
+    ["X13 with the remote of the refusal", "SYNC_UNAVAILABLE", { reason: "default-branch", remote: "fork" }, "origin/feature is the default branch of fork. Arbareto does not delete the default branch of a remote."],
+    ["X14 with the remote of the refusal", "SYNC_UNAVAILABLE", { reason: "default-unknown", remote: "fork" }, "Arbareto cannot tell the default branch of fork. Fetch fork, or run git remote set-head fork --auto, then try again."],
     ["X15 no-remote-branch", "SYNC_UNAVAILABLE", { reason: "no-remote-branch" }, "No fetch refspec of exactly one remote maps origin/feature to a remote branch, so Arbareto cannot name it."],
     ["X16 not-upstream", "SYNC_UNAVAILABLE", { reason: "not-upstream" }, "origin/feature is no longer the upstream of feature. Close this dialog, then try again."],
     ["X17 UNKNOWN_TARGET", "UNKNOWN_TARGET", {}, "origin/feature no longer exists here."],
@@ -276,13 +291,9 @@ describe("refusals (plan D4, FR-004, SC-011)", () => {
     });
   }
 
-  // The 011 contract `SyncRefused` names no remote. The renderer has no authoritative remote name for X13 and X14, so it shows the fallback.
-  test("without a remote name, X13 and X14 fall back to the code and the reason", () => {
-    expect(remoteRefusalText(refused("SYNC_UNAVAILABLE", { reason: "default-branch" }) as never, { ...names, remote: null })).toBe("The action did not start: SYNC_UNAVAILABLE default-branch.");
-    expect(remoteRefusalText(refused("SYNC_UNAVAILABLE", { reason: "default-unknown" }) as never, { ...names, remote: null })).toBe("The action did not start: SYNC_UNAVAILABLE default-unknown.");
-  });
-
   for (const [code, result, expected] of [
+    ["SYNC_UNAVAILABLE", { reason: "default-branch", remote: "origin" }, X13],
+    ["SYNC_UNAVAILABLE", { reason: "default-unknown", remote: "origin" }, X14],
     ["SYNC_UNAVAILABLE", { reason: "no-remote-branch" }, "No fetch refspec of exactly one remote maps origin/feature to a remote branch, so Arbareto cannot name it."],
     ["UNKNOWN_TARGET", {}, "origin/feature no longer exists here."],
     ["SYNC_UNAVAILABLE", { reason: "push-urls" }, "The action did not start: SYNC_UNAVAILABLE push-urls."],
@@ -312,9 +323,10 @@ describe("run steps and outcomes (plan D6, D7, FR-008, FR-012, FR-013)", () => {
     ["deleted gives X20", ended("succeeded", { push: push("deleted") }), "Deleted the remote branch origin/feature."],
     ["a stale lease gives X22", ended("failed", { push: push("rejected", "stale info"), reason: "stale-lease", remedy: X27 }, "PUSH_REJECTED"), "origin/feature changed on origin since the last fetch, so Git deleted nothing. Fetch origin, then try again."],
     ["the gone recovery gives X23", ended("succeeded", { push: push("rejected", "stale info"), reason: "stale-lease", remoteGone: true }), "origin lists no branch feature. Arbareto deleted the remote-tracking branch origin/feature."],
-    ["a rejection with another reason gives E2", ended("failed", { push: push("rejected", "fetch first"), reason: "rejected" }, "PUSH_REJECTED"), "Rejected by the remote: fetch first"],
-    ["remote-rejected gives E2", ended("failed", { push: push("remote-rejected", "pre-receive hook declined"), reason: "remote-rejected" }, "PUSH_REJECTED"), "Rejected by the remote: pre-receive hook declined"],
-    ["remote-failure gives E2", ended("failed", { push: push("remote-failure", "remote unpack failed"), reason: "remote-failure" }, "PUSH_REJECTED"), "Rejected by the remote: remote unpack failed"],
+    ["a rejection with another reason gives E2", ended("failed", { push: push("rejected", "fetch first"), reason: "rejected" }, "PUSH_REJECTED"), "Rejected by the remote: fetch first."],
+    ["remote-rejected gives E2", ended("failed", { push: push("remote-rejected", "pre-receive hook declined"), reason: "remote-rejected" }, "PUSH_REJECTED"), "Rejected by the remote: pre-receive hook declined."],
+    ["remote-rejected without a reason text gives E2 with its period", ended("failed", { push: push("remote-rejected"), reason: "remote-rejected" }, "PUSH_REJECTED"), "Rejected by the remote."],
+    ["remote-failure gives E2", ended("failed", { push: push("remote-failure", "remote unpack failed"), reason: "remote-failure" }, "PUSH_REJECTED"), "Rejected by the remote: remote unpack failed."],
     ["a failed push gives E3", ended("failed", { push: push("none"), remedy: { text: "This command runs the step in a terminal.", command: "& git push" } }, "GIT_FAILED"), "Delete remote branch did not complete: GIT_FAILED"],
     ["Cancel gives E4", ended("canceled", { push: push("none") }), "Delete remote branch canceled. The remote can hold this push. Fetch to see the remote state."],
   ];
@@ -334,6 +346,7 @@ describe("run steps and outcomes (plan D6, D7, FR-008, FR-012, FR-013)", () => {
     ["the gone recovery gives X23 and X26", ended("succeeded", { push: push("rejected", "stale info"), reason: "stale-lease", remoteGone: true }), "origin lists no branch feature. Arbareto deleted the remote-tracking branch origin/feature. Deleted the local branch feature."],
     ["the gone recovery and a failed local write give X23 and X25", ended("failed-with-effects", { push: push("rejected", "stale info"), reason: "stale-lease", remoteGone: true, localNotDeleted: true }, "GIT_FAILED"), "origin lists no branch feature. Arbareto deleted the remote-tracking branch origin/feature. feature stays."],
     ["remote-rejected gives E2 and X25", ended("failed", { push: push("remote-rejected", "pre-receive hook declined"), reason: "remote-rejected" }, "PUSH_REJECTED"), "Rejected by the remote: pre-receive hook declined. feature stays."],
+    ["remote-rejected without a reason text gives E2 and X25", ended("failed", { push: push("remote-rejected"), reason: "remote-rejected" }, "PUSH_REJECTED"), "Rejected by the remote. feature stays."],
     ["a failed push gives E3 and X25", ended("failed", { push: push("none") }, "GIT_FAILED"), "Delete remote branch did not complete: GIT_FAILED. feature stays."],
     ["Cancel gives E4 and X25", ended("canceled", { push: push("none") }), "Delete remote branch canceled. The remote can hold this push. Fetch to see the remote state. feature stays."],
   ];
@@ -342,6 +355,21 @@ describe("run steps and outcomes (plan D6, D7, FR-008, FR-012, FR-013)", () => {
       const { run } = await confirmCombined();
       await answer(run, response);
       expect(text(footer())).toContain(expected);
+    });
+  }
+
+  // The service sets `localNotDeleted` from the refs it reads after the run. A failed section removal after the ref delete leaves effects without it.
+  for (const [label, result] of [
+    ["deleted", { push: push("deleted") }],
+    ["gone", { push: push("rejected", "stale info"), reason: "stale-lease", remoteGone: true }],
+  ] as const) {
+    test(`combined: failed-with-effects after ${label} without localNotDeleted shows the generic effects line, no success text`, async () => {
+      const { run } = await confirmCombined();
+      await answer(run, ended("failed-with-effects", result, "GIT_FAILED"));
+      expect(text(footer())).toContain("Delete remote branch did not complete and left effects: GIT_FAILED");
+      expect(text(footer())).not.toContain("Deleted feature and the remote branch");
+      expect(text(footer())).not.toContain("Deleted the local branch feature.");
+      expect(text(footer())).not.toContain("Arbareto deleted the remote-tracking branch");
     });
   }
 

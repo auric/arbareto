@@ -396,6 +396,9 @@ function deleteOutcome(name: string, response: BridgeResponse, outcome: Outcome,
   const { tracking, remote, branch } = names;
   const stays = branch === null ? "" : ` ${branch} stays.`;
   const push = outcome.push;
+  // A full delete shows only for a success outcome. `localNotDeleted` has its own texts. Other effects take the generic line.
+  const stated = outcome.localNotDeleted || response.state === "succeeded" || response.state === "completed-with-effects";
+  if ((outcome.remoteGone || push?.status === "deleted") && !stated) return null;
   if (outcome.remoteGone) {
     const gone = `${remote} lists no branch ${names.name}. Arbareto deleted the remote-tracking branch ${tracking}.`;
     return { lead: branch === null ? gone : `${gone}${outcome.localNotDeleted ? stays : ` Deleted the local branch ${branch}.`}`, tail: "" };
@@ -404,7 +407,7 @@ function deleteOutcome(name: string, response: BridgeResponse, outcome: Outcome,
   if (response.state === "unknown") return null;
   if (response.state === "canceled") return { lead: `${name} canceled. ${PUSH_CANCELED}${stays}`, tail: "" };
   if (response.code === "PUSH_REJECTED" && push?.status === "rejected" && outcome.reason === "stale-lease") return { lead: `${tracking} changed on ${remote} since the last fetch, so Git deleted nothing. Fetch ${remote}, then try again.${stays}`, tail: "" };
-  if (response.code === "PUSH_REJECTED" && push !== undefined) return { lead: REMOTE_REJECTED, tail: `${push.reasonText === null ? "" : `: ${push.reasonText}`}${branch === null ? "" : `.${stays}`}` };
+  if (response.code === "PUSH_REJECTED" && push !== undefined) return { lead: REMOTE_REJECTED, tail: `${push.reasonText === null ? "" : `: ${push.reasonText}`}.${stays}` };
   if (branch === null || response.state === "succeeded") return null;
   return { lead: `${name} ${response.state === "rejected" ? "did not start" : "did not complete"}: `, code: response.code ?? response.state, tail: `${outcome.reason === undefined ? "" : ` ${outcome.reason}`}.${stays}` };
 }

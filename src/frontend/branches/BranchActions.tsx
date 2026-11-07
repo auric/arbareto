@@ -307,7 +307,7 @@ export function useBranchActions(options: BranchActionsOptions) {
       if (response === null) return;
       const reviewed = syncReviewedOf(response);
       if (reviewed !== null) return setOverlay({ kind: "remote-delete", entry, plan: reviewed.plan, token: reviewed.token });
-      onNotice(remoteRefusalText(response, { tracking: entry.name, branch: null, remote: null }));
+      onNotice(remoteRefusalText(response, { tracking: entry.name, branch: null }));
     });
   }
 
@@ -325,7 +325,7 @@ export function useBranchActions(options: BranchActionsOptions) {
       const remote: RemotePart =
         reviewed !== null && reviewed.plan.local !== undefined
           ? { checked: true, plan: reviewed.plan, token: reviewed.token, error: null }
-          : { checked: true, plan: null, token: null, error: remoteRefusalText(response, { tracking, branch: o.entry.name, remote: null }) };
+          : { checked: true, plan: null, token: null, error: remoteRefusalText(response, { tracking, branch: o.entry.name }) };
       setOverlay((current) => (current?.kind === "delete" && current.entry.ref === o.entry.ref && current.remote?.checked ? { ...current, remote } : current));
     })();
   }

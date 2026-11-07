@@ -108,11 +108,12 @@ export const RD = {
   list: (tracking: string) => `Commits only on ${tracking}`,
 } as const;
 
-type RemoteNames = { tracking: string; branch: string | null; remote: string | null };
-// Plan D4 "Refusals". A text that needs a name the renderer does not have falls back to the code and the reason.
-const REMOTE_REASONS: Record<string, (n: RemoteNames) => string | null> = {
-  "default-branch": (n) => (n.remote === null ? null : `${n.tracking} is the default branch of ${n.remote}. Arbareto does not delete the default branch of a remote.`),
-  "default-unknown": (n) => (n.remote === null ? null : `Arbareto cannot tell the default branch of ${n.remote}. Fetch ${n.remote}, or run git remote set-head ${n.remote} --auto, then try again.`),
+type RemoteNames = { tracking: string; branch: string | null };
+// Plan D4 "Refusals". Contract Δ3: `SyncRefused.remote` is the remote that the review resolved, present exactly with `default-branch` and `default-unknown`.
+// A result without a needed name breaks the contract, so it falls back to the code and the reason.
+const REMOTE_REASONS: Record<string, (n: RemoteNames, remote: string | null) => string | null> = {
+  "default-branch": (n, remote) => (remote === null ? null : `${n.tracking} is the default branch of ${remote}. Arbareto does not delete the default branch of a remote.`),
+  "default-unknown": (_, remote) => (remote === null ? null : `Arbareto cannot tell the default branch of ${remote}. Fetch ${remote}, or run git remote set-head ${remote} --auto, then try again.`),
   "no-remote-branch": (n) => `No fetch refspec of exactly one remote maps ${n.tracking} to a remote branch, so Arbareto cannot name it.`,
   "not-upstream": (n) => (n.branch === null ? null : `${n.tracking} is no longer the upstream of ${n.branch}. Close this dialog, then try again.`),
 };
@@ -121,7 +122,7 @@ const REMOTE_REASONS: Record<string, (n: RemoteNames) => string | null> = {
 export function remoteRefusalText(response: BridgeResponse, names: RemoteNames): string {
   const r = isObject(response.result) ? response.result : {};
   if (response.code === "UNKNOWN_TARGET") return `${names.tracking} no longer exists here.`;
-  const text = response.code === "SYNC_UNAVAILABLE" && typeof r.reason === "string" ? REMOTE_REASONS[r.reason]?.(names) : null;
+  const text = response.code === "SYNC_UNAVAILABLE" && typeof r.reason === "string" ? REMOTE_REASONS[r.reason]?.(names, typeof r.remote === "string" ? r.remote : null) : null;
   return text ?? refusalText(response, names.branch ?? names.tracking);
 }
 

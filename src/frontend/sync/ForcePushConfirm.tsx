@@ -4,6 +4,7 @@
 import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
+import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { branchName } from "../history/HistoryView";
@@ -36,7 +37,11 @@ export function LeaseCommits({ lease, label }: { lease: ForcePlan["lease"]; labe
         {lease.commits.map((c) => (
           <li key={c.objectId} className="flex gap-2">
             <code className="shrink-0">{shortId(c.objectId)}</code>
-            {c.subject === null ? null : <span className="min-w-0 truncate">{c.subject}</span>}
+            {c.subject === null ? null : (
+              <TextTooltip text={c.subject}>
+                <span className="min-w-0 truncate">{c.subject}</span>
+              </TextTooltip>
+            )}
           </li>
         ))}
       </ul>

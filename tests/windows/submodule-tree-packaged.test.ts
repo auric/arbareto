@@ -39,7 +39,7 @@ const RUNS = 10;
 const SIZES = [20, 256] as const;
 // Spec SC-020, amended 2026-11-04 (T161): the twins of 1,024 rows have a list budget and no SC-018 budget.
 const LIST_SIZES = [...SIZES, 1_024] as const;
-// Spec SC-018: (median time to the last branch mark) - (median time to the last row of the detached twin), per submodule row. The T144 control sets it to 1.
+// Spec SC-018: (median time to the last branch mark) - (median time to the last row of the detached twin), per submodule row. The value can be negative. The T144 control sets it to -Infinity, in a run without the LIST_MS control.
 const MARK_MS_PER_ROW = 30;
 // Spec SC-020: the median time from the Enter keydown to the last branch mark, for each twin. The T150 and T161 controls set each value to 1.
 const LIST_MS: Record<(typeof LIST_SIZES)[number], number> = { 20: 6_500, 256: 55_000, 1_024: 190_000 };

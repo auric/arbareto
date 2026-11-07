@@ -564,6 +564,10 @@ describe.skipIf(process.platform !== "win32")("T019 packaged remote branch delet
         for (const d of dialogs) {
           const dialog = await d.open();
           const danger = buttonIn(dialog, d.danger);
+          // After the UIA Toggle, a script focus() matches `:focus-visible` only after a key press.
+          await focusOn(s.c, buttonIn(dialog, "Cancel"), "Cancel");
+          await press(s.c, "Tab");
+          await until<boolean>(s.c, "the Tab focus on the danger button", `document.activeElement === (${danger})`, (v) => v);
           for (const scheme of ["dark", "light", "forced"] as const) {
             await emulate(s.c, scheme);
             expect({ dialog: d.name, scheme, unnamed: await unnamed(s.c, dialog) }).toEqual({ dialog: d.name, scheme, unnamed: [] });
@@ -623,8 +627,13 @@ describe.skipIf(process.platform !== "win32")("T019 packaged remote branch delet
           const item = `[...document.querySelectorAll('[role="menuitemradio"]')].find((e) => e.textContent.trim() === ${js(density)})`;
           await focusOn(s.c, item, `the ${density} item`);
           await press(s.c, "Enter");
-          await until<string | null>(s.c, `the ${density} density`, "document.documentElement.getAttribute('data-density')", (v) => v === density.toLowerCase());
-          await until<boolean>(s.c, "the closed View menu", nothingOpen, (v) => v);
+          await until<string | null>(s.c, `the checked ${density} item`, `(${item})?.getAttribute('aria-checked') ?? null`, (v) => v === "true");
+          // Workbench.tsx writes no `data-density` for Compact. A Base UI radio item keeps the menu open.
+          expect(await s.c.evaluate<string | null>("document.documentElement.getAttribute('data-density')")).toBe(density === "Compact" ? null : "comfortable");
+          await press(s.c, "Escape");
+          // Base UI returns the focus in a microtask when the closed popup unmounts (FloatingFocusManager.js).
+          await until<boolean>(s.c, "the unmounted View menu", "document.querySelector('[role=menu]') === null", (v) => v);
+          await settle(s.c);
           await showRemotes(s);
           await geometry(s, density);
         }

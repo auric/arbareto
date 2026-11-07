@@ -21,6 +21,7 @@ import { countLabel, COUNTS_TOOLTIP } from "../state/tracking";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { ReadsTrustNotice } from "../trust/TrustChip";
 import { buildSubmoduleTree, type TreeRow } from "./submodule-tree";
+import { TreeKeyHints } from "./TreeKeyHints";
 
 // Feature 004 spec FR-076 to FR-082, plan D13 and D15 (Submodules group texts), contract Δ12. The 001 review dialog is gone.
 
@@ -385,6 +386,13 @@ export type SubmodulesGroupProps = {
   chain?: number;
   /** The constrained profile: the references section that scrolls the group. Without it, the group region scrolls. */
   scrollElement?: () => HTMLElement | null;
+  /** Plan D20 "Place": the last block of the sidebar column for the "Keys in the tree" panel. Null or absent: the panel uses the hidden form. */
+  hintsSlot?: HTMLElement | null;
+  /** The stored open state of the panel (plan D20 "Stored state"). */
+  hintsOpen?: boolean;
+  onHintsOpen?(open: boolean): void;
+  /** `metrics(density, textScale).reducedPaneMin` for the D20 fit rule. Absent: no form fits. */
+  hintsMin?: number;
 };
 
 // Plan D20 "Group": plain rows up to this count, as the References tree does.
@@ -593,8 +601,10 @@ const SubmoduleItem = memo(function SubmoduleItem(props: SubmoduleItemProps) {
 });
 
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
-export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0, scrollElement }: SubmodulesGroupProps) {
+export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0, scrollElement, hintsSlot = null, hintsOpen = true, onHintsOpen, hintsMin = Number.POSITIVE_INFINITY }: SubmodulesGroupProps) {
   const headingId = useId();
+  const hintsButtonId = useId();
+  const hintsListId = useId();
   const reasonId = useId();
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(true);
@@ -892,7 +902,7 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
         )}
         {/* Plan D15 "Rows at rest": a failed list keeps the rows of the last list. Only a malformed tree shows no rows. */}
         {!expanded || shown.length === 0 ? null : (
-          <div ref={treeElement} role="tree" aria-labelledby={headingId} className="flex flex-col">
+          <div ref={treeElement} role="tree" aria-labelledby={headingId} aria-describedby={`${hintsButtonId} ${hintsListId}`} className="flex flex-col">
             {virtual ? (
               <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
                 {/* A failed row has more lines, so each mounted row is measured. */}
@@ -908,6 +918,18 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
           </div>
         )}
       </div>
+      {/* Plan D20 "Exists": the panel exists only while the tree exists. */}
+      {!expanded || shown.length === 0 ? null : (
+        <TreeKeyHints
+          slot={hintsSlot}
+          open={hintsOpen}
+          onOpen={onHintsOpen}
+          min={hintsMin}
+          buttonId={hintsButtonId}
+          listId={hintsListId}
+          onBoxLost={() => elements.current.get(shown[at]!.key)?.focus()}
+        />
+      )}
       {menu === null ? null : (
         <ActionMenu label={`Actions for ${menu.path}`} groups={menuGroups(menu.path)} open anchor={menu.anchor} byKey={menu.byKey} finalFocus={() => menu.anchor} onOpenChange={(next) => void (next || setMenu(null))} />
       )}

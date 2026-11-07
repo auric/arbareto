@@ -12,6 +12,7 @@
 // - `SubmodulesGroup` takes `repository`, the worktree key that keeps the closed folders for the window session.
 // tasks.md T147 (feature 004). Plan D20 "Group": above 200 shown rows, the group mounts only the rows in view. Plan D15 "Tree rows": the shrink order.
 
+import { ArrowDown01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { act, useState, type ReactNode } from "react";
@@ -94,7 +95,8 @@ async function render(node: ReactNode) {
 
 // The list-only review of the first read (FR-077). `listed: null` leaves it pending.
 let repositories = 0;
-async function mount(options: { runningReason?: string | null; blockedReason?: string | null; listed?: unknown | null; repository?: string; onOpen?: (path: string) => void } = {}) {
+// `hints`: the harness gives the group a sidebar column with the "Keys in the tree" slot as its last block (plan D20 "Place").
+async function mount(options: { runningReason?: string | null; blockedReason?: string | null; listed?: unknown | null; repository?: string; onOpen?: (path: string) => void; hints?: { min: number; open?: boolean } } = {}) {
   // The closed folders last for the window session per repository, so each mount gets its own key unless the case names one.
   const repository = options.repository ?? `repository-${repositories++}`;
   const double = createDouble();
@@ -106,10 +108,16 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
   let snapshot = SNAPSHOT;
   let setShown!: (id: string) => void;
   const handle: { update: ReturnType<typeof useSubmoduleUpdate> | null } = { update: null };
+  const hintCalls: boolean[] = [];
+  let setSlotShown!: (shown: boolean) => void;
   function Harness() {
     const [op, setOp] = useState<StatusOperation | null>(null);
     const [shown, set] = useState(SNAPSHOT);
+    const [slot, setSlot] = useState<HTMLElement | null>(null);
+    const [slotShown, showSlot] = useState(true);
+    const [hintsOpen, setHintsOpen] = useState(options.hints?.open ?? true);
     setShown = set;
+    setSlotShown = showSlot;
     const update = useSubmoduleUpdate({
       bridge: double.bridge as never,
       repositoryId: TARGET.repositoryId,
@@ -124,7 +132,8 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
     });
     handle.update = update;
     const own = op !== null && op.response === null ? RUNNING_REASON : null;
-    return (
+    const hints = options.hints;
+    const node = (
       <SubmodulesGroup
         update={update}
         repository={repository}
@@ -133,7 +142,25 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
         onCancel={() => void cancels++}
         onTrustReads={() => void trusts++}
         onOpen={options.onOpen}
+        {...(hints === undefined
+          ? {}
+          : {
+              hintsSlot: slotShown ? slot : null,
+              hintsOpen,
+              hintsMin: hints.min,
+              onHintsOpen: (open: boolean) => {
+                hintCalls.push(open);
+                setHintsOpen(open);
+              },
+            })}
       />
+    );
+    if (hints === undefined) return node;
+    return (
+      <div data-slot="sidebar-column">
+        <div>{node}</div>
+        {slotShown ? <div ref={setSlot} data-slot="key-hints-slot" /> : null}
+      </div>
     );
   }
   await render(<Harness />);
@@ -146,7 +173,8 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
     await act(async () => setShown(id));
     await settle();
   };
-  return { double, operations, failures, cancels: () => cancels, attentions: () => attentions, trusts: () => trusts, read, handle };
+  const showSlot = (shown: boolean) => act(async () => setSlotShown(shown));
+  return { double, operations, failures, cancels: () => cancels, attentions: () => attentions, trusts: () => trusts, read, handle, hintCalls, showSlot };
 }
 
 const group = () => document.querySelector<HTMLElement>('[data-slot="submodules-group"]')!;
@@ -1229,5 +1257,297 @@ describe("row shrink order", () => {
     expect(row(ICONS).querySelector('[data-slot="branch-mark"]')).toBeNull();
     const weights = [...group().querySelectorAll('[role="treeitem"] *')].flatMap(classes).filter((c) => c.startsWith("shrink-["));
     expect(weights).toEqual([]);
+  });
+});
+
+// tasks.md T163, plan D20 "Keys in the tree", spec FR-116 and US12 scenario 8. The expected texts are the D20 table in table order.
+describe("keys in the tree", () => {
+  const TEXTS = [
+    "Keys in the tree",
+    "Up, Down",
+    "Go to the previous or the next row.",
+    "Right",
+    "Open a closed row. On an open row, go to the first child.",
+    "Left",
+    "Close an open row. On another row, go to the parent.",
+    "Home, End",
+    "Go to the first or the last row.",
+    "Enter",
+    "Open the submodule. On a folder row, open or close the folder.",
+    "Shift+F10, Menu key",
+    "Open the row menu: Open submodule, Update, Copy path. A failed row adds Retry, and Show output when it has output. Folder rows have no menu.",
+  ];
+  const NO_ROOM = "Make the sidebar wider or the window taller to show the keys.";
+  // D20 "Desk heights" at 1280×800 and 100% text, 240 DIPs: H, P_open, and the button height (P_closed − 21).
+  const COMPACT = [728, 441, 24] as const;
+  const COMFORTABLE = [720, 623, 28] as const;
+  const MIN = { compact: 58, comfortable: 70 };
+
+  // One fake observer list. The test feeds each observed element its border-box height (plan D20 "No toggle").
+  type Observed = { callback: ResizeObserverCallback; targets: Set<Element> };
+  const observers = new Set<Observed>();
+  class FakeResizeObserver {
+    readonly observed: Observed;
+    constructor(callback: ResizeObserverCallback) {
+      this.observed = { callback, targets: new Set() };
+      observers.add(this.observed);
+    }
+    observe(target: Element) {
+      this.observed.targets.add(target);
+    }
+    unobserve(target: Element) {
+      this.observed.targets.delete(target);
+    }
+    disconnect() {
+      observers.delete(this.observed);
+    }
+  }
+  let savedObserver: unknown;
+  beforeAll(() => {
+    savedObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = FakeResizeObserver as never;
+  });
+  afterAll(() => void (globalThis.ResizeObserver = savedObserver as never));
+
+  const column = () => document.querySelector<HTMLElement>('[data-slot="sidebar-column"]')!;
+  const slot = () => document.querySelector<HTMLElement>('[data-slot="key-hints-slot"]')!;
+  const outer = () => document.querySelector<HTMLElement>('[data-slot="key-hints"]');
+  const content = () => document.querySelector<HTMLElement>('[data-slot="key-hints-content"]')!;
+  const hintsButton = () => button("Keys in the tree");
+  const keyList = () => document.getElementById(hintsButton().getAttribute("aria-controls") ?? "")!;
+  const tree = () => group().querySelector<HTMLElement>('[role="tree"]')!;
+  const tabStopRow = () => tree().querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')!;
+  async function feed(sidebar: number, open: number, buttonHeight: number) {
+    const size = (target: Element) => {
+      if (target === column()) return sidebar;
+      if (target === content()) return open;
+      if (target === hintsButton()) return buttonHeight;
+      throw new Error(`unexpected observed element ${target.tagName}`);
+    };
+    await act(async () => {
+      for (const o of [...observers]) o.callback([...o.targets].map((target) => ({ target, borderBoxSize: [{ blockSize: size(target), inlineSize: 240 }] })) as never, o as never);
+    });
+  }
+  async function shown(open = true) {
+    const view = await mount({ hints: { min: MIN.compact, open } });
+    await feed(...COMPACT);
+    return view;
+  }
+  const shapeOf = (icon: typeof ArrowDown01Icon) => icon.map(([, attributes]) => String((attributes as { d?: string }).d));
+  const chevron = () => [...hintsButton().querySelectorAll("svg")].map((svg) => [...svg.children].map((c) => c.getAttribute("d") ?? ""));
+  const describedTexts = () => describedText(tree());
+
+  test("(1) the open form renders in the slot and shows the 13 D20 texts in table order; each key name is its own kbd", async () => {
+    await shown();
+    expect(hintsButton().getAttribute("aria-expanded")).toBe("true");
+    const items = [...keyList().children];
+    expect(items.map((e) => e.tagName)).toEqual(Array.from({ length: 12 }, (_, i) => (i % 2 === 0 ? "DT" : "DD")));
+    expect([text(hintsButton()), ...items.map((e) => text(e))]).toEqual(TEXTS);
+    const kbds = [...content().querySelectorAll("kbd")];
+    expect(kbds.map((k) => text(k))).toEqual(["Up", "Down", "Right", "Left", "Home", "End", "Enter", "Shift+F10", "Menu key"]);
+    // The ", " between two key names is a plain text node.
+    const parts = (dt: Element) => [...dt.childNodes].map((n) => (n.nodeType === 3 ? n.textContent : (n as Element).tagName));
+    const expected = (keys: string) => keys.split(", ").flatMap((_, i) => (i === 0 ? ["KBD"] : [", ", "KBD"]));
+    expect([...keyList().querySelectorAll("dt")].map(parts)).toEqual(TEXTS.filter((_, i) => i % 2 === 1).map(expected));
+  });
+
+  test("(2) the panel exists only while the tree exists", async () => {
+    const none = async (listed: unknown) => {
+      await mount({ hints: { min: MIN.compact }, listed });
+      expect(outer()).toBeNull();
+      for (const unmount of roots.splice(0)) await unmount();
+    };
+    await none(null);
+    await none({ requestId: fixtureId(30), state: "failed", code: "DEADLINE" });
+    await none({ requestId: fixtureId(30), state: "failed", code: "TRUST_REQUIRED" });
+    await none(reviewed({ rows: [planRow({ rowId: fixtureId(0x400), path: "a" }), planRow({ rowId: fixtureId(0x401), path: "a/b", depth: 1, parentRowId: fixtureId(0x499) })] }));
+    await none(reviewed({ rows: [] }));
+    // A closed group.
+    await mount({ hints: { min: MIN.compact } });
+    expect(outer()).not.toBeNull();
+    await click(group().querySelector<HTMLButtonElement>("h3 button")!);
+    expect(outer()).toBeNull();
+    for (const unmount of roots.splice(0)) await unmount();
+
+    const present = () => {
+      expect(tree()).not.toBeNull();
+      expect(outer() !== null && slot().contains(outer())).toBe(true);
+    };
+    // A failed later list keeps the rows.
+    const later = await mount({ hints: { min: MIN.compact } });
+    await act(async () => later.handle.update!.refreshed());
+    await later.read(fixtureId(5));
+    await answer(later.double.pending("reviewSubmodules"), { requestId: fixtureId(30), state: "failed", code: "DEADLINE" });
+    expect(group().querySelector('[data-slot="list-failure"]')).not.toBeNull();
+    present();
+    for (const unmount of roots.splice(0)) await unmount();
+    // The tree-bound line.
+    const bound = folderRows(256);
+    await mount({ hints: { min: MIN.compact }, listed: reviewed({ rows: [...bound, planRow({ rowId: fixtureId(0x2000), path: `${bound[0]!.path}/n/x`, depth: 1, parentRowId: bound[0]!.rowId })] }) });
+    expect(group().querySelector('[data-slot="tree-bound"]')).not.toBeNull();
+    present();
+    for (const unmount of roots.splice(0)) await unmount();
+    // A virtual tree of 201 rows: 40 submodules under 4 folders each, and one top-level submodule.
+    const rows201 = [...folderRows(40), planRow({ rowId: fixtureId(0x3000), path: "z" })];
+    expect(buildSubmoduleTree({ rows: rows201, found: [], marks: new Map(), closed: new Set() }).state === "tree" && (buildSubmoduleTree({ rows: rows201, found: [], marks: new Map(), closed: new Set() }) as { rows: unknown[] }).rows.length).toBe(201);
+    await mount({ hints: { min: MIN.compact }, listed: reviewed({ rows: rows201 }) });
+    present();
+    for (const unmount of roots.splice(0)) await unmount();
+    // A host line, a refusal line, and a running update.
+    const hosts = await mount({ hints: { min: MIN.compact } });
+    await click(button("Update submodules", group()));
+    await answer(hosts.double.pending("reviewSubmodules"), reviewed({ hosts: [SubmoduleHostLine.parse({ path: "vendor/b", fetch: { kind: "host", name: "git.example.net" }, settings: { kind: "host", name: "github.com" } })] }));
+    expect(group().querySelector('[data-slot="host-line"]')).not.toBeNull();
+    present();
+    for (const unmount of roots.splice(0)) await unmount();
+    const refused = await mount({ hints: { min: MIN.compact } });
+    await click(button("Update submodules", group()));
+    await answer(refused.double.pending("reviewSubmodules"), reviewed({ refusals: [{ code: "UNSUPPORTED_SUBMODULE", reason: "inactive", path: "libs/a", text: "Submodule libs/a is not active.", remedy: null }] }));
+    expect(group().querySelector('[data-slot="refusal-line"]')).not.toBeNull();
+    present();
+    for (const unmount of roots.splice(0)) await unmount();
+    const running = await mount({ hints: { min: MIN.compact } });
+    await click(button("Update submodules", group()));
+    await answer(running.double.pending("reviewSubmodules"), reviewed());
+    expect(running.double.pending("updateSubmodules")).toBeDefined();
+    present();
+  });
+
+  test("(3) the tree takes the button and the key list as its description, with the 13 texts in each form", async () => {
+    await mount({ hints: { min: MIN.compact } });
+    const ids = (tree().getAttribute("aria-describedby") ?? "").split(/\s+/);
+    expect(ids).toEqual([hintsButton().id, keyList().id]);
+    expect(ids.every((id) => id !== "")).toBe(true);
+    // Before the first feed: the hidden form.
+    expect(describedTexts()).toBe(TEXTS.join(" "));
+    await feed(...COMPACT);
+    expect(hintsButton().getAttribute("aria-expanded")).toBe("true");
+    expect(describedTexts()).toBe(TEXTS.join(" "));
+    await click(hintsButton());
+    expect(hintsButton().getAttribute("aria-expanded")).toBe("false");
+    expect(describedTexts()).toBe(TEXTS.join(" "));
+    await feed(720, 623, 28);
+    expect(hintsButton().getAttribute("aria-disabled")).toBe("true");
+    expect(describedTexts()).toBe(TEXTS.join(" "));
+    await feed(189.99, 441, 24);
+    expect(outer()!.style.height).toBe("0px");
+    expect(describedTexts()).toBe(TEXTS.join(" "));
+  });
+
+  test("(4) the heading is a native disclosure button with the open chevron, and the panel's only focusable element", async () => {
+    await shown();
+    const b = hintsButton();
+    expect([b.tagName, b.getAttribute("type"), text(b), b.getAttribute("aria-expanded"), b.getAttribute("aria-controls")]).toEqual(["BUTTON", "button", "Keys in the tree", "true", keyList().id]);
+    expect(b.hasAttribute("disabled")).toBe(false);
+    expect(chevron()).toEqual([shapeOf(ArrowDown01Icon)]);
+    expect([...b.querySelectorAll("svg")].every((svg) => svg.getAttribute("aria-hidden") === "true")).toBe(true);
+    const focusable = [...outer()!.querySelectorAll<HTMLElement>("button, input, select, textarea, a[href], [tabindex]")];
+    expect(focusable).toEqual([b]);
+  });
+
+  test("(5) a click closes the open form and a second click opens it again", async () => {
+    const view = await shown();
+    await click(hintsButton());
+    expect(view.hintCalls).toEqual([false]);
+    expect(hintsButton().getAttribute("aria-expanded")).toBe("false");
+    expect(chevron()).toEqual([shapeOf(ArrowRight01Icon)]);
+    expect(keyList().style.visibility).toBe("hidden");
+    expect(outer()!.style.height).toBe(`${21 + COMPACT[2]}px`);
+    expect(outer()!.style.overflow).toBe("hidden");
+    await click(hintsButton());
+    expect(view.hintCalls).toEqual([false, true]);
+    expect(hintsButton().getAttribute("aria-expanded")).toBe("true");
+    expect(chevron()).toEqual([shapeOf(ArrowDown01Icon)]);
+    expect(keyList().style.visibility).not.toBe("hidden");
+  });
+
+  test("(6) the panel is in the slot, not inside the Submodules group", async () => {
+    await shown();
+    expect(slot().contains(outer())).toBe(true);
+    expect(outer()!.closest('[data-slot="submodules-group"]')).toBeNull();
+  });
+
+  test("(7) without a slot, the panel uses the hidden form inside the group section", async () => {
+    await mount();
+    expect(group().contains(outer())).toBe(true);
+    expect([outer()!.style.height, outer()!.style.overflow, outer()!.style.visibility]).toEqual(["0px", "hidden", "hidden"]);
+    expect(describedTexts()).toBe(TEXTS.join(" "));
+  });
+
+  test("(8) keyHintsForm applies the D20 fit rule", async () => {
+    printOrigin("../../src/frontend/submodules/TreeKeyHints.tsx", import.meta.dir);
+    const { keyHintsForm } = await import("../../src/frontend/submodules/TreeKeyHints");
+    expect(keyHintsForm(728, 441, 45, 58, true)).toBe("open");
+    expect(keyHintsForm(728, 441, 45, 58, false)).toBe("closed");
+    expect(keyHintsForm(720, 623, 49, 70, true)).toBe("noRoom");
+    expect(keyHintsForm(720, 623, 49, 70, false)).toBe("noRoom");
+    expect(keyHintsForm(189.99, 441, 45, 58, true)).toBe("hidden");
+    expect(keyHintsForm(190, 441, 45, 58, true)).toBe("noRoom");
+    // 0.4 × (H − P_open) = 58 exactly at H − P_open = 145.
+    expect(keyHintsForm(586, 441, 45, 58, true)).toBe("open");
+    expect(keyHintsForm(585.99, 441, 45, 58, true)).toBe("noRoom");
+  });
+
+  test("(9) the noRoom form keeps the stored open state, refuses a click, and gives the reason", async () => {
+    const view = await mount({ hints: { min: MIN.comfortable, open: true } });
+    await feed(...COMFORTABLE);
+    const b = hintsButton();
+    expect([b.getAttribute("aria-expanded"), b.getAttribute("aria-disabled"), b.hasAttribute("disabled")]).toEqual(["false", "true", false]);
+    expect(outer()!.style.height).toBe(`${21 + COMFORTABLE[2]}px`);
+    expect(keyList().style.visibility).toBe("hidden");
+    expect(describedText(b)).toBe(NO_ROOM);
+    const reason = document.getElementById(b.getAttribute("aria-describedby")!)!;
+    expect([reason.classList.contains("sr-only"), b.contains(reason), keyList().contains(reason)]).toEqual([true, false, false]);
+    expect(await hoverTooltip(b)).toEqual([NO_ROOM]);
+    expect(describedTexts()).toBe(TEXTS.join(" "));
+    await click(b);
+    expect(view.hintCalls).toEqual([]);
+    expect(b.getAttribute("aria-expanded")).toBe("false");
+    await feed(1020, 623, 28);
+    expect(hintsButton()).toBe(b);
+    expect([b.getAttribute("aria-expanded"), b.hasAttribute("aria-disabled"), b.hasAttribute("aria-describedby")]).toEqual(["true", false, false]);
+    expect(await hoverTooltip(b)).toBeNull();
+    expect(view.hintCalls).toEqual([]);
+  });
+
+  test("(10) the hidden form keeps the content layout, and the panel starts hidden", async () => {
+    await mount({ hints: { min: MIN.compact } });
+    const hidden = () => {
+      expect([outer()!.style.height, outer()!.style.overflow, outer()!.style.visibility]).toEqual(["0px", "hidden", "hidden"]);
+      expect([keyList().id !== "", text(keyList())]).toEqual([true, TEXTS.slice(1).join(" ")]);
+    };
+    hidden();
+    await feed(...COMPACT);
+    expect(outer()!.style.height).toBe(`${COMPACT[1]}px`);
+    await feed(189.99, 441, 24);
+    hidden();
+  });
+
+  test("(11) the closed outer block is 21 DIPs plus the fed button height", async () => {
+    await shown(false);
+    expect(outer()!.style.height).toBe("45px");
+    await feed(728, 441, 31.5);
+    expect(outer()!.style.height).toBe("52.5px");
+  });
+
+  test("(12) the button is the first focusable element after the tree in document order", async () => {
+    await shown();
+    const stops = [...document.querySelectorAll<HTMLElement>("button, input, select, textarea, a[href], [tabindex]")].filter((e) => e.tabIndex >= 0 && !e.hasAttribute("disabled"));
+    expect(stops[stops.indexOf(tabStopRow()) + 1]).toBe(hintsButton());
+  });
+
+  test("(15) when the button loses its box, the focus goes to the tree's Tab-stop row", async () => {
+    const view = await shown();
+    await act(async () => hintsButton().focus());
+    expect(document.activeElement).toBe(hintsButton());
+    await feed(189.99, 441, 24);
+    expect(document.activeElement).toBe(tabStopRow());
+    // The slot unmounts, as at a switch to the constrained profile.
+    await feed(...COMPACT);
+    await act(async () => hintsButton().focus());
+    expect(document.activeElement).toBe(hintsButton());
+    await view.showSlot(false);
+    expect(outer()!.closest('[data-slot="submodules-group"]')).not.toBeNull();
+    expect(document.activeElement).toBe(tabStopRow());
   });
 });

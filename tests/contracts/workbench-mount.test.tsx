@@ -1818,3 +1818,84 @@ describe("history scope and shortcuts", () => {
     }
   });
 });
+
+// tasks.md T163 (14), feature 004 plan D20 "Keys in the tree" ("Place", "Keyboard", "Stored state").
+describe("keys in the tree mount", () => {
+  type Observed = { callback: ResizeObserverCallback; targets: Set<Element> };
+  const observers = new Set<Observed>();
+  class FakeResizeObserver {
+    readonly observed: Observed;
+    constructor(callback: ResizeObserverCallback) {
+      this.observed = { callback, targets: new Set() };
+      observers.add(this.observed);
+    }
+    observe(target: Element) {
+      this.observed.targets.add(target);
+    }
+    unobserve(target: Element) {
+      this.observed.targets.delete(target);
+    }
+    disconnect() {
+      observers.delete(this.observed);
+    }
+  }
+  let savedObserver: unknown;
+  beforeAll(() => {
+    savedObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = FakeResizeObserver as never;
+  });
+  afterAll(() => void (globalThis.ResizeObserver = savedObserver as never));
+
+  const NOTICE = { submoduleNotice: { count: 1, paths: ["libs/a"], filter: "applied" as const } };
+  const ROW = { rowId: fixtureId(0x500), path: "libs/a", pathBytes: btoa("libs/a"), name: "libs/a", depth: 0, parentRowId: null, url: null, head: HEAD, target: HEAD, remotes: [], action: "fetch-checkout", notes: [], refusal: null };
+  const LISTED = () => ({ generation: 1, rows: [ROW], branches: [], programs: [], refusals: [], hosts: [], submoduleReviewToken: crypto.randomUUID() });
+  const slot = () => document.querySelector<HTMLElement>('[data-slot="key-hints-slot"]');
+  const content = () => document.querySelector<HTMLElement>('[data-slot="key-hints-content"]')!;
+  const hintsButton = () => [...document.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Keys in the tree")!;
+  // D20 "Desk heights", 1280×800 compact, 240 DIPs: H 728, P_open 441, button 24.
+  async function feed(sidebar: number, open: number, buttonHeight: number) {
+    await act(async () => {
+      for (const o of [...observers]) {
+        if (!o.targets.has(content())) continue;
+        const size = (target: Element) => (target === slot()!.parentElement ? sidebar : target === content() ? open : target === hintsButton() ? buttonHeight : Number.NaN);
+        o.callback([...o.targets].map((target) => ({ target, borderBoxSize: [{ blockSize: size(target), inlineSize: 240 }] })) as never, o as never);
+      }
+    });
+  }
+  async function listed() {
+    const double = await mount(succeeded(REGISTRATION));
+    await serveHistory(double);
+    await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
+    await resolve(latest(double, "reviewSubmodules"), succeeded(LISTED()));
+    return double;
+  }
+
+  test("(14) at 1280×800 the sidebar column holds the inner column and then the slot; Tab goes from the button to the splitter; a toggle stores keyHintsOpen; the constrained profile has no slot", async () => {
+    await sized(1280, 800, async () => {
+      await listed();
+      expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("wide");
+      const column = slot()!.parentElement!;
+      const [inner, last] = [...column.children];
+      expect([column.children.length, last === slot()]).toEqual([2, true]);
+      const wrapper = document.querySelector('[data-slot="submodules-group"]')!.parentElement!;
+      expect(wrapper.classList.contains("max-h-[40%]")).toBe(true);
+      expect(inner!.contains(wrapper)).toBe(true);
+      expect(inner!.contains(document.querySelector('[data-section="references"] [role="tree"]'))).toBe(true);
+      await feed(728, 441, 24);
+      expect(hintsButton().getAttribute("aria-expanded")).toBe("true");
+      const stops = [...document.querySelectorAll<HTMLElement>("button, input, select, textarea, a[href], [tabindex]")].filter((e) => e.tabIndex >= 0 && !e.hasAttribute("disabled"));
+      expect(stops[stops.indexOf(hintsButton()) + 1]?.getAttribute("aria-label")).toBe("Resize references sidebar");
+      await act(async () => hintsButton().click());
+      await settle();
+      expect(hintsButton().getAttribute("aria-expanded")).toBe("false");
+      expect(JSON.parse(localStorage.getItem("arbareto.preferences.v1")!).keyHintsOpen).toBe(false);
+      expect(readPreferences(localStorage).keyHintsOpen).toBe(false);
+    });
+    for (const unmount of unmounts.splice(0)) await unmount();
+    await sized(720, 480, async () => {
+      await listed();
+      expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
+      expect(slot()).toBeNull();
+    });
+  });
+});

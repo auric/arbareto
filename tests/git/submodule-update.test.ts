@@ -1667,7 +1667,7 @@ describe("kept Git directories whose names differ only in letter case (contract 
       console.log(`OBSERVATION T160 twins: ${JSON.stringify(rows)}`);
       expect({ outcome: outcome(response), refused: rows.filter(([, state]) => state === "refused"), nested: rows.filter(([path]) => path === "p/X").length }).toEqual({ outcome: SUCCEEDED, refused: [], nested: 1 });
     });
-  });
+  }, TIMEOUT_MS);
 });
 
 // ---- Feature 004 FR-112, FR-113: the update reads up to 8 rows at once (T152, contract Δ12 "Update reads", "Parallel reads", "Job close") ----

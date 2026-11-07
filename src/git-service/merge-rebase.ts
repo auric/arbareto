@@ -9,6 +9,7 @@ import { batchCommandArgs, isObjectId, isRefName, type ObjectFormat } from "./co
 import { createCollector, stepUnits } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
+import { readWorktrees, refTarget, revCount, unavailable, unresolvedRefusal, type Refused } from "./ref-facts";
 import type { Head } from "./snapshot";
 import { changedRefs } from "./sync";
 import { pushRecordArgs } from "./sync-commands";
@@ -18,7 +19,7 @@ import { indexState, listRefs, readOut, refKey, refText, remoteList } from "./sy
 import { parseMaybeBool, type ConfigEntry } from "./trust";
 import { forceNoteCountArgs, headIsAncestorArgs, heldCountArgs, mergeArgs, mergeCountsArgs, movedCountArgs, rebaseOntoArgs, rebaseStatusArgs, rebaseWalkArgs, rewrittenCountArgs } from "./workbench-commands";
 import { parseRebaseWalk, parseTrackedStatus, type WalkCommit } from "./workbench-parsers";
-import { conclude, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, unresolvedRefusal, type Common, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
+import { conclude, registerWorkbenchAction, type Common, type Observation, type PayloadOf, type WorkbenchRun } from "./workbench-review";
 
 export type MergeRebasePayload = PayloadOf<"merge" | "rebase">;
 type MergePayload = PayloadOf<"merge">;

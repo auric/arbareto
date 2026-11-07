@@ -95,6 +95,11 @@ export const SYNC_UNAVAILABLE_REASONS = [
   // Feature 010 contract Δ9: Abort and Continue of a cherry-pick or a revert.
   "nothing-to-commit",
   "sequence",
+  // Feature 011 contract Δ9: the remote branch delete.
+  "default-branch",
+  "default-unknown",
+  "no-remote-branch",
+  "not-upstream",
 ] as const;
 export type SyncUnavailableReason = (typeof SYNC_UNAVAILABLE_REASONS)[number];
 export const PUSH_REJECTED_REASONS = ["rejected", "stale-lease", "remote-rejected", "remote-failure"] as const;

@@ -73,18 +73,22 @@ export function createFetchParser(objectFormat: ObjectFormat) {
 
 // ---- Push porcelain (git-push(1) OUTPUT, transport.c `print_ref_status`) ----
 
-export type PushStatus = "pushed" | "forced" | "created" | "up-to-date" | "rejected" | "remote-rejected" | "remote-failure" | "none";
+export type PushStatus = "pushed" | "forced" | "created" | "up-to-date" | "rejected" | "remote-rejected" | "remote-failure" | "none" | "deleted";
 export interface PushLine {
   status: PushStatus;
   // Display only (FR-015).
   reasonText: string | null;
+  // Feature 011 plan.md D5: the line names the `alias` field. transport.c `print_ref_status` prints the peer ref, which remote.c `alloc_delete_ref` names `(delete)`.
+  alias?: true;
 }
 
+// transport.c `print_ok_ref_status` prints `-` only for a deletion (feature 011 research.md R3).
 const PUSHED: ReadonlyMap<string, PushStatus> = new Map([
   [" ", "pushed"],
   ["+", "forced"],
   ["*", "created"],
   ["=", "up-to-date"],
+  ["-", "deleted"],
 ]);
 const REFUSED: ReadonlyMap<string, PushStatus> = new Map([
   ["[rejected]", "rejected"],
@@ -104,8 +108,9 @@ function pushLine(flag: string, rest: string): PushLine | null {
   return status === undefined ? null : { status, reasonText: tail === "" ? null : tail.slice(2, -1) };
 }
 
-// `refspec` is `<from>:<to>` as the push argv holds it. Exactly one status line must carry it.
-export function parsePushPorcelain(stdout: Uint8Array, refspec: string, exitCode: number): PushLine | null {
+// `refspec` is `<from>:<to>` as the push argv holds it. Exactly one status line must carry it or `alias`.
+// Feature 011 plan.md D5: a delete passes `:<dst>` and the alias `(delete):<dst>`.
+export function parsePushPorcelain(stdout: Uint8Array, refspec: string, exitCode: number, alias?: string): PushLine | null {
   const text = utf8.decode(stdout);
   if (text !== "" && !text.endsWith("\n")) return null;
   let found: PushLine | null = null;
@@ -115,10 +120,11 @@ export function parsePushPorcelain(stdout: Uint8Array, refspec: string, exitCode
     if (line === "Done" || line.startsWith("To ")) continue;
     const m = STATUS_LINE.exec(line);
     if (!m) unknown = true;
-    else if (m[2] === refspec) {
+    else if (m[2] === refspec || (alias !== undefined && m[2] === alias)) {
       matches++;
       found = pushLine(m[1]!, m[3]!);
       if (!found) unknown = true;
+      else if (m[2] !== refspec) found.alias = true;
     }
   }
   if (matches > 1) return null;
@@ -134,6 +140,50 @@ export function parsePushUrls(stdout: Uint8Array): { url: string } | { reason: "
   const urls = text.slice(0, -1).split("\n");
   if (urls.includes("")) return null;
   return urls.length === 1 ? { url: urls[0]! } : { reason: "push-urls" };
+}
+
+// Feature 011 plan.md D5: `symbolic-ref -q` prints one `refs/` line. The result is a byte string (`latin1`), as `refKey` gives.
+export function parseSymref(stdout: Uint8Array): string | null {
+  const text = Buffer.from(stdout).toString("latin1");
+  return text.startsWith("refs/") && text.indexOf("\n") === text.length - 1 ? text.slice(0, -1) : null;
+}
+
+// Feature 011 plan.md D5: `ls-remote` lines `<oid> TAB <ref> LF`. Each `ref` is a byte string (`latin1`).
+export function parseLsRemote(stdout: Uint8Array, objectFormat: ObjectFormat): { objectId: string; ref: string }[] | null {
+  const text = Buffer.from(stdout).toString("latin1");
+  if (text === "") return [];
+  if (!text.endsWith("\n")) return null;
+  const lines: { objectId: string; ref: string }[] = [];
+  for (const line of text.slice(0, -1).split("\n")) {
+    const fields = line.split("\t");
+    if (fields.length !== 2 || !isObjectId(fields[0]!, objectFormat) || !fields[1]!.startsWith("refs/")) return null;
+    lines.push({ objectId: fields[0]!, ref: fields[1]! });
+  }
+  return lines;
+}
+
+// remote.c `query_refspecs` and refspec.c `match_name_with_pattern`: the first fetch refspec of `remote` whose source matches `dst` names the tracking ref.
+// A matching negative refspec names none (remote.c `omit_name_by_refspec`). Git's push updates this ref (transport.c `transport_update_tracking_ref`).
+export function trackingOf(entries: readonly ConfigValue[], remote: string, dst: string): string | null {
+  const specs = entries.filter((e) => e.key === `remote.${remote}.fetch` && e.value !== null).map((e) => e.value!);
+  const match = (src: string, dstPattern: string | null): string | null => {
+    const star = src.indexOf("*");
+    if (star < 0) return src === dst ? dstPattern : null;
+    const prefix = src.slice(0, star);
+    const suffix = src.slice(star + 1);
+    if (dst.length < prefix.length + suffix.length || !dst.startsWith(prefix) || !dst.endsWith(suffix)) return null;
+    return dstPattern === null ? "" : dstPattern.replace("*", dst.slice(prefix.length, dst.length - suffix.length));
+  };
+  if (specs.some((s) => s.startsWith("^") && match(s.slice(1), null) !== null)) return null;
+  for (const spec of specs) {
+    if (spec.startsWith("^")) continue;
+    const body = spec.startsWith("+") ? spec.slice(1) : spec;
+    const colon = body.indexOf(":");
+    if (colon < 0 || colon === body.length - 1) continue;
+    const found = match(body.slice(0, colon), body.slice(colon + 1));
+    if (found !== null) return found;
+  }
+  return null;
 }
 
 // ---- Tracking records (contract Δ3 `readTracking`, data-model §1) ----

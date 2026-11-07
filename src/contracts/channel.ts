@@ -876,8 +876,8 @@ export const ProcessReply = z.xor([
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
 
-// Feature 003 contract Δ3 `reviewSync`: the nine actions.
-export const SYNC_ACTIONS = ["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip"] as const;
+// Feature 003 contract Δ3 `reviewSync`: the nine actions. Feature 011 contract Δ1 adds `delete-remote-branch`.
+export const SYNC_ACTIONS = ["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip", "delete-remote-branch"] as const;
 export const SyncAction = z.enum(SYNC_ACTIONS);
 // Feature 004 contract Δ3 and feature 005 contract Δ3 `reviewWorkbench`: the actions.
 export const WORKBENCH_ACTIONS = [

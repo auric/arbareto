@@ -84,10 +84,46 @@ export function fetchArgs(remote: string): string[] {
 }
 
 // Plan.md D4 and D5. `lease` is the expected OID of `dst`. Without a lease, the push never forces.
-export function pushArgs(remote: string, branch: string, dst: string, lease: string | null, objectFormat: ObjectFormat): string[] {
+// Feature 011 plan.md D5: a null `branch` deletes `dst`. Without the lease Git deletes a moved or an absent branch (research.md R2 P2, P11).
+export function pushArgs(remote: string, branch: string | null, dst: string, lease: string | null, objectFormat: ObjectFormat): string[] {
+  if (branch === null && lease === null) throw new TypeError("delete without lease refused");
   const args = [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags"];
   if (lease !== null) args.push(`--force-with-lease=${ref(dst)}:${oid(lease, objectFormat)}`);
-  return [...args, "--", item(remote), `${branchRef(branch)}:${ref(dst)}`];
+  return [...args, "--", item(remote), `${branch === null ? "" : branchRef(branch)}:${ref(dst)}`];
+}
+
+// Feature 011 plan.md D4 read 6: the local symref of the remote default branch. No read contacts the remote.
+export function remoteHeadArgs(remote: string): string[] {
+  return read("symbolic-ref", "-q", ref(`refs/remotes/${item(remote)}/HEAD`));
+}
+
+// Feature 011 plan.md D4 read 10: the commits of `tips` that no other branch, tag, or remote-tracking ref holds.
+// Research.md R2 P14: `--exclude` before `--remotes` takes the name without `refs/remotes/`. Ref names hold no glob character (git-check-ref-format(1)).
+function onlyTips(count: string, tips: readonly string[], branch: string | null, trackingShort: string, objectFormat: ObjectFormat): string[] {
+  if (tips.length === 0) throw new TypeError("tips refused");
+  ref(`refs/remotes/${trackingShort}`);
+  if (branch !== null) branchRef(branch);
+  return read("rev-list", count, ...tips.map((tip) => oid(tip, objectFormat)), "--not", ...(branch === null ? [] : [`--exclude=${branch}`]), "--branches", "--tags", `--exclude=${trackingShort}`, "--remotes");
+}
+
+export const onlyTipsCountArgs = (tips: readonly string[], branch: string | null, trackingShort: string, objectFormat: ObjectFormat): string[] => onlyTips("--count", tips, branch, trackingShort, objectFormat);
+
+export const onlyTipsListArgs = (tips: readonly string[], branch: string | null, trackingShort: string, objectFormat: ObjectFormat): string[] => onlyTips(`--max-count=${SYNC_LEASE_COMMITS}`, tips, branch, trackingShort, objectFormat);
+
+// Feature 011 plan.md D4 read 9.
+export function fetchUrlArgs(remote: string): string[] {
+  return read("remote", "get-url", "--all", "--", item(remote));
+}
+
+// Feature 011 plan.md D8: the gone check of a stale lease. git-ls-remote(1) `--exit-code` exits 2 when no ref matches.
+export function lsRemoteArgs(remote: string, dst: string): string[] {
+  return [L, "ls-remote", "--exit-code", "--", item(remote), ref(dst)];
+}
+
+// Feature 011 plan.md D8: the removal of a stale tracking ref binds the reviewed object ID (git-update-ref(1) `-d`).
+export function trackingDeleteArgs(trackingRef: string, expect: string, objectFormat: ObjectFormat): string[] {
+  if (!ref(trackingRef).startsWith("refs/remotes/")) throw new TypeError("ref name refused");
+  return [L, "update-ref", "--no-deref", "-d", trackingRef, oid(expect, objectFormat)];
 }
 
 // Contract Δ3 Set upstream: the values that transport.c `set_upstreams` writes for `push --set-upstream`, in the order of `install_branch_config`.

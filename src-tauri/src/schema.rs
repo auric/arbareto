@@ -421,7 +421,9 @@ pub fn progress(value: &Value) -> bool {
                 | P::Reset
                 | P::Tag
                 | P::CherryPick
-                | P::RevertCommit,
+                | P::RevertCommit
+                // Feature 011 contract Δ2.
+                | P::SyncDeleteLocal,
             ) => Some(&[]),
             _ => None,
         };
@@ -2106,6 +2108,8 @@ mod tests {
             "abort",
             "continue",
             "skip",
+            // Feature 011 contract Δ6.
+            "delete-remote-branch",
         ] {
             assert!(
                 started(json!({ "kind": "sync", "action": action })),
@@ -2236,6 +2240,8 @@ mod tests {
             "tag",
             "cherry-pick",
             "revert-commit",
+            // Feature 011 contract Δ2.
+            "sync-delete-local",
         ];
         for phase in bare {
             assert!(progress(&event(phase, json!({}))), "{phase}");

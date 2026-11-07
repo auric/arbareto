@@ -124,6 +124,15 @@ describe("force push with lease (FR-024, FR-025)", () => {
     expect(double.count("sync")).toBe(1);
   });
 
+  test("the modal groups the digits of a large commit count", async () => {
+    const { double } = await rejected();
+    await click(button("Force push with lease…", band()));
+    await answer(double.pending("reviewSync"), succeeded({ action: "force-push", plan: { remotes: ["origin"], destination: DESTINATION, lease: { ...LEASE, count: 1234 } }, syncReviewToken: fixtureId(0x105) }));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(text(dialog)).toContain("It removes 1,234 commits from the remote branch:");
+    expect(text(dialog)).toContain("and 1,231 more commits");
+  });
+
   test("Cancel starts no push; the confirm button starts the reviewed force push", async () => {
     const first = await confirm();
     await click(button("Cancel", first.dialog));

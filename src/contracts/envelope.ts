@@ -222,6 +222,11 @@ const RemoteName = Text.min(1);
 const SyncMode = z.enum(["rebase", "merge"]);
 // The service checks `refs/heads/<branch>` with `isRefName`.
 const PushDestinationChoice = z.strictObject({ remote: RemoteName, branch: Text.min(1), setUpstream: z.boolean() }).meta({ title: "PushDestinationChoice" });
+// Feature 004 contract Δ3: `<ref>` is a full ref name from the review. Data-model §1: a branch is under `refs/heads/` or `refs/remotes/`.
+const refUnder = (...prefixes: string[]) => Text.refine((ref) => prefixes.some((prefix) => ref.length > prefix.length && ref.startsWith(prefix)));
+const LocalRef = refUnder("refs/heads/");
+const RemoteRef = refUnder("refs/remotes/");
+const BranchRef = refUnder("refs/heads/", "refs/remotes/");
 const ReviewSyncPayload = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("fetch"), remote: RemoteName.optional() }).meta({ title: "ReviewFetch" }),
   z.strictObject({ action: z.literal("fetch-all") }).meta({ title: "ReviewFetchAll" }),
@@ -232,6 +237,8 @@ const ReviewSyncPayload = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("abort") }).meta({ title: "ReviewAbort" }),
   z.strictObject({ action: z.literal("continue") }).meta({ title: "ReviewContinue" }),
   z.strictObject({ action: z.literal("skip") }).meta({ title: "ReviewSkip" }),
+  // Feature 011 data-model §1: only the combined delete names `local`. The service checks both names with `isRefName`.
+  z.strictObject({ action: z.literal("delete-remote-branch"), ref: RemoteRef, local: LocalRef.optional() }).meta({ title: "ReviewDeleteRemoteBranch" }),
 ]);
 // Contract Δ3 `clone`: 1 to 4,096 UTF-8 bytes and no control character (Unicode category Cc).
 const CloneUrl = z
@@ -266,11 +273,6 @@ const LaunchPuttygen = op("launchPuttygen", {}, empty());
 const BranchName = Text.min(1)
   .max(BRANCH_NAME_BYTES)
   .refine((name) => new TextEncoder().encode(name).length <= BRANCH_NAME_BYTES);
-// Contract Δ3: `<ref>` is a full ref name from the review. Data-model §1: a branch is under `refs/heads/` or `refs/remotes/`.
-const refUnder = (...prefixes: string[]) => Text.refine((ref) => prefixes.some((prefix) => ref.length > prefix.length && ref.startsWith(prefix)));
-const LocalRef = refUnder("refs/heads/");
-const RemoteRef = refUnder("refs/remotes/");
-const BranchRef = refUnder("refs/heads/", "refs/remotes/");
 // Contract Δ3 `choose-side` and `mergetool` name an entry of the shown snapshot.
 const shownEntry = { snapshotId: Identifier, entryId: Identifier };
 // Contract Δ5 "Config changes per Save". It is no output bound, so `limits.ts` does not list it.
@@ -1302,7 +1304,8 @@ export const PushDestination = z
     setUpstream: z.boolean(),
     // Contract Δ3 Set upstream: the write of `branch.<name>.rebase` applies. Only with `setUpstream`.
     upstreamRebase: z.boolean(),
-    source: z.enum(["remote-push-refspec", "push-default-upstream", "push-default-branch", "push-default-triangular", "panel"]),
+    // Feature 011 contract Δ3: a remote branch delete takes its destination from the remote-tracking ref (`tracking-ref`).
+    source: z.enum(["remote-push-refspec", "push-default-upstream", "push-default-branch", "push-default-triangular", "panel", "tracking-ref"]),
   })
   .refine((d) => d.setUpstream || !d.upstreamRebase)
   .meta({ title: "PushDestination" });
@@ -1329,6 +1332,8 @@ const NeedsDestination = z
 // Feature 010 contract Δ3: Abort and Continue also act on a stopped cherry-pick or revert.
 const STOPPED_STATES = ["merging", "rebasing", "cherry-picking", "reverting"] as const;
 const PICK_STOPS: readonly string[] = ["cherry-picking", "reverting"];
+// Feature 011 data-model §6: the WORKBENCH_UNAVAILABLE reasons of the local branch in a combined delete review.
+const DELETE_LOCAL_REASONS = ["current-branch", "other-worktree", "head-unresolved", "config-in-include"] as const satisfies readonly (typeof WORKBENCH_UNAVAILABLE_REASONS)[number][];
 // Data-model §2: the bound values for display.
 export const SyncPlan = z
   .strictObject({
@@ -1341,6 +1346,8 @@ export const SyncPlan = z
     // Contract Δ3 read 8. `subject` is null for a commit object above `HISTORY_COMMIT_OBJECT_BYTES`.
     skippedCommit: z.strictObject({ objectId: ObjectId, subject: z.string().nullable() }).meta({ title: "SkippedCommit" }).optional(),
     needsDestination: NeedsDestination.optional(),
+    // Feature 011 data-model §3: the local branch of the combined delete.
+    local: z.strictObject({ ref: Text.min(1), oid: ObjectId, reflogKeeps: z.boolean() }).meta({ title: "PlanLocal" }).optional(),
   })
   .meta({ title: "SyncPlan" });
 // Contract Δ3 `reviewSync`: a push without a destination gives `needsDestination` and no token.
@@ -1353,11 +1360,26 @@ export const ReviewSyncResult = z
         (r) =>
           (r.syncReviewToken === undefined) === (r.plan?.needsDestination !== undefined) &&
           (r.plan?.needsDestination === undefined || r.action === "push") &&
-          (r.plan?.skippedCommit !== undefined) === (r.action === "skip"),
+          (r.plan?.skippedCommit !== undefined) === (r.action === "skip") &&
+          // Feature 011 contract Δ3: a remote branch delete names its destination and its lease. Only that action names `local`.
+          (r.action !== "delete-remote-branch" || (r.plan?.destination !== undefined && r.plan?.lease !== undefined)) &&
+          (r.plan?.local === undefined || r.action === "delete-remote-branch"),
       )
       .meta({ title: "SyncReviewed" }),
     // `remedy`: the terminal command of a `rebase-exec` refusal.
-    z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional(), remedy: SyncRemedy.optional() }).meta({ title: "SyncRefused" }),
+    // Feature 011 contract Δ3: the combined delete refuses with a local branch reason. `heldElsewhere` names the worktree of two of them.
+    z
+      .strictObject({
+        reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS, ...DELETE_LOCAL_REASONS]).optional(),
+        unmerged: Count.optional(),
+        remedy: SyncRemedy.optional(),
+        worktree: ChannelPath.optional(),
+        // Feature 011 contract Δ3: the remote that the review resolved, as `git remote` names it. The texts X13 and X14 name it.
+        remote: RemoteName.optional(),
+      })
+      .refine((r) => r.worktree === undefined || r.reason === "other-worktree" || r.reason === "head-unresolved")
+      .refine((r) => (r.remote !== undefined) === (r.reason === "default-branch" || r.reason === "default-unknown"))
+      .meta({ title: "SyncRefused" }),
   ])
   .meta({ title: "ReviewSyncResult" });
 
@@ -1384,7 +1406,8 @@ export const FetchResult = z
 // Data-model §5. `reasonText` is display text only (FR-015).
 export const PushResult = z
   .strictObject({
-    status: z.enum(["pushed", "forced", "created", "up-to-date", "rejected", "remote-rejected", "remote-failure", "none"]),
+    // Feature 011 contract Δ3: `deleted` is the git-push(1) flag `-`.
+    status: z.enum(["pushed", "forced", "created", "up-to-date", "rejected", "remote-rejected", "remote-failure", "none", "deleted"]),
     oldObjectId: ObjectId.nullable(),
     newObjectId: ObjectId.nullable(),
     reasonText: z.string().nullable(),
@@ -1407,7 +1430,7 @@ export const Integration = z
   ])
   .meta({ title: "Integration" });
 const FETCHING: readonly string[] = ["fetch", "fetch-all", "pull"];
-const PUSHING: readonly string[] = ["push", "force-push"];
+const PUSHING: readonly string[] = ["push", "force-push", "delete-remote-branch"];
 const INTEGRATING: readonly string[] = ["pull", "integrate", "abort", "continue", "skip"];
 // Contract Δ3 "Results and states": the `SYNC_UNAVAILABLE` reasons that a pull or integrate result holds after the fetch or the count.
 const PULL_REFUSAL_REASONS = ["ff-only", "interactive-rebase", "upstream-gone"] as const;
@@ -1429,10 +1452,15 @@ export const SyncResult = z
     path: ChannelPath.optional(),
     // Data-model §11: the service holds a connect target for this operation.
     connectTarget: z.literal(true).optional(),
+    // Feature 011 data-model §4: `remoteGone` marks the stale ref that the gone recovery removed.
+    // `localNotDeleted` marks a local write that did not complete after the remote part.
+    remoteGone: z.literal(true).optional(),
+    localNotDeleted: z.literal(true).optional(),
   })
   .refine(
     (r) =>
       (r.fetch === undefined || FETCHING.includes(r.action)) &&
+      ((r.remoteGone === undefined && r.localNotDeleted === undefined) || r.action === "delete-remote-branch") &&
       (r.push === undefined || PUSHING.includes(r.action)) &&
       (r.integration === undefined || INTEGRATING.includes(r.action)) &&
       ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate") &&

@@ -2175,3 +2175,59 @@ describe("nested read window (004 FR-112)", () => {
     }, 1);
   }, 20 * 60_000);
 });
+
+// ---- Feature 004 T145: the stderr bytes of a 1,024-row review ----
+
+describe("review stderr bytes (004 T145, FR-115)", () => {
+  // T145 pass condition, set before the run. No contract channel of the package carries these bytes, so the harness counts them.
+  const STDERR_BOUND_BYTES = 1024 * 1024;
+  const stderrCase = (name: string, fn: () => Promise<void>, minutes: number) => caseTest("T145", name, SHELL, fn, minutes * 60_000);
+  // Sums the stderr chunks of each Git process of the review operation.
+  function expectReview(service: Service, r: SubmoduleReview, label: string, rows: number, marks: Record<string, number>): void {
+    const operationId = r.response.operationId;
+    if (operationId === undefined) throw new Error(`the ${label} review response has no operationId`);
+    const calls = service.runner.calls.filter((c) => c.operationId === operationId);
+    const bytes = calls.reduce((sum, c) => sum + (c.stderr ?? []).reduce((n, chunk) => n + chunk.length, 0), 0);
+    const states: Record<string, number> = {};
+    for (const b of (valuesOf(r.response.result, "branches")[0] ?? []) as { state: string; code?: string }[]) {
+      const key = b.code === undefined ? b.state : `${b.state} ${b.code}`;
+      states[key] = (states[key] ?? 0) + 1;
+    }
+    console.log(`OBSERVATION T145 ${label}: ${calls.length} Git processes, stderr ${bytes} bytes, bound ${STDERR_BOUND_BYTES} bytes, marks ${JSON.stringify(states)}`);
+    expect({ outcome: outcome(r.response), rows: r.rows.length, marks: states, below: bytes < STDERR_BOUND_BYTES }).toEqual({ outcome: SUCCEEDED, rows, marks, below: true });
+  }
+
+  // The packaged SC-019 fixture of tests/windows/submodule-tree-fixture.ts `wideWorld`: no clone, and each `.gitmodules` name equals its path.
+  stderrCase(
+    "1,024 gitlinks at f<i>/s without a clone: the review ends without OUTPUT_LIMIT with less than 1 MiB of stderr",
+    async () => {
+      const paths = Array.from({ length: 1_024 }, (_, i) => `f${String(i).padStart(4, "0")}/s`);
+      const w = countWorld("t145-wide", paths.map((path) => ({ path, name: path })), { clone: false });
+      await withTree(w, "t145-wide", async (service) => expectReview(service, (await reviewedTree(service, w)).r, "1,024 rows at f<i>/s without a clone", 1_024, {}));
+    },
+    15,
+  );
+
+  // The packaged SC-020 twins of 1,024 rows: each clone detached at its gitlink, then each on `main` with `origin/main` as its upstream.
+  stderrCase(
+    "1,024 clean cloned rows, detached and then on main: each review ends without OUTPUT_LIMIT with less than 1 MiB of stderr",
+    async () => {
+      const w = folderWorld("t145-twins", 1_024);
+      // Research R31: the packaged SC-020 budget for 1,024 rows is 190 s. This wait is a test budget.
+      const REVIEW_WAIT_MS = 15 * 60_000;
+      const longReview = async (service: Service, repositoryId: string): Promise<SubmoduleReview> => {
+        const read = await readOk(service, repositoryId);
+        const response = await service.response(service.send("reviewSubmodules", { snapshotId: read.snapshotId }, { repositoryId, repositoryGeneration: read.generation }), REVIEW_WAIT_MS);
+        return { read, response, token: undefined, rows: objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"]), programs: [], refusals: refusalsOf(response.result) };
+      };
+      await withTree(w, "t145-twins", async (service) => {
+        await review();
+        const { repositoryId } = await service.register(w.sup);
+        expectReview(service, await longReview(service, repositoryId), "1,024 detached cloned rows", 1_024, { detached: 1_024 });
+        for (let i = 0; i < 1_024; i++) treeGit(w, join(w.sup, ...countPath(i).split("/")), ["switch", "-q", "main"]);
+        expectReview(service, await longReview(service, repositoryId), "1,024 cloned rows on main", 1_024, { branch: 1_024 });
+      });
+    },
+    40,
+  );
+});

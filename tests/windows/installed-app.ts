@@ -8,7 +8,7 @@ import { basename, isAbsolute, join, sep } from "node:path";
 import tauri from "../../src-tauri/tauri.conf.json";
 import { FIXED_IDENTITY, ownedPath, removedByT043 } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
-import { createSuspended, ownTree, processCreationTime, type ProcessTree } from "../git/win32";
+import { createSuspended, ownTree, processCreationTime, type JobAccounting, type ProcessTree } from "../git/win32";
 
 export type RefusalCode = "ENTRY_INVALID" | "OUTSIDE_LOCALAPPDATA" | "BAD_ROOT" | "ANOTHER_INSTANCE";
 
@@ -238,6 +238,8 @@ export interface OwnedProcess {
   exited: Promise<number>;
   // True when the live process `pid` is in the owned Job, before `stop`.
   holds(pid: number): boolean;
+  // The CPU, process, and peak committed memory totals of the owned Job, before `stop`.
+  accounting(): JobAccounting;
   // Ends the owned tree only.
   stop(): void;
 }
@@ -267,6 +269,10 @@ export function spawnOwned(argv: string[], cwd: string, env: Record<string, stri
     pid: proc.pid,
     exited: proc.exited,
     holds: (pid) => open && tree.holds(pid),
+    accounting() {
+      if (!open) throw new Error("the owned Job is closed");
+      return tree.accounting();
+    },
     stop() {
       if (!open) return;
       open = false;

@@ -1837,7 +1837,8 @@ describe("parallel update reads (004 FR-112, FR-113, contract Δ12 \"Update read
     });
   });
 
-  readsCase("case c: a 1 ms deadline on the config list of d while the first reads of b and c wait moves the mutation to reconciling with DEADLINE; each waiting read runs once more, and no update process starts", async () => {
+  // Contract Δ12 "Job close", note of 2026-11-07: a recorded deadline stops the preflight, so no read that the Job close ended runs again.
+  readsCase("case c: a 1 ms deadline on the config list of d while the first reads of b and c wait moves the mutation to reconciling with DEADLINE; no waiting read runs again, and no update process starts", async () => {
     const w = world();
     await withTree(w, "t152-c", async (service) => {
       await update();
@@ -1861,7 +1862,41 @@ describe("parallel update reads (004 FR-112, FR-113, contract Δ12 \"Update read
         target: exits(isTarget),
         held: ["b", "c"].map((path) => exits((c) => atRow(w, path)(c) && firstRead(c))),
         steps: updateSteps(service, from).length,
-      }).toEqual({ outcome: { state: "failed", code: "DEADLINE" }, reconciling: true, target: [[null, "deadline"]], held: [0, 1].map(() => [[null, null], [0, null]]), steps: 0 });
+      }).toEqual({ outcome: { state: "failed", code: "DEADLINE" }, reconciling: true, target: [[null, "deadline"]], held: [0, 1].map(() => [[null, null]]), steps: 0 });
+    });
+  });
+
+  // Review finding (a): a second start of the first read of b exits 1, so a read that runs again fails row b before row d in row order.
+  // The target is the second HEAD read of d. The first one starts in the same task as the first reads of e to h, which would get the 1 ms deadline too.
+  readsCase("case j: a 1 ms deadline on the symbolic-ref HEAD read of d while the first reads of b and c wait moves the mutation to reconciling with DEADLINE; no waiting read runs again, and no update process starts", async () => {
+    const w = world();
+    await withTree(w, "t152-j", async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, w.sup);
+      const from = service.runner.calls.length;
+      const isTarget = (c: Call) => atRow(w, "d")(c) && cmd(c) === "symbolic-ref -q HEAD";
+      const isB = (c: { arguments: readonly string[] }) => atRow(w, "b")(c) && firstRead(c);
+      let starts = 0;
+      service.runner.inject.exit = (c) => (isB(c) && ++starts === 2 ? 1 : undefined);
+      const release = siblingsDeadline(service, isTarget, ["b", "c"].map((path) => (c: Call) => atRow(w, path)(c) && firstRead(c)));
+      let id = "";
+      try {
+        id = sendUpdate(service, repositoryId, r);
+        await until(() => callsSince(service, from).some((c) => isTarget(c) && c.exit !== undefined), "the deadline of the HEAD read of d", AHEAD_WAIT_MS);
+      } finally {
+        release();
+        service.runner.inject.exit = undefined;
+        if (id !== "") await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS).catch(() => undefined);
+      }
+      const response = await service.response(id, NO_TOTAL_DEADLINE_WAIT_MS);
+      const exits = (match: (c: Call) => boolean) => callsSince(service, from).filter(match).map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]);
+      expect({
+        outcome: outcome(response),
+        reconciling: progressStates(service, id).includes("reconciling"),
+        target: exits(isTarget),
+        held: ["b", "c"].map((path) => exits((c) => atRow(w, path)(c) && firstRead(c))),
+        steps: updateSteps(service, from).length,
+      }).toEqual({ outcome: { state: "failed", code: "DEADLINE" }, reconciling: true, target: [[null, "deadline"]], held: [0, 1].map(() => [[null, null]]), steps: 0 });
     });
   });
 

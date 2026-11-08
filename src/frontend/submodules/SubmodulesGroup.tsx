@@ -20,7 +20,7 @@ import { shortRef } from "../refs/ReferencesSidebar";
 import { countLabel, COUNTS_TOOLTIP } from "../state/tracking";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { ReadsTrustNotice } from "../trust/TrustChip";
-import { buildSubmoduleTree, type TreeRow } from "./submodule-tree";
+import { buildSubmoduleTree, VIRTUAL_MIN, type TreeRow } from "./submodule-tree";
 import { TreeKeyHints } from "./TreeKeyHints";
 
 // Feature 004 spec FR-076 to FR-082, plan D13 and D15 (Submodules group texts), contract Δ12. The 001 review dialog is gone.
@@ -395,8 +395,6 @@ export type SubmodulesGroupProps = {
   hintsMin?: number;
 };
 
-// Plan D20 "Group": plain rows up to this count, as the References tree does.
-const VIRTUAL_MIN = 200;
 // The compact row height (plan.md density table). The measured height of each mounted row replaces it.
 const ROW_HEIGHT = 26;
 

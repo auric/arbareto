@@ -14,9 +14,10 @@ import type { ObserveContext } from "../../src/git-service/hunk-publish";
 import type { RetainedUpdate, UpdateRowRead } from "../../src/git-service/reconcile";
 import { createRegistrations } from "../../src/git-service/registration";
 import { createTrust } from "../../src/git-service/trust";
+import type { RecordedCall } from "./bun-runner";
 import { fixturePath, serviceEnv, useFixtureRoot } from "./fixture-root";
-import { gitPath, underTest, withService } from "./hunk-harness";
-import { caseTest } from "./service-harness";
+import { gitPath, underTest, until, withService } from "./hunk-harness";
+import { caseTest, once, type Service } from "./service-harness";
 import { countPath, flatName, nestedFlat } from "./submodule-count-fixture";
 import { commandOf, gitLocation, insideSubmodule, treeGit } from "./submodule-harness";
 
@@ -334,11 +335,13 @@ describe("parallel reconciliation reads (004 FR-113, contract Δ12 \"Update read
     return peak;
   };
 
-  caseTest("T152", "T152 case h: the reconciliation of 10 rows gives the same observations in row order with 1 and 8 lanes; 8 lanes run at least 2 Git processes at once and one config list in the parent, and a failing read of row 4 gives that failure", ["shell-double"], async () => {
+  const cmd = (c: { arguments: readonly string[] }) => commandOf(c.arguments).join(" ");
+  type Match = (c: { arguments: readonly string[] }) => boolean;
+  // Row p and its 9 nested rows, in the index order of their paths. `observe` runs `observeUpdateRows` in a new operation and gives its Git calls inside the submodules.
+  async function withRows(name: string, body: (rows: { w: ReturnType<typeof nestedFlat>; service: Service; paths: string[]; atRow: (path: string) => Match; observe: (lanes: number) => Promise<{ read: Awaited<ReturnType<Reconcile["observeUpdateRows"]>>; calls: RecordedCall[] }> }) => Promise<void>) {
     const { observeUpdateRows } = (await underTest("reconcile")) as Reconcile;
-    // Row p and its 9 nested rows, in the index order of their paths.
     const nested = Array.from({ length: 9 }, (_, i) => ({ path: countPath(i), name: flatName(i) })).sort((a, b) => (a.path < b.path ? -1 : 1));
-    const w = nestedFlat("t152-reconcile", 9);
+    const w = nestedFlat(name, 9);
     const paths = ["p", ...nested.map((e) => `p/${e.path}`)];
     const parent: UpdateRowRead = { components: ["p"], name: "p", kept: null, parent: null };
     const reads: UpdateRowRead[] = [parent, ...nested.map((e) => ({ components: ["p", ...e.path.split("/")], name: e.name, kept: null, parent }))];
@@ -346,8 +349,7 @@ describe("parallel reconciliation reads (004 FR-113, contract Δ12 \"Update read
       const location = gitLocation(c.arguments);
       return location !== null && relative(join(w.sup, ...path.split("/")), resolve(w.sup, location)) === "";
     };
-    const cmd = (c: { arguments: readonly string[] }) => commandOf(c.arguments).join(" ");
-    await withService({ name: "t152-reconcile", environment: serviceEnv(w.env) }, async (service) => {
+    await withService({ name, environment: serviceEnv(w.env) }, async (service) => {
       const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
       if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
       const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
@@ -359,7 +361,16 @@ describe("parallel reconciliation reads (004 FR-113, contract Δ12 \"Update read
         const operationId = crypto.randomUUID();
         const ctx = { runner: service.runner, trust, workspace, installation: probed.installation, operationId, signal: new AbortController().signal } as unknown as ObserveContext;
         const read = await observeUpdateRows(ctx, reads, lanes);
-        const calls = service.runner.calls.filter((c) => c.operationId === operationId && insideSubmodule(w.sup, c.arguments));
+        return { read, calls: service.runner.calls.filter((c) => c.operationId === operationId && insideSubmodule(w.sup, c.arguments)) };
+      };
+      await body({ w, service, paths, atRow, observe });
+    });
+  }
+
+  caseTest("T152", "T152 case h: the reconciliation of 10 rows gives the same observations in row order with 1 and 8 lanes; 8 lanes run at least 2 Git processes at once and one config list in the parent, and a failing read of row 4 gives that failure", ["shell-double"], async () => {
+    await withRows("t152-reconcile", async ({ w, service, paths, atRow, observe: run }) => {
+      const observe = async (lanes: number) => {
+        const { read, calls } = await run(lanes);
         return { read, peak: peakOf(calls), parentConfig: calls.filter((c) => atRow("p")(c) && cmd(c) === "config list --show-scope --show-origin -z").length };
       };
       const one = await observe(1);
@@ -390,6 +401,87 @@ describe("parallel reconciliation reads (004 FR-113, contract Δ12 \"Update read
         parentConfig: [1, 1],
         failing: { code: "GIT_FAILED" },
       });
+    });
+  }, 5 * 60_000);
+
+  // Contract Δ12 "Parallel reads", Failures: after the first failed row in row order, no later read starts.
+  caseTest("T152", "T152 case k: row p fails at its first read while the first reads of rows 1 to 7 wait; no later reconciliation read starts, and each read ends before the result", ["shell-double"], async () => {
+    await withRows("t152-reconcile-stop", async ({ service, paths, atRow, observe }) => {
+      const { runner } = service;
+      const firstRead = (c: { arguments: readonly string[] }) => cmd(c) === "rev-parse --verify -q HEAD";
+      const isFailing = (c: { arguments: readonly string[] }) => atRow("p")(c) && firstRead(c);
+      const later = paths.slice(1, 8).map(atRow);
+      // Row p gives a HEAD line that is no object ID, so it fails with MALFORMED_GIT_OUTPUT without a process.
+      runner.inject.stdout = (c) => (isFailing(c) ? new TextEncoder().encode("x\n") : undefined);
+      const held = new Set<object>();
+      const heldRows = new Set<number>();
+      const resume = runner.pauseStdout((c) => {
+        if (held.has(c)) return true;
+        const row = later.findIndex((match) => match(c));
+        if (row < 0 || heldRows.has(row) || !firstRead(c)) return false;
+        heldRows.add(row);
+        held.add(c);
+        return true;
+      });
+      let pending: ReturnType<typeof observe> | null = null;
+      let result: Awaited<ReturnType<typeof observe>>;
+      try {
+        pending = observe(8);
+        await until(() => held.size === 7 && runner.calls.some((c) => isFailing(c) && c.exit !== undefined), "the failed read of p while the first reads of rows 1 to 7 wait", 60_000);
+      } finally {
+        resume();
+        runner.inject.stdout = undefined;
+        result = await pending!;
+      }
+      const doneAt = performance.now();
+      const failed = result.calls.filter(isFailing);
+      const failedAt = failed.length === 1 && failed[0]!.durationMs !== undefined ? failed[0]!.at + failed[0]!.durationMs : Number.POSITIVE_INFINITY;
+      expect({
+        read: result.read,
+        failed: failed.length,
+        late: result.calls.filter((c) => c.at > failedAt).map((c) => [gitLocation(c.arguments), cmd(c)]),
+        open: result.calls.filter((c) => c.durationMs === undefined || c.at + c.durationMs > doneAt).length,
+      }).toEqual({ read: { code: "MALFORMED_GIT_OUTPUT" }, failed: 1, late: [], open: 0 });
+    });
+  }, 5 * 60_000);
+
+  // Contract Δ12 "Job close", note of 2026-11-07: a recorded deadline decides before an earlier failed row.
+  // `reconcileUpdate` turns the deadline stop into `reconciliation-read-deadline`, so the update ends `unknown` with DEADLINE, not with the code of row p.
+  caseTest("T152", "T152 case l: row p fails at its first read, and then the held first read of row 3 records a 1 ms deadline: the reconciliation reads end with the deadline stop", ["shell-double"], async () => {
+    await withRows("t152-reconcile-deadline", async ({ service, paths, atRow, observe }) => {
+      const { runner } = service;
+      const firstRead = (c: { arguments: readonly string[] }) => cmd(c) === "rev-parse --verify -q HEAD";
+      const isFailing = (c: { arguments: readonly string[] }) => atRow("p")(c) && firstRead(c);
+      const isTarget = (c: { arguments: readonly string[] }) => atRow(paths[3]!)(c) && firstRead(c);
+      runner.inject.stdout = (c) => (isFailing(c) ? new TextEncoder().encode("x\n") : undefined);
+      // The start hold comes first, so the deadline hook sees the target only after its release.
+      const heldTarget = once(isTarget);
+      const releaseTarget = runner.holdStart(heldTarget);
+      let armed = true;
+      const releaseHook = runner.holdStart((call) => {
+        if (armed && heldTarget(call)) {
+          armed = false;
+          runner.inject.deadlineMs = 1;
+          queueMicrotask(() => void (runner.inject.deadlineMs = null));
+        }
+        return false;
+      });
+      let pending: ReturnType<typeof observe> | null = null;
+      let result: Awaited<ReturnType<typeof observe>>;
+      try {
+        pending = observe(8);
+        await until(() => runner.calls.some((c) => isFailing(c) && c.exit !== undefined) && runner.calls.some(isTarget), "the failed read of p and the held read of row 3", 60_000);
+        releaseTarget();
+        // The held read checks the start holds again in a later microtask. The hook must still be there then.
+        result = await pending;
+      } finally {
+        releaseTarget();
+        releaseHook();
+        runner.inject.stdout = undefined;
+        await pending?.catch(() => undefined);
+      }
+      const exits = (match: Match) => result.calls.filter(match).map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]);
+      expect({ read: result.read, failing: exits(isFailing), target: exits(isTarget) }).toEqual({ read: { stop: "deadline" }, failing: [[0, null]], target: [[null, "deadline"]] });
     });
   }, 5 * 60_000);
 });

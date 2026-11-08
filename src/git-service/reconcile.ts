@@ -470,33 +470,33 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
     return components !== undefined ? { worktree: forms.join(forms.root, ...components) } : r.kept === null ? null : { gitDir: r.kept };
   };
 
-  // Contract Δ12 "Job close": the count of recorded deadline exits, and the reads that run now.
-  let deadlines = 0;
+  // Contract Δ12 "Job close": a recorded deadline stops the reads. After it, no read starts and no read runs again.
+  let deadline = false;
   let deadlineSeen = () => {};
-  let nextDeadline = new Promise<void>((resolve) => (deadlineSeen = resolve));
+  const recorded = new Promise<void>((resolve) => (deadlineSeen = resolve));
   const reading = new Set<Promise<unknown>>();
-  // A read that a Job close ended gets exit code null without `deadline` (contract §6 `exit`). It runs again once for each deadline recorded after its start.
+  // Contract Δ12 "Parallel reads": no read starts after the first failed row in row order.
+  let stopped = false;
+  // A read that a Job close ended gets exit code null without `deadline` (contract §6 `exit`). It waits for the deadline exit, which can come later.
   const git = async (args: string[], maxBytes = DIAGNOSTIC_RETAINED_BYTES_PER_STREAM) => {
-    for (;;) {
-      const before = deadlines;
-      const out = createCollector({ maxBytes });
-      const read = stepOf(ctx, args, out);
-      reading.add(read);
-      const step = await read.finally(() => reading.delete(read));
+    if (deadline) throw new ReadHalt({ stop: "deadline" });
+    if (stopped || ctx.signal.aborted) throw new ReadHalt({ stop: "canceled" });
+    const out = createCollector({ maxBytes });
+    // The read records its deadline before it settles, so a read that waits for `reading` sees the deadline.
+    const read = stepOf(ctx, args, out).then((step) => {
       if (isDeadlineStop(step)) {
-        deadlines++;
+        deadline = true;
         deadlineSeen();
-        nextDeadline = new Promise((resolve) => (deadlineSeen = resolve));
       }
-      if (!("exit" in step)) throw new ReadHalt(step);
-      if (exitKind(step.exit, "read", out) === "jobClosed") {
-        // The deadline exit of the read that closed the Job can come after this exit. That read still runs, so it is in `reading`.
-        if (deadlines === before) await Promise.race([nextDeadline, Promise.allSettled([...reading])]);
-        if (deadlines !== before) continue;
-      }
-      if (out.limited) throw new ReadHalt({ code: "OUTPUT_LIMIT" });
-      return { code: step.exit.exitCode, out: out.take() };
-    }
+      return step;
+    });
+    reading.add(read);
+    const step = await read.finally(() => reading.delete(read));
+    if (!("exit" in step)) throw new ReadHalt(step);
+    if (!deadline && exitKind(step.exit, "read", out) === "jobClosed") await Promise.race([recorded, Promise.allSettled([...reading])]);
+    if (deadline) throw new ReadHalt({ stop: "deadline" });
+    if (out.limited) throw new ReadHalt({ code: "OUTPUT_LIMIT" });
+    return { code: step.exit.exitCode, out: out.take() };
   };
   const line = async (args: string[]) => {
     const r = await git(args);
@@ -573,7 +573,10 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
         row = await started[i]!;
       } catch (error) {
         // The first failure in row order decides. No later read starts, and every running read ends before the result.
+        stopped = true;
         await Promise.allSettled(started);
+        // 001 contract §5 "Deadline outcomes": a recorded deadline decides before an earlier failure, as `firstEnd` does.
+        if (deadline) return { stop: "deadline" };
         throw error;
       }
       start(i + lanes);

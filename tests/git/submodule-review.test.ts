@@ -7,10 +7,17 @@
 import { describe, expect, spyOn } from "bun:test";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES, TRUST_INPUT_BYTES, UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
-import { submoduleConfigListArgs } from "../../src/git-service/commands";
+import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES, SUBMODULE_WORK_PARALLEL, TRUST_INPUT_BYTES, UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
+import { indexEntryArgs, submoduleConfigListArgs } from "../../src/git-service/commands";
 import { redactUrlUserInfo, type SubmoduleAction, type SubmodulePlanRow } from "../../src/contracts/submodules";
 import * as approvalsModule from "../../src/git-service/approvals";
+import { probeGit } from "../../src/git-service/git-installation";
+import { RunnerRefusal, type GitRunner } from "../../src/git-service/git-runner";
+import { captureHead } from "../../src/git-service/history";
+import type { ObserveContext } from "../../src/git-service/hunk-publish";
+import { listingOf } from "../../src/git-service/reconcile";
+import { createRegistrations } from "../../src/git-service/registration";
+import { parseIndexListing } from "../../src/git-service/status";
 import * as trustModule from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, removeTree, serviceEnv, useFixtureRoot } from "./fixture-root";
@@ -1202,7 +1209,13 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
   for (const [label, code, arm] of FAILURES) {
     // Contract §5 "Total unexpected diagnostic output": the 4 MiB bound counts per operation, so each later exit of the review carries `diagnosticLimit`.
     const bound = code === "OUTPUT_LIMIT";
-    const end = bound ? "the --contains read after it, and the review fails OUTPUT_LIMIT" : `gives that row unread ${code}, one --contains read runs after it, and the review succeeds with every row and the other mark`;
+    // Contract Δ12 "Job close", changed 2026-11-07: a mark read deadline ends the review, and no later read starts.
+    const deadline = code === "DEADLINE";
+    const end = bound
+      ? "the --contains read after it, and the review fails OUTPUT_LIMIT"
+      : deadline
+        ? "fails the review with DEADLINE, and no --contains read starts after it"
+        : `gives that row unread ${code}, one --contains read runs after it, and the review succeeds with every row and the other mark`;
     markCase(`${label} on the mark read of one row ${bound ? `carries over to ${end}` : end}`, async () => {
       const name = `t139-${code.toLowerCase().replaceAll("_", "-")}`;
       const w = markWorld(name, { ahead: SPECS.ahead, equal: SPECS.equal });
@@ -1214,7 +1227,9 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
         expect({ outcome: outcome(r.response), rows: r.rows.map((row) => row.path), marks: markByPath(r), contains }).toEqual(
           bound
             ? { outcome: { state: "failed", code }, rows: [], marks: {}, contains: [0] }
-            : { outcome: SUCCEEDED, rows: ["ahead", "equal"], marks: { ahead: SPECS.ahead.want, equal: { state: "unread", ref: "refs/heads/main", code } }, contains: [0] },
+            : deadline
+              ? { outcome: { state: "failed", code }, rows: [], marks: {}, contains: [] }
+              : { outcome: SUCCEEDED, rows: ["ahead", "equal"], marks: { ahead: SPECS.ahead.want, equal: { state: "unread", ref: "refs/heads/main", code } }, contains: [0] },
         );
       });
     });
@@ -1427,7 +1442,8 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
       });
     });
 
-    parallelCase("a 1 ms deadline on the mark read of row 0 gives unread DEADLINE; each held read of three other rows ends with exit code null and runs once more, and the list succeeds", async () => {
+    // Contract Δ12 "Job close", note of 2026-11-07: a recorded deadline stops the review. No read runs again, and no read starts after it.
+    parallelCase("a 1 ms deadline on the mark read of row 0 fails the review with DEADLINE; each held read of three other rows ends with exit code null and runs no second time", async () => {
       const w = world();
       await withTree(w, "t148-mark-deadline", async (service) => {
         const repositoryId = await registered(service, w);
@@ -1438,40 +1454,147 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
         } finally {
           release();
         }
-        const held = ["b", "c", "d"].map((path) => callsSince(service).filter((c) => at(w, path)(c) && firstRead(c)).map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]));
-        const marks = short(pathMarks(response));
-        expect({ outcome: outcome(response), rows: objectsWith<SubmodulePlanRow>(response.result, ["rowId", "action"]).map((row) => row.path), held, a: marks.a }).toEqual({
-          outcome: SUCCEEDED,
-          rows: ROWS,
-          held: [0, 1, 2].map(() => [[null, null], [0, null]]),
-          a: { state: "unread", ref: "refs/heads/main", code: "DEADLINE" },
+        const exits = (path: string, match: (c: Call) => boolean) => callsSince(service).filter((c) => at(w, path)(c) && match(c)).map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]);
+        expect({ outcome: outcome(response), target: exits("a", (c) => isTrackCall(c.arguments)), held: ["b", "c", "d"].map((path) => exits(path, firstRead)) }).toEqual({
+          outcome: { state: "failed", code: "DEADLINE" },
+          target: [[null, "deadline"]],
+          held: [0, 1, 2].map(() => [[null, null]]),
         });
-        expect({ ...marks, a: undefined }).toEqual({ ...markOracle(w, MARKED), a: undefined });
       });
     });
 
-    parallelCase("one recorded deadline closes the Job while 8 reads run: each other read runs again once, and a rerun that ends with exit code null without a new deadline runs no third time", async () => {
+    // Review finding (b): the nested read of row a records its deadline while pass B still has rows k and l to read.
+    parallelCase("a 1 ms deadline on the nested read of row a while the first reads of 7 other rows wait fails the review with DEADLINE; no held read runs again, and no review read starts after the deadline", async () => {
       const w = world();
       const siblings = ["b", "c", "d", "f", "g", "i", "j"];
-      await withTree(w, "t148-rerun-once", async (service) => {
+      await withTree(w, "t148-deadline-first", async (service) => {
         const repositoryId = await registered(service, w);
-        const release = siblingsDeadline(service, (c) => isTrackCall(c.arguments) && at(w, "a")(c), siblings.map((path) => (c: Call) => at(w, path)(c) && firstRead(c)));
-        // The second start of the first read of b ends with exit code null, and no read records a second deadline.
-        let starts = 0;
-        service.runner.inject.exit = (c) => (at(w, "b")(c) && firstRead(c) && ++starts === 2 ? null : undefined);
+        const isTarget = (c: Call) => at(w, "a")(c) && commandOf(c.arguments).join(" ") === "cat-file --batch-check";
+        const release = siblingsDeadline(service, isTarget, siblings.map((path) => (c: Call) => at(w, path)(c) && firstRead(c)));
+        let requestId = "";
         let response: ServiceResponse;
         try {
-          response = await service.response(await sendReview(service, repositoryId), NO_TOTAL_DEADLINE_WAIT_MS);
+          requestId = await sendReview(service, repositoryId);
+          response = await service.response(requestId, NO_TOTAL_DEADLINE_WAIT_MS);
         } finally {
           release();
         }
-        const exits = (path: string, match: (c: Call) => boolean) => callsSince(service).filter((c) => at(w, path)(c) && match(c)).map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]);
-        // Contract §6 `exit`: the read of b has no exit code, so its row fails with GIT_FAILED.
-        expect({ outcome: outcome(response), target: exits("a", (c) => isTrackCall(c.arguments)), held: Object.fromEntries(siblings.map((path) => [path, exits(path, firstRead)])) }).toEqual({
-          outcome: { state: "failed", code: "GIT_FAILED" },
+        const calls = callsOf(service, await service.operationId(requestId));
+        const target = calls.filter(isTarget);
+        const exits = (path: string, match: (c: Call) => boolean) => calls.filter((c) => at(w, path)(c) && match(c)).map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]);
+        // The service records the deadline when the exit of the target arrives.
+        const recordedAt = target.length === 1 && target[0]!.durationMs !== undefined ? target[0]!.at + target[0]!.durationMs : Number.POSITIVE_INFINITY;
+        expect({
+          outcome: outcome(response),
+          target: target.map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]),
+          held: Object.fromEntries(siblings.map((path) => [path, exits(path, firstRead)])),
+          late: calls.filter((c) => c.at > recordedAt).map((c) => [gitLocation(c.arguments), commandOf(c.arguments).join(" ")]),
+        }).toEqual({
+          outcome: { state: "failed", code: "DEADLINE" },
           target: [[null, "deadline"]],
-          held: Object.fromEntries(siblings.map((path) => [path, [[null, null], path === "b" ? [null, null] : [0, null]]])),
+          held: Object.fromEntries(siblings.map((path) => [path, [[null, null]]])),
+          late: [],
         });
+      });
+    });
+
+    // Contract Δ12 "Job close", note of 2026-11-07: a recorded deadline decides before an earlier failed row.
+    // Row a: `rev-parse --verify` exits 1 and HEAD names a branch, so `show-ref --exists` decides. It exits 0, so row a fails with GIT_FAILED.
+    parallelCase("row a fails with GIT_FAILED after an exit 1, and then the held symbolic-ref read of row c records a 1 ms deadline: the review fails with DEADLINE", async () => {
+      const w = world();
+      await withTree(w, "t148-deadline-after-failure", async (service) => {
+        const { runner } = service;
+        const repositoryId = await registered(service, w);
+        const from = runner.calls.length;
+        const cmd = (c: { arguments: readonly string[] }) => commandOf(c.arguments).join(" ");
+        const isFirstOfA = (c: { arguments: readonly string[] }) => at(w, "a")(c) && firstRead(c);
+        const isExistsOfA = (c: { arguments: readonly string[] }) => at(w, "a")(c) && commandOf(c.arguments)[0] === "show-ref";
+        const isTarget = (c: { arguments: readonly string[] }) => at(w, "c")(c) && cmd(c) === "symbolic-ref -q HEAD";
+        let failedOnce = false;
+        runner.inject.exit = (c) => (!failedOnce && isFirstOfA(c) ? ((failedOnce = true), 1) : undefined);
+        // The start holds come first, so the deadline hook sees the target only after its release.
+        const heldTarget = once(isTarget);
+        const releaseTarget = runner.holdStart(heldTarget);
+        const releaseExists = runner.holdStart(once(isExistsOfA));
+        let armed = true;
+        const releaseHook = runner.holdStart((call) => {
+          if (armed && heldTarget(call)) {
+            armed = false;
+            runner.inject.deadlineMs = 1;
+            queueMicrotask(() => void (runner.inject.deadlineMs = null));
+          }
+          return false;
+        });
+        const since = () => callsSince(service, from);
+        let response: ServiceResponse;
+        try {
+          const requestId = await sendReview(service, repositoryId);
+          await until(() => since().some(isTarget) && since().some(isExistsOfA), "the held reads of rows a and c", 60_000);
+          releaseExists();
+          await until(() => since().some((c) => isExistsOfA(c) && c.exit !== undefined), "the show-ref read of row a", 60_000);
+          releaseTarget();
+          response = await service.response(requestId, NO_TOTAL_DEADLINE_WAIT_MS);
+        } finally {
+          releaseExists();
+          releaseTarget();
+          releaseHook();
+          runner.inject.exit = undefined;
+        }
+        const exits = (match: (c: Call) => boolean) => since().filter(match).map((c) => [c.exit?.exitCode ?? null, c.exit?.deadline ?? null]);
+        expect({ outcome: outcome(response), first: exits(isFirstOfA), exists: exits(isExistsOfA), target: exits(isTarget) }).toEqual({
+          outcome: { state: "failed", code: "DEADLINE" },
+          first: [[1, null]],
+          exists: [[0, null]],
+          target: [[null, "deadline"]],
+        });
+      });
+    });
+
+    // Contract Δ12 "Job close", note of 2026-11-07, and 001 §5 "Deadline outcomes": a walk deadline records a deadline as a Git process deadline does.
+    // A runner wrapper answers the hooks walk of the program listing of row a with a refusal, then the one of row c with the walk deadline.
+    parallelCase("the program listing walk of row a is refused, and then the listing walk of row c ends with the walk deadline: the observation ends with the deadline stop", async () => {
+      const w = world();
+      await withTree(w, "t148-walk-deadline", async (service) => {
+        const { createSubmoduleReviewer } = (await review()) as typeof import("../../src/git-service/submodule-review");
+        const git = gitPath();
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", w.sup), installation: probed.installation, signal: new AbortController().signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        // The hooks folder of the Git directory `.git/modules/<name>` of a row, in any root.
+        const hooksOf = (name: string) => (request: { files: readonly { path: readonly string[] }[] }) => request.files.some((f) => `/${f.path.join("/")}/`.includes(`/modules/${name}/hooks/`));
+        let refused = 0;
+        let stopped = 0;
+        let answered = () => {};
+        const aAnswered = new Promise<void>((resolve) => (answered = resolve));
+        const runner: GitRunner = {
+          ...service.runner,
+          fileFacts: async (request, signal) => {
+            if (hooksOf("a")(request)) {
+              refused++;
+              answered();
+              throw new RunnerRefusal("UNKNOWN_TARGET");
+            }
+            if (hooksOf("c")(request)) {
+              stopped++;
+              await aAnswered;
+              return { stop: "deadline" };
+            }
+            return service.runner.fileFacts(request, signal);
+          },
+        };
+        const environment = serviceEnv(w.env);
+        const trust = trustModule.createTrust({ runner, environment });
+        const reviewer = createSubmoduleReviewer({ runner, trust, approvals: approvalsModule.createApprovals(), environment, listingTuple: async () => null });
+        const t = { operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, installation: probed.installation };
+        const head = await captureHead(runner, t);
+        if (!("state" in head)) throw new Error(`no HEAD: ${JSON.stringify(head)}`);
+        const index = await listingOf({ ...t, runner, trust } as unknown as ObserveContext, indexEntryArgs(), (bytes) => parseIndexListing(bytes, workspace.objectFormat));
+        if (!("value" in index)) throw new Error(`no index: ${JSON.stringify(index)}`);
+        const read = await reviewer.observe(t, undefined, null, undefined, false, SUBMODULE_WORK_PARALLEL).top({ head, indexEntries: index.value });
+        expect({ read, refused, stopped }).toEqual({ read: { stop: "deadline" }, refused: 1, stopped: 1 });
       });
     });
 

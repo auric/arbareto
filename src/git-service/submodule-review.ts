@@ -607,7 +607,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const superTrust = async (): Promise<TrustListing> => {
       if (cachedListing === null) {
         const r = await list();
-        if (!r.ok) throw new Halt("stop" in r ? { stop: r.stop } : { code: r.code });
+        if (!r.ok) throw "stop" in r ? walkStop(r.stop) : new Halt({ code: r.code });
         cachedListing = r.listing;
       }
       const gate = trust.gate(w, cachedListing, installation, "reads");
@@ -648,49 +648,56 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       }
     };
 
-    // Contract Δ12 "Job close": the count of recorded deadline exits, and the reads that run now.
-    let deadlines = 0;
+    // Contract Δ12 "Job close": a recorded deadline stops the attempt. After it, no read starts and no read runs again.
+    let deadline = false;
     let deadlineSeen = () => {};
-    let nextDeadline = new Promise<void>((resolve) => (deadlineSeen = resolve));
+    const recorded = new Promise<void>((resolve) => (deadlineSeen = resolve));
     const reading = new Set<Promise<unknown>>();
-    // A read that a Job close ended gets exit code null without `deadline` (contract §6 `exit`). It runs again once for each deadline recorded after its start.
+    const record = () => {
+      deadline = true;
+      deadlineSeen();
+    };
+    // 001 contract §5 "Deadline outcomes": a walk deadline has the outcome of a Git process deadline in the same step, so it records a deadline too.
+    const walkStop = (stop: WalkStop["stop"]) => {
+      if (stop === "deadline") record();
+      return new Halt({ stop });
+    };
+    // No read starts after a recorded deadline, after the first failure, or after Cancel.
+    const guard = () => {
+      if (deadline) throw new Halt({ stop: "deadline" });
+      if (stopping || t.signal.aborted) throw new Halt({ stop: "canceled" });
+    };
+    // A read that a Job close ended gets exit code null without `deadline` (contract §6 `exit`). It waits for the deadline exit, which can come later.
     const runOnce = async (args: string[], maxBytes: number, input?: Uint8Array) => {
-      for (;;) {
-        if (stopping || t.signal.aborted) throw new Halt({ stop: "canceled" });
-        const before = deadlines;
-        const out = createCollector({ maxBytes });
-        const read = runRead(runner, t, args, out, input);
-        reading.add(read);
-        const step = await read.finally(() => reading.delete(read));
-        if (t.signal.aborted) throw new Halt({ stop: "canceled" });
-        if ("refused" in step) return { step, out };
-        const kind = exitKind(step.exit, "read", out);
-        if (kind === "deadline") {
-          deadlines++;
-          deadlineSeen();
-          nextDeadline = new Promise((resolve) => (deadlineSeen = resolve));
-        }
-        if (kind !== "jobClosed") return { step, out };
-        // The deadline exit of the read that closed the Job can come after this exit. That read still runs, so it is in `reading`.
-        if (deadlines === before) await Promise.race([nextDeadline, Promise.allSettled([...reading])]);
-        if (t.signal.aborted) throw new Halt({ stop: "canceled" });
-        if (deadlines === before) return { step, out };
-      }
+      guard();
+      const out = createCollector({ maxBytes });
+      // The read records its deadline before it settles, so a read that waits for `reading` sees the deadline.
+      const read = runRead(runner, t, args, out, input).then((step) => {
+        if (!("refused" in step) && exitKind(step.exit, "read", out) === "deadline") record();
+        return step;
+      });
+      reading.add(read);
+      const step = await read.finally(() => reading.delete(read));
+      if (t.signal.aborted) throw new Halt({ stop: "canceled" });
+      if (!deadline && !("refused" in step) && exitKind(step.exit, "read", out) === "jobClosed") await Promise.race([recorded, Promise.allSettled([...reading])]);
+      if (t.signal.aborted) throw new Halt({ stop: "canceled" });
+      if (deadline) throw new Halt({ stop: "deadline" });
+      return { step, out };
     };
 
     const git = async (args: string[], options: { max?: number; input?: Uint8Array } = {}) => {
       const { step, out } = await runOnce(args, options.max ?? DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, options.input);
       if ("refused" in step) throw failed(step.refused);
-      if (step.exit.deadline !== undefined) throw new Halt({ stop: "deadline" });
       if (step.exit.diagnosticLimit) throw failed("OUTPUT_LIMIT");
       return { code: step.exit.exitCode, out: out.take(), limited: out.limited };
     };
 
     const fileFacts = async (files: FactEntry[], digest: boolean) => {
       if (files.length === 0) return [];
+      guard();
       const reply = await requestFacts(runner, t.operationId, w, digest, files, t.signal);
       if (t.signal.aborted) throw new Halt({ stop: "canceled" });
-      if (!Array.isArray(reply)) throw new Halt("stop" in reply ? { stop: reply.stop } : { code: reply.code });
+      if (!Array.isArray(reply)) throw "stop" in reply ? walkStop(reply.stop) : new Halt({ code: reply.code });
       if (reply.some((fact) => fact.kind === "error")) throw failed("REPOSITORY_UNAVAILABLE");
       return reply;
     };
@@ -755,7 +762,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       return { head: null, headRef };
     };
 
-    // Feature 004 contract Δ12 "Branch marks". A failed read gives `unread`. Only an abort and the operation stderr bound end the review.
+    // Feature 004 contract Δ12 "Branch marks". A failed read gives `unread`. Only an abort, a deadline ("Job close"), and the operation stderr bound end the review.
     // `held`: git-for-each-ref(1) gives the HEAD ref at the HEAD commit, so that ref contains HEAD.
     const markOf = async (location: { worktree: string }, rowId: string, headRef: string | null, head: string): Promise<{ mark: SubmoduleBranch; held: boolean }> => {
       const done = (mark: SubmoduleBranch, held = false) => ({ mark, held });
@@ -765,7 +772,6 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const unread = (code: ErrorCode): SubmoduleBranch => ({ rowId, state: "unread", ref: headRef, code });
       const { step, out } = await runOnce(submoduleTrackingArgs(location, headRef), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
       if ("refused" in step) return done(unread(step.refused));
-      if (step.exit.deadline !== undefined) return done(unread("DEADLINE"));
       if (step.exit.diagnosticLimit) return done(unread("OUTPUT_LIMIT"));
       if (out.limited) return done(unread("OUTPUT_LIMIT"));
       if (step.exit.exitCode !== 0) return done(unread("GIT_FAILED"));
@@ -1507,7 +1513,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       unknownNested: boolean,
     ): Promise<{ owner: string; fingerprint: string; entries: ProgramEntry[] }> => {
       const listed = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: w }, environment, repo.entries, repo.hooks, { root: root ?? forms.gitRoot, gitDirectory: repo.gitDir });
-      if (!listed.ok) throw new Halt("stop" in listed ? { stop: listed.stop } : { code: listed.code });
+      if (!listed.ok) throw "stop" in listed ? walkStop(listed.stop) : new Halt({ code: listed.code });
       const listing = listed.listing;
       const superRelative = relativeValues(superListing, OUTER_SCOPES);
       const entries: ProgramEntry[] = [];
@@ -1593,14 +1599,17 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     let attempts = 0;
     const attempt = async <T>(read: () => Promise<T>): Promise<SubmoduleFact<T>> => {
       attempts++;
+      let fact: SubmoduleFact<T>;
       try {
-        return { value: await read() };
+        fact = { value: await read() };
       } catch (error) {
-        if (error instanceof Halt) return error.fact;
-        throw error;
+        if (!(error instanceof Halt)) throw error;
+        fact = error.fact;
       } finally {
         if (--attempts === 0) await settle();
       }
+      // 001 contract §5 "Deadline outcomes": a recorded deadline decides first, as `firstEnd` does. A read that no level awaits, as at the §5 bound, can record it too.
+      return deadline ? { stop: "deadline" } : fact;
     };
 
     // Feature 004 contract Δ12 "Row order": a stable pre-order walk over `parentRowId`. Siblings keep the read order.
@@ -1743,7 +1752,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const read = await attempt(async (): Promise<Observed> => {
         const superListing = await superTrust();
         const location = { worktree: parent.worktree };
-        // Contract Δ12 "Update reads": the two reads run at once. The first failure in the serial order decides.
+        // Contract Δ12 "Update reads": the two reads run at once. A recorded deadline decides first, then the first failure in the serial order.
         const configRead = ahead(() => readConfig(location));
         const headRead = ahead(() => readHead(location));
         const config = await configRead();

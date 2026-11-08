@@ -55,8 +55,6 @@ const INPUT_MAX_MS = 500;
 // One uncounted warm-up cycle, then the counted cycles. Each cycle sends the 10 keys of `CYCLE`, so the p95 counts 200 inputs.
 const INPUT_WARMUP_CYCLES = 1;
 const INPUT_CYCLES = 20;
-// The Event Timing API reports no entry below its 16 ms minimum `durationThreshold`, so such an input counts as 16 ms.
-const EVENT_THRESHOLD_MS = 16;
 // T145, the feature 010 rule (commit-menu-perf.test.ts): app cold is the first timed run after a new app start. The OS file cache stays warm. A record without a budget.
 const COLD_SIZES: readonly number[] = SIZES;
 
@@ -562,15 +560,27 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           const review = { state: reply.state, code: reply.code ?? null, rows: reply.result?.rows.length ?? null, unreadLimit: (reply.result?.branches ?? []).filter((b) => b.code === "OUTPUT_LIMIT").length };
           console.log(`RECORD ${TASK}: SC-019 ${k.rows} rows review reply ${js(review)}`);
           expect(review).toEqual({ state: "succeeded", code: null, rows: k.rows, unreadLimit: 0 });
-          // W3C Event Timing: the duration of each keydown runs from the event to the next paint after its handlers.
           await s.c.evaluate(LONG_TASKS);
+          // `__t144Arm(check, limit)`: the time from the next keydown `timeStamp` to the first animation frame in which `check` holds.
+          // A check that holds at the arm, or no such frame within `limit`, gives `ok: false`.
           await s.c.evaluate(`(() => {
             window.__t144Keys = [];
-            window.__t144Events = [];
+            window.__t144Press = null;
             addEventListener('keydown', (e) => window.__t144Keys.push(e.timeStamp), { capture: true });
-            window.__t144Take = (entries) => { for (const e of entries) if (e.name === 'keydown') window.__t144Events.push({ start: e.startTime, duration: e.duration }); };
-            window.__t144Observer = new PerformanceObserver((list) => window.__t144Take(list.getEntries()));
-            window.__t144Observer.observe({ type: 'event', durationThreshold: ${EVENT_THRESHOLD_MS} });
+            window.__t144Arm = (check, limit) => {
+              window.__t144Press = null;
+              if (check()) return void (window.__t144Press = { ok: false, why: 'the focus held before the press' });
+              addEventListener('keydown', (e) => {
+                const start = e.timeStamp;
+                const step = () => {
+                  const now = performance.now();
+                  if (check()) return void (window.__t144Press = { ok: true, ms: now - start });
+                  if (now - start > limit) return void (window.__t144Press = { ok: false, why: 'no frame held the focus within ' + limit + ' ms' });
+                  requestAnimationFrame(step);
+                };
+                requestAnimationFrame(step);
+              }, { capture: true, once: true });
+            };
             return true;
           })()`);
           // The focused treeitem of the group tree, or null.
@@ -578,20 +588,29 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
           const first = `${GROUP}.querySelector('[role=treeitem][tabindex="0"]')`;
           await s.c.evaluate(`(${first}).focus(); true`);
           await until<boolean>(s.c, "the tree focus", `document.activeElement === (${first})`, (v) => v);
+          // The untimed last two steps of the cycle give its end state, so the first Home moves the focus as in every later cycle.
+          for (const [key, want] of k.cycle.slice(-2)) {
+            await press(s.c, key);
+            await until<RowFacts | null>(s.c, `the start state ${key}`, FOCUS, (v) => js(v) === js(want));
+          }
           const durations: number[] = [];
           for (let cycle = 0; cycle < INPUT_WARMUP_CYCLES + INPUT_CYCLES; cycle++) {
-            await s.c.evaluate(`(window.__t144Keys = [], window.__t144Events = [], ${LONG_TASKS})`);
+            await s.c.evaluate(`(window.__t144Keys = [], ${LONG_TASKS})`);
             const before = s.app.accounting();
+            const cycleDurations: number[] = [];
             for (const [key, want] of k.cycle) {
+              await s.c.evaluate(`(window.__t144Arm(() => JSON.stringify(${FOCUS}) === ${js(js(want))}, ${KEY_WAIT_MS}), true)`);
               await press(s.c, key);
-              await until<RowFacts | null>(s.c, `cycle ${cycle} ${key}`, FOCUS, (v) => js(v) === js(want));
+              const r = (await until<{ ok: boolean; ms?: number; why?: string } | null>(s.c, `cycle ${cycle} ${key}`, "window.__t144Press", (v) => v !== null, KEY_WAIT_MS + 5_000))!;
+              // A press without its frame has no time, so the case fails. No default value stands in.
+              if (!r.ok || r.ms === undefined) throw new Error(`cycle ${cycle} ${key}: ${r.why ?? "no time"}`);
+              cycleDurations.push(r.ms);
             }
-            await s.c.evaluate("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => done(true), 50))))");
             const after = s.app.accounting();
-            const { keys, events, now } = await s.c.evaluate<{ keys: number[]; events: { start: number; duration: number }[]; now: number }>("(window.__t144Take(window.__t144Observer.takeRecords()), { keys: window.__t144Keys, events: window.__t144Events, now: performance.now() })");
+            const { keys, now } = await s.c.evaluate<{ keys: number[]; now: number }>("({ keys: window.__t144Keys, now: performance.now() })");
             expect({ cycle, keys: keys.length }).toEqual({ cycle, keys: k.cycle.length });
             console.log(`RECORD ${TASK}: SC-019 ${k.rows} rows cycle ${cycle}${cycle < INPUT_WARMUP_CYCLES ? " (warm-up)" : ""}: ${cpuText(before, after)}; ${stallText(await stalls(s.c, keys[0]!, now))}`);
-            if (cycle >= INPUT_WARMUP_CYCLES) durations.push(...keys.map((key) => events.find((e) => e.start === key)?.duration ?? EVENT_THRESHOLD_MS));
+            if (cycle >= INPUT_WARMUP_CYCLES) durations.push(...cycleDurations);
           }
           console.log(`OBSERVATION ${TASK}: SC-019 ${k.rows} rows: ${durations.length} inputs, p95 ${p95(durations)} ms, max ${Math.max(...durations)} ms, durations ${js(durations)}`);
           expect(durations.length).toBe(INPUT_CYCLES * k.cycle.length);

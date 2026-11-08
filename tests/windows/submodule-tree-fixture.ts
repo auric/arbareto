@@ -8,6 +8,7 @@
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SubmoduleBranch, SubmodulePlanRow } from "../../src/contracts/submodules";
+import { VIRTUAL_MIN } from "../../src/frontend/submodules/submodule-tree";
 import { FIXED_IDENTITY, FIXTURE_ROOT, ownedGit } from "../git/fixture-root";
 import { gitExit } from "../git/history-diff-fixtures";
 import type { IpcLog } from "./cdp";
@@ -290,8 +291,8 @@ export function markParts(exe: string, dir: string): string[] {
 
 // ---- Page checks of the twin sets ----
 
-// src/frontend/submodules/SubmodulesGroup.tsx `VIRTUAL_MIN` (plan D20 "Group"): above this count of shown rows, only the rows near the view are mounted.
-export const VIRTUAL_MIN = 200;
+// Plan D20 "Group": above `VIRTUAL_MIN` shown rows, only the rows near the view are mounted.
+export { VIRTUAL_MIN };
 
 /**
  * A page expression: true when the rows of `paths` show with the branch mark `text` (spec FR-109). The marks come with the rows (FR-110).

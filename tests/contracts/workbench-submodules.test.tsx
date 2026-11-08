@@ -731,7 +731,7 @@ const BOARD_MARKS = [
   mark(BOARD_IDS.fmt!, { state: "branch", ref: "refs/heads/release/2.x", upstream: "refs/remotes/origin/release/2.x", track: { state: "counts", ahead: 0, behind: 3 } }),
   mark(BOARD_IDS.lint!, { state: "branch", ref: "refs/heads/lint", upstream: "refs/remotes/origin/lint", track: { state: "gone" } }),
   mark(BOARD_IDS.app!, { state: "branch", ref: "refs/heads/main", upstream: UPSTREAM, track: { state: "counts", ahead: 2, behind: 1 } }),
-  mark(BOARD_IDS.zlib!, { state: "unread", ref: "refs/heads/main", code: "DEADLINE" }),
+  mark(BOARD_IDS.zlib!, { state: "unread", ref: "refs/heads/main", code: "GIT_FAILED" }),
   mark(BOARD_IDS.minizip!, { state: "branch", ref: "refs/tags/v1", upstream: null, track: { state: "none" } }),
   mark(BOARD_IDS.docs!, { state: "branch", ref: "refs/heads/draft", upstream: null, track: { state: "none" } }),
 ];
@@ -905,7 +905,7 @@ describe("Submodules group tree (FR-107 to FR-111)", () => {
       `vendor/tools/lint, lint, upstream gone, ${head}`,
       ICONS,
       `app-shared, main, 2 ahead, 1 behind, ${head}`,
-      `app-shared/third_party/zlib, main, counts are unavailable: DEADLINE, ${head}`,
+      `app-shared/third_party/zlib, main, counts are unavailable: GIT_FAILED, ${head}`,
       `app-shared/third_party/contrib/minizip, refs/tags/v1, No upstream, ${head}`,
       `docs-theme, draft, No upstream, ${head}`,
     ]);

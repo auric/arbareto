@@ -531,12 +531,13 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
           const { update } = await listReview(l.s, l.repositoryId, T155_WAIT_MS);
           const u = await timedUpdate(l.s, l.runner, update, T155_WAIT_MS);
           const rows = objectsWith<SubmoduleRowResult>(u.response.result, ["rowId", "state", "fetched"]);
-          expect({ lanes: l.n, state: u.response.state, code: u.response.code, rows: rows.length, moved: rows.filter((r) => r.state === "moved").length, timed: u.first !== null && u.preflight !== null }).toEqual({
+          expect({ lanes: l.n, state: u.response.state, code: u.response.code, rows: rows.length, moved: rows.filter((r) => r.state === "moved").length, steps: u.steps, timed: u.first !== null && u.preflight !== null }).toEqual({
             lanes: l.n,
             state: "succeeded",
             code: undefined,
             rows: 20,
             moved: 20,
+            steps: 20,
             timed: true,
           });
           l.runs.push({ first: u.first!, total: u.total, preflight: u.preflight!, steps: u.steps });

@@ -27,7 +27,7 @@
 @theme inline {
   --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-heading: var(--font-sans);
-  --font-mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, Menlo, Monaco, "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", monospace;
   --spacing: 4px;
   --text-xs: calc(var(--font-ui) * var(--text-scale));
   --text-xs--line-height: var(--leading-ui);

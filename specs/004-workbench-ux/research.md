@@ -933,6 +933,153 @@ Unpackaged, Windows, ms from the `updateSubmodules` request. The list review bef
 
 - The arbareto-ux reference names nested submodules with a "no branch" state. Not verified in the source in this session.
 
-**Packaged record (T145)**: pending.
+**Packaged record (T145), session 2 (2026-11-07 to 2026-11-08)**
 
-**Packaged record (T164)**: pending.
+- Build: l9 `main-submodule-parallel` at c96336c8 (ae1e1ec8 plus 011 from main), clean. Built exe SHA-256 36BF1C483D80B422A79789CD9BA2F5B9D48648718216BF9B98957DF9442E650E. Installed exe SHA-256 A090947618D83B332DDC187E7D638506CAD8685A049439553171F959D140C796. The installed exe matches the patched build, with 1 marker hit. Installer SHA-256 66E2EFECA0F5FE60A8742C0AE37273FFCB3B9FD3EDD7048D3C86EE1A1F4269CD.
+- OS: Windows 11 Pro 10.0.26300 (26H2.9711). Git 2.56.0.windows.2. Bun 1.4.4. WSL: Ubuntu-26.04, Git 2.55.0. Windows text size 100%.
+- The session had no Kernel-Power 42 event and no timeout. Each control file was restored, and its SHA-256 matched HEAD.
+
+Controls, each applied alone. Each case failed.
+
+| Control | Case | Failing field |
+| --- | --- | --- |
+| c1a `MARK_MS_PER_ROW = -Infinity` | SC-018 20 | `perRow` false (3.92 ms per row is above -Infinity) |
+| c1b `LIST_MS` 1 | SC-020 20, 256, 1,024 | `branch` false and `detached` false at each size |
+| c2 `INPUT_P95_MS` 1 | SC-019 256, 1,024 | `p95` false |
+| c2b `INPUT_MAX_MS` 1 | SC-019 256, 1,024 | `max` false |
+| c3 `UPDATE_MS` 1 | SC-021 20, 100, 256, 1,024 | `median` false at each size |
+| c4-1 `HINT_MOVE` board text | T164 (1) | the tree description differs |
+| c4-2 first `OPEN_LAYOUTS` want hidden | T164 (2) | "the hidden form (case 2 1280x800 compact 240 DIPs) did not happen within 10000 ms" |
+| c4-3 `AFTER_SPACE` true | T164 (3) | "case 3 after Space did not happen within 10000 ms" |
+| c4-4 `CLOSED_DESK.compact` 49 | T164 (3) and (4) | `desk` false, `group` false |
+| c4-5 `AFTER_CLOSE_RESTART` open | T164 (5) | "the closed form (case 5 copy after the close) did not happen within 10000 ms" |
+| c4-6 `NO_ROOM_WANT` open | T164 (6) | "the open form (case 6 noRoom) did not happen within 10000 ms" |
+| c4-7 `FIRST_TAB_AFTER_TREE` SPLITTER | T164 (7) | "the first Tab stop after the tree did not happen within 10000 ms: false" |
+| c4-10 `widthLimit` 100 | T164 (10) at 100% | `scroll` false |
+
+Counted runs, median of 10 after one warm-up.
+
+| Case | Result | Budget | Verdict |
+| --- | --- | --- | --- |
+| SC-018 20 | 3.92 ms per row (branch 4,631.6 ms, detached 4,553.3 ms) | 30 ms per row | pass |
+| SC-018 256 | 0.74 ms per row (branch 39,979.8 ms, detached 39,789.2 ms) | 30 ms per row | pass |
+| SC-020 20 | branch 4,631.6 ms, detached 4,553.3 ms | 6,500 ms | pass |
+| SC-020 256 | branch 39,979.8 ms, detached 39,789.2 ms | 55,000 ms | pass |
+| SC-020 1,024 | branch 118,531.6 ms, detached 118,704.2 ms (SC-018 value -0.17 ms per row, no budget) | 190,000 ms | pass |
+| SC-019 256 | 200 inputs, p95 16 ms, max 24 ms | 100 ms and 500 ms | pass |
+| SC-019 1,024 `f<i>/s` | 220 inputs, p95 16 ms, max 24 ms | 100 ms and 500 ms | pass |
+| SC-021 20 | median 7,346.7 ms, max 7,664.1 ms | 10,000 ms | pass |
+| SC-021 100 | median 28,031.3 ms, max 29,540.5 ms | 36,000 ms | pass |
+| SC-021 256 | median 51,520.9 ms, max 52,436.9 ms | 85,000 ms | pass |
+| SC-021 1,024 | median 206,480.1 ms, max 310,108.2 ms | 310,000 ms (median) | pass |
+
+- SC-019 rows: Measured with the Event Timing metric before T165. Session 3 replaces these values.
+- App cold (OS file cache warm, no budget): SC-018 20 branch 4,884.4 ms. SC-018 256 branch 40,791.3 ms. SC-021 20 7,521.3 ms. SC-021 100 28,155.6 ms.
+- Warm-up runs: SC-018 20 4,541.4 ms and 4,436.7 ms. SC-018 256 41,029.0 ms and 41,064.8 ms. SC-020 1,024 122,629.2 ms and 118,669.6 ms. SC-021 20 7,825.1 ms, 100 29,771.4 ms, 256 65,284.4 ms, 1,024 215,960.4 ms.
+- Long tasks: 0 in every timed span of every counted case.
+- Review reply check: SC-019 256 `{"state":"succeeded","code":null,"rows":256,"unreadLimit":0}`. SC-019 1,024 `{"state":"succeeded","code":null,"rows":1024,"unreadLimit":0}`. No `OUTPUT_LIMIT`.
+- Stderr bytes: the `tests/git` case recorded them before (0 and 2,632 bytes). This session did not measure them.
+- WebView2 in the Job: every session printed 6 msedgewebview2.exe processes below the app, all in the Job ("msedgewebview2.exe in the Job 6 of 12").
+- Job peak committed bytes at session end (counted sessions): SC-018 20 804,261,888. SC-018 256 829,902,848. SC-020 1,024 1,016,717,312. SC-021 20 889,831,424, 100 870,576,128, 256 917,762,048, 1,024 1,266,180,096. Peak process committed bytes: 391,589,888 to 733,388,800.
+- Job CPU at session end (user and kernel ms): SC-018 20 330,359 and 550,438. SC-018 256 2,746,219 and 5,889,516. SC-020 1,024 7,289,500 and 12,628,594. SC-021 1,024 14,480,172 and 25,167,219. SC-019 cycles: 94 to 313 ms user per cycle.
+
+011 T026 on this build, which holds b2006241:
+
+| Case | Result | Budget | Verdict |
+| --- | --- | --- | --- |
+| SC-009b remote | median 251.1 ms, max 395.6 ms, cold 462.5 ms | 500, 1,000, and 1,000 ms | pass |
+| SC-009b combined | median 293.4 ms, max 440.4 ms | 500 and 1,000 ms | pass |
+| SC-009c remote only | median 830.9 ms, max 948.3 ms, cold 772.7 ms | 1,500, 3,000, and 3,000 ms | pass |
+| SC-009d combined | median 1,160.9 ms, max 1,677.4 ms, cold 1,029.6 ms | 2,000, 4,000, and 4,000 ms | pass |
+| SC-009e (in c and d) | 76 to 133 inputs per run, p95 24 ms, max 24 ms | 100 and 500 ms, at least 20 inputs | pass |
+| WSL record SC-009b | remote median 1,775.8 ms, combined 2,169.5 ms, cold 1,783.7 ms | record only | test pass |
+| WSL record SC-009c | median 3,387.4 ms, cold 3,695.8 ms; SC-009e p95 16 to 24 ms, max 32 ms | record only | test pass |
+| WSL record SC-009d | median 4,396.8 ms, cold 4,492 ms; SC-009e p95 16 to 24 ms, max 32 ms | record only | test pass |
+| `tests/wsl/remote-delete-wsl.test.ts` | 6 pass, 0 fail | - | pass |
+
+- After the WSL steps, the WSL home folder holds only the 7 older `arbareto-*` folders.
+
+Shots (local scratch): t144-main, t144-collapsed, t144-dark, and t144-branchmarks (2026-11-08T00-37Z). Differences from session 1:
+- The "Keys in the tree" panel now shows open below the group, with the 13 D20 texts.
+- The References region and the Submodules group are much shorter. References scrolls after Remotes, and the group shows about 3 rows.
+- Collapsed now matches the board, because it has a keys panel.
+- The panel texts are the D20 texts, not the board texts ("Go to the previous or the next row." against "Move to the next row.").
+- The fixture commit ID differs (d955e1477f89 against 83d0cb8fc450).
+
+**Packaged record (T145), session 3 (2026-11-08)**
+
+- Build: l9 `main-submodule-parallel` at 9df12f84, clean. Built exe SHA-256 4EE394C47E1F03EA0BA8FA273F642B1570C64C99F1FF940A0361AA57CA9180E8. Installed exe SHA-256 0487C38588548EBE4AEC6B178F921A36A5C6CD5FAE7F3E22E7DA58F550A5D2AF. The installed exe matches the patched build, with 1 marker hit. Installer SHA-256 5E8675ABCE21C6C446D4728C3891918F2283B87DADEFCE906B884FF091F4D367. Installed version 0.1.0.
+- OS: Windows 11 Pro 10.0.26300 (26H2.9711). Git 2.56.0.windows.2. Bun 1.4.4. Windows text size 100%.
+- Step 0 before the build: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run export:schemas --check`, and `bun test ./tests/contracts ./tests/git/portable-imports.test.ts` exit 0.
+- The session had no Kernel-Power 42 event and no timeout.
+- SC-019 metric: the time from the keydown `timeStamp` to the first animation frame in which the expected row has focus.
+
+Counted runs, median of 10 after one warm-up for SC-020. SC-019 uses 20 counted cycles after 1 warm-up cycle.
+
+| Case | Result | Budget | Verdict |
+| --- | --- | --- | --- |
+| SC-019 256 | 200 inputs, p95 7.4 ms, max 8.3 ms; 11 of 1,280 rows mounted | 100 ms and 500 ms | pass |
+| SC-019 1,024 `f<i>/s` | 220 inputs, p95 7.4 ms, max 9.0 ms; 11 of 2,048 rows mounted | 100 ms and 500 ms | pass |
+| SC-020 1,024 | branch 109,405.4 ms, detached 108,368.3 ms (SC-018 value 1.01 ms per row, no budget) | 190,000 ms | pass |
+
+- SC-020 1,024 runs: branch 107,213.5 to 111,490.7 ms, detached 105,641.4 to 112,114.9 ms. Warm-up: branch 108,034.4 ms, detached 106,363.1 ms. Each run started 8,772 to 8,782 new processes.
+- PENDING: SC-021 1,024 moved rows, median of 10 after one warm-up, against 310,000 ms.
+- The first SC-021 1,024 run is not counted, because a closed terminal stopped it after 2 counted runs (warm-up 229,824.1 ms, runs 236,566.9 ms and 377,387.6 ms).
+- Long tasks: 0 in every timed span of every counted case.
+- Review reply check: SC-019 256 `{"state":"succeeded","code":null,"rows":256,"unreadLimit":0}`. SC-019 1,024 `{"state":"succeeded","code":null,"rows":1024,"unreadLimit":0}`. No `OUTPUT_LIMIT`.
+- WebView2 in the Job: every session printed 6 msedgewebview2.exe processes below the app, all in the Job ("msedgewebview2.exe in the Job 6 of 12").
+- Job peak committed bytes at session end: SC-019 256 643,493,888. SC-019 1,024 719,847,424. SC-020 1,024 1,022,296,064. Peak process committed bytes: 355,831,808, 388,083,712, and 651,522,048.
+- Job CPU at session end (user and kernel ms): SC-019 256 11,734.4 and 11,625.0. SC-019 1,024 14,359.4 and 11,953.1. SC-020 1,024 7,339,093.8 and 12,214,062.5. SC-019 cycles: 78.1 to 218.8 ms user per cycle.
+
+Controls, each applied alone to `tests/windows/submodule-tree-packaged.test.ts`. Each case failed.
+
+| Control | Case | Failing field | Measured |
+| --- | --- | --- | --- |
+| c2 `INPUT_P95_MS` 1 | SC-019 256 | `p95` false | p95 7.9 ms, max 8.9 ms |
+| c2 `INPUT_P95_MS` 1 | SC-019 1,024 | `p95` false | p95 7.8 ms, max 9.6 ms |
+| c2b `INPUT_MAX_MS` 1 | SC-019 256 | `max` false | p95 7.5 ms, max 9.4 ms |
+| c2b `INPUT_MAX_MS` 1 | SC-019 1,024 | `max` false | p95 7.9 ms, max 8.6 ms |
+
+- After each control, the file was restored. Its SHA-256 86DCBC1CCB7ECA138707C9055864CAB1581CEE6D369687CF760849A757D0E39A matched the hash before the edit.
+
+**Packaged record (T164)**
+
+Session 2 (build c96336c8, one run with all cases in one process):
+- Result: 2 pass ((7), and (10) at 100%), 6 fail, 1 skip ((10) at 225%: "missing capability text-scale-225").
+- (1): "COM_FAILED: Expand returned 0x80131509". The `RECORD T164 focus after profile switch` line did not print.
+- (2), (3), and (4): "error: the 240 DIP sidebar did not happen within 10000 ms: "180"".
+- (5): "error: the closed form (case 5 restart after the close) did not happen within 10000 ms: {"profile":"wide","density":"compact","form":"open",...}".
+- (6): "error: the click on the button did not happen within 10000 ms: 1".
+- (8) and (9): "COM_FAILED: Expand returned 0x80131509". The test wrote six contrast captures below the fixture root and removed them at its end.
+- In the control runs (table above), cases (1) to (6) ran one per process and reached their control fields.
+- T164 wrote no file to the shots folder.
+
+Session 3 (2026-11-08), one run with all cases:
+- Build ID 9df12f84 (hashes in session 3 above). OS 10.0.26300 (26H2.9711). WebView2 Edg/157.0.4341.42. Git 2.56.0.windows.2. Display scale 125% (`devicePixelRatio` 1.25). Windows text size 100%.
+- Result: 8 pass, 0 fail, 1 skip ((10) at 225%: "missing capability text-scale-225"). Session 3 ran no T164 control. The controls are the session 2 controls c4-1 to c4-10.
+- (1): the tree description equals the 13 D20 texts in the open, closed, and noRoom forms, and in the constrained profile at 960×640 compact (hidden form).
+- (1), focus after the profile switch to constrained: focus is on `body` (role generic, no name), not on the Tab-stop row. Accepted as a LOW finding.
+- (2): at 240 DIPs the key list has 1 track. At 360 DIPs it has 2 tracks. In each form, `scrollHeight` equals `innerHeight`.
+
+| Case (2) layout | P_open (desk) | H | Group | References |
+| --- | --- | --- | --- | --- |
+| 1280×800 compact 240 DIPs | 440 (441) | 727.2 | 114.9 | 172.3 |
+| 960×800 compact 240 DIPs (narrow) | 440 (none) | 687.2 | 98.9 | 148.3 |
+| 1280×800 comfortable 240 DIPs | 481.6 (483) | 719.2 | 95.0 | 142.6 |
+| 1280×800 compact 360 DIPs | 304.8 (305) | 727.2 | 169.0 | 253.4 |
+| 1280×800 comfortable 360 DIPs | 393.6 (394) | 719.2 | 130.2 | 195.4 |
+
+- (3): click gave `aria-expanded` false and outer 45. Enter gave true and 440. Space gave false and 45. Enter gave true and 440. The button is 24 DIPs.
+- (4): compact closed outer 45 (button 24, desk 45), H 727.2, group 272.9. Comfortable closed outer 49 (button 28, desk 49), H 719.2, group 268.1.
+- (5): new profile open. After the close: closed. Restart after the close: closed, and the second copy of fixture (a) closed. After the open: open. Restart after the open: open, and fixture (a) open.
+- (6): 1280×800 comfortable 180 DIPs gave noRoom, P_open 621.6 (desk 623), H 719.2, button 28, `aria-expanded` false, `aria-disabled` true. Enter and the click left noRoom. 1280×1100 gave open with P_open 621.6, H 1019.2, button 28. Back at 1280×800, noRoom again, with H 719.2 and button 28.
+- (6), 10-frame stability: each of the 5 states (noRoom, after Enter, after the click, 1280×1100, back at 1280×800) kept one form on 10 animation frames in a row.
+- (6), the `"keyHintsOpen":true` read of `arbareto.preferences.v1`: not recorded. The log prints no stored value. The test asserts it after Enter and after the click, and the case passed.
+- (7): pass.
+- (8): light 14.26:1 (button text, key name) and 5.74:1 (key text, unavailable button text). Dark 12.67:1 and 6.88:1. Forced colors 21.00:1, and 13.98:1 for the unavailable button text. All pass.
+- (9): nine captures in local scratch: 360 and 240 DIPs, open and closed, light and dark, and the noRoom form with its tooltip. The user approved the closed and noRoom shots on 2026-11-08.
+- (10) at 100%: compact open (P_open 548, button 24) and comfortable noRoom (P_open 621.6, button 28). Both give `scrollWidth` 179 equal to `clientWidth` 179, and no element outside the content box.
+- (10) at 225%: skipped, accepted by the user 2026-11-08 (Windows text size 225% not set).
+- WebView2: 6 msedgewebview2.exe processes in the Job in each app session. Job peak committed bytes 603,701,248 to 692,572,160. Peak process committed bytes 316,862,464 to 344,141,824.
+
+Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): these also wait for a re-measure on the build after T165, because the session 2 values predate T165. Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. T164 also waits for its red checks on the current test file, because the c4 controls ran on c96336c8, before the test changes in 7e0f34b8.

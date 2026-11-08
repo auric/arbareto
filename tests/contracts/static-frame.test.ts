@@ -42,3 +42,14 @@ describe("static frame", () => {
     expect(patchView).toMatch(/<Virtualizer className="[^"]*\bselect-text\b/);
   });
 });
+
+// plan.md "Note (2026-11-07, user decision)": one code font stack for all code text, the commit message included.
+describe("code font", () => {
+  test("the code font stack is Cascadia Mono first, then the Windows, macOS, and Linux system monospace fonts", () => {
+    expect(rule("@theme inline")["--font-mono"]).toBe('"Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, Menlo, Monaco, "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", monospace');
+  });
+
+  test("all code text uses the stack without ligatures", () => {
+    expect(rule("code", "kbd", "samp", "pre", ".font-mono")).toMatchObject({ "font-family": "var(--font-mono)", "font-variant-ligatures": "none" });
+  });
+});

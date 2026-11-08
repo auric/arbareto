@@ -800,6 +800,38 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
     caseTimeout(12),
   );
 
+  test.skipIf(reason !== null)(
+    "plan.md code font note (2026-11-07): the commit message renders in Cascadia Mono, Cascadia Code, or Consolas",
+    async () => {
+      const f = fixture("amend-no-upstream", "code-font-repo");
+      const { app, c } = await cdpStart(f, "code-font");
+      try {
+        await found(app.pid, COMMIT_VIEW, ControlType.Button, invoke);
+        const box = `document.querySelector('[data-view="commit"] textarea[aria-label=${js(MESSAGE)}]')`;
+        await until<boolean>(c, "the enabled commit message box", `!!${box} && !${box}.disabled && ${box}.offsetParent !== null`, (v) => v);
+        // An empty box lays out no glyphs, so it reports no platform font.
+        await c.evaluate(`${box}.focus(); true`);
+        await c.send("Input.insertText", { text: "Font check 0123" });
+        await until<string>(c, "the typed message", `${box}.value`, (v) => v.length > 0);
+        await c.send("DOM.enable");
+        await c.send("CSS.enable");
+        const { root } = (await c.send("DOM.getDocument", { depth: 0 })) as { root: { nodeId: number } };
+        const { nodeId } = (await c.send("DOM.querySelector", { nodeId: root.nodeId, selector: `[data-view="commit"] textarea[aria-label=${js(MESSAGE)}]` })) as { nodeId: number };
+        const { fonts } = (await c.send("CSS.getPlatformFontsForNode", { nodeId })) as { fonts: { familyName: string; glyphCount: number }[] };
+        console.log(`FONTS code-font: ${js(fonts)}`);
+        const used = fonts.toSorted((a, b) => b.glyphCount - a.glyphCount)[0]?.familyName ?? null;
+        console.log(`RECORD font: ${used}`);
+        const windowsFonts = ["Cascadia Mono", "Cascadia Code", "Consolas"];
+        expect({ used: used !== null && windowsFonts.includes(used), others: fonts.map((x) => x.familyName).filter((n) => !windowsFonts.includes(n)) }).toEqual({ used: true, others: [] });
+      } finally {
+        c.close();
+        sockets.delete(c);
+        await stop(app);
+      }
+    },
+    caseTimeout(12),
+  );
+
   // ---- Live input ----
 
   test.skipIf(liveReason !== null)(

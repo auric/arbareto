@@ -1014,17 +1014,36 @@ Shots (local scratch): t144-main, t144-collapsed, t144-dark, and t144-branchmark
 - The session had no Kernel-Power 42 event and no timeout.
 - SC-019 metric: the time from the keydown `timeStamp` to the first animation frame in which the expected row has focus.
 
-Counted runs, median of 10 after one warm-up for SC-020. SC-019 uses 20 counted cycles after 1 warm-up cycle.
+Counted runs, median of 10 after one warm-up for SC-020 and SC-021. SC-019 uses 20 counted cycles after 1 warm-up cycle.
 
 | Case | Result | Budget | Verdict |
 | --- | --- | --- | --- |
 | SC-019 256 | 200 inputs, p95 7.4 ms, max 8.3 ms; 11 of 1,280 rows mounted | 100 ms and 500 ms | pass |
 | SC-019 1,024 `f<i>/s` | 220 inputs, p95 7.4 ms, max 9.0 ms; 11 of 2,048 rows mounted | 100 ms and 500 ms | pass |
 | SC-020 1,024 | branch 109,405.4 ms, detached 108,368.3 ms (SC-018 value 1.01 ms per row, no budget) | 190,000 ms | pass |
+| SC-020 20 (after T165) | branch 5,254.6 ms, detached 5,229.6 ms (SC-018 value 1.25 ms per row, no budget) | 6,500 ms | pass |
+| SC-020 256 (after T165) | branch 44,022.9 ms, detached 44,011.5 ms (SC-018 value 0.04 ms per row, no budget) | 55,000 ms | pass |
+| SC-021 20 (after T165) | median 7,508.1 ms, max 7,846.1 ms | 10,000 ms | pass |
+| SC-021 100 (after T165) | median 28,154.5 ms, max 29,161.7 ms | 36,000 ms | pass |
+| SC-021 256 (after T165) | median 78,532.3 ms, max 101,981.2 ms; load-affected, not a baseline | 85,000 ms | pass |
+| SC-021 1,024 (quiet rerun from 15:02) | median 204,609.8 ms, max 236,650.4 ms | 310,000 ms | pass |
 
 - SC-020 1,024 runs: branch 107,213.5 to 111,490.7 ms, detached 105,641.4 to 112,114.9 ms. Warm-up: branch 108,034.4 ms, detached 106,363.1 ms. Each run started 8,772 to 8,782 new processes.
-- PENDING: SC-021 1,024 moved rows, median of 10 after one warm-up, against 310,000 ms.
+- From 15:00, a quiet check ran before each run: 60-s CPU average below 15%, maximum below 60%, MsMpEng average below 20% over 30 s, free memory at least 6.5 GB, gate 0. The driver log `full.out` holds each check.
+- SC-021 1,024 runs (quiet rerun): warm-up 315,675.8 ms. Runs 203,032.9, 203,281.3, 204,639.1, 204,840.0, 203,715.6, 204,981.1, 236,650.4, 204,580.4, 205,170.8, and 203,923.2 ms. Nine runs took 203,032.9 to 205,170.8 ms. Run 7 took 236,650.4 ms.
+- SC-021 1,024 new processes per run: 16,435, except 16,436 in run 3 and 20,310 in run 7. The warm-up started 17,212.
+- SC-021 1,024 CPU per run: about 550,000 ms user and 830,000 ms kernel. Run 7 used 676,094 ms user and 1,215,156 ms kernel.
+- SC-021 1,024 against session 2: session 2 gave median 206,480.1 ms and max 310,108.2 ms. Session 3 gave median 204,609.8 ms and max 236,650.4 ms.
+- SC-020 20 runs: 328 to 339 new processes per run. Warm-up: branch 5,248.2 ms, detached 5,291.9 ms.
+- SC-020 256 runs: 3,396 to 3,406 new processes per run. Warm-up: branch 48,963.9 ms, detached 47,616.0 ms.
+- SC-021 20 runs: 371 or 372 new processes per run. Warm-up 8,108.7 ms.
+- SC-021 100 runs: 1,651 to 1,653 new processes per run. Warm-up 31,686.3 ms.
+- SC-021 256 runs: warm-up 92,577.6 ms (5,703 processes). Runs 70,688.6, 73,393.1, 101,981.2, 87,112.2, 83,671.5, 84,114.5, 57,521.9, 58,056.8, 93,642.9, and 62,226.3 ms. Each counted run started 4,147 new processes. Session 2 median: 51,520.9 ms.
+- SC-021 256 is load-affected, not a baseline. The quiet check passed at 17:44 (CPU average 5.0%). At 18:02, MsMpEng used 117% and backgrounddownload 73% beside the run.
 - The first SC-021 1,024 run is not counted, because a closed terminal stopped it after 2 counted runs (warm-up 229,824.1 ms, runs 236,566.9 ms and 377,387.6 ms).
+- INVALID: the SC-021 1,024 rerun from 12:26 to 13:54 is not counted (`INVALID: load`). A stray pwsh used about 1.5 cores, and Defender about 1.1 cores. Warm-up 256,203.6 ms. Runs 283,471.4, 372,541.6, 385,755.6, 510,511.3, and 353,464.8 ms. Each run started 16,435 new processes, but run 4 started 25,471. The driver stopped the run by PID and creation time and removed its fixture folder.
+- Test run 42144 (13:56 to 14:55) overlapped no counted step. In that window, driver 21896 held the lock and ran only quiet checks. It gave up at 14:14.
+- The c4 red checks for T164 did not run. The STOP file ended the driver at the `c4-1` entry before any test ran. The restore matched 86DCBC1CCB7ECA138707C9055864CAB1581CEE6D369687CF760849A757D0E39A. The c4 checks move to session 4.
 - Long tasks: 0 in every timed span of every counted case.
 - Review reply check: SC-019 256 `{"state":"succeeded","code":null,"rows":256,"unreadLimit":0}`. SC-019 1,024 `{"state":"succeeded","code":null,"rows":1024,"unreadLimit":0}`. No `OUTPUT_LIMIT`.
 - WebView2 in the Job: every session printed 6 msedgewebview2.exe processes below the app, all in the Job ("msedgewebview2.exe in the Job 6 of 12").
@@ -1082,4 +1101,4 @@ Session 3 (2026-11-08), one run with all cases:
 - (10) at 225%: skipped, accepted by the user 2026-11-08 (Windows text size 225% not set).
 - WebView2: 6 msedgewebview2.exe processes in the Job in each app session. Job peak committed bytes 603,701,248 to 692,572,160. Peak process committed bytes 316,862,464 to 344,141,824.
 
-Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): these also wait for a re-measure on the build after T165, because the session 2 values predate T165. Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. T164 also waits for its red checks on the current test file, because the c4 controls ran on c96336c8, before the test changes in 7e0f34b8.
+Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): session 3 re-measured these cases on build 9df12f84, after T165 (table above). Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. T164 also waits for its red checks on the current test file, because the c4 controls ran on c96336c8, before the test changes in 7e0f34b8. These red checks move to session 4.

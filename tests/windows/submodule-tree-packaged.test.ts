@@ -23,7 +23,7 @@ import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import type { JobAccounting } from "../git/win32";
 import { appEnv, descendants, findInstalledApp, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { BOARD_TOP, BOARD_TREE, boardWorld, folderCount, folderWorld, ICONS, markParts, marksShown, otherRepo, replyMarks, sameMarks, twinWorlds, VIRTUAL_MIN, wideWorld } from "./submodule-tree-fixture";
-import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
+import { close, closeWindow, ControlType, expand, find, findWindow, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 import { metrics, type Density } from "../../src/frontend/layout/profiles";
 import { keyHintsForm, type KeyHintsForm } from "../../src/frontend/submodules/TreeKeyHints";
 
@@ -87,6 +87,7 @@ const KEYS: Record<string, { key: string; code: string; vk: number; text?: strin
   o: { key: "o", code: "KeyO", vk: 0x4f, text: "o" },
   r: { key: "r", code: "KeyR", vk: 0x52, text: "r" },
   Space: { key: " ", code: "Space", vk: 0x20, text: " " },
+  Escape: { key: "Escape", code: "Escape", vk: 0x1b },
 };
 const CTRL = { key: "Control", code: "ControlLeft", vk: 0x11 };
 async function press(c: Cdp, name: string, modifiers = 0): Promise<void> {
@@ -730,6 +731,13 @@ ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v
   let t164World: { a: string; copy: string } | null = null;
   const t164Fixture = () => (t164World ??= { a: twinWorlds(GIT!, fixtureDir("t164-a"), 20).branch, copy: twinWorlds(GIT!, fixtureDir("t164-a-copy"), 20).branch });
 
+  // Chromium commits localStorage up to 5 s after a write, and a Job end loses an uncommitted write. A restart case closes the window as a user does.
+  async function quit(s: Session): Promise<void> {
+    const title = await s.c.evaluate<string>("document.title");
+    await use(findWindow(s.app.pid, title, MAX_WAIT_MS), closeWindow);
+    expect(await waitExit(s.app)).not.toBeNull();
+    await end(s);
+  }
   async function hintsSession(label: string): Promise<Session> {
     const s = await session(`t164-${label}`, t164Fixture().a);
     await until<boolean>(s.c, "the Keys in the tree panel", `${HINTS} !== null`, (v) => v, LIST_WAIT_MS);
@@ -749,6 +757,9 @@ ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v
     await s.c.evaluate(`(${item}).focus(); true`);
     await press(s.c, "Enter");
     await until<string>(s.c, `the ${want} density`, DENSITY, (v) => v === want);
+    // A Base UI radio item keeps the menu open (remote-delete-packaged.test.ts T019 density case).
+    await press(s.c, "Escape");
+    await until<boolean>(s.c, "the unmounted View menu", "document.querySelector('[role=menu]') === null", (v) => v);
   }
   // Splitter.tsx: Home gives the 180 DIP minimum. The 8 DIP and 32 DIP key steps reach no other D20 width from 180, so a pointer drag gives the rest.
   async function setSidebar(s: Session, width: number): Promise<void> {
@@ -850,7 +861,9 @@ ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v
         await s.c.evaluate(FRAMES);
         console.log(`RECORD T164 focus after profile switch: ${js({ dom: await s.c.evaluate<unknown>(ACTIVE_FACTS), ax: await axNode(s.c, "document.activeElement") })}`);
         // Case 1 in the constrained profile: the group mounts only while the references section shows.
-        await uia(s.app.pid, "Show references", ControlType.Button, invoke);
+        // ReferencesSidebar.tsx: the toggle has `aria-expanded`, so UI Automation gives it no Invoke pattern (remote-delete-packaged.test.ts `showRemotes`).
+        await s.c.evaluate(`document.querySelector('button[aria-label="Show references"][aria-expanded=false]').focus(); true`);
+        await press(s.c, "Enter");
         await until<boolean>(s.c, "the constrained tree", `!!(${TREE})`, (v) => v, LIST_WAIT_MS);
         await expectForm(s, "hidden", "case 1 constrained 960x640 compact");
         await expectDescription(s, "constrained 960x640 compact");
@@ -953,7 +966,7 @@ ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v
         await clickAt(s.c, HINTS_BUTTON);
         const closed = await expectForm(s, "closed", "case 5 after the close");
         expect(closed.stored?.includes(`"keyHintsOpen":false`)).toBe(true);
-        await end(s);
+        await quit(s);
         s = await restart("t164-5", a);
         await until<boolean>(s.c, "the panel after the restart", `${HINTS} !== null`, (v) => v, LIST_WAIT_MS);
         await layout(s, 1280, 800, "compact", 240);
@@ -964,7 +977,7 @@ ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v
         await clickAt(s.c, HINTS_BUTTON);
         const open = await expectForm(s, "open", "case 5 after the open");
         expect(open.stored?.includes(`"keyHintsOpen":true`)).toBe(true);
-        await end(s);
+        await quit(s);
         s = await restart("t164-5", copy);
         await until<boolean>(s.c, "the panel after the second restart", `${HINTS} !== null`, (v) => v, LIST_WAIT_MS);
         await layout(s, 1280, 800, "compact", 240);

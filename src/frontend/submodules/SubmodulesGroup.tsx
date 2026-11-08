@@ -393,6 +393,8 @@ export type SubmodulesGroupProps = {
   onHintsOpen?(open: boolean): void;
   /** `metrics(density, textScale).reducedPaneMin` for the D20 fit rule. Absent: no form fits. */
   hintsMin?: number;
+  /** `TreeKeyHints` `buttonRef`. */
+  hintsButtonRef?(element: HTMLButtonElement): () => void;
 };
 
 // The compact row height (plan.md density table). The measured height of each mounted row replaces it.
@@ -599,7 +601,7 @@ const SubmoduleItem = memo(function SubmoduleItem(props: SubmoduleItemProps) {
 });
 
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
-export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0, scrollElement, hintsSlot = null, hintsOpen = true, onHintsOpen, hintsMin = Number.POSITIVE_INFINITY }: SubmodulesGroupProps) {
+export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0, scrollElement, hintsSlot = null, hintsOpen = true, onHintsOpen, hintsMin = Number.POSITIVE_INFINITY, hintsButtonRef }: SubmodulesGroupProps) {
   const headingId = useId();
   const hintsButtonId = useId();
   const hintsListId = useId();
@@ -926,6 +928,7 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
           buttonId={hintsButtonId}
           listId={hintsListId}
           onBoxLost={() => elements.current.get(shown[at]!.key)?.focus()}
+          buttonRef={hintsButtonRef}
         />
       )}
       {menu === null ? null : (

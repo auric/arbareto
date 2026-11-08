@@ -4,7 +4,7 @@
 import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, Folder01Icon, FolderGitIcon, GitBranchIcon, SidebarLeftIcon, Tag01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type Ref } from "react";
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
 import { compareKeys, treeKey } from "../../contracts/tree-order";
 import { unknownReadText } from "../app/RepositoryStates";
@@ -97,6 +97,8 @@ export type ReferencesSidebarProps = {
   /** The expansion of a collapsible section, when the parent holds it. */
   expanded?: boolean;
   onExpandedChange?: (next: boolean) => void;
+  /** The Show references toggle of a collapsible section. */
+  toggleRef?: Ref<HTMLButtonElement>;
   /** Feature 005 spec FR-066: the newest `readBranches` entries, for the worktree line of the branch card. Without them, the card leaves out that line. */
   branches?: readonly BranchEntry[] | null;
 };
@@ -157,7 +159,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollElement, expanded, onExpandedChange, branches }: ReferencesSidebarProps) {
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollElement, expanded, onExpandedChange, toggleRef, branches }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId(), empty: useId(), card: useId(), counts: useId() };
   // Feature 005 plan.md D13: one branch card at a time, by row key.
   const [card, setCard] = useState<{ key: string; instant: boolean } | null>(null);
@@ -558,7 +560,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
             {groups.reduce((sum, g) => sum + g.tree.count, 0)}
           </span>
         )}
-        {collapsible ? <IconButton icon={SidebarLeftIcon} label="Show references" className="ml-auto" aria-expanded={shown} onClick={() => (onExpandedChange ?? setOwnShown)(!shown)} /> : null}
+        {collapsible ? <IconButton ref={toggleRef} icon={SidebarLeftIcon} label="Show references" className="ml-auto" aria-expanded={shown} onClick={() => (onExpandedChange ?? setOwnShown)(!shown)} /> : null}
       </div>
       {shown ? (
         <>

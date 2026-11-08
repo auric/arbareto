@@ -1898,4 +1898,25 @@ describe("keys in the tree mount", () => {
       expect(slot()).toBeNull();
     });
   });
+
+  // tasks.md T166, plan D20 "Keyboard": the constrained profile removes the tree, so the focus goes to the Show references toggle.
+  test("T166: a switch to the constrained profile while the panel button has focus moves the focus to the Show references toggle", async () => {
+    await sized(1280, 800, async () => {
+      await listed();
+      await feed(728, 441, 24);
+      await act(async () => hintsButton().focus());
+      expect(document.activeElement).toBe(hintsButton());
+      const happy = (window as unknown as SizedWindow).happyDOM;
+      await act(async () => {
+        happy.setInnerWidth(960);
+        happy.setInnerHeight(640);
+        window.dispatchEvent(new Event("resize"));
+      });
+      await settle();
+      expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
+      expect(document.querySelector('[data-slot="submodules-group"]')).toBeNull();
+      expect(document.activeElement === document.body).toBe(false);
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("Show references");
+    });
+  });
 });

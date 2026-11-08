@@ -1169,6 +1169,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [referencesShown, setReferencesShown] = useState(false);
   // Feature 004 plan D20 "Place": the slot of the "Keys in the tree" panel, outside the constrained profile only.
   const [hintsSlot, setHintsSlot] = useState<HTMLElement | null>(null);
+  // Plan D20 "Keyboard": a profile switch removes the tree while the "Keys in the tree" button can have focus.
+  const hintsFocusLost = useRef(false);
+  const [bindHintsButton] = useState(() => (element: HTMLButtonElement) => () => {
+    if (document.activeElement === element) hintsFocusLost.current = true;
+  });
+  const referencesToggle = useRef<HTMLButtonElement>(null);
   // The opener of the submodule update. The Submodules group keeps the focused control.
   const reviewOpener = useRef<"notice" | "menu" | "group">("notice");
   // After an approval, `approvalRead` waits until the read that `trustApproved` starts ends with any result,
@@ -1453,6 +1459,15 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const heading = bandRef.current?.querySelector<HTMLElement>("h2");
     if (heading) heading.focus();
     else moveSection("next", "noticeHeading");
+  });
+  // Plan D20 "Keyboard": in the constrained profile, focus moves to the Show references toggle.
+  useLayoutEffect(() => {
+    if (!hintsFocusLost.current) return;
+    hintsFocusLost.current = false;
+    // The flag can outlive its render, so a live focus stays where it is.
+    const active = document.activeElement;
+    const lost = active === null || active === document.body || !active.isConnected;
+    if (profile === "constrained" && lost) referencesToggle.current?.focus();
   });
   const onSectionFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -2128,6 +2143,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           hintsOpen={preferences.keyHintsOpen}
           onHintsOpen={(open) => savePreferences({ ...preferences, keyHintsOpen: open })}
           hintsMin={m.reducedPaneMin}
+          hintsButtonRef={bindHintsButton}
         />
       </div>
     );
@@ -2154,6 +2170,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         scrollElement={constrained ? referencesElement : undefined}
         expanded={constrained ? referencesShown : undefined}
         onExpandedChange={constrained ? setReferencesShown : undefined}
+        toggleRef={referencesToggle}
         repository={state.repository?.worktreeKey ?? ""}
         onShowBranchHistory={showBranchHistory}
         tracking={labels}

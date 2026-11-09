@@ -504,7 +504,10 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
   - Deployment policy: one policy, `{"name": "v*", "type": "tag"}`.
 - Immutable releases: already on before this step (`{"enabled": true, "enforced_by_owner": false}`). No change.
 - Repository: `"private": false`. Only the signed-in account read this value.
-- Open: the anonymous `gh api repos/auric/arbareto` check that confirms `"private": false`.
+- Anonymous public check (2026-11-09T10:42:51Z): an unauthenticated `GET https://api.github.com/repos/auric/arbareto` returned HTTP 200.
+  - The request sent no token and did not use `gh`. `gh api` sends the stored token of a signed-in account, so this call is the anonymous form of the T031 check.
+  - Response: `"full_name": "auric/arbareto"`, `"private": false`, `"visibility": "public"`, `"default_branch": "main"`, `"archived": false`.
+  - The response body and the request time are in local scratch. The HTTP status comes from the orchestrator record.
 - Open: the check that `main` holds features 005, 006, 008, 010, and 011 and the 004 Submodules tree (004 User Story 12).
-- T031 stays open until both checks pass.
-- `OBSERVATION T031: environment release set (reviewer auric, admin bypass off, tag policy v*); immutable releases on; anonymous public check and main content check open`
+- T031 stays open until this check passes.
+- `OBSERVATION T031: environment release set (reviewer auric, admin bypass off, tag policy v*); immutable releases on; anonymous check private false; main content check open`

@@ -1153,3 +1153,33 @@ T165 review fix (commit 7c18ae53, merged into l9 as 54ccc1cd), worktree l5, 2026
 - One run of the new case started 28 s after the previous run, not after the 3-minute wait.
 
 Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): session 3 re-measured these cases on build 9df12f84, after the first T165 fix (table above). Build 9df12f84 does not hold the 7c18ae53 change. Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. Session 4 ran the c4 red checks on the current test file (build 763786ec). Each control was red. Evidence for T166: session 4 T164 (1) and control c-t166. Evidence for T145: session 4 T156 case 1. Session 4 re-ran SC-021 256 for T158 on build 763786ec. T145 and T161 also stay unticked until the green final full run.
+
+WSL record (T151, T155, T162), worktree l9 at 54ccc1cd (merge of the T165 fix 7c18ae53), 2026-11-09. Distro Ubuntu-26.04. Windows host Bun 1.4.4, Git 2.56.0.windows.2. The driver ran from 17:35:54 to about 20:18. Each step ran once, in a fixed order. Each `ORIGIN` line named the l9 checkout:
+- Check before the runs: frozen install, `bun run typecheck`, and the schema check exit 0. `bun test ./tests/contracts`: 6,780 pass, 37 skip, 0 fail, 138 files, 634 s. `tests/git/portable-imports.test.ts`: 25 pass, 0 fail.
+- r-t151-1: exit 0, 1 pass, 0 fail, 156 s.
+- r-t155-1: exit 0, 1 pass, 0 fail, 636 s.
+- r-t162-1 (filter `-t "1,024 rows: the list time"`): exit 0, 1 pass, 0 fail, 6,298 s.
+- No budget applies. SC-018, SC-020, and SC-021 give WSL no budget at any row count (spec.md SC-018, SC-020, SC-021).
+
+| Record | Rows | Value |
+| --- | ---: | --- |
+| T151 SC-020 list time, median of 3 | 20 | branch 16,780.1 ms, detached 16,877.9 ms |
+| T141 SC-018 per row, from the T151 run | 20 | branch about 839 ms, detached 843.9 ms, difference -4.9 ms per row |
+| T155 SC-021, 1 lane, median of 3 | 20 moved | first update process 45,055.1 ms, total 93,062.7 ms, preflight 45,054.4 ms |
+| T155 SC-021, 8 lanes, median of 3 | 20 moved | first update process 23,924.4 ms, total 66,187.5 ms, preflight 23,923.8 ms |
+| T162 SC-020 list time, one counted run after a warm-up | 100 | detached 83,603.7 ms, branch 83,760.6 ms |
+| T162 SC-020 list time, one counted run after a warm-up | 1,024 | detached 725,401.3 ms, branch 724,737.4 ms |
+| T162 SC-020 per added row | 100 to 1,024 | detached 694.59 ms, branch 693.70 ms |
+| T162 SC-021 time to "Updating 1 of <n>" | 100 moved | 92,329.3 ms |
+| T162 SC-021 time to "Updating 1 of <n>" | 1,024 moved | 802,275.9 ms |
+| T162 SC-021 per added row | 100 to 1,024 | 768.34 ms |
+
+- The "List time" estimate gave 9 to 12 s for 20 rows. T151 measured 16.8 to 16.9 s.
+- Controls: after each control, `tests/wsl/submodules.test.ts` was restored. Each time, its SHA-256 was BE81CBF3…B46B, the hash before the edit.
+- c-t151-1 (fixture of 19 rows): exit 1, 0 pass, 1 fail. The case "branch marks: ahead 1, detached, and gone…" failed with marks 19 vs 20 and rows 19 vs 20.
+- c-t155-1 (19 moved rows): exit 1, 0 pass, 1 fail. The "update time…" case failed with moved 19 vs 20 and steps 19 vs 20.
+- c-t162-1 (1,023 rows): exit 1, 0 pass, 1 fail. The "1,024 rows…" case failed with rows 1023 vs 1024.
+- No `arbareto-fixtures-*` folder stayed in the distro.
+- Driver defect: the driver counted pass and fail on stdout. Bun writes its summary to stderr. So the driver fields `valid`, `green`, and `red` read False. The counts above come from the stderr log of each step. The fields did not change the run order.
+
+Ticks: none from this record. T151, T155, and T162 wait for the green final full run that includes the WSL group (tasks.md:42).

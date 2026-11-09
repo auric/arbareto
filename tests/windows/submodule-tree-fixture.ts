@@ -7,8 +7,11 @@
 
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { SubmoduleBranch, SubmodulePlanRow } from "../../src/contracts/submodules";
+import { VIRTUAL_MIN } from "../../src/frontend/submodules/submodule-tree";
 import { FIXED_IDENTITY, FIXTURE_ROOT, ownedGit } from "../git/fixture-root";
 import { gitExit } from "../git/history-diff-fixtures";
+import type { IpcLog } from "./cdp";
 
 // Git transport rules (git-config(1) `protocol.allow`): Git 2.38.1 and later refuse the file transport for a submodule clone without this value.
 const CONFIG = ["-c", `user.name=${FIXED_IDENTITY.name}`, "-c", `user.email=${FIXED_IDENTITY.email}`, "-c", "core.autocrlf=false", "-c", "protocol.file.allow=always"];
@@ -25,6 +28,8 @@ export interface Lib {
   url: string;
   // `main` and the tag `v1`.
   main: string;
+  // The tip of `release/2.x`.
+  release: string;
 }
 
 // `<root>/lib.git` has `main` (2 commits), the tag `v1` at `main`, `release/2.x` (3 commits after `main`), and `lint` at `main`.
@@ -48,7 +53,7 @@ function lib(exe: string, root: string): Lib {
   g(src, ["switch", "-q", "-c", "release/2.x"]);
   for (const n of [1, 2, 3]) commit(`release ${n}`);
   g(src, ["push", "-q", slashed(bare), "refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"]);
-  return { url: slashed(bare), main };
+  return { url: slashed(bare), main, release: g(src, ["rev-parse", "HEAD"]) };
 }
 
 // One commit on `main` of a new repository at `repo`. `prepare` writes the index entries of that commit.
@@ -93,7 +98,7 @@ export function twinWorlds(exe: string, dir: string, n: number): Twins {
     g(branch, ["add", "--", ".gitmodules"]);
     g(branch, ["update-index", "--index-info"], gitlinks(l.main, paths));
   });
-  g(branch, ["submodule", "update", "--init", "-q"]);
+  g(branch, ["submodule", "update", "--init", "--jobs", "8", "-q"]);
   // The update leaves each HEAD detached at the gitlink. The clone made `main` with `origin/main` as its upstream, at the same commit.
   const detached = join(dir, "detached");
   // The gitfile and `core.worktree` of each submodule hold relative paths, so the copy stays valid.
@@ -102,14 +107,49 @@ export function twinWorlds(exe: string, dir: string, n: number): Twins {
   return { branch, detached, paths };
 }
 
+export interface Moved {
+  repo: string;
+  paths: string[];
+  // The commit of each HEAD: `main` of `lib.git`.
+  head: string;
+  // The commit of each gitlink: the `release/2.x` tip, which each clone holds.
+  target: string;
+}
+
+/** T154: the detached twin of `twinWorlds` with every gitlink at the `release/2.x` tip. Each HEAD stays detached at `main`. */
+export function movedTwins(exe: string, dir: string, n: number): Moved {
+  const g = gitIn(exe);
+  const l = lib(exe, dir);
+  const paths = Array.from({ length: n }, (_, i) => twinPath(i));
+  const repo = join(dir, "moved");
+  commitRepo(exe, repo, () => {
+    writeFileSync(join(repo, ".gitmodules"), gitmodules(paths.map((p) => [p, l.url])));
+    g(repo, ["add", "--", ".gitmodules"]);
+    g(repo, ["update-index", "--index-info"], gitlinks(l.main, paths));
+  });
+  g(repo, ["submodule", "update", "--init", "--jobs", "8", "-q"]);
+  g(repo, ["update-index", "--index-info"], gitlinks(l.release, paths));
+  g(repo, ["commit", "-q", "--no-verify", "-m", "move"]);
+  return { repo, paths, head: l.main, target: l.release };
+}
+
 // ---- (c): the 1,024-folder bound ----
 
 /** T144 (c): 256 gitlinks without a clone. Each path has 4 own folders, so 256 rows give 1,024 folders. `top` adds 1 shared folder. */
 export function folderWorld(exe: string, dir: string, folders: 1_024 | 1_025): { repo: string; paths: string[] } {
+  const prefix = folders === 1_025 ? "top/" : "";
+  return gitlinkWorld(exe, dir, Array.from({ length: 256 }, (_, i) => `${prefix}t${String(i).padStart(3, "0")}/a/b/c/s`));
+}
+
+/** T161: 1,024 gitlinks without a clone at `f<i>/s`, i from 0000 to 1023. So 1,024 rows give 1,024 folders. */
+export function wideWorld(exe: string, dir: string): { repo: string; paths: string[] } {
+  return gitlinkWorld(exe, dir, Array.from({ length: 1_024 }, (_, i) => `f${String(i).padStart(4, "0")}/s`));
+}
+
+// One commit with a gitlink at `main` of `lib.git` for each path, without a clone.
+function gitlinkWorld(exe: string, dir: string, paths: string[]): { repo: string; paths: string[] } {
   const g = gitIn(exe);
   const l = lib(exe, dir);
-  const prefix = folders === 1_025 ? "top/" : "";
-  const paths = Array.from({ length: 256 }, (_, i) => `${prefix}t${String(i).padStart(3, "0")}/a/b/c/s`);
   const repo = join(dir, "repo");
   commitRepo(exe, repo, () => {
     writeFileSync(join(repo, ".gitmodules"), gitmodules(paths.map((p) => [p, l.url])));
@@ -248,3 +288,50 @@ export function markParts(exe: string, dir: string): string[] {
   if (ab === null) return [name, "upstream gone"];
   return [name, `${ab[1]} ahead, ${ab[2]} behind`];
 }
+
+// ---- Page checks of the twin sets ----
+
+// Plan D20 "Group": above `VIRTUAL_MIN` shown rows, only the rows near the view are mounted.
+export { VIRTUAL_MIN };
+
+/**
+ * A page expression: true when the rows of `paths` show with the branch mark `text` (spec FR-109). The marks come with the rows (FR-110).
+ * The one top folder row counts all rows of `paths`. Each mounted submodule row is a row of `paths` with the mark `text`.
+ * Up to `VIRTUAL_MIN` shown rows, all rows are mounted, so the mounted submodule rows must also number `paths.length`.
+ */
+export function marksShown(paths: readonly string[], text: string): string {
+  const top = paths[0]!.split("/")[0]!;
+  if (!paths.every((p) => p.startsWith(`${top}/`))) throw new Error(`a path is outside the top folder ${top}`);
+  const all = paths.length + folderCount(paths) <= VIRTUAL_MIN;
+  // SubmodulesGroup.tsx `num`: the folder count text is the en-US form.
+  const count = paths.length.toLocaleString("en-US");
+  return `(() => {
+    const items = [...(document.querySelector('[data-slot=submodules-group]')?.querySelectorAll('[role=tree] [role=treeitem]') ?? [])];
+    const top = items.find((e) => e.dataset.path === undefined && e.getAttribute('aria-description') === ${JSON.stringify(top)} && e.getAttribute('aria-level') === '1' && e.getAttribute('aria-setsize') === '1');
+    if (top?.querySelector('[data-slot=folder-count]')?.textContent !== ${JSON.stringify(count)}) return false;
+    const paths = new Set(${JSON.stringify(paths)});
+    const rows = items.filter((e) => e.dataset.path !== undefined);
+    return rows.length > 0 && ${all ? `rows.length === ${paths.length} &&` : ""} rows.every((e) => paths.has(e.dataset.path) && e.querySelector('[data-slot=branch-mark]')?.textContent === ${JSON.stringify(text)});
+  })()`;
+}
+
+type ReviewReply = { state: string; result?: { rows: Pick<SubmodulePlanRow, "rowId" | "path">[]; branches: SubmoduleBranch[] } };
+export type ReplyMarks = { rows: string[]; count: number; marks: Record<string, object> };
+
+/** The branch marks of the last sent `review_submodules` call, by row path (contract Δ12 "Branch marks"). No call may be pending. */
+export async function replyMarks(ipc: IpcLog): Promise<ReplyMarks> {
+  if (ipc.pending("review_submodules").length > 0) throw new Error("a review_submodules call is pending");
+  const call = ipc.calls().findLast((c) => c.command === "review_submodules");
+  if (call === undefined || call.end === null) throw new Error("no review_submodules reply arrived");
+  const reply = await ipc.body<ReviewReply>(call);
+  if (reply.state !== "succeeded" || reply.result === undefined) throw new Error(`the last review_submodules reply is ${reply.state}`);
+  const pathOf = new Map(reply.result.rows.map((r) => [r.rowId, r.path]));
+  return {
+    rows: reply.result.rows.map((r) => r.path).toSorted(),
+    count: reply.result.branches.length,
+    marks: Object.fromEntries(reply.result.branches.map(({ rowId, ...mark }) => [pathOf.get(rowId) ?? `no row ${rowId}`, mark])),
+  };
+}
+
+/** The `replyMarks` value when each row of `paths` has the mark `mark`, without its `rowId`. */
+export const sameMarks = (paths: readonly string[], mark: object): ReplyMarks => ({ rows: paths.toSorted(), count: paths.length, marks: Object.fromEntries(paths.map((p) => [p, mark])) });

@@ -6,9 +6,14 @@
 
 import { describe, expect, test } from "bun:test";
 import type { OperationEvent } from "../../src/contracts/outcome";
+import { COMMIT_OUTPUT_TAIL_BYTES, PIPE_FRAME_BYTES } from "../../src/contracts/limits";
 import { SubmoduleRowResult, type SubmoduleFailedRead } from "../../src/contracts/submodules";
+import { encodeFrame } from "../../src/git-service/transport";
+import { printOrigin } from "../origin";
 import { underTest } from "./hunk-harness";
 import { TEXTS } from "./submodule-harness";
+
+printOrigin("../../src/git-service/transport.ts", import.meta.dir);
 
 type RowRemedy = { command: string | null; text?: string };
 
@@ -265,5 +270,22 @@ describe("operation outcome (contract §12 \"Reconciliation and outcome\", first
   test("a row that differs from its plan gives completed-with-effects", async () => {
     const { event } = await classify({ rows: [row({ observed: seen(OTHER) })], stop: null });
     expect(event).toEqual({ type: "differing-effects" });
+  });
+});
+
+// Feature 004 FR-115 and 001 contract §12 "Output tail" (T159 case d).
+describe("output tail total (004 FR-115)", () => {
+  test("1,024 failed rows with 16 KiB tails: the first 256 rows keep their tails, 4 MiB; each later row keeps exitCode and its remedy with an empty tail; the result fits one frame", async () => {
+    // A JSON string holds a backslash as 2 bytes, so 1,024 such tails pass the 16 MiB frame.
+    const tail = `${"\\".repeat(255)}\n`.repeat(64);
+    expect(new TextEncoder().encode(tail).length).toBe(COMMIT_OUTPUT_TAIL_BYTES);
+    const failed = { firstFetch: false, outputTail: tail, exitCode: 128, remedy: CLONE_REMEDY };
+    const { rows } = await classify({ rows: Array.from({ length: 1_024 }, (_, i) => row({ path: `s${i}`, observed: seen(OLD), phase: { ...idle, failedStep: failed } })), stop: null });
+    const kept = rows.findIndex((r) => r.outputTail !== tail);
+    expect({
+      kept,
+      later: rows.slice(kept).every((r) => r.state === "failed" && r.outputTail === "" && r.exitCode === 128 && Bun.deepEquals(r.remedy, CLONE_REMEDY)),
+    }).toEqual({ kept: 256, later: true });
+    expect(encodeFrame({ kind: "public", response: { state: "failed-with-effects", result: { rows } } }).length).toBeLessThan(PIPE_FRAME_BYTES);
   });
 });

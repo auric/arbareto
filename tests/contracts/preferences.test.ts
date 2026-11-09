@@ -11,7 +11,7 @@ printOrigin("../../src/frontend/state/preferences.ts", import.meta.dir);
 // plan.md "Compact token system" and "Chosen layout, sizes, and DPI": the wide file lane is 240 to 400 DIPs, 280 by default.
 // plan.md "References sidebar": the sidebar is 180 to 420 DIPs, 240 by default. Null keeps the layout default of a height pane.
 const PANES: Panes = { fileLane: 280, sidebar: 240, fileBand: null, tray: null, commitDock: null, detailsDock: null };
-const DEFAULTS: Preferences = { theme: "system", darkPalette: "graphite", density: "compact", panes: PANES };
+const DEFAULTS: Preferences = { theme: "system", darkPalette: "graphite", density: "compact", panes: PANES, keyHintsOpen: true };
 // The stored bounds over both densities and the contract text scales 1 to 2.25. Heights have no plan.md DIP maximum.
 const STORED: Panes = { fileLane: 333, sidebar: 300, fileBand: 150, tray: 200, commitDock: 500, detailsDock: 240 };
 const BELOW: Panes = { fileLane: 239, sidebar: 179, fileBand: 101, tray: 143, commitDock: 423, detailsDock: 57 };
@@ -64,7 +64,7 @@ describe("preferences", () => {
       for (const density of ["compact", "comfortable"] as const) {
         for (const fileLane of [240, 333, 400]) {
           for (const darkPalette of ["graphite", "ink", "warm"] as const) {
-            const value: Preferences = { theme, darkPalette, density, panes: { ...PANES, fileLane } };
+            const value: Preferences = { theme, darkPalette, density, panes: { ...PANES, fileLane }, keyHintsOpen: fileLane !== 333 };
             expect(readPreferences(stored(value))).toEqual(value);
           }
         }
@@ -74,14 +74,14 @@ describe("preferences", () => {
 
   test("an invalid theme reads as System and keeps the other values", () => {
     for (const theme of ["purple", "", "System", "DARK", 1, null, undefined, {}]) {
-      expect(readPreferences(stored({ darkPalette: "graphite", theme: theme as never, density: "comfortable", panes: { ...PANES, fileLane: 300 } }))).toEqual({ darkPalette: "graphite", theme: "system", density: "comfortable", panes: { ...PANES, fileLane: 300 } });
+      expect(readPreferences(stored({ darkPalette: "graphite", theme: theme as never, density: "comfortable", panes: { ...PANES, fileLane: 300 } }))).toEqual({ darkPalette: "graphite", theme: "system", density: "comfortable", panes: { ...PANES, fileLane: 300 }, keyHintsOpen: true });
     }
   });
 
   // plan.md "Dark palettes": an unknown or missing palette reads as Graphite.
   test("an unknown or missing dark palette reads as Graphite and keeps the other values", () => {
     for (const darkPalette of ["purple", "", "Ink", "WARM", "warm dark", 1, null, undefined, {}]) {
-      expect(readPreferences(stored({ theme: "dark", darkPalette: darkPalette as never, density: "comfortable", panes: { ...PANES, fileLane: 300 } }))).toEqual({ theme: "dark", darkPalette: "graphite", density: "comfortable", panes: { ...PANES, fileLane: 300 } });
+      expect(readPreferences(stored({ theme: "dark", darkPalette: darkPalette as never, density: "comfortable", panes: { ...PANES, fileLane: 300 } }))).toEqual({ theme: "dark", darkPalette: "graphite", density: "comfortable", panes: { ...PANES, fileLane: 300 }, keyHintsOpen: true });
     }
     const storage = new MemoryStorage();
     storage.setItem("arbareto.preferences.v1", JSON.stringify({ theme: "dark", density: "compact", panes: PANES }));
@@ -90,13 +90,13 @@ describe("preferences", () => {
 
   test("an invalid density reads as Compact; Comfortable is the only other value", () => {
     for (const density of ["spacious", "cozy", "Comfortable", "", 0, null]) {
-      expect(readPreferences(stored({ darkPalette: "graphite", theme: "dark", density: density as never, panes: { ...PANES, fileLane: 300 } }))).toEqual({ darkPalette: "graphite", theme: "dark", density: "compact", panes: { ...PANES, fileLane: 300 } });
+      expect(readPreferences(stored({ darkPalette: "graphite", theme: "dark", density: density as never, panes: { ...PANES, fileLane: 300 } }))).toEqual({ darkPalette: "graphite", theme: "dark", density: "compact", panes: { ...PANES, fileLane: 300 }, keyHintsOpen: true });
     }
   });
 
   test("an out-of-range or non-numeric pane proportion reads as its default", () => {
     for (const fileLane of [239, 401, -1, 0, Number.NaN, Number.POSITIVE_INFINITY, 1e9, "300", null]) {
-      expect(readPreferences(stored({ darkPalette: "graphite", theme: "light", density: "comfortable", panes: { ...PANES, fileLane: fileLane as never } }))).toEqual({ darkPalette: "graphite", theme: "light", density: "comfortable", panes: PANES });
+      expect(readPreferences(stored({ darkPalette: "graphite", theme: "light", density: "comfortable", panes: { ...PANES, fileLane: fileLane as never } }))).toEqual({ darkPalette: "graphite", theme: "light", density: "comfortable", panes: PANES, keyHintsOpen: true });
     }
   });
 
@@ -153,13 +153,32 @@ describe("preferences", () => {
 
   test("a throwing storage read gives the defaults, and a throwing write throws nothing", () => {
     expect(readPreferences(throwing)).toEqual(DEFAULTS);
-    expect(() => writePreferences(throwing, { darkPalette: "graphite", theme: "dark", density: "comfortable", panes: { ...PANES, fileLane: 300 } })).not.toThrow();
+    expect(() => writePreferences(throwing, { darkPalette: "graphite", theme: "dark", density: "comfortable", panes: { ...PANES, fileLane: 300 }, keyHintsOpen: false })).not.toThrow();
   });
 
   test("the module exports no mode, trust, approval, or operation field", () => {
     for (const name of Object.keys(preferencesModule)) expect(name).not.toMatch(FORBIDDEN);
     expect(keysDeep(DEFAULT_PREFERENCES).filter((key) => FORBIDDEN.test(key))).toEqual([]);
     expect(keysDeep(readPreferences(stored({ darkPalette: "graphite", theme: "dark" }))).filter((key) => FORBIDDEN.test(key))).toEqual([]);
+  });
+
+  // tasks.md T163 (13), feature 004 plan D20 "Stored state": the "Keys in the tree" panel starts open.
+  test("keyHintsOpen defaults to true; a missing or non-boolean value reads as true; false stays; each write keeps it", () => {
+    expect(DEFAULT_PREFERENCES.keyHintsOpen).toBe(true);
+    const raw = (value: Record<string, unknown>) => {
+      const storage = new MemoryStorage();
+      storage.setItem("arbareto.preferences.v1", JSON.stringify(value));
+      return storage;
+    };
+    const { keyHintsOpen: _, ...without } = DEFAULTS;
+    expect(readPreferences(raw({ ...without, theme: "dark" }))).toEqual({ ...DEFAULTS, theme: "dark" });
+    expect(readPreferences(raw({ ...DEFAULTS, keyHintsOpen: false })).keyHintsOpen).toBe(false);
+    for (const value of [null, 0, 1, "false", "true", {}, []]) expect(readPreferences(raw({ ...DEFAULTS, keyHintsOpen: value })).keyHintsOpen).toBe(true);
+    const storage = stored({ keyHintsOpen: false });
+    expect(JSON.parse(storage.getItem("arbareto.preferences.v1")!).keyHintsOpen).toBe(false);
+    const next = storePanes(storage, readPreferences(storage), "wide", { sidebar: 300 });
+    expect(next.keyHintsOpen).toBe(false);
+    expect(readPreferences(storage)).toEqual({ ...DEFAULTS, keyHintsOpen: false, panes: { ...PANES, sidebar: 300 } });
   });
 
   test("an extra stored mode or trust field never reaches the read result", () => {

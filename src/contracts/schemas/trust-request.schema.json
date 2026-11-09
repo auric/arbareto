@@ -484,7 +484,7 @@
         },
         "submodulePaths": {
           "minItems": 1,
-          "maxItems": 256,
+          "maxItems": 1024,
           "type": "array",
           "items": {
             "type": "string",

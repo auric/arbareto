@@ -2229,6 +2229,8 @@ Open:
 
 - "Stage one hunk with the keyboard only" and its `bun tests/windows/make-fixture.ts --snapshot <fixture path>` check did not run. They need real keyboard input on the installed app. This is a user step. T149 stays open until it passes.
 
+**Code font record, 2026-11-09.** The packaged build 763786ec (feature 004, worktree l9) ran the code font case of `tests/windows/workbench-packaged.test.ts`. The rule is the code font note of 2026-11-07 in plan.md:503. Result: 1 pass, `RECORD font: Cascadia Mono` (15 glyphs, not a custom font). WebView2 157.0.4341.42 on OS 10.0.26300. Control: the test's own `windowsFonts` list without "Cascadia Mono" gave `used` false, and the case failed. The hashes are in 004 research.md R31, session 4.
+
 ### Scenario records
 
 This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.

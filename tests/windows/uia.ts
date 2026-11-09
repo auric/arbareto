@@ -82,10 +82,12 @@ const IID_IUIAutomationValuePattern = "a94cd8b1-0844-4cd6-9d2d-640537ab39e9";
 const IID_IUIAutomationExpandCollapsePattern = "619be086-1f4e-4ee4-bafa-210128738730";
 const IID_IUIAutomationTogglePattern = "94cf8058-9b8d-4ab9-8bfd-4cd0a33c8c70";
 const IID_IUIAutomationScrollPattern = "88f4d42a-e881-459d-a77c-73bbbb7e02dc";
+const IID_IUIAutomationWindowPattern = "0faef453-9208-43ef-bbb2-3b485177864f";
 const UIA_InvokePatternId = 10000;
 const UIA_ValuePatternId = 10002;
 const UIA_ScrollPatternId = 10004;
 const UIA_ExpandCollapsePatternId = 10005;
+const UIA_WindowPatternId = 10009;
 const UIA_SelectionItemPatternId = 10010;
 const UIA_TextPatternId = 10014;
 const UIA_TogglePatternId = 10015;
@@ -96,6 +98,7 @@ const UIA_LiveSettingPropertyId = 30135;
 const Polite = 1;
 // `UIAutomationClient.h` control type IDs for the `controlType` argument of `find`.
 export const ControlType = { Button: 50000, Edit: 50004, MenuItem: 50011, Tree: 50023, TreeItem: 50024 } as const;
+const TreeScope_Element = 0x1;
 const TreeScope_Descendants = 0x4;
 const IID_IUIAutomationElement3 = "8471df34-aee0-4a01-a7de-7db9af12c296";
 const SLOT = {
@@ -145,6 +148,8 @@ const SLOT = {
   get_CurrentValue: 4,
   // IUIAutomationTogglePattern
   Toggle: 3,
+  // IUIAutomationWindowPattern
+  Close: 3,
   // IUIAutomationScrollPattern
   get_CurrentVerticalScrollPercent: 6,
   // IUIAutomationTextPattern
@@ -375,13 +380,22 @@ function nameCondition(name: string, controlType: number | undefined): Pointer {
 }
 
 // The first descendant in tree order whose Name equals `name`, and whose control type equals `controlType` when given. UI Automation also shows an owned dialog as a descendant of its owner window.
-export async function find(processId: number, name: string, timeoutMs: number, controlType?: number): Promise<Element> {
+export function find(processId: number, name: string, timeoutMs: number, controlType?: number): Promise<Element> {
+  return findFirst(TreeScope_Descendants, processId, name, timeoutMs, controlType);
+}
+
+// The top-level window of the process whose Name equals `name`.
+export function findWindow(processId: number, name: string, timeoutMs: number): Promise<Element> {
+  return findFirst(TreeScope_Element, processId, name, timeoutMs, undefined);
+}
+
+async function findFirst(scope: number, processId: number, name: string, timeoutMs: number, controlType: number | undefined): Promise<Element> {
   checkArgs(processId, name, timeoutMs);
   const condition = nameCondition(name, controlType);
   try {
     return await poll(timeoutMs, `no element named ${JSON.stringify(name)} in process ${processId}`, () =>
       eachWindow(processId, (window) => {
-        const found = outCall(window, "FindFirst", [i32, P], [TreeScope_Descendants, condition]);
+        const found = outCall(window, "FindFirst", [i32, P], [scope, condition]);
         return found === null ? null : new Element(found);
       }),
     );
@@ -469,6 +483,10 @@ export function expand(element: Element): void {
 
 export function collapse(element: Element): void {
   withPattern(element, UIA_ExpandCollapsePatternId, IID_IUIAutomationExpandCollapsePattern, "ExpandCollapse", (self) => hr("Collapse", slotCall(self, SLOT.Collapse, [], [])));
+}
+
+export function closeWindow(element: Element): void {
+  withPattern(element, UIA_WindowPatternId, IID_IUIAutomationWindowPattern, "Window", (self) => hr("Close", slotCall(self, SLOT.Close, [], [])));
 }
 
 export function focus(element: Element): void {

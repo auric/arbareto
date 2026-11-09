@@ -15,7 +15,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 
 ## Format: `[ID] [P?] [Story] Description`
 
-- **[P]**: The task touches different files from the other `[P]` tasks in its group and depends on no incomplete task of that group. A sub-heading starts a new group. "Depends on" names the exact order.
+- **[P]**: The task touches different files from the other `[P]` tasks in its group and depends on no incomplete task of that group. A sub-heading starts a new group. "Depends on" names the exact order. For "Depends on" and `[P]`, a task whose note says that its tick waits for the T028 full run counts as complete.
 - **[Story]**: The user story from spec.md (US1 to US5). A task that serves several stories carries the first story and names the others.
 - **WP and agent**: Each task names its plan.md work package. Each phase heading names the agent.
 - **Local tags**: `Local: Rust` needs the local Rust toolchain. `Local: Windows` needs the Windows reference host. `Local: package` needs a packaged Windows build. `Local: network` needs reads of github.com. `GitHub` needs the orchestrator and the user's OK for that GitHub step. Cloud sessions do not run these tasks. A skip never counts as a pass.
@@ -243,7 +243,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 | FR-044 to FR-046 | T022, T034, T035 |
 | SC-001, SC-004 | T017, T030, T032 |
 | SC-002, SC-003 | T018, T020, T032 |
-| SC-005 | T007, T010, T017, T024, T033 (wrong version and dirty identity: local T007 and T026 Q3; outside `main`: GitHub T033) |
+| SC-005 | T007, T010, T017, T024, T033 (wrong version and dirty identity: local T007 and T026 Q3; outside `main`: GitHub T033; pin mismatch: static workflow check T024, no run) |
 | SC-006 | T029, T032 (times recorded) |
 | SC-007 | T032 |
 | SC-008 | T024, T036 |

@@ -511,3 +511,9 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - Open: the check that `main` holds features 005, 006, 008, 010, and 011 and the 004 Submodules tree (004 User Story 12).
 - T031 stays open until this check passes.
 - `OBSERVATION T031: environment release set (reviewer auric, admin bypass off, tag policy v*); immutable releases on; anonymous check private false; main content check open`
+
+### T024 Bun pin case (2026-11-09, reference host, the tree that fcdcf041 commits)
+
+- `bun test ./tests/contracts/release-workflow.test.ts`: exit 0, 18 pass, 0 fail. The `ORIGIN` line names the checkout under test.
+- Control mutation, undone byte for byte: in the `build` "Install Bun" step only, `RELEASE_CHECK pin` becomes `RELEASE_CHECK pinX`. The workflow test exit 1, 1 of 18 fail ("each Install Bun step compares the zip hash with BUN_ZIP_SHA256 and exits 1 with RELEASE_CHECK pin bun-windows-x64.zip").
+- `release.yml` SHA-256 before the mutation and after the restore: `0266D50EE523BA7D79DA0CC33B96C8A17BDE9B3164E0A16DDB7A070837ED8AE4`.

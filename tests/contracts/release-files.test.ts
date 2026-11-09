@@ -229,6 +229,20 @@ describeGit("hunspell-source.ts", (git) => {
     expect(source).toContain("LGPL-2.1");
   });
 
+  test("core.autocrlf=true in the Git config leaves the archive files equal to the pinned blobs", () => {
+    const { base, pins } = upstream("autocrlf");
+    const out = fixtureDir("source-autocrlf-out");
+    const env = fixtureEnv({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.autocrlf", GIT_CONFIG_VALUE_0: "true" });
+    const result = hunspellSource({ version: "0.1.0", out, upstream: base, pins, git: fixtureGitPath(git), env, work: fixtureDir("source-autocrlf-work") });
+    expect(result).toEqual({ path: join(out, archiveName("0.1.0")) });
+    const unpacked = fixtureDir("source-autocrlf-unpacked");
+    const tar = Bun.spawnSync([TAR, "-xzf", join(out, archiveName("0.1.0")), "-C", unpacked], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    expect(tar.exitCode).toBe(0);
+    const blob = fixtureGit(git, base, ["--git-dir", join(base, "hunspell", "hunspell"), "cat-file", "blob", `${pins.hunspell}:hunspell.txt`]);
+    expect(blob).toBe("hunspell.txt\n");
+    expect(readFileSync(join(unpacked, "hunspell", "hunspell.txt"), "utf8")).toBe(blob);
+  });
+
   test("a relative out folder gets the archive", () => {
     const { base, pins } = upstream("relative");
     const out = fixtureDir("source-relative-out");

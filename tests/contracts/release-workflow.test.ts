@@ -158,12 +158,13 @@ describe.skipIf(PWSH === null)("publish script with a reused draft", () => {
     "function gh {",
     "  Add-Content -LiteralPath $env:GH_LOG -Value ($args -join ' ')",
     "  $global:LASTEXITCODE = 0",
-    "  if ($args[0] -eq 'api') { if (($args -join ' ') -match '\\.assets\\[\\]\\.name') { $env:DRAFT_ASSETS -split ',' } else { 'true' } }",
+    "  if ($args[0] -eq 'api') { if (($args -join ' ') -match '\\.assets\\[\\]\\.name') { $env:DRAFT_ASSETS -split ',' } elseif ($args[1] -like '*/commits/refs/tags/*') { $env:TAG_COMMIT } else { 'true' } }",
     "}",
     "function bun { $global:LASTEXITCODE = 0; Join-Path $env:RUNNER_TEMP 'notes.md' }",
   ].join("\n");
 
-  function publish(label: string, assets: string[]): { code: number | null; stderr: string; gh: string } {
+  const BUILT = "1111111111111111111111111111111111111111";
+  function publish(label: string, assets: string[], tagCommit = BUILT): { code: number | null; stderr: string; gh: string } {
     const temp = join(scratch, label);
     mkdirSync(join(temp, "release-files"), { recursive: true });
     for (const name of PLANNED) writeFileSync(join(temp, "release-files", name), name);
@@ -172,7 +173,7 @@ describe.skipIf(PWSH === null)("publish script with a reused draft", () => {
     writeFileSync(join(temp, "publish.ps1"), `${STUBS}\n${script}\nexit 0\n`);
     const log = join(temp, "gh.log");
     writeFileSync(log, "");
-    const env = { ...process.env, RUNNER_TEMP: temp, TAG: "v0.1.0", SIGNING: "off", GITHUB_REPOSITORY: "auric/arbareto", GH_LOG: log, DRAFT_ASSETS: assets.join(",") };
+    const env = { ...process.env, RUNNER_TEMP: temp, TAG: "v0.1.0", SIGNING: "off", GITHUB_REPOSITORY: "auric/arbareto", GH_LOG: log, DRAFT_ASSETS: assets.join(","), GITHUB_SHA: BUILT, TAG_COMMIT: tagCommit };
     const proc = Bun.spawnSync([PWSH!, "-NoProfile", "-NonInteractive", "-File", join(temp, "publish.ps1")], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 60_000 });
     return { code: proc.exitCode, stderr: proc.stderr.toString(), gh: readFileSync(log, "utf8") };
   }
@@ -181,6 +182,13 @@ describe.skipIf(PWSH === null)("publish script with a reused draft", () => {
     const result = publish("stale", [...PLANNED, "arbareto_0.0.9_x64-setup.exe"]);
     expect([result.code, result.stderr.trim()]).toEqual([1, "RELEASE_CHECK exists v0.1.0"]);
     expect(result.gh).not.toContain("release upload");
+  });
+
+  test("a tag on another commit than GITHUB_SHA gives RELEASE_CHECK not-tag-commit and no release change", () => {
+    const moved = "2222222222222222222222222222222222222222";
+    const result = publish("moved", PLANNED.slice(1), moved);
+    expect([result.code, result.stderr.trim()]).toEqual([1, `RELEASE_CHECK not-tag-commit v0.1.0 ${moved}`]);
+    expect(result.gh).not.toContain("release ");
   });
 
   test("a draft with only planned assets gets the upload and the publish", () => {

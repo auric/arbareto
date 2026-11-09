@@ -35,7 +35,7 @@ The first preview release for Windows 11 x64.
 - A sidebar with branches, remote-tracking branches, tags, worktrees, and submodules. Add and remove worktrees. Update submodules.
 - The Submodules group shows a folder tree. Each folder shows the count of all submodules below it, nested ones included. Above 1,024 folders, the group shows the submodule rows without folder rows, and one line states this.
 - Each checked-out submodule shows its branch, or "no branch" for a detached HEAD. A branch with an upstream shows its ahead and behind counts. A gone upstream is marked.
-- The Submodules group and Update submodules work with up to 1,024 submodules, nested ones included. In the Commit view, submodule rows past 256 show no "modified content" or "untracked content" mark.
+- The Submodules group and Update submodules work with up to 1,024 submodules, nested ones included. With more than 256 submodules, only the first 256 by path can show the "modified content" or "untracked content" mark in the Commit view.
 - The fold-out panel "Keys in the tree" below the Submodules group lists the tree keys and the submodule menu items. It starts open. Arbareto keeps its open or closed state after a restart.
 - Git settings by scope: system, global, and local.
 - Repositories inside WSL 2 distros, through the Git of the distro. Global Git settings of the distro can be saved.

@@ -257,6 +257,10 @@ jobs:
           $version = $env:TAG.Substring(1)
           $notes = bun scripts/release/notes.ts --version $version --signing $env:SIGNING --out $env:RUNNER_TEMP
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # The tag can move while publish waits for approval. GITHUB_SHA is the commit of the build.
+          $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/refs/tags/$env:TAG" --jq .sha
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ("$tagCommit" -cne $env:GITHUB_SHA) { [Console]::Error.WriteLine("RELEASE_CHECK not-tag-commit $env:TAG $tagCommit"); exit 1 }
           $drafts = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name == env.TAG) | .draft')
           if ($LASTEXITCODE -ne 0) { exit 1 }
           if ($drafts -contains 'false' -or $drafts.Count -gt 1) { [Console]::Error.WriteLine("RELEASE_CHECK exists $env:TAG"); exit 1 }

@@ -226,7 +226,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 
 ## Assumptions
 
-- The repository is public before the tag. The user gives that OK separately, and the main ruleset and security features follow the public switch (user decisions, 2026-10-24).
+- The repository is public since 2026-10-25 (research.md R7 T031). The main ruleset and security features follow the public switch (user decisions, 2026-10-24).
 - SignPath Foundation approves only released projects (research.md R1). So v0.1.0 ships unsigned, and the application follows the release.
 - The version stays `0.1.0` in `src-tauri/Cargo.toml`, and Tauri takes the application version from there (research.md R4).
 - A GitHub-hosted runner for a public repository is free (research.md R2).

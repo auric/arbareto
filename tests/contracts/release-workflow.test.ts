@@ -135,6 +135,15 @@ describe("release workflow", () => {
     expect(verify).toBeLessThan(attest);
     expect(attest).toBeLessThan(release);
   });
+
+  test("each Install Bun step compares the zip hash with BUN_ZIP_SHA256 and exits 1 with RELEASE_CHECK pin bun-windows-x64.zip", () => {
+    const pin = 'if ($hash -ne $env:BUN_ZIP_SHA256) { [Console]::Error.WriteLine("RELEASE_CHECK pin bun-windows-x64.zip $hash"); exit 1 }';
+    for (const job of ["build", "publish"]) {
+      const install = steps(job).filter((s) => s.name === "Install Bun");
+      expect(install.length).toBe(1);
+      expect((install[0]!.run ?? "").split("\n").map((line) => line.trim())).toContain(pin);
+    }
+  });
 });
 
 // The publish script runs in pwsh with stub `gh` and `bun` functions. A runner without pwsh skips these cases.

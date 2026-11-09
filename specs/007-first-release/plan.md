@@ -6,7 +6,7 @@
 
 ## Summary
 
-A tag `v0.1.0` on `main` starts one GitHub Actions workflow on `windows-2025`. The `build` job checks the tag and the tree, installs pinned tools, builds the two executables (`cargo tauri build --no-bundle`), runs an optional SignPath step, packs the NSIS installer (`cargo tauri bundle --bundles nsis`), runs an optional second SignPath step, and makes the release files: the installer, `SHA256SUMS.txt`, the third-party notices text, and the Hunspell source archive. The `publish` job waits for the maintainer in the `release` environment, attests every file, creates a draft pre-release from the `CHANGELOG.md` section, uploads the files, and publishes. One repository variable switches signing on. The application gains a build channel (`local` or `preview`): About shows "Preview" and two release links, and the release "Installed apps" entry reads "Arbareto". A dry-run trigger builds without publishing, so the workflow runs on GitHub before the public switch. The plan also amends 001 B-RELEASE and R7 so that they gate v1.0.
+A tag `v0.1.0` on `main` starts one GitHub Actions workflow on `windows-2025`. The `build` job checks the tag and the tree, installs pinned tools, builds the two executables (`cargo tauri build --no-bundle`), runs an optional SignPath step, packs the NSIS installer (`cargo tauri bundle --bundles nsis`), runs an optional second SignPath step, and makes the release files: the installer, `SHA256SUMS.txt`, the third-party notices text, and the Hunspell source archive. The `publish` job waits for the maintainer in the `release` environment, attests every file, creates a draft pre-release from the `CHANGELOG.md` section, uploads the files, and publishes. One repository variable switches signing on. The application gains a build channel (`local` or `preview`): About shows "Preview" and two release links, and the release "Installed apps" entry reads "Arbareto". A dry-run trigger builds without publishing. The plan also amends 001 B-RELEASE and R7 so that they gate v1.0.
 
 ## Technical Context
 
@@ -121,7 +121,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - `rust-toolchain.toml` at the repository root: `channel = "1.99.0"`, `profile = "minimal"`, `components = ["clippy", "rustfmt"]`, `targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]`. rustup reads it from the working folder and its parents. The cloud setup installs Rust from a tarball without rustup and is not affected; its `1.98.0` stays the minimum (001 plan.md:23).
 - Bun on the runner: download `https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64.zip` into `$env:RUNNER_TEMP`, compare `Get-FileHash -Algorithm SHA256` with the pin, extract there, and prepend the folder to `GITHUB_PATH`. No `setup-bun` action.
 - Rust on the runner: `rustup toolchain install` reads `rust-toolchain.toml`. Then `rustc --version` must print `rustc 1.99.0 `.
-- tauri-cli: `cargo install tauri-cli --version 2.12.0 --locked`. Then `cargo tauri --version` must print `tauri-cli 2.12.0`. The notices check (T375) also refuses any other value.
+- tauri-cli: `cargo install tauri-cli --version 2.12.0 --locked`. Then `cargo tauri --version` must print `tauri-cli 2.12.0`. The notices check (001 T375) also refuses any other value.
 - Actions: each `uses:` names a 40-hex commit ID and the version tag in a trailing comment. The workflow contract test refuses any other form. The implementer reads each SHA from the action repository tag at implementation time and records it in research.md R7.
 - No `actions/cache` step (research R2).
 
@@ -255,7 +255,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 ## Batches
 
-- Batch 0: WP1, then WP2. Runs now, on `007-first-release` from `main`.
+- Batch 0: WP1, then WP2. On `007-first-release` from `main`.
 - Batch 1: WP3, then WP4 (WP4 needs the WP3 contract). Needs 006 on `main` for `links.rs`. Until then, WP3 starts without the link command, and the link task waits.
 - Batch 2: WP5 and WP6 in disjoint files, then WP7.
 - Batch 3: WP8. Needs the user's OK for the dry-run branch push. The tag run needs the public switch and 005, 006, 008, 010, 011, and the 004 Submodules tree merged (spec FR-006).
@@ -264,6 +264,6 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 - The SignPath stages cannot run before the approval. Their YAML is checked only by the contract test. Mitigation: switch-on tasks with a test release `v0.1.1` (research R1 Q9).
 - `windows-2025` updates weekly. The pins hold the versions; the run record shows the image.
-- `cargo install tauri-cli` builds from source on each run. Guess: 5 to 10 minutes.
+- `cargo install tauri-cli` builds from source on each run. No measurement yet. T029 records the time.
 - The dry run uses a standard GitHub-hosted runner in the public repository. These runners are free for public repositories (research R2).
 - The uninstaller and the NSIS plugin DLL stay unsigned under SignPath (user, Q3).

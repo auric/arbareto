@@ -575,6 +575,7 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
         // The first failure in row order decides. No later read starts, and every running read ends before the result.
         stopped = true;
         await Promise.allSettled(started);
+        if (!(error instanceof ReadHalt)) throw error;
         // 001 contract §5 "Deadline outcomes": a recorded deadline decides before an earlier failure, as `firstEnd` does.
         if (deadline) return { stop: "deadline" };
         throw error;

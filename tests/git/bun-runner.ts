@@ -687,6 +687,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Bytes replace the process of a call and go to stderr in 64 KiB chunks. They count toward the operation stderr bound, which closes the Job (contract §5, §6).
     stderr: undefined as ((call: { operationId: string; arguments: readonly string[] }) => Uint8Array | undefined) | undefined,
     // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
+    // Null is the exit of a call that a Job close ended, without `deadline` (contract §6 `exit`).
     exit: undefined as ((call: { arguments: readonly string[] }) => number | null | undefined) | undefined,
     // A code refuses a call as the shell refuses it. No process starts (T377).
     refuse: undefined as ((call: { operationId: string; arguments: readonly string[] }) => RefusedCode | undefined) | undefined,

@@ -10,7 +10,8 @@ export type Theme = "system" | "light" | "dark";
 export type DarkPalette = "graphite" | "ink" | "warm";
 /** DIPs (plan.md "Store pane sizes in logical units"). Null keeps the layout default, which depends on the density and the window. */
 export type Panes = { fileLane: number; sidebar: number; fileBand: number | null; tray: number | null; commitDock: number | null; detailsDock: number | null };
-export type Preferences = { theme: Theme; darkPalette: DarkPalette; density: Density; panes: Panes };
+/** `keyHintsOpen`: the stored open state of the "Keys in the tree" panel (feature 004 plan D20 "Stored state"). */
+export type Preferences = { theme: Theme; darkPalette: DarkPalette; density: Density; panes: Panes; keyHintsOpen: boolean };
 export type PreferenceStorage = Pick<Storage, "getItem" | "setItem">;
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -18,6 +19,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   darkPalette: "graphite",
   density: "compact",
   panes: { fileLane: FILE_LANE.default, sidebar: SIDEBAR.default, fileBand: null, tray: null, commitDock: null, detailsDock: null },
+  keyHintsOpen: true,
 };
 
 const KEY = "arbareto.preferences.v1";
@@ -59,6 +61,7 @@ function sanitize(value: unknown): Preferences {
     darkPalette: DARK_PALETTES.includes(darkPalette) ? (darkPalette as DarkPalette) : DEFAULT_PREFERENCES.darkPalette,
     density: density === "comfortable" ? "comfortable" : "compact",
     panes: { fileLane: pane("fileLane"), sidebar: pane("sidebar"), fileBand: pane("fileBand"), tray: pane("tray"), commitDock: pane("commitDock"), detailsDock: pane("detailsDock") },
+    keyHintsOpen: field(value, "keyHintsOpen") !== false,
   };
 }
 

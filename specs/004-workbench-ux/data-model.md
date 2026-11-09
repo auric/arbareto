@@ -121,7 +121,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 12. Submodule row state (renderer)
 
-- `path`, `depth`, `state` (`waiting`, `fetching`, `updating`, `done`, `failed`, `refused`), `percent` (from the 001 progress counter, or null), `observed` (the 001 row result), `exitCode` and `outputTail` for a failure.
+- `path`, `depth`, `state` (`waiting`, `fetching`, `updating`, `done`, `failed`, `refused`), `percent` (from the 001 progress counter, or null), `observed` (the 001 row result), `exitCode` and `outputTail` for a failure. Amended by feature 004 (2026-11-04): a failed row past the 4 MiB tail total has an empty `outputTail` (001 contract §12 "Output tail").
 - Host line: the review `hosts` list, with one `{path, fetch, settings}` entry for each row (contract Δ12), and Update anyway. `fetch` and `settings` each have the contract Δ12 form: `{kind: "host", name}`, `{kind: "local"}`, or `{kind: "unknown"}`.
 - Tree node (spec FR-107 to FR-111, plan D20; added 2026-11-03). The renderer builds the nodes from `parentRowId`, `depth`, and `pathBytes`. It never depends on the service row order.
   - `kind`: `folder` or `submodule`.
@@ -150,7 +150,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - `SubmoduleBranch`, strict, by `state`:
   - `{rowId, state: "detached"}`: `symbolic-ref -q HEAD` exits 1.
   - `{rowId, state: "branch", ref, upstream, track}`: `ref` is the full HEAD ref. `upstream` is the full upstream ref, or null. `track` is the shared `TrackState` of the 003 `TrackingEntry`. `upstream` is null exactly when `track.state` is `none`.
-  - `{rowId, state: "unread", ref, code}`: the track read failed. `code` is `DEADLINE`, `GIT_FAILED`, `OUTPUT_LIMIT`, `MALFORMED_GIT_OUTPUT`, `STATE_UNKNOWN`, or the runner refusal code.
+  - `{rowId, state: "unread", ref, code}`: the track read failed. `code` is `GIT_FAILED`, `OUTPUT_LIMIT`, `MALFORMED_GIT_OUTPUT`, `STATE_UNKNOWN`, or the runner refusal code. A track read deadline gives no entry, because it fails the whole review with `DEADLINE` (contract Δ12 "Job close", changed 2026-11-07, review decision).
 - A HEAD ref outside `refs/heads/` gives `branch` with `upstream` null and track `none`, with no process. Git sets `%(upstream)` only for `refs/heads/` refs (research R31).
 - `STATE_UNKNOWN`: no record has `refname` equal to the HEAD ref with `%(HEAD)` set. HEAD moved between the two reads. A HEAD record with a name that is not valid UTF-8 also gives `STATE_UNKNOWN`.
 - The marks never enter the observed rows, the program inputs, or the review token binding.

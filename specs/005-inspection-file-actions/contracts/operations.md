@@ -224,7 +224,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 | Submodule chain | 8 levels (`SUBMODULE_REVIEW_NESTING_LEVELS`) |
 | Submodule change commits (`SUBMODULE_CHANGE_COMMITS`) | 50 per side |
 | Submodule change `log` output (`SUBMODULE_CHANGE_OUTPUT_BYTES`) | 256 KiB per side |
-| Submodule work targets (`SUBMODULE_WORK_TARGETS`) | 256 per read, the 001 §5 submodule review bound |
+| Submodule work targets (`SUBMODULE_WORK_TARGETS`) | 256 per read, the 001 §5 submodule review bound. Amended by feature 004 (2026-11-04): 256 per read as its own value. The 001 §5 submodule review bound is 1,024 (004 contract Δ12 "Submodule bound"). |
 | Submodule work parallel runs (`SUBMODULE_WORK_PARALLEL`) | 8 |
 | Workbench review token lifetime | 60 s (004) |
 

@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { decodeRequest } from "../../src/contracts/envelope";
+import { decodeRequest, RecoveryStatement, WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { HISTORY_ROWS_PER_REQUEST, HISTORY_VIEW_COMMITS, PIPE_FRAME_BYTES, PUBLIC_REQUEST_BYTES, STATUS_PAGE_BYTES } from "../../src/contracts/limits";
 import { isWindows } from "../../src/contracts/native-path";
 import { OPERATIONS } from "../../src/contracts/operations";
@@ -808,5 +808,22 @@ describe("history view payloads", () => {
   test("an unknown field in a nested payload object gives INVALID_REQUEST", () => {
     expectCode(load({ row: 1, skip: 10 }), "INVALID_REQUEST");
     expectCode(rows({ at: { row: 1, extra: true } }), "INVALID_REQUEST");
+  });
+});
+
+// Feature 004 contract Δ12 "Submodule bound" (T159 case b). The `confirmRun` path cap is in the golden vectors.
+describe("submodule bound caps", () => {
+  const paths = (n: number) => Array.from({ length: n }, (_, i) => `s${i}`);
+  const row = (path: string) => ({ rowId: id(), path, state: "unchanged", oldCommit: null, newCommit: null, fetched: false, connected: false, found: false, registered: false });
+
+  test("the readWorkspace notice holds 1,024 paths, not 1,025", () => {
+    const notice = WorkspaceSnapshot.shape.submoduleNotice;
+    const valid = (n: number) => notice.safeParse({ count: n, paths: paths(n), filter: "applied" }).success;
+    expect([valid(1_024), valid(1_025)]).toEqual([true, false]);
+  });
+
+  test("a recovery statement holds 1,024 submodule row results, not 1,025", () => {
+    const valid = (n: number) => RecoveryStatement.safeParse({ outcome: "unknown", submoduleResults: paths(n).map(row) }).success;
+    expect([valid(1_024), valid(1_025)]).toEqual([true, false]);
   });
 });

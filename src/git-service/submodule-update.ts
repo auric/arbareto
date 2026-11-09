@@ -7,7 +7,7 @@
 import { lstat, readdir } from "node:fs/promises";
 import type { Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_PROGRESS_EVENTS_PER_SECOND } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_PROGRESS_EVENTS_PER_SECOND, SUBMODULE_WORK_PARALLEL } from "../contracts/limits";
 import {
   buildRefusalRemedy,
   buildSubmoduleRemedy,
@@ -253,6 +253,8 @@ export interface SubmoduleUpdaterOptions {
   respond: (response: Response) => unknown;
   // Test seam only. Production never sets it.
   submoduleCheckpoint?: (checkpoint: SubmoduleCheckpoint) => Promise<void> | void;
+  // Test seam only. Production never sets it. The most row reads of the update observer at once. 1 gives the one-at-a-time reference of 004 FR-112.
+  updateLanes?: number;
 }
 
 export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
@@ -283,7 +285,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     if ("failed" in captured) return { code: captured.failed };
     const index = await listingOf(ctx, indexEntryArgs(), (bytes) => parseIndexListing(bytes, w.objectFormat));
     if (!("value" in index)) return isStop(index) ? index : { code: index.code };
-    const observer = o.reviews.observe(t, rowIds, a.review.scope);
+    // Feature 004 contract Δ12 "Update reads": the preflight and the level reads read up to 8 rows at once and apply in row order.
+    const observer = o.reviews.observe(t, rowIds, a.review.scope, undefined, false, o.updateLanes ?? SUBMODULE_WORK_PARALLEL);
     const read = await observer.top({ head: captured, indexEntries: index.value });
     if ("stop" in read) return read;
     const bound = observer.binding();
@@ -341,8 +344,6 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     const forms = pathForms(w, ctx.installation);
     const wsl = forms.wsl;
     const confirmed = new Set(read.programs.map((e) => JSON.stringify([e.owner, e.identity, e.program.digest])));
-    const fold = forms.key;
-    const confirmedDirs = new Map(read.rowless.map((repo) => [fold(repo.gitDir), programDirOwner(repo.gitDir)]));
     const progress = createProgress(registry, operationId);
     let lastDescendants = 0;
     let visited = 0;
@@ -446,8 +447,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       if (has(e.owner, e.identity)) return true;
       if (holder === null) return false;
       // A kept Git directory without a row can become a row of a level read. It keeps its confirmed entries.
-      const dir = holder.p.repo === null ? undefined : confirmedDirs.get(fold(holder.p.repo.gitDir));
-      if (dir !== undefined && has(dir, e.identity)) return true;
+      // Contract Δ12: Git forms compare exactly. `rev-parse --absolute-git-dir` prints the letter case of the folder on disk.
+      if (holder.p.repo !== null && has(programDirOwner(holder.p.repo.gitDir), e.identity)) return true;
       const [copy, ...value] = e.identity;
       // A confirmed `unchecked` copy for unknown nested submodules covers the same value for each row below its row.
       if (e.program.digest === "unchecked" && (copy === "" || copy === "nested")) {
@@ -787,7 +788,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       const rowIds = new Map(a.review.value.rows.map((row) => [row.pathBytes, row.rowId]));
       let pre = await preflight(ctx, rowIds, a);
       if (!("observer" in pre)) return refuse(pre);
-      if (!approvals.consume(key, operationId)) {
+      // Feature 004 contract Δ12 "Update token": acceptance checked the lifetime. A 1,024-row preflight can take longer.
+      if (!approvals.consume(key, operationId, { lifetime: false })) {
         const now = approvals.accept(key);
         return refuse({ code: !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET" });
       }

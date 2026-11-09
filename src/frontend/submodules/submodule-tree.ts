@@ -7,6 +7,9 @@ import { compareStringKeys, treeStringKey } from "../../contracts/tree-order";
 
 // Feature 004 spec FR-107 to FR-111, plan D20 "Tree builder", data-model §12 "Tree node". It never depends on the service row order.
 
+// Plan D20 "Group": plain rows up to this count, as the References tree does.
+export const VIRTUAL_MIN = 200;
+
 /** A row result with `found` and no plan row: it shows its full path at the end of the root level. */
 export type FoundRow = { rowId: string; path: string };
 export type TreeInput = {

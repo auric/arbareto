@@ -1021,11 +1021,11 @@ Counted runs, median of 10 after one warm-up for SC-020 and SC-021. SC-019 uses 
 | SC-019 256 | 200 inputs, p95 7.4 ms, max 8.3 ms; 11 of 1,280 rows mounted | 100 ms and 500 ms | pass |
 | SC-019 1,024 `f<i>/s` | 220 inputs, p95 7.4 ms, max 9.0 ms; 11 of 2,048 rows mounted | 100 ms and 500 ms | pass |
 | SC-020 1,024 | branch 109,405.4 ms, detached 108,368.3 ms (SC-018 value 1.01 ms per row, no budget) | 190,000 ms | pass |
-| SC-020 20 (after T165) | branch 5,254.6 ms, detached 5,229.6 ms (SC-018 value 1.25 ms per row, within the 30 ms SC-018 budget) | 6,500 ms | pass |
-| SC-020 256 (after T165) | branch 44,022.9 ms, detached 44,011.5 ms (SC-018 value 0.04 ms per row, within the 30 ms SC-018 budget) | 55,000 ms | pass |
-| SC-021 20 (after T165) | median 7,508.1 ms, max 7,846.1 ms | 10,000 ms | pass |
-| SC-021 100 (after T165) | median 28,154.5 ms, max 29,161.7 ms | 36,000 ms | pass |
-| SC-021 256 (after T165) | median 78,532.3 ms, max 101,981.2 ms; load-affected, not a baseline | 85,000 ms | pass |
+| SC-020 20 (after the first T165 fix) | branch 5,254.6 ms, detached 5,229.6 ms (SC-018 value 1.25 ms per row, within the 30 ms SC-018 budget) | 6,500 ms | pass |
+| SC-020 256 (after the first T165 fix) | branch 44,022.9 ms, detached 44,011.5 ms (SC-018 value 0.04 ms per row, within the 30 ms SC-018 budget) | 55,000 ms | pass |
+| SC-021 20 (after the first T165 fix) | median 7,508.1 ms, max 7,846.1 ms | 10,000 ms | pass |
+| SC-021 100 (after the first T165 fix) | median 28,154.5 ms, max 29,161.7 ms | 36,000 ms | pass |
+| SC-021 256 (after the first T165 fix) | median 78,532.3 ms, max 101,981.2 ms; load-affected, not a baseline | 85,000 ms | pass |
 | SC-021 1,024 (quiet rerun from 15:02) | median 204,609.8 ms, max 236,650.4 ms | 310,000 ms | pass |
 
 - SC-020 1,024 runs: branch 107,213.5 to 111,490.7 ms, detached 105,641.4 to 112,114.9 ms. Warm-up: branch 108,034.4 ms, detached 106,363.1 ms. Each run started 8,772 to 8,782 new processes.
@@ -1102,7 +1102,7 @@ Session 3 (2026-11-08), one run with all cases:
 - WebView2: 6 msedgewebview2.exe processes in the Job in each app session. Job peak committed bytes 603,701,248 to 692,572,160. Peak process committed bytes 316,862,464 to 344,141,824.
 
 Session 4 (2026-11-09), one run with all cases, then the controls:
-- Build: worktree l9 `main-submodule-parallel` at 763786ec, clean. The T165 review fixes (a deadline check before each walk of a submodule program listing, and the reconcile rethrow of a non-halt error) are not in this build. They were uncommitted in worktree l5 on 2026-11-09. Built exe SHA-256 9DBAEC47B9DDAEFEB3582865232EFDF6F4A00F72031B84927DC53640F4BC751C. Installed exe SHA-256 C025DFC6081542714CDFD6E24FB53DA669195694BD2DD895F1F55E0EF4716DF2 (HASH_A). The installed exe matches the patched build, with 1 marker hit. Installer SHA-256 7C3F39AD1B75E76C9832C20B163C8D0FC1DB10169623C1F997EC84A4E93AF0A2. Installed version 0.1.0.
+- Build: worktree l9 `main-submodule-parallel` at 763786ec, clean. The T165 review fixes (a deadline check before each walk of a submodule program listing, and the reconcile rethrow of a non-halt error) are not in this build. They were uncommitted in worktree l5 on 2026-11-09. Commit 7c18ae53 holds them now (merge 54ccc1cd). No packaged session ran on that build. Built exe SHA-256 9DBAEC47B9DDAEFEB3582865232EFDF6F4A00F72031B84927DC53640F4BC751C. Installed exe SHA-256 C025DFC6081542714CDFD6E24FB53DA669195694BD2DD895F1F55E0EF4716DF2 (HASH_A). The installed exe matches the patched build, with 1 marker hit. Installer SHA-256 7C3F39AD1B75E76C9832C20B163C8D0FC1DB10169623C1F997EC84A4E93AF0A2. Installed version 0.1.0.
 - OS 10.0.26300 (26H2.9711). WebView2 Edg/157.0.4341.42. Git 2.56.0.windows.2. Bun 1.4.4. Display scale 125% (`devicePixelRatio` 1.25). Windows text size 100%.
 - Step 0 before the build: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run export:schemas --check`, and `bun test ./tests/contracts ./tests/git/portable-imports.test.ts` exit 0. The test step gave 6,805 pass, 37 skip, 0 fail.
 - The session had no Kernel-Power 42 event. No step is INVALID.
@@ -1140,4 +1140,16 @@ Controls, each applied alone. Each control exited 1.
 - c-t166 used build B: installer SHA-256 C25CEFBC327C29280594129C5D7C8A21F90618A298BE8CDC4C39FD7FEF2FF26C, installed exe SHA-256 14EB46DBB2DD76D5C908F1932CE82841564457E678BD7B8D226B4415C51D2649 (differs from HASH_A). After the restore, the reinstall of installer A gave HASH_A again. Worktree l9 was clean at the end.
 - The driver line `must[body: true]=False` is a driver string-match defect: it searched `body: true`, but the test prints `"body": true`. The c-t166 log holds `"body": true`, so the control is red.
 
-Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): session 3 re-measured these cases on build 9df12f84, after T165 (table above). Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. T164 also waits for its red checks on the current test file, because the c4 controls ran on c96336c8, before the test changes in 7e0f34b8. Session 4 ran these red checks on build 763786ec, and each control was red. Evidence for T166: session 4 T164 (1) and control c-t166. Evidence for T145: session 4 T156 case 1. Session 4 re-ran SC-021 256 for T158 on build 763786ec. T145 and T161 also stay unticked until the green final full run.
+T165 review fix (commit 7c18ae53, merged into l9 as 54ccc1cd), worktree l5, 2026-11-09. Each run printed the l5 checkout as its import origin:
+- `bun run typecheck`: exit 0, before and after the review edits.
+- Ten paths (`tests/git/` submodule-review, submodule-reconcile, commit-amend, commit-races, git-runner, submodule-notice, submodule-outcome, submodule-plan, submodule-scope, and `tests/contracts`): 7,035 pass, 37 skip, 0 fail, 147 files, 3,710 s. This run used the test before the review edits (test SHA-256 909878A7…).
+- Full `tests/git/submodule-review.test.ts` after the review edits (test SHA-256 C9648478…): 128 pass, 0 fail, 2,589 s.
+- Controls on the edited test, each alone. The source SHA-256 was 40F6E79B… before each control and after each restore.
+- (c) both `guard()` calls in `listingRunner` removed, `record()` kept: red, 1 late `fileFacts` read (row a's `pre-commit` digest).
+- (a+c) the code before the fix: red, 9 late `fileFacts` and 16 late `identities` reads.
+- (r) only the `record()` call in `noted` removed, guards kept: red. The late reads are row a's digest, row j's hooks walk, and 12 `identities` reads.
+- The `identities` guard alone and the `ReadHalt` rethrow in `reconcile.ts` have no control (see T165).
+- The 37 skips: bun printed no SKIP lines for them. The reasons were not checked.
+- One run of the new case started 28 s after the previous run, not after the 3-minute wait.
+
+Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): session 3 re-measured these cases on build 9df12f84, after the first T165 fix (table above). Build 9df12f84 does not hold the 7c18ae53 change. Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. Session 4 ran the c4 red checks on the current test file (build 763786ec). Each control was red. Evidence for T166: session 4 T164 (1) and control c-t166. Evidence for T145: session 4 T156 case 1. Session 4 re-ran SC-021 256 for T158 on build 763786ec. T145 and T161 also stay unticked until the green final full run.

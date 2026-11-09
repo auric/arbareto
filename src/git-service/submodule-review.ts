@@ -701,6 +701,23 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       if (reply.some((fact) => fact.kind === "error")) throw failed("REPOSITORY_UNAVAILABLE");
       return reply;
     };
+    // Contract Δ12 "Job close": each walk of a submodule program listing starts only before a recorded deadline.
+    // The service records a walk deadline when the reply arrives, before the listing returns.
+    const noted = <T>(reply: T[] | WalkStop) => {
+      if (!Array.isArray(reply) && reply.stop === "deadline") record();
+      return reply;
+    };
+    const listingRunner: GitRunner = {
+      ...runner,
+      fileFacts: async (request, signal) => {
+        guard();
+        return noted(await runner.fileFacts(request, signal));
+      },
+      identities: async (operationId, context, paths, signal) => {
+        guard();
+        return noted(await runner.identities(operationId, context, paths, signal));
+      },
+    };
     // A link before the last component means that no entry exists at the path. The walk never follows a link.
     const entryExists = (fact: FileFact, path: readonly string[]) => fact.kind !== "absent" && (fact.kind !== "link" || fact.component === path.length);
     const facts = async (files: FactEntry[]) => (await fileFacts(files, false)).map((fact, i) => entryExists(fact, files[i]!.path));
@@ -1512,7 +1529,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       writes: boolean,
       unknownNested: boolean,
     ): Promise<{ owner: string; fingerprint: string; entries: ProgramEntry[] }> => {
-      const listed = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: w }, environment, repo.entries, repo.hooks, { root: root ?? forms.gitRoot, gitDirectory: repo.gitDir });
+      guard();
+      const listed = await listSubmoduleTrust(listingRunner, { operationId: t.operationId, signal: t.signal, workspace: w }, environment, repo.entries, repo.hooks, { root: root ?? forms.gitRoot, gitDirectory: repo.gitDir });
       if (!listed.ok) throw "stop" in listed ? walkStop(listed.stop) : new Halt({ code: listed.code });
       const listing = listed.listing;
       const superRelative = relativeValues(superListing, OUTER_SCOPES);

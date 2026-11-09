@@ -1550,52 +1550,153 @@ describe("branch marks (004 FR-109, FR-110, contract Δ12 \"Branch marks\", data
       });
     });
 
+    type FactsRequest = Parameters<GitRunner["fileFacts"]>[0];
+    // The hooks folder of the Git directory `.git/modules/<name>` of a row, in any root.
+    const hooksOf = (name: string) => (request: FactsRequest) => request.files.some((f) => `/${f.path.join("/")}/`.includes(`/modules/${name}/hooks/`));
+    const anyHooks = (request: FactsRequest) => request.files.some((f) => /\/modules\/.+\/hooks\//.test(`/${f.path.join("/")}/`));
+    // The `top` read of a reviewer with 8 lanes whose runner walks through `facts` and `identities`. `real` is the walk of the service runner.
+    const walkTop = async (
+      service: Service,
+      w: TreeWorld,
+      facts: (real: GitRunner["fileFacts"]) => GitRunner["fileFacts"],
+      identities = (real: GitRunner["identities"]): GitRunner["identities"] => real,
+    ) => {
+      const { createSubmoduleReviewer } = (await review()) as typeof import("../../src/git-service/submodule-review");
+      const git = gitPath();
+      const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+      if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+      const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+      const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", w.sup), installation: probed.installation, signal: new AbortController().signal });
+      if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+      const workspace = registrations.get(registered.result.repositoryId)!;
+      const runner: GitRunner = {
+        ...service.runner,
+        fileFacts: facts((request, signal) => service.runner.fileFacts(request, signal)),
+        identities: identities((operationId, context, paths, signal) => service.runner.identities(operationId, context, paths, signal)),
+      };
+      const environment = serviceEnv(w.env);
+      const trust = trustModule.createTrust({ runner, environment });
+      const reviewer = createSubmoduleReviewer({ runner, trust, approvals: approvalsModule.createApprovals(), environment, listingTuple: async () => null });
+      const t = { operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, installation: probed.installation };
+      const head = await captureHead(runner, t);
+      if (!("state" in head)) throw new Error(`no HEAD: ${JSON.stringify(head)}`);
+      const index = await listingOf({ ...t, runner, trust } as unknown as ObserveContext, indexEntryArgs(), (bytes) => parseIndexListing(bytes, workspace.objectFormat));
+      if (!("value" in index)) throw new Error(`no index: ${JSON.stringify(index)}`);
+      return reviewer.observe(t, undefined, null, undefined, false, SUBMODULE_WORK_PARALLEL).top({ head, indexEntries: index.value });
+    };
+
     // Contract Δ12 "Job close", note of 2026-11-07, and 001 §5 "Deadline outcomes": a walk deadline records a deadline as a Git process deadline does.
     // A runner wrapper answers the hooks walk of the program listing of row a with a refusal, then the one of row c with the walk deadline.
     parallelCase("the program listing walk of row a is refused, and then the listing walk of row c ends with the walk deadline: the observation ends with the deadline stop", async () => {
       const w = world();
       await withTree(w, "t148-walk-deadline", async (service) => {
-        const { createSubmoduleReviewer } = (await review()) as typeof import("../../src/git-service/submodule-review");
-        const git = gitPath();
-        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
-        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
-        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
-        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", w.sup), installation: probed.installation, signal: new AbortController().signal });
-        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
-        const workspace = registrations.get(registered.result.repositoryId)!;
-        // The hooks folder of the Git directory `.git/modules/<name>` of a row, in any root.
-        const hooksOf = (name: string) => (request: { files: readonly { path: readonly string[] }[] }) => request.files.some((f) => `/${f.path.join("/")}/`.includes(`/modules/${name}/hooks/`));
         let refused = 0;
         let stopped = 0;
         let answered = () => {};
         const aAnswered = new Promise<void>((resolve) => (answered = resolve));
-        const runner: GitRunner = {
-          ...service.runner,
-          fileFacts: async (request, signal) => {
-            if (hooksOf("a")(request)) {
-              refused++;
-              answered();
-              throw new RunnerRefusal("UNKNOWN_TARGET");
-            }
-            if (hooksOf("c")(request)) {
-              stopped++;
-              await aAnswered;
-              return { stop: "deadline" };
-            }
-            return service.runner.fileFacts(request, signal);
-          },
-        };
-        const environment = serviceEnv(w.env);
-        const trust = trustModule.createTrust({ runner, environment });
-        const reviewer = createSubmoduleReviewer({ runner, trust, approvals: approvalsModule.createApprovals(), environment, listingTuple: async () => null });
-        const t = { operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, installation: probed.installation };
-        const head = await captureHead(runner, t);
-        if (!("state" in head)) throw new Error(`no HEAD: ${JSON.stringify(head)}`);
-        const index = await listingOf({ ...t, runner, trust } as unknown as ObserveContext, indexEntryArgs(), (bytes) => parseIndexListing(bytes, workspace.objectFormat));
-        if (!("value" in index)) throw new Error(`no index: ${JSON.stringify(index)}`);
-        const read = await reviewer.observe(t, undefined, null, undefined, false, SUBMODULE_WORK_PARALLEL).top({ head, indexEntries: index.value });
+        const read = await walkTop(service, w, (real) => async (request, signal) => {
+          if (hooksOf("a")(request)) {
+            refused++;
+            answered();
+            throw new RunnerRefusal("UNKNOWN_TARGET");
+          }
+          if (hooksOf("c")(request)) {
+            stopped++;
+            await aAnswered;
+            return { stop: "deadline" };
+          }
+          return real(request, signal);
+        });
         expect({ read, refused, stopped }).toEqual({ read: { stop: "deadline" }, refused: 1, stopped: 1 });
       });
+    });
+
+    // Contract Δ12 "Job close": a walk deadline closes no Job, so the running reads end by themselves. After the service has the reply, no read starts.
+    // The listing seam keeps the other lanes busy until the listing of row c returns. So a queued listing can begin only after the service has the reply.
+    // Row c gets its answer after each other lane waits in its hooks walk or holds its ended listing.
+    // The `pre-commit` file gives the running listing of row a a digest read after its walk (contract §7 "Program file digests").
+    parallelCase("the listing walk of row c ends with the walk deadline while the other lanes run: the running walks end by themselves, and no read starts after the service has the reply", async () => {
+      const w = world();
+      const hook = join(w.sup, ".git", "modules", "a", "hooks", "pre-commit");
+      const deferred = () => {
+        let open = () => {};
+        const opened = new Promise<void>((resolve) => (open = resolve));
+        return { open, opened };
+      };
+      const lanes = SUBMODULE_WORK_PARALLEL;
+      const [othersWaiting, cAnswered, cListed, othersEnded] = [deferred(), deferred(), deferred(), deferred()];
+      let late = false;
+      let listings = 0;
+      let waiting = 0;
+      let walks = 0;
+      let ended = 0;
+      const reads: { kind: "fileFacts" | "identities"; late: boolean; paths: string[] }[] = [];
+      const held: string[] = [];
+      const start = (kind: "fileFacts" | "identities", paths: string[]) => reads.push({ kind, late, paths });
+      const wait = () => {
+        if (++waiting === lanes - 1) othersWaiting.open();
+      };
+      const real = trustModule.listSubmoduleTrust;
+      // The reviewer begins the listings of the first `lanes` rows at once, in row order. Each later listing begins in a freed lane.
+      const listing = spyOn(trustModule, "listSubmoduleTrust").mockImplementation(async (...args: Parameters<typeof real>) => {
+        if (listings++ >= lanes) return real(...args);
+        const gitDirectory = args[5].gitDirectory;
+        if (gitDirectory !== null && basename(gitDirectory) === "c") {
+          try {
+            return await real(...args);
+          } finally {
+            cListed.open();
+            await othersEnded.opened;
+          }
+        }
+        try {
+          return await real(...args);
+        } finally {
+          if (!late) wait();
+          await cListed.opened;
+          if (++ended === lanes - 1) othersEnded.open();
+        }
+      });
+      try {
+        writeFileSync(hook, "#!/bin/sh\n", { mode: 0o755 });
+        await withTree(w, "t148-walk-deadline-late", async (service) => {
+          const read = await walkTop(
+            service,
+            w,
+            (realFacts) => async (request, signal) => {
+              start("fileFacts", request.files.map((f) => f.path.join("/")));
+              if (hooksOf("c")(request)) {
+                await othersWaiting.opened;
+                late = true;
+                cAnswered.open();
+                return { stop: "deadline" };
+              }
+              if (late || !anyHooks(request)) return realFacts(request, signal);
+              walks++;
+              wait();
+              await cAnswered.opened;
+              const reply = await realFacts(request, signal);
+              held.push(Array.isArray(reply) ? "facts" : JSON.stringify(reply));
+              return reply;
+            },
+            (realIds) => async (operationId, context, paths, signal) => {
+              start("identities", [...paths]);
+              return realIds(operationId, context, paths, signal);
+            },
+          );
+          expect({ read, answered: late, ended, walked: walks > 0, held, lateReads: reads.filter((r) => r.late) }).toEqual({
+            read: { stop: "deadline" },
+            answered: true,
+            ended: lanes - 1,
+            walked: true,
+            held: Array.from({ length: walks }, () => "facts"),
+            lateReads: [],
+          });
+        });
+      } finally {
+        listing.mockRestore();
+        rmSync(hook, { force: true });
+      }
     });
 
     parallelCase("a 1 ms deadline on the config list of row 5 fails the review with DEADLINE, and no review process ends after the response", async () => {

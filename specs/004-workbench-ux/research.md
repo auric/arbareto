@@ -1101,4 +1101,38 @@ Session 3 (2026-11-08), one run with all cases:
 - (10) at 225%: skipped, accepted by the user 2026-11-08 (Windows text size 225% not set).
 - WebView2: 6 msedgewebview2.exe processes in the Job in each app session. Job peak committed bytes 603,701,248 to 692,572,160. Peak process committed bytes 316,862,464 to 344,141,824.
 
-Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): session 3 re-measured these cases on build 9df12f84, after T165 (table above). Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. T164 also waits for its red checks on the current test file, because the c4 controls ran on c96336c8, before the test changes in 7e0f34b8. These red checks move to session 4. T145 and T161 also stay unticked until the green final full run.
+Session 4 (2026-11-09), one run with all cases, then the controls:
+- Build: worktree l9 `main-submodule-parallel` at 763786ec, clean. The T165 review fixes (a deadline check before each walk of a submodule program listing, and the reconcile rethrow of a non-halt error) are not in this build. They are uncommitted in worktree l5. Built exe SHA-256 9DBAEC47B9DDAEFEB3582865232EFDF6F4A00F72031B84927DC53640F4BC751C. Installed exe SHA-256 C025DFC6081542714CDFD6E24FB53DA669195694BD2DD895F1F55E0EF4716DF2 (HASH_A). The installed exe matches the patched build, with 1 marker hit. Installer SHA-256 7C3F39AD1B75E76C9832C20B163C8D0FC1DB10169623C1F997EC84A4E93AF0A2. Installed version 0.1.0.
+- OS 10.0.26300 (26H2.9711). WebView2 Edg/157.0.4341.42. Git 2.56.0.windows.2. Bun 1.4.4. Display scale 125% (`devicePixelRatio` 1.25). Windows text size 100%.
+- Step 0 before the build: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run export:schemas --check`, and `bun test ./tests/contracts ./tests/git/portable-imports.test.ts` exit 0. The test step gave 6,805 pass, 37 skip, 0 fail.
+- The session had no Kernel-Power 42 event. No step is INVALID.
+- Result: 8 pass, 0 fail, 1 skip ((10) at 225%: "missing capability text-scale-225", accepted by the user 2026-11-08).
+- (1): the tree description equals the 13 D20 texts in the open, closed, and noRoom forms, and in the constrained profile at 960×640 compact (hidden form).
+- (1), focus after the profile switch to constrained: the case asserts focus on the "Show references" button (`tag` button, `body` false), and it passed (T166). The log prints no focus line.
+- (2) to (8), and (10) at 100%: the same values as session 3.
+- (9): nine captures in local scratch, with the session 3 names (2026-11-09T09-45Z). Each pair with session 3 has the same size, 1600×1000 px, and a different SHA-256. The only visible difference is the fixture commit ID (ac10210324b3 against b080177e0131). The other changed pixels differ by at most 15 of 255 per channel, and by at most 54 below the noRoom tooltip.
+- WebView2: 6 msedgewebview2.exe processes in the Job in each of the 10 app sessions. Job peak committed bytes 601,968,640 to 688,787,456. Peak process committed bytes 318,328,832 to 353,308,672.
+- Code font case of `tests/windows/workbench-packaged.test.ts` (001 plan.md note 2026-11-07): 1 pass. `RECORD font: Cascadia Mono`, 15 glyphs, not a custom font.
+- T156 case 1 for T145 ("256 cloned rows with flat names" in `tests/git/submodule-review.test.ts`): 1 pass in 248.4 s. The global Git config SHA-256 was the same before and after. The test removed its fixture folder.
+
+Controls, each applied alone. Each control exited 1.
+
+| Control | Case | Failing field |
+| --- | --- | --- |
+| c-font `windowsFonts` without "Cascadia Mono" | code font | `used` false, `others` ["Cascadia Mono"] |
+| c4-1 board text "Move to the next row." | T164 (1) | the tree description differs |
+| c4-2 first `OPEN_LAYOUTS` want hidden | T164 (2) | "the hidden form (case 2 1280x800 compact 240 DIPs) did not happen within 10000 ms" |
+| c4-3 `AFTER_SPACE` true | T164 (3) | "case 3 after Space did not happen within 10000 ms" |
+| c4-4 `CLOSED_DESK.compact` 49 | T164 (3) and (4) | `desk` false, `group` false |
+| c4-5 `AFTER_CLOSE_RESTART` open | T164 (5) | "the open form (case 5 restart after the close) did not happen within 10000 ms" |
+| c4-6 `NO_ROOM_WANT` open | T164 (6) | "the open form (case 6 noRoom) did not happen within 10000 ms" |
+| c4-7 `FIRST_TAB_AFTER_TREE` SPLITTER | T164 (7) | "the first Tab stop after the tree did not happen within 10000 ms: false" |
+| c4-10 `widthLimit` 100 | T164 (10) at 100% | `scroll` false |
+| c-t166 no focus move in `Workbench.tsx` (build B) | T164 (1) | focus on `body` (`tag` body, `label` null, `body` true) |
+
+- The c4 controls ran on the test file of 763786ec, after the test changes in 7e0f34b8.
+- After each control, the file was restored. Each SHA-256 matched the hash before the edit: `tests/windows/workbench-packaged.test.ts` 5BDCA1A0D6594C84FC50B12671D6FD7A96182586C5FBF7716B2CEC813D5F1E68, `tests/windows/submodule-tree-packaged.test.ts` 83AC9135E7A6A402BC2DB83580413724778855491EEA91A1441D71A4911CAA52, `src/frontend/app/Workbench.tsx` 1A76B95B2070DE007F63F0263EED7FA47A72B5F0EB84C8353555C19F68ED62B6.
+- c-t166 used build B: installer SHA-256 C25CEFBC327C29280594129C5D7C8A21F90618A298BE8CDC4C39FD7FEF2FF26C, installed exe SHA-256 14EB46DBB2DD76D5C908F1932CE82841564457E678BD7B8D226B4415C51D2649 (differs from HASH_A). After the restore, the reinstall of installer A gave HASH_A again. Worktree l9 was clean at the end.
+- The driver line `must[body: true]=False` is a driver string-match defect: it searched `body: true`, but the test prints `"body": true`. The c-t166 log holds `"body": true`, so the control is red.
+
+Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): session 3 re-measured these cases on build 9df12f84, after T165 (table above). Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. T164 also waits for its red checks on the current test file, because the c4 controls ran on c96336c8, before the test changes in 7e0f34b8. Session 4 ran these red checks on build 763786ec, and each control was red. Evidence for T166: session 4 T164 (1) and control c-t166. Evidence for T145: session 4 T156 case 1. T145 and T161 also stay unticked until the green final full run.

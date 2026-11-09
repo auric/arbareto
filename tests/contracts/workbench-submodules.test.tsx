@@ -1542,7 +1542,7 @@ describe("keys in the tree", () => {
     expect(document.activeElement).toBe(hintsButton());
     await feed(189.99, 441, 24);
     expect(document.activeElement).toBe(tabStopRow());
-    // The slot unmounts, as at a switch to the constrained profile.
+    // The slot unmounts inside one profile.
     await feed(...COMPACT);
     await act(async () => hintsButton().focus());
     expect(document.activeElement).toBe(hintsButton());

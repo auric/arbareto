@@ -237,7 +237,7 @@ Each fact runs on Windows Git 2.56 and WSL Ubuntu-26.04 Git 2.55, compared with 
 
 Run of 2026-10-17: Windows Git 2.56.0.windows.2, Windows 10.0.26300, commit 326ce7e. T003 (`tests/git/workbench-facts.test.ts`) passed 53 tests, and T004 (`tests/git/staging-facts.test.ts`) passed 5 tests. N1 to N6 come from three clean T005 runs (`tests/windows/native-facts.test.ts`) of the same day in the installed package. A `mismatch` below is a `match=false` line. The design already handles each of them. The WSL run of F1 to F31 waits for T081.
 
-Rerun of 2026-10-18 for T006 and T020 on f004-impl at f6877ce in `C:\Projects\arbareto-l4`: Windows Git 2.56.0.windows.2, Windows 10.0.26300. Source: local scratch (verify-004) file `observations-r2.txt`, 342 `OBSERVATION` lines. T003 has 215 lines, T004 has 92, and T005 has 35. Of these, 193, 83, and 15 are F and N lines; the other lines come from earlier feature tests with the same task IDs. T003 has 7 `match=false` lines (F11, five F12 lines, F16). T004 has 6 (two F25, four F26). T005 has none, and 2 `unverified` lines (N1 Enter and Escape, N2 right-click and Shift+F10, both `live-input`). Each line below has the same mark and line counts in this rerun, except N6, which now matches.
+Rerun of 2026-10-18 for T006 and T020 on f004-impl at f6877ce in worktree l4: Windows Git 2.56.0.windows.2, Windows 10.0.26300. Source: local scratch (verify-004) file `observations-r2.txt`, 342 `OBSERVATION` lines. T003 has 215 lines, T004 has 92, and T005 has 35. Of these, 193, 83, and 15 are F and N lines; the other lines come from earlier feature tests with the same task IDs. T003 has 7 `match=false` lines (F11, five F12 lines, F16). T004 has 6 (two F25, four F26). T005 has none, and 2 `unverified` lines (N1 Enter and Escape, N2 right-click and Shift+F10, both `live-input`). Each line below has the same mark and line counts in this rerun, except N6, which now matches.
 - F1, match (62 of 62 lines, rerun of 2026-10-17 on f004-b0-fixes): every argv of contract Δ3 exits as expected. The rerun adds `--no-show-signature` to both reflog reads, the global `--literal-pathspecs` to `choose-side`, `--no-log -m` to each merge form with `--no-ff` and `--no-commit`, and the D6 moved count without `--no-merges`. `check-ignore -z --stdin --no-index` with `--literal-pathspecs` exits 128, as contract Δ3 states, and the contract form without the flag exits 0. Design change from the first run: that one read drops `--literal-pathspecs` (plan D3, contract Δ3). Without the flag, a stdin path that starts with `:` can be read as pathspec magic, so plan D3 refuses such a candidate with reason `path`. NTFS cannot hold `:`, so T081 checks the literal read on WSL.
 - F2, match: `checkout -b` with a refused switch exits 1, `show-ref --exists` then exits 2, and no file changes, for the track and the start-point forms.
 - F3, match: Keep changes with a conflicting change exits 1 and changes nothing.
@@ -313,10 +313,10 @@ Rerun of 2026-10-18 for T006 and T020 on f004-impl at f6877ce in `C:\Projects\ar
 
 ## R22 Batch 0 and 1 verification (T006, T020)
 
-Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at f6877ce. One run serves T006 and T020. The batch 0 and batch 1 reviews are recorded ("Batch reviews").
+Run of 2026-10-18 in worktree l4 on f004-impl at f6877ce. One run serves T006 and T020. The batch 0 and batch 1 reviews are recorded ("Batch reviews").
 - `bun install --frozen-lockfile`, `bun run export:schemas --check`, `cargo check --locked --manifest-path src-tauri/Cargo.toml`, and `bun run build:service`: exit 0.
 - `cargo test --locked --manifest-path src-tauri/Cargo.toml`: exit 0, 540 passed, 0 failed, 4 ignored.
-- `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0. Parallel group: 5,813 pass, 0 fail, 37 skip. Serial group: 453 pass, 0 fail, 9 skip. Every `ORIGIN` line is under `C:\Projects\arbareto-l4`. The 15 distinct skip reasons are capabilities.
+- `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0. Parallel group: 5,813 pass, 0 fail, 37 skip. Serial group: 453 pass, 0 fail, 9 skip. Every `ORIGIN` line is under worktree l4. The 15 distinct skip reasons are capabilities.
 - `bun run test:windows`: exit 0, 113 pass, 0 fail, 4 skip (`live-input` twice, `history-fixture-h1m` twice). Its `ORIGIN` lines name the installed package.
 - `bun run typecheck`: exit 1 on f6877ce, TS2740 in `src/frontend/changes/FileControls.tsx`. Cause: after main merged into f004-impl, the `FileActionValue` filter in `src/contracts/envelope.ts` did not narrow its type. 359e87a fixes it with a type-only change. On 359e87a, `bun run typecheck` exits 0, and `bun test tests/contracts` with `portable-imports` gives 4,167 pass, 30 skip, 0 fail. The full run's typecheck was red. Only typecheck and the contract tests check the fix; no full run ran on 359e87a.
 - T006 control mutation: the unmerged branch fixture with 1 commit made the T001 self-check fail (`branches`: 52 pass, 1 fail). After the undo, 53 of 53 passed.
@@ -325,10 +325,10 @@ Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at f6877ce. One run 
 
 ## R23 Batch 2 verification (T035)
 
-Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at bdbc7a7. The batch 2 review is recorded ("Batch reviews").
+Run of 2026-10-18 in worktree l4 on f004-impl at bdbc7a7. The batch 2 review is recorded ("Batch reviews").
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, and `bun test tests/contracts/groups.test.ts` (1 pass): exit 0.
 - `cargo test --locked --manifest-path src-tauri/Cargo.toml`: exit 0, 542 passed, 0 failed, 4 ignored.
-- `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0. Parallel group: 6,005 pass, 0 fail, 39 skip. Serial group: 466 pass, 0 fail, 9 skip. Every `ORIGIN` line is under `C:\Projects\arbareto-l4`. The 15 distinct skip reasons are capabilities.
+- `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0. Parallel group: 6,005 pass, 0 fail, 39 skip. Serial group: 466 pass, 0 fail, 9 skip. Every `ORIGIN` line is under worktree l4. The 15 distinct skip reasons are capabilities.
 - `bun run test:windows`: exit 0, 112 pass, 0 fail, 5 skip. Two UIA focus cases printed the `foreground` capability skip: owner pid 10616, lock timeout 2147483647, idle about 2.6 hours.
 - Control mutation 1: the mutation removed the expected object ID from the `update-ref --no-deref -d` builder `deleteRefArgs` (`src/git-service/workbench-commands.ts:252`). `branch-ops.ts` builds its delete step with it. The moved-branch case and the F9 case of `tests/git/branch-ops.test.ts` failed (7 pass, 2 fail). After the undo, 9 of 9 passed.
 - Control mutation 2: the mutation made `stashApplyArgs` (`src/git-service/workbench-commands.ts:228`) reapply by `stash@{0}`. `switch.ts` builds its reapply step with it. The two-earlier-stashes case and the SC-001/SC-002 case of `tests/git/switch.test.ts` failed (20 pass, 2 fail). After the undo, 22 of 22 passed.
@@ -340,11 +340,11 @@ Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at bdbc7a7. The batc
 
 ## R25 Batch 3 verification (T048)
 
-Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at 350efce. The batch 3 review is recorded ("Batch reviews").
+Run of 2026-10-18 in worktree l4 on f004-impl at 350efce. The batch 3 review is recorded ("Batch reviews").
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, and `bun test tests/contracts/groups.test.ts`: exit 0.
 - `bun run test:all`: exit 0. Parallel group: 6,109 pass, 0 fail, 39 skip. Serial group: 520 pass, 0 fail, 9 skip.
 - `bun run test:windows`: 112 pass, 0 fail, 5 skip. Two of the skips are the `foreground` capability skips.
-- In every step, each `ORIGIN` repository root is under `C:\Projects\arbareto-l4`. The `test:windows` `ORIGIN` lines also name the installed app and its fixture copy, as in R23.
+- In every step, each `ORIGIN` repository root is under worktree l4. The `test:windows` `ORIGIN` lines also name the installed app and its fixture copy, as in R23.
 - `bun run test:contracts`: 4,394 pass, 1 fail. Cause: a `mock.module` of PatchView in another file reached `comparison-view.test.tsx` in the single-process run. 931278d fixes the leak. On 931278d, `bun run test:contracts` gives 4,395 pass, 32 skip, 0 fail.
 - Control mutation: the mutation let S act outside the diff (`src/frontend/keyboard/shortcuts.ts:143`). `tests/contracts/shortcuts-004.test.ts` failed (4 pass, 3 fail). After the undo, 7 of 7 passed.
 - Earlier run, for context: a green run on dee96b7, before the review fixes, gave 6,095/0/39 and 513/0/9.
@@ -387,9 +387,9 @@ Screenshots on 931278d: `bun run dev` with a scratch profile and a scratch repos
 
 ## R26 Batch 3 follow-up verification (T093)
 
-Run of 2026-10-20 in `C:\Projects\arbareto-l7` on f004-impl at 68acd72.
+Run of 2026-10-20 in worktree l7 on f004-impl at 68acd72.
 - `bun run build` and `bun run typecheck`: exit 0.
-- `bun run test:contracts`: exit 0. 4,708 pass, 33 skip, 0 fail. All 291 `ORIGIN` lines are under `C:\Projects\arbareto-l7`.
+- `bun run test:contracts`: exit 0. 4,708 pass, 33 skip, 0 fail. All 291 `ORIGIN` lines are under worktree l7.
 - Control mutation: in `src/frontend/changes/ChangesPane.tsx`, Stage all changes took only the rows that match the filter. `tests/contracts/workbench-commit.test.tsx` failed: 64 pass, 1 fail ("login shows only the rows whose path holds it, and Stage all changes still stages every change"). After the undo, 65 of 65 passed.
 - Later: R27 records `bun run test:all`. "Batch reviews" records the independent review of T087 to T092 ("T093 review").
 
@@ -402,16 +402,16 @@ Screenshots: the R25 method. `bun run dev` ran with `ARBARETO_PROFILE_ROOT` in a
 - Board differences that T087 to T092 do not cover: the merge panel keeps the "Result" label and the `merge.ff` source line, the message box has an empty right column, and Commit is not the primary button.
 - At 960 DIPs width, the narrow file band shows about two rows, because Filter files takes one row of the 001 file band default.
 
-Follow-up (T106), 2026-10-20, in `C:\Projects\arbareto-l7` on f004-t093-fu at 359d239. The Commit view now takes its layout from its own width (plan.md D16 "Geometry"). At 960 DIPs, the lists sit left of the diff in a 280 DIP lane (`t093fu-l7/shots/960-commit-view.png`), and Changes and Staged show all eight rows of the fixture. An `openWorktree` refusal `UNKNOWN_TARGET` shows the D15 worktree text. Each sidebar Worktrees row has a tooltip with its full accessible name. "No file matches the filter." sits in a `role="status"` region that is always present. The six new or changed cases failed before the fixes. One control mutation per fix turned its case red, and the undo turned it green again. `bun run typecheck` and `bun run build` exit 0. `bun test tests/contracts` gives 4,713 pass, 33 skip, 0 fail. `tests/git/portable-imports.test.ts` gives 23 pass. All 292 `ORIGIN` lines are under `C:\Projects\arbareto-l7`. Open: in the 960 DIP tray, the message help line overlaps the hook note of the right column.
+Follow-up (T106), 2026-10-20, in worktree l7 on f004-t093-fu at 359d239. The Commit view now takes its layout from its own width (plan.md D16 "Geometry"). At 960 DIPs, the lists sit left of the diff in a 280 DIP lane (`t093fu-l7/shots/960-commit-view.png`), and Changes and Staged show all eight rows of the fixture. An `openWorktree` refusal `UNKNOWN_TARGET` shows the D15 worktree text. Each sidebar Worktrees row has a tooltip with its full accessible name. "No file matches the filter." sits in a `role="status"` region that is always present. The six new or changed cases failed before the fixes. One control mutation per fix turned its case red, and the undo turned it green again. `bun run typecheck` and `bun run build` exit 0. `bun test tests/contracts` gives 4,713 pass, 33 skip, 0 fail. `tests/git/portable-imports.test.ts` gives 23 pass. All 292 `ORIGIN` lines are under worktree l7. Open: in the 960 DIP tray, the message help line overlaps the hook note of the right column.
 
 Follow-up (menu focus), 2026-10-20, on f004-menu-focus at adafb93: Shift+F10 and the Menu key on a sidebar branch, history, Worktrees, submodule, or Changes row now move the focus to the first menu item, also an unavailable one (spec FR-014). Base UI 1.8.0 focused the popup, because a menu without a trigger records no open method. A right-click keeps the Base UI popup focus.
 
 ## R27 Full run, 2026-10-20
 
-Run of 2026-10-20 in `C:\Projects\arbareto-l4` on f004-impl at 45f527e. The run finished in two parts at this one commit. The logs are in the orchestrator scratchpad `full-004-l4b/` and `full-004-l4c/`.
+Run of 2026-10-20 in worktree l4 on f004-impl at 45f527e. The run finished in two parts at this one commit. The logs are in the orchestrator scratchpad `full-004-l4b/` and `full-004-l4c/`.
 - Part 1, 06:07 to 08:37: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`. Parallel step: exit 0, 194 files, 6,523 pass, 0 fail, 40 skip. Serial step: 28 of 30 files ran with no failure.
 - The driver timeout of 150 minutes then stopped part 1 inside `tests/wsl/submodules.test.ts`. The orchestrator sets this timeout. It is not a test failure. `bun run test:all` gave no exit code of its own.
-- Every `ORIGIN` line of part 1 is under `C:\Projects\arbareto-l4`.
+- Every `ORIGIN` line of part 1 is under worktree l4.
 - Part 2, 08:41 to 09:10: the two serial files that part 1 did not finish ran as the serial step runs them, each in one `bun test` process with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `tests/wsl/submodules.test.ts`: 13 pass, 0 fail. `tests/wsl/sync-wsl.test.ts`: 15 pass, 0 fail.
 - `cargo test --locked` in `src-tauri`: exit 0, 553 passed, 0 failed, 4 ignored.
 - `bun test tests/wsl/registration.test.ts` with `ARBARETO_WSL_DISTRO=Ubuntu-24.04`: 39 pass, 4 skip (`distro-git-2.55`), 0 fail.
@@ -425,7 +425,7 @@ Run of 2026-10-20 in `C:\Projects\arbareto-l4` on f004-impl at 45f527e. The run 
 
 ## R28 Evidence records, 2026-10-20
 
-Runs of 2026-10-20 in `C:\Projects\arbareto-l5` on f004-evidence at 223503f, with the new cases of this section. Every `ORIGIN` line is under `C:\Projects\arbareto-l5`. After each undo, `git diff` of the mutated file is empty.
+Runs of 2026-10-20 in worktree l5 on f004-evidence at 223503f, with the new cases of this section. Every `ORIGIN` line is under worktree l5. After each undo, `git diff` of the mutated file is empty.
 
 Control mutations:
 - T096: one merge case of `tests/git/merge-rebase.test.ts` ran `git config merge.log true` after the run. The file failed (35 pass, 1 fail): the `.git/config` digest changed. After the undo, 36 of 36 passed.
@@ -464,14 +464,14 @@ Failing-first records:
 
 ## R29 Verification runs for T062, T076, and T093, 2026-10-20 and 2026-10-21
 
-Three runs in `C:\Projects\arbareto-l4` on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/`, `verify2-004-l4/`, and `verify3-004-l4/`. Runs 1 and 2 fail the T062, T076, and T093 pass condition. Run 3 at 5b9de69 passes it. Runs 4 and 5 verify T119. Their logs are in `verify4-004-l4/` and `verify5-l3/`. Run 6 verifies T120. Its logs are in `f005-t027/` (files `*-r2.*`).
+Three runs in worktree l4 on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/`, `verify2-004-l4/`, and `verify3-004-l4/`. Runs 1 and 2 fail the T062, T076, and T093 pass condition. Run 3 at 5b9de69 passes it. Runs 4 and 5 verify T119. Their logs are in `verify4-004-l4/` and `verify5-l3/`. Run 6 verifies T120. Its logs are in `f005-t027/` (files `*-r2.*`).
 
 Run 1, 2026-10-20, at 448e316:
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run build:service`, and `cargo check`: exit 0.
 - `bun run test:contracts`: 4,740 pass, 33 skip, 0 fail.
 - `bun run test:all`: exit 0 in 124 minutes. Parallel step: 6,547 pass. Serial step: 535 pass.
 - `cargo test`: 553 passed. `bun test tests/wsl/registration.test.ts` on Ubuntu-24.04: 39 pass.
-- Every `ORIGIN` repository root is under `C:\Projects\arbareto-l4`.
+- Every `ORIGIN` repository root is under worktree l4.
 - `bun test tests/windows`: 115 pass, 6 skip, 1 fail. In the native facts, N2 failed: `ElementFromHandle` returned 0x800705B4, `HRESULT_FROM_WIN32(ERROR_TIMEOUT)`. The file alone then gave 4 pass, 0 fail.
 - T062 `cmd` mutation: 14 pass, 1 fail. The red case was a D12 class case, not a Q14 case. Thus the run did not show the Q14 check red.
 - T062 `rewritesUpstream` false: 5 pass, 6 fail; after the undo, 11 of 11 passed. T076 confirmation dialog skip: 17 pass, 1 fail; after the undo, 18 of 18 passed.
@@ -484,9 +484,9 @@ Run 2, 2026-10-20 21:50 to 2026-10-21 about 01:30, at 2eec275, on a clean tree:
 - `bun install --frozen-lockfile`, `bun run build`, `bun run build:service`, `bun run typecheck`, `bun run export:schemas --check`, and `cargo check`: exit 0.
 - `bun run test:contracts`: 4,768 pass, 33 skip, 0 fail.
 - 21:56 to 00:32: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 1. Parallel step: 194 files, 6,574 pass, 40 skip, 1 fail. Serial step: 30 files, 536 pass, 9 skip, 0 fail. All 224 files ran, with 7,160 tests.
-- All 1,865 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l4`.
+- All 1,865 `ORIGIN` lines of `test:all` are under worktree l4.
 - The failure: `tests/git/submodule-review.test.ts:775`, "a modules walk above 256 folders gives limit", after 45.5 s. It expected one `limit` refusal and received `[]`. The file alone then gave 76 pass, 0 fail.
-- `bun test tests/windows`: 116 pass, 6 skip, 0 fail. Of its 28 `ORIGIN` lines, two are outside `C:\Projects\arbareto-l4`. They are the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA d39f9131, the main be0e367 package) and its fixture home copy (SHA b5d54c39).
+- `bun test tests/windows`: 116 pass, 6 skip, 0 fail. Of its 28 `ORIGIN` lines, two are outside worktree l4. They are the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA d39f9131, the main be0e367 package) and its fixture home copy (SHA b5d54c39).
 - N1: 7 lines match. N2: the `app-menu-by-uia-show-context-menu` line gives `menu:false` and `match=false`. This line is an observation line by design, and it ran against the main package. N3, N4 (conhost seen), N5, and N6 match.
 - `cargo test --locked`: 553 passed, 4 ignored. `bun test tests/wsl/registration.test.ts` on Ubuntu-24.04: 39 pass, 4 skip (`distro-git-2.55`).
 - Skips in `test:all`: 15 skips print a SKIP reason. They are ssh-server 3, disposable-volume 2, history-fixture-h1m 2, other-account-owner 2, distro-git-below-2.55 2, fifo 1, restart-keeps-lingering 1, empty-locpath-hides-c-utf8 1, and two-test-distros 1. 34 skips print no reason line. Skips in `tests/windows`: display-off, live input 2, WSL distro unset 1, and history-fixture-h1m 2.
@@ -543,8 +543,8 @@ Run 3, 2026-10-21 06:24 to 09:18, at 5b9de69, on a clean tree:
 - `bun install --frozen-lockfile`, `bun run build`, `cargo check --locked`, `bun run build:service`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
 - `bun run test:contracts`: 4,779 pass, 33 skip, 0 fail.
 - 06:30 to 09:00: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0 in 150 minutes. Parallel step: 194 files, 6,626 tests, 6,586 pass, 40 skip, 0 fail, in 3,416 s. Serial step: 31 files, 595 tests, 585 pass, 10 skip, 0 fail, in 5,599 s. All 225 files ran, with 7,221 tests, 0 fail, and 50 skip.
-- All 1,883 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l4`.
-- `bun test tests/windows`: 116 pass, 6 skip, 0 fail. Of its 28 `ORIGIN` lines, two are outside `C:\Projects\arbareto-l4`. They are the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA d39f9131, the main be0e367 package) and its fixture home copy (SHA b5d54c39).
+- All 1,883 `ORIGIN` lines of `test:all` are under worktree l4.
+- `bun test tests/windows`: 116 pass, 6 skip, 0 fail. Of its 28 `ORIGIN` lines, two are outside worktree l4. They are the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA d39f9131, the main be0e367 package) and its fixture home copy (SHA b5d54c39).
 - N2: the `app-menu-by-uia-show-context-menu` line gives `menu:false` and `match=false`. This line is an observation line by design, and it ran against the main package. N1 (7 lines), N3, N4, and N5 match. N6 `plain` and `allow` give `foreground:false` and `match=false`, with `foregroundOwnerAtReady` bun.exe and an idle time of about 29,600 s. In run 2, both N6 lines matched. The failed run of 2026-10-17 in R21 N6 had the same pattern: an idle desktop, and another process held the foreground. O-8 stays open until T082.
 - `cargo test --locked`: 553 passed, 4 ignored. `bun test tests/wsl/registration.test.ts` on Ubuntu-24.04: 39 pass, 4 skip.
 - Control mutations, each red on its named case and then green after the undo, with a clean tree after each:
@@ -558,13 +558,13 @@ Run 3, 2026-10-21 06:24 to 09:18, at 5b9de69, on a clean tree:
 - Not in this run: the `bun run dev` board comparison, screenshots, live-input steps, and reviews.
 - Verdict: the agent-runnable pass condition of T062, T076, and T093 holds at 5b9de69.
 
-Run 4, 2026-10-21 11:09 to 14:43, at 7c38b92 in `C:\Projects\arbareto-l4` on f004-impl, on a clean tree:
+Run 4, 2026-10-21 11:09 to 14:43, at 7c38b92 in worktree l4 on f004-impl, on a clean tree:
 - `bun install --frozen-lockfile`, `bun run build`, `cargo check`, `bun run build:service`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
 - 11:10 to 14:17: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 1 in 187 minutes. Parallel step: 194 files, 6,635 tests, 6,593 pass, 40 skip, 2 fail, exit 1, in 4,802 s. Serial step: 31 files, 595 tests, 585 pass, 10 skip, 0 fail, in 6,406 s. All 225 files ran, with 7,230 tests and 50 skip.
-- All 1,883 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l4`.
+- All 1,883 `ORIGIN` lines of `test:all` are under worktree l4.
 - Failure 1: `tests/git/submodule-review.test.ts`, "a modules walk above 256 folders gives limit", after 54.9 s. The harness `response` wait (`tests/git/service-harness.ts:481`) gave "no answer within 35000 ms".
 - Failure 2: `tests/wsl/mutations.test.ts`, "a Windows repository with core.sharedRepository stays eligible". The case hit the Bun default timeout of 5,000 ms.
-- Each failed file alone then passed: `submodule-review.test.ts` 77 pass, 0 fail, and `wsl/mutations.test.ts` 28 pass, 0 fail. All `ORIGIN` lines of both reruns are under `C:\Projects\arbareto-l4`.
+- Each failed file alone then passed: `submodule-review.test.ts` 77 pass, 0 fail, and `wsl/mutations.test.ts` 28 pass, 0 fail. All `ORIGIN` lines of both reruns are under worktree l4.
 - Cause: test defects, not product defects. The harness waited 35 s for every operation, but contract §5 gives `reviewSubmodules` no total read deadline. The shared-repository case gave no timeout. 001 T383 records both causes and the fix.
 - T119 cases: both T119 cases of `worktrees.test.ts` pass (8.1 s and 11.9 s), with no T119 SKIP line. The four `head-unresolved` golden vectors pass. `workbench-parsers`, `workbench-worktrees`, and `workbench-branches` pass with no skip.
 - `cargo test --locked`: 553 passed, 0 failed, 4 ignored.
@@ -574,10 +574,10 @@ Run 4, 2026-10-21 11:09 to 14:43, at 7c38b92 in `C:\Projects\arbareto-l4` on f00
 - Verdict: fail, because `bun run test:all` gave exit 1. Both failures are outside T119.
 - Fix: 001 T383, cc73e83. Main bbe9b95 merges it.
 
-Run 5, 2026-10-21 15:20 to 18:44, at cc73e83 in `C:\Projects\arbareto-l3`, on a clean tree. cc73e83 is main a42f4a4 with 001 T383, and main a42f4a4 holds the T119 merge.
+Run 5, 2026-10-21 15:20 to 18:44, at cc73e83 in worktree l3, on a clean tree. cc73e83 is main a42f4a4 with 001 T383, and main a42f4a4 holds the T119 merge.
 - `bun install --frozen-lockfile`, `bun run build`, `cargo check`, `bun run build:service`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
 - 15:21 to 18:41: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0 in 199 minutes. Parallel step: 194 files, 6,635 tests, 6,595 pass, 40 skip, 0 fail, in 5,738 s. Serial step: 31 files, 595 tests, 585 pass, 10 skip, 0 fail, in 6,220 s. All 225 files ran, with 7,230 tests, 0 fail, and 50 skip.
-- All 1,883 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l3`. Stdout holds 213 of them, and stderr holds 1,670.
+- All 1,883 `ORIGIN` lines of `test:all` are under worktree l3. Stdout holds 213 of them, and stderr holds 1,670.
 - T119 cases: in `worktrees.test.ts`, the FR-013 and FR-017 `headUnresolved` case passes (11.58 s), the FR-016 to FR-055 `head-unresolved` case passes (15.98 s), and the "HEAD unknown" display case passes (0.32 s). No T119 SKIP line.
 - T383 cases: the walk case passes (69.49 s), the T382 case passes (60.12 s), and the shared-repository case passes (6.75 s). The walk cases print "review 45016 ms" and "review 36944 ms", with the response wait 90,000 ms. Both reviews take longer than the old 35,000 ms wait.
 - `cargo test --locked`: 553 passed, 0 failed, 4 ignored.
@@ -587,10 +587,10 @@ Run 5, 2026-10-21 15:20 to 18:44, at cc73e83 in `C:\Projects\arbareto-l3`, on a 
 - Not in this run: `bun run test:contracts`, `bun test tests/windows`, control mutations, the board comparison, and reviews.
 - Verdict: run 5 is the green full run that verifies T119.
 
-Run 6, 2026-10-22 12:11 to 14:17, at f005-impl ccc56c2 in `C:\Projects\arbareto-l2` (005 batch 1, T027 part A r2). ccc56c2 holds main 8732717 through merge 3eb88cf, and so all T120 code and cases.
+Run 6, 2026-10-22 12:11 to 14:17, at f005-impl ccc56c2 in worktree l2 (005 batch 1, T027 part A r2). ccc56c2 holds main 8732717 through merge 3eb88cf, and so all T120 code and cases.
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check`, `cargo test`, and `bun run build:service`: exit 0.
 - 12:13 to 14:17: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0 in 124 minutes. Parallel step: 201 files, 7,037 tests, 6,997 pass, 40 skip, 0 fail, in 2,428.9 s. Serial step: 34 files, 670 tests, 660 pass, 10 skip, 0 fail, in 5,002.2 s.
-- All 1,921 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l2`. Stdout holds 224 of them, and stderr holds 1,697.
+- All 1,921 `ORIGIN` lines of `test:all` are under worktree l2. Stdout holds 224 of them, and stderr holds 1,697.
 - 005 changes after the merge (`git diff 8732717 ccc56c2`): `ChangesPane.tsx` has no change. WP2 (acda0e9) sorts the rows of `file-tree.ts` folders first and changes the expected order in two `workbench-commit.test.tsx` cases (positions, Filter files). The row keys and the T120 cases do not change.
 - Control mutations, from the T120 author in three rounds: the kept row object again; the entry ID as the file row key again; the earlier-rows kept check, with no `moveFrom` in the menu-close effect. Each mutation turned the new cases red. A hash compare restored each file.
 - Not in this run: `bun test tests/windows`, the packaged T082 test, and the board comparison.
@@ -610,7 +610,7 @@ Open items:
 - Feature 005 candidates from the long-path work: a discovery refusal reason after exit 128 (`symbolic-ref --no-recurse`, `show-ref --exists`, a shell allow-list). The silent `for-each-ref` drop stays a known limit.
 - Board-only: the Submodules board shows done and running icons and a progress bar. The app shows only the submodule icon.
 
-Process deviation, 2026-10-21, at about 02:13: the board-comparison agent opened `C:\Projects\arbareto` in the dev app for about one minute. An empty picker path caused it. `git status` of that checkout stayed clean, and it had no `index.lock`. The times of `index`, `HEAD`, and `config` are older than the open. The fix preamble now requires a path check before each open.
+Process deviation, 2026-10-21, at about 02:13: the board-comparison agent opened the main checkout in the dev app for about one minute. An empty picker path caused it. `git status` of that checkout stayed clean, and it had no `index.lock`. The times of `index`, `HEAD`, and `config` are older than the open. The fix preamble now requires a path check before each open.
 
 Task records for the tick audit:
 - T111 plan-rule checks (2026-10-20, T111 agent): (A) the worktree ask after Not now from the trust chip does not break plan.md D15 "Trust texts". A canceled chip ask records `declined`, and every later `askTrust` returns false until the repository changes. A temporary probe (chip Not now, then Remove worktree) sent 1 `approveTrust` and 1 `reviewWorkbench`, so nothing asked a second time. (B) The Submodules header during a run does not break D15 "Header". Every submodule progress event carries `rowIndex` and `rowCount` (`src/contracts/submodules.ts`). Board shot 44 was taken before the first event, while the Run confirmation still waited. With no counter yet, the header shows no count.
@@ -703,7 +703,7 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 - Suspicion, checked in T108 and not a defect: the Stop trusting BUSY check runs only at acceptance. Only the contract delta sentence changed (3482b3b).
 - No batch 4 test asserts on DOM nodes, so the 9e92c50 case does not apply.
 
-**Batch 4 rerun review, 2026-10-20 (T108).** Independent review at e05d52c. Fixes in `C:\Projects\arbareto-l6` on f004-b4-fixes. Medium: a global `merge.tool=bc` without `mergetool.bc.path` ran a repository `bcompare.exe` through an absolute `PATH` entry without approval. git-mergetool--lib `get_merge_tool_path` runs the `translate_merge_tool_path` output (Git 2.56.0.windows.2, lines 478 to 505), and `mergetools/bc` gives `bcomp` or `bcompare`. Now any relative entry or any entry inside the roots needs the class `mergetool` (plan.md D12). Low: the amend token now binds the upstream. A `.git/remotes/origin` `Pull:` line changes the upstream without a configuration change, so the confirmed amend ran before the fix. A configuration change gives `TRUST_CHANGED` first. Lean: the seven "ORIGIN absent" blocks are gone. Doc: D13 records the `insteadOf` gap, and contract Δ7 records the revoke `BUSY` rule. Each new case failed with its fix undone and passed with it. Checks: typecheck, schema check, `tests/contracts` (4726 pass, 0 fail), and ten `tests/git` files (267 pass, 2 fail). The 2 failures are the `trust.test.ts` "bare-name lookup" cases. They fail the same way with the trust.ts of 223503f.
+**Batch 4 rerun review, 2026-10-20 (T108).** Independent review at e05d52c. Fixes in worktree l6 on f004-b4-fixes. Medium: a global `merge.tool=bc` without `mergetool.bc.path` ran a repository `bcompare.exe` through an absolute `PATH` entry without approval. git-mergetool--lib `get_merge_tool_path` runs the `translate_merge_tool_path` output (Git 2.56.0.windows.2, lines 478 to 505), and `mergetools/bc` gives `bcomp` or `bcompare`. Now any relative entry or any entry inside the roots needs the class `mergetool` (plan.md D12). Low: the amend token now binds the upstream. A `.git/remotes/origin` `Pull:` line changes the upstream without a configuration change, so the confirmed amend ran before the fix. A configuration change gives `TRUST_CHANGED` first. Lean: the seven "ORIGIN absent" blocks are gone. Doc: D13 records the `insteadOf` gap, and contract Δ7 records the revoke `BUSY` rule. Each new case failed with its fix undone and passed with it. Checks: typecheck, schema check, `tests/contracts` (4726 pass, 0 fail), and ten `tests/git` files (267 pass, 2 fail). The 2 failures are the `trust.test.ts` "bare-name lookup" cases. They fail the same way with the trust.ts of 223503f.
 
 **T109 to T111 review, 2026-10-20.** Independent reviewer at b6e21ec (T109, T110, T111, range 702dab4..b6e21ec). Skills: `ponytail-review`, `web-design-guidelines`, `arbareto-ux`, and a manual correctness, no-heuristics, keyboard, accessibility, and forced-colors review. No Critical or High finding. Medium: SaveRow shows an enabled Save after a failed settings read, and the click does nothing (GitSettingsPage.tsx SaveRow); T113 gives Save the read reason. Medium: plan.md D15 "Top bar row" says the controls never wrap, but its new last sentence and the 001 header model wrap them; T112 limits the first rule to one header row. Low: the Commit trust reason is chosen by text equality (T113); the scope file tooltip cannot open by keyboard (T113); the switcher text move also changes the branch list (T113 plan text); the Submodules collapse test does not check the host lines (T113). Lean: `wraps` can be a required prop (T112). The keyboard model, focus outlines, forced-colors pairs, the trust dialog shield icon, and the new tests passed review. Fixes: T112 c1e0836 (merge 02279c6), T113 8c40b46 (merge e6c0589).
 
@@ -1021,8 +1021,8 @@ Counted runs, median of 10 after one warm-up for SC-020 and SC-021. SC-019 uses 
 | SC-019 256 | 200 inputs, p95 7.4 ms, max 8.3 ms; 11 of 1,280 rows mounted | 100 ms and 500 ms | pass |
 | SC-019 1,024 `f<i>/s` | 220 inputs, p95 7.4 ms, max 9.0 ms; 11 of 2,048 rows mounted | 100 ms and 500 ms | pass |
 | SC-020 1,024 | branch 109,405.4 ms, detached 108,368.3 ms (SC-018 value 1.01 ms per row, no budget) | 190,000 ms | pass |
-| SC-020 20 (after T165) | branch 5,254.6 ms, detached 5,229.6 ms (SC-018 value 1.25 ms per row, no budget) | 6,500 ms | pass |
-| SC-020 256 (after T165) | branch 44,022.9 ms, detached 44,011.5 ms (SC-018 value 0.04 ms per row, no budget) | 55,000 ms | pass |
+| SC-020 20 (after T165) | branch 5,254.6 ms, detached 5,229.6 ms (SC-018 value 1.25 ms per row, within the 30 ms SC-018 budget) | 6,500 ms | pass |
+| SC-020 256 (after T165) | branch 44,022.9 ms, detached 44,011.5 ms (SC-018 value 0.04 ms per row, within the 30 ms SC-018 budget) | 55,000 ms | pass |
 | SC-021 20 (after T165) | median 7,508.1 ms, max 7,846.1 ms | 10,000 ms | pass |
 | SC-021 100 (after T165) | median 28,154.5 ms, max 29,161.7 ms | 36,000 ms | pass |
 | SC-021 256 (after T165) | median 78,532.3 ms, max 101,981.2 ms; load-affected, not a baseline | 85,000 ms | pass |
@@ -1077,7 +1077,7 @@ Session 3 (2026-11-08), one run with all cases:
 - Build ID 9df12f84 (hashes in session 3 above). OS 10.0.26300 (26H2.9711). WebView2 Edg/157.0.4341.42. Git 2.56.0.windows.2. Display scale 125% (`devicePixelRatio` 1.25). Windows text size 100%.
 - Result: 8 pass, 0 fail, 1 skip ((10) at 225%: "missing capability text-scale-225"). Session 3 ran no T164 control. The controls are the session 2 controls c4-1 to c4-10.
 - (1): the tree description equals the 13 D20 texts in the open, closed, and noRoom forms, and in the constrained profile at 960×640 compact (hidden form).
-- (1), focus after the profile switch to constrained: focus is on `body` (role generic, no name), not on the Tab-stop row. Accepted as a LOW finding.
+- (1), focus after the profile switch to constrained: focus is on `body` (role generic, no name), not on the Tab-stop row. Accepted as a LOW finding. The decision of 2026-11-08 replaced this with the fix T166.
 - (2): at 240 DIPs the key list has 1 track. At 360 DIPs it has 2 tracks. In each form, `scrollHeight` equals `innerHeight`.
 
 | Case (2) layout | P_open (desk) | H | Group | References |
@@ -1101,4 +1101,43 @@ Session 3 (2026-11-08), one run with all cases:
 - (10) at 225%: skipped, accepted by the user 2026-11-08 (Windows text size 225% not set).
 - WebView2: 6 msedgewebview2.exe processes in the Job in each app session. Job peak committed bytes 603,701,248 to 692,572,160. Peak process committed bytes 316,862,464 to 344,141,824.
 
-Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): session 3 re-measured these cases on build 9df12f84, after T165 (table above). Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. T164 also waits for its red checks on the current test file, because the c4 controls ran on c96336c8, before the test changes in 7e0f34b8. These red checks move to session 4.
+Session 4 (2026-11-09), one run with all cases, then the controls:
+- Build: worktree l9 `main-submodule-parallel` at 763786ec, clean. The T165 review fixes (a deadline check before each walk of a submodule program listing, and the reconcile rethrow of a non-halt error) are not in this build. They were uncommitted in worktree l5 on 2026-11-09. Built exe SHA-256 9DBAEC47B9DDAEFEB3582865232EFDF6F4A00F72031B84927DC53640F4BC751C. Installed exe SHA-256 C025DFC6081542714CDFD6E24FB53DA669195694BD2DD895F1F55E0EF4716DF2 (HASH_A). The installed exe matches the patched build, with 1 marker hit. Installer SHA-256 7C3F39AD1B75E76C9832C20B163C8D0FC1DB10169623C1F997EC84A4E93AF0A2. Installed version 0.1.0.
+- OS 10.0.26300 (26H2.9711). WebView2 Edg/157.0.4341.42. Git 2.56.0.windows.2. Bun 1.4.4. Display scale 125% (`devicePixelRatio` 1.25). Windows text size 100%.
+- Step 0 before the build: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run export:schemas --check`, and `bun test ./tests/contracts ./tests/git/portable-imports.test.ts` exit 0. The test step gave 6,805 pass, 37 skip, 0 fail.
+- The session had no Kernel-Power 42 event. No step is INVALID.
+- Result: 8 pass, 0 fail, 1 skip ((10) at 225%: "missing capability text-scale-225", accepted by the user 2026-11-08).
+- (1): the tree description equals the 13 D20 texts in the open, closed, and noRoom forms, and in the constrained profile at 960×640 compact (hidden form).
+- (1), focus after the profile switch to constrained: the case asserts focus on the "Show references" button (`tag` button, `body` false), and it passed (T166). The log prints no focus line.
+- (2) to (8), and (10) at 100%: the same values as session 3.
+- (9): nine captures in local scratch, with the session 3 names (2026-11-09T09-45Z). Each pair with session 3 has the same size, 1600×1000 px, and a different SHA-256. The only visible difference is the fixture commit ID (ac10210324b3 against b080177e0131). The other changed pixels differ by at most 15 of 255 per channel, and by at most 54 below the noRoom tooltip.
+- WebView2: 6 msedgewebview2.exe processes in the Job in each of the 10 app sessions. Job peak committed bytes 601,968,640 to 688,787,456. Peak process committed bytes 318,328,832 to 353,308,672.
+- Code font case of `tests/windows/workbench-packaged.test.ts` (001 plan.md note 2026-11-07): 1 pass. `RECORD font: Cascadia Mono`, 15 glyphs, not a custom font.
+- T156 case 1 for T145 ("256 cloned rows with flat names" in `tests/git/submodule-review.test.ts`): 1 pass in 248.4 s. The global Git config SHA-256 was the same before and after. The test removed its fixture folder.
+- SC-021 256 (quiet rerun, "with 256 moved" in `tests/windows/submodule-update-packaged.test.ts`): median 54,332.8 ms, max 87,240.3 ms, budget 85,000 ms. Spec SC-021 judges the median of 10 counted runs, so the case passes. Run 1 alone is above 85,000 ms. 1 pass, 0 fail, 1,735.8 s. The installed exe was HASH_A. No Kernel-Power 42 event.
+- SC-021 256 quiet check at 12:41:19: 60-s Processor total average 10.0%, maximum 27.1%, MsMpEng 30-s average 19.1%, free memory 12,483 MB, gate 0.
+- SC-021 256 runs: warm-up 85,343.2 ms (5,702 processes). Runs 87,240.3, 56,003.8, 54,309.7, 53,642.2, 54,109.9, 54,355.9, 54,760.0, 54,490.8, 54,307.2, and 54,065.8 ms. Runs 2 to 10 took 53,642.2 to 56,003.8 ms. Each counted run started 4,147 or 4,148 new processes. Long tasks: 0 in each run. Session 3 median: 78,532.3 ms.
+- SC-021 256 CPU per counted run: 136,531.3 to 143,125.0 ms user and 202,453.1 to 241,343.8 ms kernel. Run 1 used the most kernel time.
+- SC-021 256 load: the driver log `sc021.out` has 27 load samples, one per minute. MsMpEng was 3.1% to 142.2%, and 23 samples were at least 60%. Defender was active during the run, so this is not a load-free baseline.
+
+Controls, each applied alone. Each control exited 1.
+
+| Control | Case | Failing field |
+| --- | --- | --- |
+| c-font `windowsFonts` without "Cascadia Mono" | code font | `used` false, `others` ["Cascadia Mono"] |
+| c4-1 board text "Move to the next row." | T164 (1) | the tree description differs |
+| c4-2 first `OPEN_LAYOUTS` want hidden | T164 (2) | "the hidden form (case 2 1280x800 compact 240 DIPs) did not happen within 10000 ms" |
+| c4-3 `AFTER_SPACE` true | T164 (3) | "case 3 after Space did not happen within 10000 ms" |
+| c4-4 `CLOSED_DESK.compact` 49 | T164 (3) and (4) | `desk` false, `group` false |
+| c4-5 `AFTER_CLOSE_RESTART` open | T164 (5) | "the open form (case 5 restart after the close) did not happen within 10000 ms" |
+| c4-6 `NO_ROOM_WANT` open | T164 (6) | "the open form (case 6 noRoom) did not happen within 10000 ms" |
+| c4-7 `FIRST_TAB_AFTER_TREE` SPLITTER | T164 (7) | "the first Tab stop after the tree did not happen within 10000 ms: false" |
+| c4-10 `widthLimit` 100 | T164 (10) at 100% | `scroll` false |
+| c-t166 no focus move in `Workbench.tsx` (build B) | T164 (1) | focus on `body` (`tag` body, `label` null, `body` true) |
+
+- The c4 controls ran on the test file of 763786ec, after the test changes in 7e0f34b8.
+- After each control, the file was restored. Each SHA-256 matched the hash before the edit: `tests/windows/workbench-packaged.test.ts` 5BDCA1A0D6594C84FC50B12671D6FD7A96182586C5FBF7716B2CEC813D5F1E68, `tests/windows/submodule-tree-packaged.test.ts` 83AC9135E7A6A402BC2DB83580413724778855491EEA91A1441D71A4911CAA52, `src/frontend/app/Workbench.tsx` 1A76B95B2070DE007F63F0263EED7FA47A72B5F0EB84C8353555C19F68ED62B6.
+- c-t166 used build B: installer SHA-256 C25CEFBC327C29280594129C5D7C8A21F90618A298BE8CDC4C39FD7FEF2FF26C, installed exe SHA-256 14EB46DBB2DD76D5C908F1932CE82841564457E678BD7B8D226B4415C51D2649 (differs from HASH_A). After the restore, the reinstall of installer A gave HASH_A again. Worktree l9 was clean at the end.
+- The driver line `must[body: true]=False` is a driver string-match defect: it searched `body: true`, but the test prints `"body": true`. The c-t166 log holds `"body": true`, so the control is red.
+
+Ticks: none from these records. The tick waits for the green final full run (tasks.md:42). Evidence for T150 (session 2 control c1b and SC-020 20 and 256), T154 (session 2 SC-021 20 and 100 and control c3), and T158 (session 2 SC-021 256 and control c3): session 3 re-measured these cases on build 9df12f84, after T165 (table above). Evidence for T163: session 3 T164, with the red runs and the 7 controls in local scratch. Evidence for T164: session 3 T164. T164 also waits for its red checks on the current test file, because the c4 controls ran on c96336c8, before the test changes in 7e0f34b8. Session 4 ran these red checks on build 763786ec, and each control was red. Evidence for T166: session 4 T164 (1) and control c-t166. Evidence for T145: session 4 T156 case 1. Session 4 re-ran SC-021 256 for T158 on build 763786ec. T145 and T161 also stay unticked until the green final full run.

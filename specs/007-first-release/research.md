@@ -106,11 +106,11 @@ Research date: 2026-10-24. Each fact cites a source URL or a repository file. A 
 
 - Attestations: `actions/attest-build-provenance` v4 is a wrapper on `actions/attest` (https://raw.githubusercontent.com/actions/attest-build-provenance/main/README.md). The how-to uses `actions/attest@v4` with `subject-path`, and the job needs `id-token: write`, `contents: read`, and `attestations: write` (https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations). Users verify with `gh attestation verify <file> -R auric/arbareto` (same page).
 - Attestations are available for public repositories on all current plans. On Free, Pro, or Team plans, private repositories cannot use them (https://raw.githubusercontent.com/actions/attest-build-provenance/main/README.md, note). So the workflow cannot attest before the public switch (FR-004).
-- Immutable releases lock the tag and the assets after publication, and they create a release attestation. GitHub recommends: create a draft, attach all assets, then publish (https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases). A deleted immutable release blocks reuse of its tag name. This setting meets FR-028. It is a repository setting, so the user switches it on.
+- Immutable releases lock the tag and the assets after publication, and they create a release attestation. GitHub recommends: create a draft, attach all assets, then publish (https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases). A deleted immutable release blocks reuse of its tag name. This setting meets FR-028. It is a repository setting. The orchestrator switches it on at the public switch (spec FR-028).
 - Environments: required reviewers can approve jobs that reference the environment (up to six). On GitHub Free, required reviewers and environment secrets are available only for public repositories. Environment secrets reach a job only after the approval. "Prevent self-reviews" exists, but a single maintainer cannot use it. Deployment branch and tag rules restrict which `GITHUB_REF` values can deploy (https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
 - Proposed job split (for the plan):
-  - `build` job: `permissions: contents: read`. No secrets. Uploads the unsigned files as a workflow artifact.
-  - `sign` job (only with signing on): environment `release`, `actions: read`, `contents: read`, the SignPath token as an environment secret.
+  - `build` job: `permissions: contents: read, actions: read`. No secrets. Uploads the unsigned files as a workflow artifact.
+  - Signing: the workflow has no `sign` job. plan.md D11 puts both SignPath stages into the `build` job, behind `if: vars.ARBARETO_SIGNING == 'signpath'`. The SignPath token is a repository secret, so `build` uses no environment. Only `publish` uses the environment `release`.
   - `publish` job: environment `release` with the user as required reviewer and the tag rule `v*`. `contents: write`, `id-token: write`, `attestations: write`. It attests, writes the checksum file, creates the draft with `gh release create --draft --prerelease`, uploads, and publishes.
   - Workflow-level `permissions: {}` so each job states its own.
 - Tag protection: rulesets can target tags with `fnmatch` patterns (https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets). The user decided on 2026-10-24 "No tag ruleset" for the public switch. Immutable releases plus the environment tag rule cover the published tags. A tag ruleset would also stop someone with write access from creating `v*` tags. There is only one maintainer, so this adds little (open question Q4).
@@ -489,3 +489,22 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - LOW, no change: 001 plan.md "Constitution Check" cites constitution 3.0.0. The 4.0.1 sync report keeps these rows correct.
 - No CRITICAL or HIGH finding on the 007 amendments stays open.
 - `OBSERVATION T027: 001 analyze 0 CRITICAL, 1 HIGH fixed, 2 MEDIUM fixed, 1 MEDIUM open, 1 LOW`
+
+### T031 Release settings, partial (2026-11-09, GitHub API, `auric/arbareto`)
+
+- The orchestrator set the values through the GitHub API at the user's request. A GET read back each value.
+- History: the first `PUT environments/release` and `POST environments/release/deployment-branch-policies` returned HTTP 200, with `can_admins_bypass` `true` (the GitHub default).
+- A second `PUT environments/release` with the full body returned HTTP 200. It sets `can_admins_bypass` to `false` to meet spec FR-018.
+- Environment `release`, final read-back:
+  - Required reviewer: `auric` (type `User`).
+  - `prevent_self_review`: `false`. A single maintainer cannot use self-review prevention (research R3).
+  - `can_admins_bypass`: `false`. An admin cannot skip the required approval.
+  - Wait timer: none.
+  - `deployment_branch_policy`: `{"protected_branches": false, "custom_branch_policies": true}`.
+  - Deployment policy: one policy, `{"name": "v*", "type": "tag"}`.
+- Immutable releases: already on before this step (`{"enabled": true, "enforced_by_owner": false}`). No change.
+- Repository: `"private": false`. Only the signed-in account read this value.
+- Open: the anonymous `gh api repos/auric/arbareto` check that confirms `"private": false`.
+- Open: the check that `main` holds features 005, 006, 008, 010, and 011 and the 004 Submodules tree (004 User Story 12).
+- T031 stays open until both checks pass.
+- `OBSERVATION T031: environment release set (reviewer auric, admin bypass off, tag policy v*); immutable releases on; anonymous public check and main content check open`

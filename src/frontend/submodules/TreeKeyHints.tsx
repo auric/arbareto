@@ -3,7 +3,7 @@
 
 import { ArrowDown01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Fragment, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 
@@ -59,12 +59,25 @@ export type TreeKeyHintsProps = {
   listId: string;
   /** The button lost its box while it had focus. */
   onBoxLost(): void;
+  /** Attaches the button. React calls the returned cleanup before it removes the button. Keep it stable. */
+  buttonRef?(element: HTMLButtonElement): () => void;
 };
 
-export function TreeKeyHints({ slot, open, onOpen, min, buttonId, listId, onBoxLost }: TreeKeyHintsProps) {
+export function TreeKeyHints({ slot, open, onOpen, min, buttonId, listId, onBoxLost, buttonRef }: TreeKeyHintsProps) {
   const reasonId = `${buttonId}-reason`;
   const content = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
+  const button = useRef<HTMLButtonElement | null>(null);
+  const bindButton = useCallback(
+    (element: HTMLButtonElement) => {
+      button.current = element;
+      const release = buttonRef?.(element);
+      return () => {
+        release?.();
+        button.current = null;
+      };
+    },
+    [buttonRef],
+  );
   const [size, setSize] = useState<Size | null>(null);
   // D20 "No toggle": the content block keeps its full layout in each form, so these heights never depend on the form.
   useLayoutEffect(() => {
@@ -110,7 +123,7 @@ export function TreeKeyHints({ slot, open, onOpen, min, buttonId, listId, onBoxL
           <TooltipTrigger
             render={
               <button
-                ref={button}
+                ref={bindButton}
                 id={buttonId}
                 type="button"
                 aria-expanded={shownOpen}

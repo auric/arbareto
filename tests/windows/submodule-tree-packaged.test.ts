@@ -870,7 +870,7 @@ ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v
         await layout(s, 1280, 800, "comfortable", 180);
         await expectForm(s, "noRoom", "case 1 noRoom");
         await expectDescription(s, "noRoom");
-        // The gap that T163 found: the constrained profile remounts the group in `SidebarAfter`, and the references section starts collapsed. A record, no assertion.
+        // Plan D20 "Keyboard" (T166): the constrained profile removes the tree, so the focus goes to the Show references toggle.
         await layout(s, 1280, 800, "compact", 240);
         await expectForm(s, "open", "profile switch start");
         await s.c.evaluate(`(${HINTS_BUTTON}).focus(); true`);
@@ -878,7 +878,7 @@ ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v
         await s.c.send("Emulation.setDeviceMetricsOverride", { width: 960, height: 640, deviceScaleFactor: 0, mobile: false });
         await until<boolean>(s.c, "the constrained profile without the slot", `document.querySelector('[data-profile]')?.getAttribute('data-profile') === 'constrained' && document.querySelector('[data-slot=key-hints-slot]') === null`, (v) => v);
         await s.c.evaluate(FRAMES);
-        console.log(`RECORD T164 focus after profile switch: ${js({ dom: await s.c.evaluate<unknown>(ACTIVE_FACTS), ax: await axNode(s.c, "document.activeElement") })}`);
+        expect(await s.c.evaluate<unknown>(ACTIVE_FACTS)).toMatchObject({ tag: "button", label: "Show references", body: false });
         // Case 1 in the constrained profile: the group mounts only while the references section shows.
         // ReferencesSidebar.tsx: the toggle has `aria-expanded`, so UI Automation gives it no Invoke pattern (remote-delete-packaged.test.ts `showRemotes`).
         await s.c.evaluate(`document.querySelector('button[aria-label="Show references"][aria-expanded=false]').focus(); true`);

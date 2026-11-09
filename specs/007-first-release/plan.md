@@ -134,6 +134,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - Release mode: `git rev-parse --verify HEAD^{commit}` must equal `git rev-parse --verify refs/tags/<tag>^{commit}`. Else exit 1 with `RELEASE_CHECK not-tag-commit` (spec FR-014). A non-zero `rev-parse` exit fails with `RELEASE_CHECK git-failed <code>`.
 - Both modes: `git --no-optional-locks status --porcelain --untracked-files=all` must print nothing, before and after the build (spec FR-014).
 - Release mode: `gh api repos/{owner}/{repo}/releases --paginate` JSON; a published release with the same `tag_name` fails with `RELEASE_CHECK exists`. A draft with that tag is reused (spec FR-015, FR-017). A draft asset name outside the release files of the run also fails with `RELEASE_CHECK exists`. This check runs in the publish job, because the build job has no `contents: write` token and drafts need it to be visible.
+- Release mode, publish job, before the release lookup: `gh api repos/{owner}/{repo}/commits/refs/tags/<tag> --jq .sha` must equal `GITHUB_SHA`. Else exit 1 with `RELEASE_CHECK not-tag-commit <tag> <commit>`. A failed `gh api` exits 1 (contracts/release.md §2).
 - All downloads and outputs go below `$env:RUNNER_TEMP`, never into the checkout.
 
 ### D4 Build channel and clean identity

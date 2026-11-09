@@ -517,3 +517,15 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - `bun test ./tests/contracts/release-workflow.test.ts`: exit 0, 18 pass, 0 fail. The `ORIGIN` line names the checkout under test.
 - Control mutation, undone byte for byte: in the `build` "Install Bun" step only, `RELEASE_CHECK pin` becomes `RELEASE_CHECK pinX`. The workflow test exit 1, 1 of 18 fail ("each Install Bun step compares the zip hash with BUN_ZIP_SHA256 and exits 1 with RELEASE_CHECK pin bun-windows-x64.zip").
 - `release.yml` SHA-256 before the mutation and after the restore: `0266D50EE523BA7D79DA0CC33B96C8A17BDE9B3164E0A16DDB7A070837ED8AE4`.
+
+### 6bb2235d review cases (2026-11-09, reference host, the tree that 6bb2235d commits)
+
+- `bun test ./tests/contracts/release-files.test.ts`: exit 0, 21 pass, 0 fail. The `ORIGIN` lines name the checkout under test.
+- `bun test ./tests/contracts/release-workflow.test.ts`: exit 0, 19 pass, 0 fail. The `ORIGIN` line names the `release.yml` of the checkout under test.
+- Control 1, undone byte for byte: the `info/attributes` line in `hunspell-source.ts` goes back to `* -export-ignore -export-subst`. The release-files test exit 1, 1 of 21 fail ("core.autocrlf=true in the Git config leaves the archive files equal to the pinned blobs").
+- `hunspell-source.ts` SHA-256 before the mutation and after the restore: `4601BF2D2E683D190DB4D7469FDDD0563436056E72B9C079B816EE4BB49C7EBC`.
+- Control 2, undone byte for byte: in `release.yml`, `RELEASE_CHECK not-tag-commit` becomes `RELEASE_CHECK xnot-tag-commit`. The workflow test exit 1, 1 of 19 fail ("a tag on another commit than GITHUB_SHA gives RELEASE_CHECK not-tag-commit and no release change").
+- `release.yml` SHA-256 before the mutation and after the restore: `54B0CE4B2B7E0AC2492C57E3DF9AECD611077B95FF0DC5B085E340FA7AB987D5`.
+- Fact (2026-11-09, read-only `gh api` check): `repos/git/git/commits/refs/tags/v2.45.0` returns `786a3e4b8d754d2b14b1208b98eeb0a554ef19a8`. This is the commit of the annotated tag, equal to the `refs/tags/v2.45.0^{}` line of `git ls-remote`. `repos/git/git/commits/tags/v2.45.0` returns HTTP 422. So the publish step uses the `refs/tags/<tag>` form.
+- Fact (2026-11-09, GitHub docs "Events that trigger workflows", `push` table): `GITHUB_SHA` is the "Tip commit pushed to the ref." actions/checkout `src/ref-helper.ts` `testRef` compares `github.context.sha` with `rev-parse <ref>^{commit}`.
+- T032 gives the live check of the publish tag check.

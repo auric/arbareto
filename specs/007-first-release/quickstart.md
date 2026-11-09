@@ -37,6 +37,7 @@ Run the local checks first. The GitHub runs need the orchestrator, and the user'
 
 - Push the branch head to `release-dry-run`. The `build` job runs; `publish` is skipped.
 - Download the `release-files` artifact. Run `sums.ts verify` on it. Record the run record (image, tool versions, MSVC toolset, SDK) in research.md R7.
+- Unpack the Hunspell source archive with `C:\Windows\System32\tar.exe -xzf`. For each pin, the file list below `hunspell/` or `hunspell-wasm/` equals `git ls-tree -r --name-only <pin>`. The SHA-256 of each file equals the SHA-256 of `git cat-file blob <pin>:<path>`.
 - Install the dry-run installer as in Q4.
 
 ## Q6. Release (after the public switch, 005, 006, 008, 010, 011, and the 004 Submodules tree on `main`)

@@ -1145,9 +1145,9 @@ T165 review fix (commit 7c18ae53, merged into l9 as 54ccc1cd), worktree l5, 2026
 - Ten paths (`tests/git/` submodule-review, submodule-reconcile, commit-amend, commit-races, git-runner, submodule-notice, submodule-outcome, submodule-plan, submodule-scope, and `tests/contracts`): 7,035 pass, 37 skip, 0 fail, 147 files, 3,710 s. This run used the test before the review edits (test SHA-256 909878A7…).
 - Full `tests/git/submodule-review.test.ts` after the review edits (test SHA-256 C9648478…): 128 pass, 0 fail, 2,589 s.
 - Controls on the edited test, each alone. The source SHA-256 was 40F6E79B… before each control and after each restore.
-- (c) both `guard()` calls in `listingRunner` removed, `record()` kept: red, 1 late `fileFacts` read (row a's `pre-commit` digest).
-- (a+c) the code before the fix: red, 9 late `fileFacts` and 16 late `identities` reads.
-- (r) only the `record()` call in `noted` removed, guards kept: red. The late reads are row a's digest, row j's hooks walk, and 12 `identities` reads.
+- (c) both `guard()` calls in `listingRunner` removed, `record()` kept: red, 1 late `fileFacts` read (row a's `pre-commit` digest). The case "the listing walk of row c ends with the walk deadline while the other lanes run: the running walks end by themselves, and no read starts after the service has the reply" failed.
+- (a+c) the code before the fix: red, 9 late `fileFacts` and 16 late `identities` reads. The case "the listing walk of row c ends with the walk deadline while the other lanes run: the running walks end by themselves, and no read starts after the service has the reply" failed.
+- (r) only the `record()` call in `noted` removed, guards kept: red. The late reads are row a's digest, row j's hooks walk, and 12 `identities` reads. The case "the listing walk of row c ends with the walk deadline while the other lanes run: the running walks end by themselves, and no read starts after the service has the reply" failed.
 - The `identities` guard alone and the `ReadHalt` rethrow in `reconcile.ts` have no control (see T165).
 - The 37 skips: bun printed no SKIP lines for them. The reasons were not checked.
 - One run of the new case started 28 s after the previous run, not after the 3-minute wait.

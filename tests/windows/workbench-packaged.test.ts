@@ -811,13 +811,25 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
         await until<boolean>(c, "the enabled commit message box", `!!${box} && !${box}.disabled && ${box}.offsetParent !== null`, (v) => v);
         // An empty box lays out no glyphs, so it reports no platform font.
         await c.evaluate(`${box}.focus(); true`);
-        await c.send("Input.insertText", { text: "Font check 0123" });
-        await until<string>(c, "the typed message", `${box}.value`, (v) => v.length > 0);
+        const typed = "Font check 0123";
+        await c.send("Input.insertText", { text: typed });
+        await until<string>(c, "the typed message", `${box}.value`, (v) => v === typed);
         await c.send("DOM.enable");
         await c.send("CSS.enable");
         const { root } = (await c.send("DOM.getDocument", { depth: 0 })) as { root: { nodeId: number } };
-        const { nodeId } = (await c.send("DOM.querySelector", { nodeId: root.nodeId, selector: `[data-view="commit"] textarea[aria-label=${js(MESSAGE)}]` })) as { nodeId: number };
-        const { fonts } = (await c.send("CSS.getPlatformFontsForNode", { nodeId })) as { fonts: { familyName: string; glyphCount: number }[] };
+        const { nodeId: areaId } = (await c.send("DOM.querySelector", { nodeId: root.nodeId, selector: `[data-view="commit"] textarea[aria-label=${js(MESSAGE)}]` })) as { nodeId: number };
+        // CSS.getPlatformFontsForNode reads child text nodes only. The textarea text lives in its user-agent shadow root.
+        type DomNode = { nodeType: number; nodeValue: string; backendNodeId: number; children?: DomNode[]; shadowRoots?: DomNode[] };
+        const { node: area } = (await c.send("DOM.describeNode", { nodeId: areaId, depth: -1, pierce: true })) as { node: DomNode };
+        console.log(`SHADOW code-font: ${js(area.shadowRoots ?? null)}`);
+        const holder = (n: DomNode): DomNode | null =>
+          n.nodeType === 1 && (n.children ?? []).some((k) => k.nodeType === 3 && k.nodeValue === typed)
+            ? n
+            : [...(n.shadowRoots ?? []), ...(n.children ?? [])].reduce<DomNode | null>((hit, k) => hit ?? holder(k), null);
+        const editor = (area.shadowRoots ?? []).reduce<DomNode | null>((hit, s) => hit ?? holder(s), null);
+        expect(editor).not.toBeNull();
+        const { nodeIds } = (await c.send("DOM.pushNodesByBackendIdsToFrontend", { backendNodeIds: [editor!.backendNodeId] })) as { nodeIds: number[] };
+        const { fonts } = (await c.send("CSS.getPlatformFontsForNode", { nodeId: nodeIds[0] })) as { fonts: { familyName: string; glyphCount: number }[] };
         console.log(`FONTS code-font: ${js(fonts)}`);
         const used = fonts.toSorted((a, b) => b.glyphCount - a.glyphCount)[0]?.familyName ?? null;
         console.log(`RECORD font: ${used}`);

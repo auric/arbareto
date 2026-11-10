@@ -202,14 +202,22 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
   );
 
   // Feature 008 T063: git-status(1) porcelain v2 `XY` gives `fileChange`. `X` is the head-to-index side, `Y` the index-to-worktree side.
-  caseTest("T063", `F02: fileChange is added, deleted, or modified from the side letter of the status record`, SHELL, () =>
-    withService({ name: "t063-file-change" }, async (service) => {
+  caseTest("T063", `F02 and F10: fileChange is added, deleted, modified, or null from the side letter of the status record`, SHELL, async () => {
+    const conflict = repoOf(buildF10(gitPath(), "t063-file-change-conflict", "merge"));
+    await withService({ name: "t063-file-change" }, async (service) => {
       const repo = repoOf(buildF02(gitPath(), "t063-file-change"));
       git(repo, ["--literal-pathspecs", "rm", "-q", "--", "keep.txt"]);
       rmSync(join(repo, "other-a.txt"));
       put(repo, "ita.txt", "ita\n");
       git(repo, ["--literal-pathspecs", "add", "-N", "--", "ita.txt"]);
       put(repo, "loose.txt", "loose\n");
+      // A `T.` record without a symbolic link: with `core.symlinks=false`, Git compares the file content with the link text of the 120000 entry.
+      git(repo, ["config", "core.symlinks", "false"]);
+      put(repo, "link.txt", "multi.txt");
+      git(repo, ["--literal-pathspecs", "add", "--", "link.txt"]);
+      git(repo, ["--literal-pathspecs", "commit", "-q", "--no-verify", "-m", "link", "--only", "--", "link.txt"]);
+      const link = gitText(repo, ["hash-object", "-w", "--stdin"], { input: Buffer.from("multi.txt") }).trim();
+      git(repo, ["update-index", "--cacheinfo", `120000,${link},link.txt`]);
       const cases = [
         ["multi.txt", "staged", "modified"],
         ["multi.txt", "unstaged", "modified"],
@@ -219,17 +227,23 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
         ["other-a.txt", "unstaged", "deleted"],
         ["ita.txt", "unstaged", "added"],
         ["loose.txt", "untracked", "added"],
+        ["link.txt", "staged", null],
       ] as const;
       await underTest("comparison");
       const { repositoryId } = await service.register(repo);
       const read = await readOk(service, repositoryId);
-      expect([...new Map(read.entries.filter((e) => e.xy !== undefined).map((e) => [e.path, e.xy]))].sort()).toEqual([["ita.txt", ".A"], ["keep.txt", "D."], ["multi.txt", "MM"], ["other-a.txt", "MD"], ["other-b.txt", "A."]]);
-      const found: string[][] = [];
-      for (const [path, category] of cases) found.push([path, category, one<string>(resultOf(await compare(service, repositoryId, path, category, read)), "fileChange")]);
+      expect([...new Map(read.entries.filter((e) => e.xy !== undefined).map((e) => [e.path, e.xy]))].sort()).toEqual([["ita.txt", ".A"], ["keep.txt", "D."], ["link.txt", "T."], ["multi.txt", "MM"], ["other-a.txt", "MD"], ["other-b.txt", "A."]]);
+      const found: unknown[][] = [];
+      for (const [path, category] of cases) found.push([path, category, one<string | null>(resultOf(await compare(service, repositoryId, path, category, read)), "fileChange")]);
       expect(found).toEqual(cases.map((c) => [...c]));
-    }),
-    TIMEOUT_MS,
-  );
+    });
+    // An unmerged `u` record names no side change.
+    await withService({ name: "t063-file-change-conflict" }, async (service) => {
+      const { repositoryId } = await service.register(conflict);
+      const c = await compare(service, repositoryId, "conflict.txt", "conflicted");
+      expect({ xy: c.entry.xy, fileChange: one<string | null>(resultOf(c), "fileChange") }).toEqual({ xy: "UU", fileChange: null });
+    });
+  }, TIMEOUT_MS);
 });
 
 // T399, 001 contract §5 "Deadline outcomes": the deadline closes the operation Job, so the sibling step ends with `exitCode` null and no `deadline`.

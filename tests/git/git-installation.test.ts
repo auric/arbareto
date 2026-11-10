@@ -281,7 +281,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
     async () => {
       const exe = join(fixtureDir("oversize"), "git.exe");
       // NTFS extends the file without writing its bytes, so the fixture costs no disk writes.
-      // The x64 head of the stub keeps the T413 machine check out of this refusal.
+      // An x64 head, so only the size bound can refuse this file. A removed size check must turn this test red.
       const fd = openSync(exe, "w");
       writeSync(fd, readFileSync(compiled).subarray(0, IMAGE_HEAD_BYTES));
       ftruncateSync(fd, GIT_EXECUTABLE_DIGEST_BYTES + 1);

@@ -9,6 +9,7 @@ import { join, relative } from "node:path";
 import { acquireLock, builderDigest, PERF_CACHE_ROOT } from "../windows/perf-fixtures";
 import { FIXED_TIMESTAMPS, FIXTURE_ROOT, fixtureDir, fixtureEnv, fixturePath, ownedGit, ownedPath, removeTree } from "./fixture-root";
 import { fixtureGitPath } from "./git-binary";
+import { sha256 } from "./git-oracle";
 
 export type ObjectFormat = "sha1" | "sha256";
 export type FiEntry = { mode: "100644" | "100755" | "120000"; data: string | Uint8Array } | { mode: "160000"; oid: string } | "delete";
@@ -241,38 +242,50 @@ interface Manifest {
   builderDigest: string;
   // The exact `for-each-ref --format=%(objectname) %(refname)` output at build time.
   refs: string;
+  // SHA-256 of the porcelain v2 status at build time. A build without checkout lists every HEAD path as deleted from the index.
+  status: string;
   built: Omit<Built, "repo" | "root" | "git">;
 }
 
 // Null when Git fails, so a damaged entry never counts as reusable.
-function refList(git: string, repo: string): string | null {
-  const proc = gitExit(git, PERF_CACHE_ROOT, repo, ["--no-optional-locks", "for-each-ref", "--format=%(objectname) %(refname)"]);
+function refList(git: string, root: string, repo: string): string | null {
+  const proc = gitExit(git, root, repo, ["--no-optional-locks", "for-each-ref", "--format=%(objectname) %(refname)"]);
   return proc.exitCode === 0 ? proc.stdout.toString("utf8") : null;
 }
 
+// A temp clean-up can delete the index and work-tree files and keep the refs. Null when Git fails.
+function statusDigest(git: string, root: string, repo: string): string | null {
+  const proc = gitExit(git, root, repo, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--untracked-files=all"]);
+  return proc.exitCode === 0 ? sha256(proc.stdout) : null;
+}
+
 // Builds once per builder digest under the cache root. The lock and the temporary folder follow `ensureLargeFixture`.
-function cached(git: string, name: string, build: (repo: string) => Omit<Built, "repo" | "root" | "git">): Built {
-  mkdirSync(PERF_CACHE_ROOT, { recursive: true });
-  const folder = ownedPath(PERF_CACHE_ROOT, `f005-${name}`);
-  const lock = ownedPath(PERF_CACHE_ROOT, `f005-${name}.lock`);
-  const temp = ownedPath(PERF_CACHE_ROOT, `f005-${name}.tmp`);
+// `root` must be a real path. Only the reuse test gives another root.
+export function cached(git: string, name: string, build: (repo: string) => Omit<Built, "repo" | "root" | "git">, root: string = PERF_CACHE_ROOT): Built {
+  mkdirSync(root, { recursive: true });
+  const folder = ownedPath(root, `f005-${name}`);
+  const lock = ownedPath(root, `f005-${name}.lock`);
+  const temp = ownedPath(root, `f005-${name}.tmp`);
   const manifestPath = join(folder, "manifest.json");
   acquireLock(lock);
   try {
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, start: new Date().toISOString() }));
     if (existsSync(manifestPath)) {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
-      if (manifest.builderDigest === currentDigest() && existsSync(join(folder, "repo")) && refList(git, join(folder, "repo")) === manifest.refs) return { ...manifest.built, git, root: PERF_CACHE_ROOT, repo: join(folder, "repo") };
+      const repo = join(folder, "repo");
+      if (manifest.builderDigest === currentDigest() && existsSync(repo) && refList(git, root, repo) === manifest.refs && statusDigest(git, root, repo) === manifest.status) return { ...manifest.built, git, root, repo };
     }
     if (existsSync(temp)) removeTree(temp);
     mkdirSync(temp);
     const built = build(join(temp, "repo"));
-    const refs = refList(git, join(temp, "repo"));
+    const refs = refList(git, root, join(temp, "repo"));
     if (refs === null || refs === "") throw new Error(`for-each-ref failed or listed no refs in ${join(temp, "repo")}`);
-    writeFileSync(join(temp, "manifest.json"), `${JSON.stringify({ builderDigest: currentDigest(), refs, built } satisfies Manifest, null, 2)}\n`);
+    const status = statusDigest(git, root, join(temp, "repo"));
+    if (status === null) throw new Error(`git status failed in ${join(temp, "repo")}`);
+    writeFileSync(join(temp, "manifest.json"), `${JSON.stringify({ builderDigest: currentDigest(), refs, status, built } satisfies Manifest, null, 2)}\n`);
     if (existsSync(folder)) removeTree(folder);
     renameSync(temp, folder);
-    return { ...built, git, root: PERF_CACHE_ROOT, repo: join(folder, "repo") };
+    return { ...built, git, root, repo: join(folder, "repo") };
   } finally {
     removeTree(lock);
   }

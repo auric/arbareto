@@ -375,6 +375,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 **Agent**: implementer. Test code only.
 
 - [ ] T113 [US1] Rebuild a cached 005 fixture when its refs changed in `tests/git/history-diff-fixtures.ts`. Cause: the SC-002 case "the 100,001-file commit gives exactly …" in `tests/git/commit-changes.test.ts` got `rejected` with `UNKNOWN_TARGET`. A Windows temp clean-up removed the refs, the reflogs, `hooks`, and `info/exclude` of the cached `f005-wide-100001` repository, but kept its objects. `cached()` reused an entry when the builder digest matched and the `repo` folder existed, and never read the refs. Fix: at build time, the manifest records the exact `for-each-ref --format=%(objectname) %(refname)` output. A build with no refs or a failed read stops with an error. On reuse, `cached()` reads the refs again and rebuilds on a different output or a nonzero Git exit. The builder digest changes, so the first run rebuilds both `f005-*` entries. Tests: `tests/git/commit-changes.test.ts` alone goes green after the rebuild, then every other test file that calls `wideLarge` or `blameLarge` runs once. Control mutation: skip the ref comparison and remove the refs of a private cache copy; the SC-002 case must fail with `UNKNOWN_TARGET`. Spec: SC-002.
+- [ ] T122 [US1] Rebuild a cached 005 fixture when its index or work tree changed in `tests/git/history-diff-fixtures.ts`. Cause: on 2026-11-07 a Windows temp clean-up deleted `.git/index`, work-tree files, `hooks`, `info`, and `logs` of the cached `f005-submodules-100` and `f005-submodules-256` entries, but kept HEAD, config, refs, and objects. The T113 ref check accepts such an entry. The `submoduleWorld` check in `tests/windows/submodule-perf-fixture.ts` already needs an empty porcelain v2 status (T108 follow-up, with `tests/windows/submodule-perf-fixture.test.ts`). Fix: at build time, the `cached()` manifest also records the SHA-256 of `status --porcelain=v2 -z --ignore-submodules=none --untracked-files=all`. The `wideLarge` entry has no checkout, so its recorded status lists every HEAD path as deleted from the index. A failed status read at build time stops with an error. On reuse, `cached()` reads the status again and rebuilds on a different digest or a nonzero Git exit. `cached()` takes an optional root for the test. The builder digest changes, so the first run rebuilds both `f005-*` entries. Tests: `tests/git/history-diff-cache.test.ts` builds a one-file entry under the fixture root, deletes `.git/index`, then a work-tree file, and expects a rebuild each time, and a reuse of an intact entry. Control mutation: skip the status comparison; the test must fail. Spec: SC-002.
 
 ### Submodule marks speed (orchestrator decisions of 2026-10-31)
 
@@ -434,7 +435,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Packaged harness fixes (T101): after T099. Then T063 runs again.
 - Budget decisions (T103): after T101. Then T063 runs again. T104: after the v0.1.0 release.
 - Read and preview speed (T112): after T103. Then T063 runs again.
-- Fixture cache ref check (T113): no dependency. Then T063 runs again.
+- Fixture cache ref check (T113, T122): no dependency. Then T063 runs again.
 - Submodule marks speed and packaged cost (T114, T115, T116): after the v0.1.0 release, after T108.
 - Submodule change preview (T106–T111, WP9): v0.1.0 blocker. T106 beside T107, then T108, T109, T110, and T111 in order. Then T063 runs again.
 - Submodule staging (T118–T121, WP10): before v0.1.0. T118, then T119, then T120, then T121. Then T063 runs again.
@@ -496,7 +497,7 @@ Then:          T027
 | FR-069 to FR-076 (US10) | T106, T107, T108, T109, T110, T111, T114, T115, T119 (FR-069), T121 (FR-073) |
 | FR-077 to FR-082 (US11) | T118, T119, T120, T121 (FR-078, FR-081) |
 | SC-001 | T021, T061, T084, T101 |
-| SC-002 | T021, T061, T083, T090, T103, T104, T113 |
+| SC-002 | T021, T061, T083, T090, T103, T104, T113, T122 |
 | SC-003 | T012, T032, T059, T060, T078, T085 |
 | SC-004 | T001, T007, T027 |
 | SC-005 | T034, T059, T061, T078, T081, T084, T085, T087, T101, T103, T112 |

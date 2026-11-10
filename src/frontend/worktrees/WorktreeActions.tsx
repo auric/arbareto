@@ -50,6 +50,8 @@ export type WorktreeActionsOptions = {
   start: string | null;
   /** The reason that blocks every mutation, or null. */
   blockedReason: string | null;
+  /** `blockedReason` is the running or the reconcile reason. It then shows only in the tooltip and the accessible description (plan D15 running rule, 003 plan D12). */
+  blockedRunning?: boolean;
   /** True while a mutation runs (plan D15 running rule). */
   running: boolean;
   onOperation(op: StatusOperation): void;
@@ -91,7 +93,7 @@ function listOf(repositoryId: string, response: BridgeResponse): List {
 
 /** The worktree list of the top bar and the sidebar, and the Open, Remove, Prune, and Add actions. */
 export function useWorktreeActions(options: WorktreeActionsOptions) {
-  const { bridge, target, repositoryId, refsDigest, workbench, worktreeRoot, start, blockedReason, running, onOperation, onNotice, onOpen, onDock, askTrust } = options;
+  const { bridge, target, repositoryId, refsDigest, workbench, worktreeRoot, start, blockedReason, blockedRunning = false, running, onOperation, onNotice, onOpen, onDock, askTrust } = options;
   const [list, setList] = useState<List | null>(null);
   const [remove, setRemove] = useState<RemoveOverlay | null>(null);
   const [add, setAdd] = useState<{ repositoryId: string; opener: Element | null; initial?: AddSelection } | null>(null);
@@ -140,6 +142,8 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
     return blockedReason;
   }
   const pruneReason = entries === null ? null : prunable ? blockedReason : W.nothingToPrune;
+  /** True when a menu item shows `reason` only in the tooltip and the accessible description. */
+  const quiet = (reason: string | null) => blockedRunning && reason !== null && reason === blockedReason;
 
   async function review(payload: Parameters<Bridge["reviewWorkbench"]>[1]) {
     const t = target();
@@ -282,6 +286,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
     removeReason,
     openReason,
     pruneReason,
+    quiet,
     open,
     startRemove,
     prune,

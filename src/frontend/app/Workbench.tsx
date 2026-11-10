@@ -1866,6 +1866,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     worktreeRoot: path,
     start: panel === "details" && kept !== null ? kept : currentHead === null || currentHead.state === "unborn" ? null : currentHead.oid,
     blockedReason: mutationReason,
+    blockedRunning: quietMutation,
     running,
     onOperation: setOperation,
     onNotice: setNotice,

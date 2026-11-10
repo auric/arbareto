@@ -393,8 +393,6 @@ export type SubmodulesGroupProps = {
   onHintsOpen?(open: boolean): void;
   /** `metrics(density, textScale).reducedPaneMin` for the D20 fit rule. Absent: no form fits. */
   hintsMin?: number;
-  /** `TreeKeyHints` `buttonRef`. */
-  hintsButtonRef?(element: HTMLButtonElement): () => void;
 };
 
 // The compact row height (plan.md density table). The measured height of each mounted row replaces it.
@@ -601,7 +599,7 @@ const SubmoduleItem = memo(function SubmoduleItem(props: SubmoduleItemProps) {
 });
 
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
-export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0, scrollElement, hintsSlot = null, hintsOpen = true, onHintsOpen, hintsMin = Number.POSITIVE_INFINITY, hintsButtonRef }: SubmodulesGroupProps) {
+export function SubmodulesGroup({ update, repository, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0, scrollElement, hintsSlot = null, hintsOpen = true, onHintsOpen, hintsMin = Number.POSITIVE_INFINITY }: SubmodulesGroupProps) {
   const headingId = useId();
   const hintsButtonId = useId();
   const hintsListId = useId();
@@ -616,6 +614,12 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
   const [menu, setMenu] = useState<{ path: string; anchor: HTMLElement; byKey?: boolean } | null>(null);
   const elements = useRef(new Map<string, HTMLElement>());
   const updateButton = useRef<HTMLButtonElement>(null);
+  const headingButton = useRef<HTMLButtonElement>(null);
+  // Plan D20 "Keyboard": the tree and the panel button can hold the focus when they unmount inside one profile.
+  const treeFocusLost = useRef(false);
+  const [bindFocusHolder] = useState(() => (element: HTMLElement) => () => {
+    if (element.contains(document.activeElement)) treeFocusLost.current = true;
+  });
   const copy = useCopy();
   const reason = runningReason ?? blockedReason;
   const { rows, branches, results, run, summary } = update;
@@ -644,6 +648,14 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
     setStored({ repository, closed: next });
   }
   const treeElement = useRef<HTMLDivElement>(null);
+  const [bindTree] = useState(() => (element: HTMLDivElement) => {
+    treeElement.current = element;
+    const release = bindFocusHolder(element);
+    return () => {
+      release();
+      treeElement.current = null;
+    };
+  });
   // The tree offset inside the scroll element (TanStack Virtual `scrollMargin`).
   const [margin, setMargin] = useState(0);
   const toFocus = useRef<string | null>(null);
@@ -677,6 +689,13 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
     if (!element) return;
     toFocus.current = null;
     element.focus();
+  });
+  // Plan D20 "Keyboard": the heading button gets a focus that the tree took with it.
+  useLayoutEffect(() => {
+    if (!treeFocusLost.current) return;
+    treeFocusLost.current = false;
+    const active = document.activeElement;
+    if (active === null || active === document.body || !active.isConnected) headingButton.current?.focus();
   });
   function focusRow(index: number) {
     const to = Math.min(shown.length - 1, Math.max(0, index));
@@ -776,7 +795,7 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
     <section data-slot="submodules-group" aria-labelledby={headingId} className="flex min-h-0 flex-col">
       <div data-slot="group-header" className="flex items-center gap-1 px-2 font-semibold" style={{ minHeight: "var(--h-pane-heading)" }}>
         <h3 id={headingId}>
-          <button type="button" aria-expanded={expanded} className="flex items-center gap-1" onClick={() => setExpanded((x) => !x)}>
+          <button ref={headingButton} type="button" aria-expanded={expanded} className="flex items-center gap-1" onClick={() => setExpanded((x) => !x)}>
             <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
             Submodules
           </button>
@@ -902,7 +921,7 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
         )}
         {/* Plan D15 "Rows at rest": a failed list keeps the rows of the last list. Only a malformed tree shows no rows. */}
         {!expanded || shown.length === 0 ? null : (
-          <div ref={treeElement} role="tree" aria-labelledby={headingId} aria-describedby={`${hintsButtonId} ${hintsListId}`} className="flex flex-col">
+          <div ref={bindTree} role="tree" aria-labelledby={headingId} aria-describedby={`${hintsButtonId} ${hintsListId}`} className="flex flex-col">
             {virtual ? (
               <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
                 {/* A failed row has more lines, so each mounted row is measured. */}
@@ -928,7 +947,7 @@ export function SubmodulesGroup({ update, repository, runningReason, blockedReas
           buttonId={hintsButtonId}
           listId={hintsListId}
           onBoxLost={() => elements.current.get(shown[at]!.key)?.focus()}
-          buttonRef={hintsButtonRef}
+          buttonRef={bindFocusHolder}
         />
       )}
       {menu === null ? null : (

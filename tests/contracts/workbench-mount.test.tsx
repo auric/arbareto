@@ -1919,4 +1919,34 @@ describe("keys in the tree mount", () => {
       expect(document.activeElement?.getAttribute("aria-label")).toBe("Show references");
     });
   });
+
+  // tasks.md T167, plan D20 "Keyboard": any focus inside the removed references section goes to the Show references toggle.
+  const tabStopRows = () => [...document.querySelectorAll<HTMLElement>('[data-section="references"] [role="treeitem"][tabindex="0"]')];
+  const inGroup = (element: HTMLElement) => element.closest('[data-slot="submodules-group"]') !== null;
+  const MAIN = { kind: "branch" as const, name: "main", invalidUtf8: false, objectId: HEAD, objectType: "commit" as const, peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId: HEAD };
+  const REFS = { generation: 1, refs: [MAIN], refsDigest: "0".repeat(64), current: { name: "main", objectId: HEAD }, completeness: { state: "complete" as const } };
+  for (const [name, target] of [
+    ["Submodules tree", () => tabStopRows().find(inGroup)!],
+    ["references tree", () => tabStopRows().find((row) => !inGroup(row))!],
+  ] as const) {
+    test(`T167: a switch to the constrained profile while the ${name} row has focus moves the focus to the Show references toggle`, async () => {
+      await sized(1280, 800, async () => {
+        const double = await listed();
+        await resolve(latest(double, "readRefs"), succeeded(REFS));
+        const row = target();
+        await act(async () => row.focus());
+        expect(document.activeElement).toBe(row);
+        const happy = (window as unknown as SizedWindow).happyDOM;
+        await act(async () => {
+          happy.setInnerWidth(960);
+          happy.setInnerHeight(640);
+          window.dispatchEvent(new Event("resize"));
+        });
+        await settle();
+        expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
+        expect(document.activeElement === document.body).toBe(false);
+        expect(document.activeElement?.getAttribute("aria-label")).toBe("Show references");
+      });
+    });
+  }
 });

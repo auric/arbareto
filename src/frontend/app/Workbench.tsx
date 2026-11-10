@@ -1169,11 +1169,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [referencesShown, setReferencesShown] = useState(false);
   // Feature 004 plan D20 "Place": the slot of the "Keys in the tree" panel, outside the constrained profile only.
   const [hintsSlot, setHintsSlot] = useState<HTMLElement | null>(null);
-  // Plan D20 "Keyboard": a profile switch removes the tree while the "Keys in the tree" button can have focus.
-  const hintsFocusLost = useRef(false);
-  const [bindHintsButton] = useState(() => (element: HTMLButtonElement) => () => {
-    if (document.activeElement === element) hintsFocusLost.current = true;
-  });
+  // Plan D20 "Keyboard": the switch to the constrained profile removes the content of the wide references section while it can hold the focus.
+  const referencesFocusLost = useRef(false);
+  const wideReferences = useRef<HTMLDivElement>(null);
   const referencesToggle = useRef<HTMLButtonElement>(null);
   // The opener of the submodule update. The Submodules group keeps the focused control.
   const reviewOpener = useRef<"notice" | "menu" | "group">("notice");
@@ -1460,10 +1458,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (heading) heading.focus();
     else moveSection("next", "noticeHeading");
   });
+  // Plan D20 "Keyboard": React keeps the section element and removes its content before it detaches a ref.
+  // So this check reads the old DOM during render.
+  if (profile === "constrained" && wideReferences.current?.contains(document.activeElement)) referencesFocusLost.current = true;
   // Plan D20 "Keyboard": in the constrained profile, focus moves to the Show references toggle.
   useLayoutEffect(() => {
-    if (!hintsFocusLost.current) return;
-    hintsFocusLost.current = false;
+    if (!referencesFocusLost.current) return;
+    referencesFocusLost.current = false;
     // The flag can outlive its render, so a live focus stays where it is.
     const active = document.activeElement;
     const lost = active === null || active === document.body || !active.isConnected;
@@ -2143,7 +2144,6 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           hintsOpen={preferences.keyHintsOpen}
           onHintsOpen={(open) => savePreferences({ ...preferences, keyHintsOpen: open })}
           hintsMin={m.reducedPaneMin}
-          hintsButtonRef={bindHintsButton}
         />
       </div>
     );
@@ -2215,7 +2215,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       </div>
     ) : (
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: `${sideWidth}px ${m.splitter}px minmax(0, 1fr)` }}>
-        <div data-section="references" tabIndex={-1} className="min-h-0 border-r border-divider">
+        <div ref={wideReferences} data-section="references" tabIndex={-1} className="min-h-0 border-r border-divider">
           {sidebar}
         </div>
         <Splitter label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />

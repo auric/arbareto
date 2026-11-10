@@ -3,7 +3,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import { act, useState, type ReactNode } from "react";
-import type { ChangeEntry } from "../../src/contracts/envelope";
+import type { ChangeEntry, Comparison } from "../../src/contracts/envelope";
 import type { Amend } from "../../src/frontend/state/workbench";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
@@ -661,7 +661,7 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
 const PATCH = ["diff --git a/f.ts b/f.ts", "index 1..2 100644", "--- a/f.ts", "+++ b/f.ts", "@@ -1,4 +1,5 @@", " a", "-b", "+B", "+C", " d", " e", "@@ -10,2 +11,3 @@", " x", "+y", " z", ""].join("\n");
 const hunk = (ordinal: number, oldStart: number, oldCount: number, newStart: number, newCount: number) => ({ hunkId: fixtureId(0x700 + ordinal), ordinal, oldStart, oldCount, newStart, newCount, digest: String(ordinal).repeat(64) });
 
-async function shownDiff(category: "unstaged" | "staged" = "unstaged", patch = PATCH, hunks = [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)]) {
+async function shownDiff(category: "unstaged" | "staged" = "unstaged", patch = PATCH, hunks = [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)], fileChange: Comparison["fileChange"] = "modified") {
   const file = entry(category, "f.ts", category === "staged" ? "M." : ".M");
   const world = createWorld({ entries: [file] });
   world.answers.readComparison = (args) => {
@@ -677,6 +677,7 @@ async function shownDiff(category: "unstaged" | "staged" = "unstaged", patch = P
       support: "supported",
       fileAction: category === "staged" ? "unstage" : "stage",
       remedy: null,
+      fileChange,
     });
   };
   const double = await openCommitView(world);
@@ -721,7 +722,7 @@ describe("hunk buttons (FR-037)", () => {
     expect(document.activeElement === copy).toBe(true);
     const call = double.calls.filter((c) => c.operation === "readComparison").at(-1)!;
     const payload = call.args[1] as { snapshotId: string; entryId: string };
-    await answer(call, succeeded({ comparisonId: fixtureId(0x7fe), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(PATCH), hunks: [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)], support: "supported", fileAction: "stage", remedy: null }));
+    await answer(call, succeeded({ comparisonId: fixtureId(0x7fe), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(PATCH), hunks: [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)], support: "supported", fileAction: "stage", remedy: null, fileChange: "modified" }));
     await settle();
     expect(buttons("Stage hunk", commitView()!)).toHaveLength(2);
     expect(copy.isConnected).toBe(true);
@@ -735,23 +736,27 @@ describe("line selection (FR-041 to FR-044, contract Δ4)", () => {
 
   test("the mapping gives the 1-based body ordinals of the selected + and - lines of one hunk", () => {
     // Rows: " a"(1) "-b"(2) "+B"(3) "+C"(4) " d"(5) " e"(6); then " x"(1) "+y"(2) " z"(3).
-    expect(pickLines(rows, { start: 2, side: "deletions", end: 3, endSide: "additions" }, "stage")).toEqual({ ok: true, hunk: 0, lines: [2, 3, 4] });
-    expect(pickLines(rows, { start: 2, side: "additions", end: 2 }, "stage")).toEqual({ ok: true, hunk: 0, lines: [3] });
-    expect(pickLines(rows, { start: 12, side: "additions", end: 12 }, "stage")).toEqual({ ok: true, hunk: 1, lines: [2] });
+    expect(pickLines(rows, { start: 2, side: "deletions", end: 3, endSide: "additions" }, "stage", "modified")).toEqual({ ok: true, hunk: 0, lines: [2, 3, 4] });
+    expect(pickLines(rows, { start: 2, side: "additions", end: 2 }, "stage", "modified")).toEqual({ ok: true, hunk: 0, lines: [3] });
+    expect(pickLines(rows, { start: 12, side: "additions", end: 12 }, "stage", "modified")).toEqual({ ok: true, hunk: 1, lines: [2] });
   });
 
   test("the refusals: context-only, several-hunks, deleted-file, new-file for an unstage, and eof-newline for a part; the whole marker hunk passes", () => {
-    expect(pickLines(rows, { start: 1, side: "additions", end: 1 }, "stage")).toEqual({ ok: false, reason: "context-only" });
-    expect(pickLines(rows, { start: 4, side: "additions", end: 12 }, "stage")).toEqual({ ok: false, reason: "several-hunks" });
+    expect(pickLines(rows, { start: 1, side: "additions", end: 1 }, "stage", "modified")).toEqual({ ok: false, reason: "context-only" });
+    expect(pickLines(rows, { start: 4, side: "additions", end: 12 }, "stage", "modified")).toEqual({ ok: false, reason: "several-hunks" });
+    // Feature 008 T063: the comparison field `fileChange` gives deleted-file and new-file. The patch header gives no reason.
     const deleted = patchRows("diff --git a/f b/f\ndeleted file mode 100644\n--- a/f\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n");
-    expect(pickLines(deleted, { start: 1, side: "deletions", end: 1 }, "stage")).toEqual({ ok: false, reason: "deleted-file" });
+    expect(pickLines(deleted, { start: 1, side: "deletions", end: 1 }, "stage", "deleted")).toEqual({ ok: false, reason: "deleted-file" });
+    expect(pickLines(deleted, { start: 1, side: "deletions", end: 1 }, "stage", "modified")).toEqual({ ok: true, hunk: 0, lines: [1] });
+    expect(pickLines(rows, { start: 2, side: "deletions", end: 2 }, "stage", "deleted")).toEqual({ ok: false, reason: "deleted-file" });
     const added = patchRows("diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n@@ -0,0 +1,2 @@\n+a\n+b\n");
-    expect(pickLines(added, { start: 1, side: "additions", end: 1 }, "unstage")).toEqual({ ok: false, reason: "new-file" });
-    expect(pickLines(added, { start: 1, side: "additions", end: 1 }, "stage")).toEqual({ ok: true, hunk: 0, lines: [1] });
+    expect(pickLines(added, { start: 1, side: "additions", end: 1 }, "unstage", "added")).toEqual({ ok: false, reason: "new-file" });
+    expect(pickLines(added, { start: 1, side: "additions", end: 1 }, "unstage", "modified")).toEqual({ ok: true, hunk: 0, lines: [1] });
+    expect(pickLines(added, { start: 1, side: "additions", end: 1 }, "stage", "added")).toEqual({ ok: true, hunk: 0, lines: [1] });
     const eof = patchRows("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n");
-    expect(pickLines(eof, { start: 2, side: "deletions", end: 2 }, "stage")).toEqual({ ok: false, reason: "eof-newline" });
+    expect(pickLines(eof, { start: 2, side: "deletions", end: 2 }, "stage", "modified")).toEqual({ ok: false, reason: "eof-newline" });
     // The marker line counts in the ordinals: " a"(1) "-b"(2) "\"(3) "+c"(4) "\"(5).
-    expect(pickLines(eof, { start: 2, side: "deletions", end: 2, endSide: "additions" }, "stage")).toEqual({ ok: true, hunk: 0, lines: [2, 4] });
+    expect(pickLines(eof, { start: 2, side: "deletions", end: 2, endSide: "additions" }, "stage", "modified")).toEqual({ ok: true, hunk: 0, lines: [2, 4] });
   });
 
   test("Shift+Down from no selection starts at the first changed row of the hunk and extends one row per key", () => {
@@ -803,12 +808,22 @@ describe("line selection (FR-041 to FR-044, contract Δ4)", () => {
 
   test("U unstages selected lines of a staged diff, and a staged new file refuses with new-file", async () => {
     const added = "diff --git a/f.ts b/f.ts\nnew file mode 100644\n--- /dev/null\n+++ b/f.ts\n@@ -0,0 +1,2 @@\n+a\n+b\n";
-    const { double } = await shownDiff("staged", added, [hunk(0, 0, 0, 1, 2)]);
+    const { double } = await shownDiff("staged", added, [hunk(0, 0, 0, 1, 2)], "added");
     await act(async () => pierre.onLines!({ start: 1, side: "additions", end: 1 }));
     await settle();
     const unstage = button("Unstage 1 line (U)");
     expect(describedBy(unstage)).toBe("Unstage 1 line is unavailable: Git cannot unstage part of a new file");
     await press(diffBody(), "u");
+    expect(double.count("applyHunk")).toBe(0);
+  });
+
+  test("a null fileChange refuses a line selection: the service has no status fact (feature 008 T063)", async () => {
+    const { double } = await shownDiff("unstaged", PATCH, undefined, null);
+    await act(async () => pierre.onLines!({ start: 2, side: "additions", end: 2 }));
+    await settle();
+    const stage = button("Stage 1 line (S)");
+    expect(describedBy(stage)).toBe("Stage 1 line is unavailable: The comparison is incomplete");
+    await press(diffBody(), "s");
     expect(double.count("applyHunk")).toBe(0);
   });
 
@@ -828,7 +843,7 @@ describe("line selection (FR-041 to FR-044, contract Δ4)", () => {
   });
 
   test("a point that names no row gives no line pick: the line action states the mapping failure and sends nothing (contract §4)", async () => {
-    expect(pickLines(rows, { start: 99, side: "additions", end: 2 }, "stage")).toBeNull();
+    expect(pickLines(rows, { start: 99, side: "additions", end: 2 }, "stage", "modified")).toBeNull();
     const { double } = await shownDiff();
     await act(async () => pierre.onLines!({ start: 99, side: "additions", end: 99 }));
     await settle();
@@ -1120,7 +1135,7 @@ describe("Working directory row (plan D15, O-11)", () => {
     const world = createWorld({ entries: [file] });
     world.answers.readComparison = (args) => {
       const payload = args[1] as { snapshotId: string; entryId: string };
-      return succeeded({ comparisonId: fixtureId(0x7fd), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(PATCH), hunks: [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)], support: "supported", fileAction: "stage", remedy: null });
+      return succeeded({ comparisonId: fixtureId(0x7fd), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(PATCH), hunks: [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)], support: "supported", fileAction: "stage", remedy: null, fileChange: "modified" });
     };
     await openCommitView(world);
     const filter = () => document.querySelector<HTMLElement>('input[aria-label="Filter files"]')!;
@@ -1475,6 +1490,7 @@ function mergeWorld(entries: ChangeEntry[] = mergeBoard().all) {
       support: resolve ? "state" : "supported",
       fileAction: resolve ? "resolve" : e.category === "staged" ? "unstage" : "stage",
       remedy: null,
+      fileChange: resolve ? null : "modified",
     });
   };
   return world;

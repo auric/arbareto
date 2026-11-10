@@ -4,7 +4,7 @@
 // Feature 008 T027: the Commit view diff helpers of the revert tests. The caller mocks PatchView with `PatchDouble`, mocks PatchPool, registers the DOM, and passes the Workbench module.
 
 import { act, type ReactNode } from "react";
-import type { ChangeEntry } from "../../src/contracts/envelope";
+import type { ChangeEntry, Comparison } from "../../src/contracts/envelope";
 import { fixtureId } from "./bridge-contract";
 import { b64, entry, openCommitView, pressKey } from "./commit-fake";
 import { answer, button, click, createWorld, settle, succeeded } from "./sync-fake";
@@ -42,14 +42,14 @@ export const alertDialog = () => document.querySelector<HTMLElement>('[role="ale
 export const hunkRow = (index: number) => commitView().querySelector<HTMLElement>(`[data-hunk="${index}"]`)!;
 
 /** Opens the Commit view with one file and shows its diff. With `freshIds`, each comparison read has a new `comparisonId`, as in the service. */
-export async function shownDiff(module: WorkbenchModule, { category = "unstaged", path = "login.ts", patch = PATCH, hunks = HUNKS, others = [], freshIds = false }: { category?: ChangeEntry["category"]; path?: string; patch?: string; hunks?: unknown[]; others?: ChangeEntry[]; freshIds?: boolean } = {}) {
+export async function shownDiff(module: WorkbenchModule, { category = "unstaged", path = "login.ts", patch = PATCH, hunks = HUNKS, others = [], freshIds = false, fileChange = category === "untracked" ? "added" : "modified" }: { category?: ChangeEntry["category"]; path?: string; patch?: string; hunks?: unknown[]; others?: ChangeEntry[]; freshIds?: boolean; fileChange?: Comparison["fileChange"] } = {}) {
   const file = entry(category, path);
   const world = createWorld({ entries: [file, ...others] });
   const scope = category === "staged" ? "head-to-index" : category === "untracked" ? "empty-to-untracked" : "index-to-worktree";
   let reads = 0;
   world.answers.readComparison = (args) => {
     const payload = args[1] as { snapshotId: string; entryId: string };
-    return succeeded({ comparisonId: freshIds ? fixtureId(0x900 + reads++) : COMPARISON, snapshotId: payload.snapshotId, entryId: payload.entryId, scope, completeness: { state: "complete" }, patch: Buffer.from(patch).toString("base64"), hunks, support: "supported", fileAction: category === "staged" ? "unstage" : "stage", remedy: null });
+    return succeeded({ comparisonId: freshIds ? fixtureId(0x900 + reads++) : COMPARISON, snapshotId: payload.snapshotId, entryId: payload.entryId, scope, completeness: { state: "complete" }, patch: Buffer.from(patch).toString("base64"), hunks, support: "supported", fileAction: category === "staged" ? "unstage" : "stage", remedy: null, fileChange });
   };
   const double = await openCommitView(module, world);
   const tree = category === "staged" ? "Staged" : "Changes";

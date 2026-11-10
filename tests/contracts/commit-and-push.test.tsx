@@ -163,7 +163,7 @@ describe("Commit and push (FR-038)", () => {
       const { snapshotId, entryId } = args[1] as { snapshotId: string; entryId: string };
       const patch = Buffer.from("diff --git a/a.ts b/a.ts\nindex 1..2 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n a\n+n\n b\n").toString("base64");
       const hunks = [{ hunkId: fixtureId(0x401), ordinal: 0, oldStart: 1, oldCount: 2, newStart: 1, newCount: 3, digest: "1".repeat(64) }];
-      return { ...succeeded({ comparisonId: fixtureId(0x402), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks, support: "supported", fileAction: "stage", remedy: null }), entryId };
+      return { ...succeeded({ comparisonId: fixtureId(0x402), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks, support: "supported", fileAction: "stage", remedy: null, fileChange: "modified" }), entryId };
     };
     const double = await mountWorkbench(workbench, world);
     // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
@@ -230,7 +230,7 @@ describe("Commit and push (FR-038)", () => {
     world.answers.readComparison = (args) => {
       const { snapshotId, entryId } = args[1] as { snapshotId: string; entryId: string };
       const patch = Buffer.from("diff --cc a.txt\n").toString("base64");
-      return { ...succeeded({ comparisonId: fixtureId(0x504), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks: [], support: "state", fileAction: "resolve", remedy: null }), entryId };
+      return { ...succeeded({ comparisonId: fixtureId(0x504), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks: [], support: "state", fileAction: "resolve", remedy: null, fileChange: null }), entryId };
     };
     world.answers.applyFile = undefined;
     const double = await mountWorkbench(workbench, world);

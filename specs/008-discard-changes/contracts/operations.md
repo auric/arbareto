@@ -18,6 +18,10 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs`. `<oid>` matches the object format. `<path>` is the literal path bytes.
 
+### `readComparison` (001 §3)
+
+- A retained comparison value has the field `fileChange` (T063): `added`, `deleted`, `modified`, or `null`. The service sets it from the porcelain v2 `XY` of the entry: `X` for `head-to-index`, `Y` for `index-to-worktree`. `A` gives `added`, `D` gives `deleted`, and `M`, `R`, or `C` gives `modified`. An untracked entry gives `added`. A type change `T` and an unmerged entry give `null`. The renderer takes the `deleted-file` and `new-file` reasons only from this field. It refuses a line action and a revert when the field is `null`.
+
 ### `reviewWorkbench` (004 Δ3)
 
 - New payload forms (data-model §1):

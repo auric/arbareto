@@ -222,12 +222,12 @@ function revertBlock(props: HunkControlsProps): string | null {
 function revertState(props: HunkControlsProps) {
   const rows = props.lines?.patch ?? null;
   const range = props.lines?.range ?? null;
-  const header = rows?.header ?? [];
-  // The `git diff` extended header lines (git-diff(1) "Generating patch text with -p").
-  const fileReason = header.some((l) => l.startsWith("deleted file mode ")) ? LINE_REVERT_TEXT["deleted-file"] : header.some((l) => l.startsWith("new file mode ")) ? LINE_REVERT_TEXT["new-file"] : null;
+  const change = props.comparison.fileChange;
+  // Feature 008 data-model §7: the service field, not the patch text. Null: the service has no status fact, so the revert refuses.
+  const fileReason = change === "deleted" ? LINE_REVERT_TEXT["deleted-file"] : change === "added" ? LINE_REVERT_TEXT["new-file"] : change === null ? COMPARISON_INCOMPLETE : null;
   const hunkReason = revertBlock(props) ?? fileReason;
   if (range === null || rows === null) return { hunkReason, lines: null };
-  const pick = pickLines(rows, range, "unstage");
+  const pick = pickLines(rows, range, "unstage", change);
   const reason = hunkReason ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_REVERT_TEXT[pick.reason as keyof typeof LINE_REVERT_TEXT]);
   const label = revertLinesLabel(changeRows(rows, range)?.length ?? 0);
   return { hunkReason, lines: { label, reason, pick: pick?.ok === true ? pick : null, hunks: selectedHunks(rows, range) } };
@@ -360,9 +360,9 @@ export function HunkControls(props: HunkControlsProps) {
   const range = props.lines?.range ?? null;
   const rows = props.lines?.patch ?? null;
   // Undefined: no line selection. Null: a point of the selection names no row of the canonical patch (contract §4).
-  const pick = range === null || rows === null ? undefined : pickLines(rows, range, unstage ? "unstage" : "stage");
+  const pick = range === null || rows === null ? undefined : pickLines(rows, range, unstage ? "unstage" : "stage", comparison.fileChange);
   const picked = pick?.ok === true ? pick : null;
-  const lineReason = pick === undefined ? null : (blockReason ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_TEXT[pick.reason as keyof typeof LINE_TEXT]));
+  const lineReason = pick === undefined ? null : (blockReason ?? (comparison.fileChange === null ? COMPARISON_INCOMPLETE : null) ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_TEXT[pick.reason as keyof typeof LINE_TEXT]));
   const quiet = quietBlock(props.blocked);
   const lineHunk = picked === null ? undefined : comparison.hunks[picked.hunk];
   const runLines = (direction: "stage" | "unstage") => {

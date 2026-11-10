@@ -134,6 +134,15 @@ function statusRecord(e: ChangeEntry, path: Uint8Array): StatusRecord {
   return { kind: "rename", ...fields, modes, oids, score: e.score, originalPath: { bytes: Buffer.from(e.sourcePathBytes!, "base64"), display: e.sourcePath! } };
 }
 
+// Feature 008 data-model §7: git-status(1) "Porcelain Format Version 2" `XY`. `X` is the head-to-index side, `Y` the index-to-worktree side.
+// An unmerged record, a type change `T`, and a letter outside the documented set give null, so the renderer refuses line actions.
+function fileChangeOf(e: ChangeEntry, scope: ComparisonScope): "added" | "deleted" | "modified" | null {
+  if (e.category === "untracked") return "added";
+  if (e.category === "conflicted") return null;
+  const letter = e.xy?.[scope === "head-to-index" ? 0 : 1];
+  return letter === "A" ? "added" : letter === "D" ? "deleted" : letter === "M" || letter === "R" || letter === "C" ? "modified" : null;
+}
+
 // The same record as raw `status --porcelain=v2 -z` bytes without the final NUL, for `decideFileAction` and `decideResolve`.
 export function rawRecord(e: ChangeEntry, path: Uint8Array): Uint8Array {
   if (e.category === "untracked") return Buffer.concat([Buffer.from("? "), path]);
@@ -593,6 +602,7 @@ export function createComparisonReader({ runner, trust, onDrop, spent }: Compari
         support: decision === null ? null : decision.supported ? "supported" : (decision as { reason: string }).reason,
         fileAction: actionValue(fileAction),
         remedy,
+        fileChange: fileChangeOf(e, scope),
         ...(head === null ? {} : { gitlink: { oid: head } }),
       };
       if (completeness.state === "limited") return { result: "limited", code: completeness.code, value };

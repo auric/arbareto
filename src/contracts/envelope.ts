@@ -1205,6 +1205,8 @@ export const Comparison = z
     support: SupportValue.nullable(),
     fileAction: FileActionValue,
     remedy: FileRemedy,
+    // Feature 008 data-model §7 "the renderer mapping": the side letter of the porcelain v2 status record for this scope. Null: an unmerged record, a type change `T`, or an undocumented letter.
+    fileChange: z.enum(["added", "deleted", "modified"]).nullable(),
     // Feature 005 contract Δ4 and data-model §17: the submodule HEAD that Stage file of a moved gitlink records.
     gitlink: z.strictObject({ oid: ObjectId }).optional(),
   })

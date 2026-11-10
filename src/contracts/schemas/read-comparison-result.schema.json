@@ -435,6 +435,21 @@
             }
           ]
         },
+        "fileChange": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "added",
+                "deleted",
+                "modified"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "gitlink": {
           "type": "object",
           "properties": {
@@ -459,7 +474,8 @@
         "hunks",
         "support",
         "fileAction",
-        "remedy"
+        "remedy",
+        "fileChange"
       ],
       "additionalProperties": false,
       "title": "Comparison"

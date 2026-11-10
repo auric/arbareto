@@ -23,6 +23,7 @@ export const MORE_ACTIONS = "More actions";
 export const REVERT_EXPIRED = "The review expired. Arbareto changed nothing. Select Revert again.";
 export const REVERT_CHECKING = (n: number) => `Checking ${n === 1 ? "1 file" : `${formatCount(n)} files`}…`;
 export const REVERT_PROGRESS = (i: number, n: number) => `Reverting ${formatCount(i)} of ${formatCount(n)}…`;
+export const REVERT_RECONCILING = "Checking the result…";
 /** `action` is the item label without the ellipsis. */
 export const REVERT_UNAVAILABLE = (action: string) => `${action} is unavailable.`;
 

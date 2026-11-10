@@ -138,6 +138,7 @@ function comparison(snapshotId: string, entryId: string, digests: string[]) {
     support: "supported",
     fileAction: "stage",
     remedy: null,
+    fileChange: "modified",
   };
 }
 

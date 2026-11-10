@@ -50,6 +50,7 @@ function comparison(count: number, support = "supported") {
     support,
     fileAction: "stage",
     remedy: null,
+    fileChange: "modified" as const,
   };
 }
 

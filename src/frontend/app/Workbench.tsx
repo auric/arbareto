@@ -15,7 +15,7 @@ import { FileControls, FileFailure, gitlinkReason, runFileAction } from "../chan
 import { changeOf, EXTRA_ID, extraEntries, indexGitlink, SubmodulePreview, useSubmoduleChangeRead, useSubmoduleWork, workOf, type ChangeRead, type SubmoduleReader, type WorkRead } from "../changes/SubmodulePreview";
 import { BLOCKED_TEXT, HunkButton, HunkControls, IN_APP_STATES, operationBlock, ReasonLine, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
 import { RevertConfirm } from "../changes/RevertConfirm";
-import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, revertUnstagedRefusal, reviewRefusal, type RevertLinesPlan, type RevertUnstagedPlan } from "../changes/revert-text";
+import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_RECONCILING, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, revertUnstagedRefusal, reviewRefusal, type RevertLinesPlan, type RevertUnstagedPlan } from "../changes/revert-text";
 import { CommitTray } from "../commit/CommitTray";
 import { WorkingSummary } from "../commit/WorkingSummary";
 import { IconButton } from "../components/icon-button";
@@ -418,11 +418,11 @@ function trackRevertReview(staging: Staging, label: string, files: number, send:
   };
   return trackOperation("runWorkbench", undefined, send, (op) => staging.onOperation({ ...op, texts, ...(op.response === null ? { running: REVERT_CHECKING(files) } : ended(op.response)) }));
 }
-/** Feature 008 plan.md D12: a revert run with REVERT_PROGRESS. `outcome` gives the result line and the lines of the status area. */
+/** Feature 008 plan.md D12: a revert run with REVERT_PROGRESS and REVERT_RECONCILING. `outcome` gives the result line and the lines of the status area. */
 async function trackRevertRun(staging: Staging, ended: (operation: "runWorkbench", response: BridgeResponse) => void, repositoryId: string, token: string, label: string, outcome: (response: BridgeResponse) => { text: string; lines: string[] } | undefined) {
   const report = (op: StatusOperation) => {
     const counters = op.progress?.phase === "revert-files" ? op.progress.counters : {};
-    const running = counters.fileIndex === undefined || counters.fileCount === undefined ? {} : { running: REVERT_PROGRESS(counters.fileIndex, counters.fileCount) };
+    const running = op.progress?.state === "reconciling" ? { running: REVERT_RECONCILING } : counters.fileIndex === undefined || counters.fileCount === undefined ? {} : { running: REVERT_PROGRESS(counters.fileIndex, counters.fileCount) };
     const result = op.response === null ? undefined : outcome(op.response);
     staging.onOperation({ ...op, texts: [label, "Reverting", label], ...running, ...(result === undefined ? {} : { outcome: result.text, ...(result.lines.length === 0 ? {} : { lines: result.lines, opens: true }) }) });
   };

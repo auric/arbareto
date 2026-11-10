@@ -98,6 +98,38 @@ describeGit("credentials stay out of every output (T037)", () => {
     }
   }, TIMEOUT_MS);
 
+  // T093, plan.md D5: a push URL with user information never goes into process arguments. So the review binds `urlReread` false.
+  caseTest("T093", "SC-005: a [rejected] lease push over a push URL with user information and another fetch URL runs no ls-remote --get-url and no re-read, gives reason rejected, and no process argument holds the URL", SHELL, async () => {
+    const h = hostFor("t093-credentials");
+    const project = `${h.root}/http`;
+    mkdirSync(native(project), { recursive: true });
+    const bare = buildCredentialRemote(h, project);
+    const clone = `${h.root}/clone`;
+    gitRun(h, h.root, ["clone", "-q", "--", bare, clone]);
+    gitRun(h, clone, ["commit", "-q", "--allow-empty", "-m", "local"]);
+    // The remote moves after the clone, so Git's lease check refuses with "stale info".
+    const tip = revParse(h, bare, "refs/heads/main");
+    importStream(h, bare, [Buffer.from(`reset refs/heads/main\nfrom ${tip}\n\n`), fc({ mark: 1, ref: "refs/heads/main", message: "after the clone\n", files: { "late.txt": "late\n" } })]);
+    const server = startHttpRemote({ git: fixtureGitPath(gitExe()), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
+    try {
+      const pushUrl = urlWithCredential(`${server.url}/cred.git`);
+      gitRun(h, clone, ["config", "remote.origin.pushurl", pushUrl]);
+      await withSync("t093-credentials", async (service) => {
+        const r = await register(service, clone);
+        const from = service.runner.calls.length;
+        const review = await reviewed(service, r, { action: "force-push" });
+        const response = await service.response<SyncResult>(sendSync(service, r, review.syncReviewToken));
+        expect({ ...outcome(response), reason: response.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "rejected" });
+        expect(response.result!.push).toMatchObject({ status: "rejected", lease: true, reasonText: "stale info" });
+        const args = service.runner.calls.slice(from).map((c) => [...c.arguments]);
+        expect(args.filter((a) => a.includes("ls-remote"))).toEqual([]);
+        expect(args.filter((a) => a.some((x) => x.includes(pushUrl) || x.includes(HTTP_PASSWORD)))).toEqual([]);
+      }, { environment: nativeEnv() });
+    } finally {
+      await server.stop();
+    }
+  }, TIMEOUT_MS);
+
   // Feature 011 T011 and SC-005: the push, the gone check, and the remedy of a remote branch delete.
   caseTest("T011", "011 SC-005: a remote branch delete over a push URL with user information shows it redacted in the plan; the push, the gone check, the results, and the log hold no secret; the stale-lease remedy is text only", SHELL, async () => {
     const h = hostFor("t011-credentials");

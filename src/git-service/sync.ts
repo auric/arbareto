@@ -304,6 +304,22 @@ export function createSyncer(o: SyncerOptions) {
     // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No listing decides before the process-end fact.
     const processEnded = async (ends: readonly { exit: GitExit | null }[]) => w.wsl === undefined || ends.every((e) => e.exit !== null && e.exit.exitCode !== null) || (await processEnd(q)) === "fact";
 
+    // Contract Δ3 "Lease re-read" and feature 011 plan.md D8: one `ls-remote --exit-code` of `<dst>`, which reads the fetch URL.
+    // `remote` null: no exit status, a deadline, a limit, another exit, or a malformed listing. `objectId` null: no exact `<dst>` line.
+    const leaseReread = async (d: { remote: string; ref: string }, userInfo: boolean): Promise<{ end: StepEnd; remote: { objectId: string | null } | null }> => {
+      const listed = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+      // Contract Δ3 "Remedies": the remedy runs the step itself.
+      const lsRemedy = remedyOf("& {git} --no-lazy-fetch -C {root} ls-remote --exit-code -- {remote} {dst}", { remote: d.remote, dst: d.ref }, userInfo);
+      const end = await networkStep(lsRemoteArgs(d.remote, d.ref), "sync-push", {}, lsRemedy, listed);
+      const x = end.exit;
+      if (x === null || x.exitCode === null || x.deadline !== undefined || x.diagnosticLimit || listed.limited) return { end, remote: null };
+      // git-ls-remote(1) `--exit-code`: exit 2 when no ref matches. A pattern matches a ref tail, so only an exact `<dst>` line counts (research.md R2 P15).
+      if (x.exitCode === 2) return { end, remote: { objectId: null } };
+      const lines = x.exitCode === 0 ? parseLsRemote(listed.take(), w.objectFormat) : null;
+      if (lines === null) return { end, remote: null };
+      return { end, remote: { objectId: lines.find((l) => l.ref === refKey(d.ref))?.objectId ?? null } };
+    };
+
     // Contract Δ3 "Remedies": the fetch remedy of one remote.
     const fetchRemedy = (entries: readonly ConfigEntry[], remote: string): Remedy => remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote }, holdsUserInfo(entries, remote));
 
@@ -449,11 +465,22 @@ export function createSyncer(o: SyncerOptions) {
       const line = exited ? parsePushPorcelain(out.take(), refspec, end.exit!.exitCode!) : null;
       const status: PushStatus = line?.status ?? "none";
       const succeeded = exited && SUCCESS.includes(status);
+
+      // Contract Δ9: a `[rejected]` line gives no typed cause, and a remote helper can ignore the lease. Only a remote value other than the
+      // lease value proves a stale lease. The read runs only when the fetch URL names the push URL byte for byte (`sameUrl`).
+      let stale = false;
+      const reread: { exit: GitExit | null }[] = [];
+      if (exited && status === "rejected" && lease !== null && b.sameUrl === true && !signal.aborted) {
+        const check = await leaseReread(d, userInfo);
+        reread.push(check.end);
+        stale = check.remote !== null && check.remote.objectId !== lease;
+      }
+
       // Contract Δ3 Set upstream: only after a successful push, with the bound keys. A failed write leaves the push succeeded.
       const writes = upstreamArgs(branch, d.remote, d.ref, d.upstreamRebase);
       const upstream = succeeded && d.setUpstream ? await writeUpstream(writes) : { set: true, ends: [] };
       const upstreamNotSet = !upstream.set;
-      enterReconciling(registry, operationId, deadline, lastDescendants);
+      enterReconciling(registry, operationId, deadline || reread.some((e) => e.exit?.deadline !== undefined), lastDescendants);
       const tracking = d.trackingRef ?? trackingOf(entries, d.remote, d.ref);
       const pushResult = (after: Refs | null, upstreamWritten: boolean) => ({
         status,
@@ -465,7 +492,7 @@ export function createSyncer(o: SyncerOptions) {
         upstreamNotSet,
         outputTail: end.outputTail,
       });
-      if (!(await processEnded([end, ...upstream.ends]))) return unknown({ code: "GIT_FAILED" }, { action: b.payload.action, push: pushResult(null, false) });
+      if (!(await processEnded([end, ...upstream.ends, ...reread]))) return unknown({ code: "GIT_FAILED" }, { action: b.payload.action, push: pushResult(null, false) });
       const read = await readAfter({ action: b.payload.action, push: pushResult(null, false) });
       if (read === null) return;
       const { after, head: observedHead, state } = read;
@@ -492,8 +519,7 @@ export function createSyncer(o: SyncerOptions) {
       keepTarget("url", d.url);
       if (changed) return finish({ type: "failed-with-effects" }, { ...result, remedy });
       if (status === "rejected" || status === "remote-rejected" || status === "remote-failure") {
-        // Contract Δ3 and Δ9: a `[rejected]` status of a push with a lease means that the remote changed.
-        const reason = status !== "rejected" ? status : lease === null ? "rejected" : "stale-lease";
+        const reason = status !== "rejected" ? status : stale ? "stale-lease" : "rejected";
         return finish({ type: "no-effects", observed: "failed", code: "PUSH_REJECTED" }, { ...result, reason });
       }
       const code: ErrorCode | undefined = deadline ? undefined : end.refused ?? (out.limited || end.exit?.diagnosticLimit ? "OUTPUT_LIMIT" : exited && line === null ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED");
@@ -527,16 +553,9 @@ export function createSyncer(o: SyncerOptions) {
       // Plan.md D8: the gone check runs only after a stale lease, and only when the fetch URL names the push URL byte for byte.
       let remoteGone = false;
       if (stale && b.sameUrl === true) {
-        const listed = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-        // Contract Δ3 "Remedies": the remedy runs the step itself.
-        const lsRemedy = remedyOf("& {git} --no-lazy-fetch -C {root} ls-remote --exit-code -- {remote} {dst}", { remote: d.remote, dst: d.ref }, userInfo);
-        const check = await networkStep(lsRemoteArgs(d.remote, d.ref), "sync-push", {}, lsRemedy, listed);
-        ends.push(check);
-        const x = check.exit;
-        const read = x !== null && x.exitCode !== null && x.deadline === undefined && !x.diagnosticLimit && !listed.limited;
-        // git-ls-remote(1) `--exit-code`: exit 2 when no ref matches. A pattern matches a ref tail, so exit 0 needs no exact `<dst>` line (research.md R2 P15).
-        const lines = read && x.exitCode === 0 ? parseLsRemote(listed.take(), of) : null;
-        if (read && (x.exitCode === 2 || (lines !== null && !lines.some((l) => l.ref === refKey(d.ref))))) {
+        const check = await leaseReread(d, userInfo);
+        ends.push(check.end);
+        if (check.remote !== null && check.remote.objectId === null) {
           const removal = await writeUpstream([trackingDeleteArgs(lease.trackingRef, lease.expect, of)]);
           ends.push(...removal.ends);
           remoteGone = removal.set;

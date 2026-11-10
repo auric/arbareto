@@ -21,7 +21,7 @@ import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, 
 import { isMissing } from "./read-steps";
 import { deletePayloadValid, observeRemoteDelete } from "./remote-delete";
 import type { Head, OperationState } from "./snapshot";
-import { gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
+import { fetchUrlArgs, gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
 import { autoSetupRemote, decidePull, defaultRemote, decidePushDestination, holdsExec, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRebaseHead, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
 import type { WorkspaceReader } from "./status";
 import { parseMaybeBool, type ConfigEntry, type ListingOutcome } from "./trust";
@@ -548,6 +548,12 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
     const read = await leaseOf(ctx, destination.trackingRef, head.oid);
     if (!("value" in read)) return read;
     lease = read.value;
+    // Contract Δ9: the lease re-read runs `ls-remote` with the remote name, which reads the fetch URL. It must name the push URL byte for byte.
+    const fetchOut = await readOut(ctx, fetchUrlArgs(destination.remote), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+    if ("limited" in fetchOut) return { code: "OUTPUT_LIMIT" };
+    if (!("value" in fetchOut)) return fetchOut;
+    const sameUrl = Buffer.from(fetchOut.value).equals(Buffer.from(urlOut.value));
+    return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease, sameUrl });
   }
   return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease });
 }

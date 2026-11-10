@@ -8,8 +8,9 @@ import { expect } from "bun:test";
 import { HISTORY_COMMIT_OBJECT_BYTES, SYNC_LEASE_COMMITS } from "../../src/contracts/limits";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
+import { fileUrl } from "./remote-delete-harness";
 import { buildPush, fc, gitOut, gitRun, importStream, refMap, revParse, type GitHost, type PushFixture } from "./remote-fixtures";
-import { caseTest } from "./service-harness";
+import { caseTest, type Service } from "./service-harness";
 import { ANY_EXIT, copyWithRemotes, hostFor, INTEGRATE_ENV, pullFlags, refreshIndex, register, remoteCalls, repoShape, reviewed, reviewSync, run, subcommandOf, sync, TIMEOUT_MS, withSync, refusalOf } from "./sync-harness";
 
 useFixtureRoot();
@@ -23,6 +24,8 @@ const REMOTE_COMMITS = SYNC_LEASE_COMMITS + 5;
 
 // Every object that the remote can reach from a ref. A force push that loses a commit drops it from this set.
 const reachable = (h: GitHost, repo: string) => gitOut(h, repo, ["rev-list", "--all", "--objects"]).split("\n").filter((l) => l !== "").sort();
+// T092: the exit codes of the `ls-remote` re-reads after call `from`.
+const lsRemoteExits = (service: Service, from: number) => service.runner.calls.slice(from).filter((c) => subcommandOf(c.arguments) === "ls-remote").map((c) => c.exit?.exitCode);
 
 describeGit("rejected push and force push with lease (T035)", () => {
   let fixture: { h: GitHost; f: PushFixture } | null = null;
@@ -130,12 +133,64 @@ describeGit("rejected push and force push with lease (T035)", () => {
       importStream(a.h, a.remotes.origin!, [Buffer.from(`reset refs/heads/topic\nfrom ${review.plan.lease!.expect}\n\n`), fc({ mark: 1, ref: "refs/heads/topic", message: "after the fetch\n", files: { "late.txt": "late\n" } })]);
       const refsBefore = refMap(a.h, a.remotes.origin!);
       const objectsBefore = reachable(a.h, a.remotes.origin!);
+      const from = service.runner.calls.length;
       const response = await sync(service, r, review.syncReviewToken);
       expect({ ...outcome(response), reason: response.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "stale-lease" });
       expect(response.result!.push).toMatchObject({ status: "rejected", lease: true });
+      // T092, contract Δ9: the stale claim comes from the remote re-read.
+      expect(lsRemoteExits(service, from)).toEqual([0]);
       expect(refMap(a.h, a.remotes.origin!)).toEqual(refsBefore);
       expect(reachable(a.h, a.remotes.origin!)).toEqual(objectsBefore);
     });
+  }, TIMEOUT_MS);
+
+  // T092, contract Δ9. Git sets the lease status before it runs the pre-push hook (transport.c `transport_push`), and it runs the hook also when
+  // the lease refuses every ref (011 research.md R5 U8). So the hook can change the remote between Git's lease check and the re-read.
+  // The remote moves after the fetch, so Git's lease check refuses. Then the pre-push hook runs `hook` with the remote path and the lease value.
+  // `pushurl`: the push URL in other bytes than the fetch URL, so the review binds `sameUrl` false (011 remote-delete-gone.test.ts P16).
+  const leaseHookCase = async (name: string, hook: (origin: string, expectOid: string) => string, { reason = "rejected", pushurl = false } = {}) => {
+    const a = diverged(true);
+    const expectOid = revParse(a.h, a.repo, "refs/remotes/origin/topic");
+    importStream(a.h, a.remotes.origin!, [Buffer.from(`reset refs/heads/topic\nfrom ${expectOid}\n\n`), fc({ mark: 1, ref: "refs/heads/topic", message: "after the fetch\n", files: { "late.txt": "late\n" } })]);
+    a.h.write(`${a.repo}/.git/hooks/pre-push`, `#!/bin/sh\ncat > /dev/null\n${hook(a.remotes.origin!, expectOid)}\n`);
+    if (pushurl) gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.remotes.origin!)]);
+    let exits: (number | null | undefined)[] = [];
+    await withSync(name, async (service) => {
+      const r = await register(service, a.repo);
+      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.sync).toBe(true);
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+      const review = await reviewed(service, r, { action: "force-push" });
+      expect(review.plan.lease!.expect).toBe(expectOid);
+      const from = service.runner.calls.length;
+      const response = await sync(service, r, review.syncReviewToken);
+      expect({ ...outcome(response), reason: response.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason });
+      expect(response.result!.push).toMatchObject({ status: "rejected", lease: true, reasonText: "stale info" });
+      exits = lsRemoteExits(service, from);
+    });
+    return { a, exits, expectOid };
+  };
+
+  caseTest("T092", "contract Δ9: a [rejected] lease push whose remote re-read equals the lease value gives reason rejected with Git's reasonText", SHELL, async () => {
+    const seen = await leaseHookCase("t092-equal", (origin, expectOid) => `git --git-dir='${origin}' update-ref refs/heads/topic ${expectOid}`);
+    expect(seen.exits).toEqual([0]);
+    expect(revParse(seen.a.h, seen.a.remotes.origin!, "refs/heads/topic")).toBe(seen.expectOid);
+  }, TIMEOUT_MS);
+
+  // git-ls-remote(1) runs `git-upload-pack` in the remote. setup.c `check_repository_format_gently` refuses a format version above 1.
+  caseTest("T092", "contract Δ9: a [rejected] lease push whose remote re-read fails gives reason rejected and no stale claim", SHELL, async () => {
+    const seen = await leaseHookCase("t092-read-fails", (origin) => `git --git-dir='${origin}' config core.repositoryformatversion 99`);
+    expect(seen.exits).toHaveLength(1);
+    expect([0, 2]).not.toContain(seen.exits[0]);
+  }, TIMEOUT_MS);
+
+  caseTest("T092", "contract Δ9: a [rejected] lease push whose remote branch is gone at the re-read (ls-remote exit 2) gives reason stale-lease", SHELL, async () => {
+    const seen = await leaseHookCase("t092-gone", (origin) => `git --git-dir='${origin}' update-ref -d refs/heads/topic`, { reason: "stale-lease" });
+    expect(seen.exits).toEqual([2]);
+  }, TIMEOUT_MS);
+
+  caseTest("T092", "contract Δ9 gap: with a pushurl in other bytes than the URL, a [rejected] lease push runs no re-read and gives reason rejected with Git's reasonText", SHELL, async () => {
+    const seen = await leaseHookCase("t092-pushurl", () => "exit 0", { pushurl: true });
+    expect(seen.exits).toEqual([]);
   }, TIMEOUT_MS);
 
   // T046 (FR-026, SC-002): the pull choices of the notice.

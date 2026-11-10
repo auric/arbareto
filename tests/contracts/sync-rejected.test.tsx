@@ -147,10 +147,20 @@ describe("force push with lease (FR-024, FR-025)", () => {
   test("a stale-lease result states that the remote branch changed since the last fetch and offers Fetch", async () => {
     const { double, dialog } = await confirm();
     await click(button("Force push with lease", dialog));
-    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x204), state: "failed", code: "PUSH_REJECTED", result: { action: "force-push", push: pushResult("rejected", true) } });
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x204), state: "failed", code: "PUSH_REJECTED", result: { action: "force-push", push: pushResult("rejected", true), reason: "stale-lease" } });
     expect(text(band())).toContain(STALE);
     expect(bandButtons().filter((b) => b !== "Dismiss notice")).toEqual(["Fetch"]);
     expect(buttons("Force push with lease…", band())).toHaveLength(0);
+  });
+
+  // Tasks.md T092, contract Δ9: reason `rejected` with a lease means that the remote re-read did not show a changed remote.
+  test("a lease rejection that the lease does not prove shows Git's reason and no stale notice", async () => {
+    const { double, dialog } = await confirm();
+    await click(button("Force push with lease", dialog));
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x205), state: "failed", code: "PUSH_REJECTED", result: { action: "force-push", push: { ...pushResult("rejected", true), reasonText: "non-fast-forward" }, reason: "rejected" } });
+    await settle();
+    expect(text(band())).not.toContain(STALE);
+    expect(text(document.querySelector("footer")!)).toContain("Force push with lease did not complete: PUSH_REJECTED rejected: non-fast-forward");
   });
 
   for (const [label, plan] of [

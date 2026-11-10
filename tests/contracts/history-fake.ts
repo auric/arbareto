@@ -6,7 +6,7 @@
 
 import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { filterText } from "../../src/contracts/filter-text";
-import { FILTER_TEXT_BYTES, HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
+import { FILTER_TEXT_BYTES, HISTORY_LOAD_MARGIN, HISTORY_PARENTS_PER_COMMIT } from "../../src/contracts/limits";
 import type { Head, HistoryBridge, ViewRow } from "../../src/frontend/state/history-view";
 import { contractChecked, fixtureId } from "./bridge-contract";
 
@@ -34,6 +34,8 @@ export type FakeOptions = {
   hold?: { load?: boolean; search?: boolean };
   /** The cell of a row. */
   cell?: (i: number) => ViewRow["cell"];
+  /** All reduced parents of a filter row. The default is the next match below row i, in the linear history of the fake. */
+  reduced?: (i: number) => NonNullable<ViewRow["reducedParents"]>;
   /** The terminal response of the next load, instead of a success. */
   loadResponse?: (payload: Record<string, unknown>) => BridgeResponse | null;
   searchResponse?: (text: string) => BridgeResponse | null;
@@ -97,12 +99,22 @@ export function createFake(options: FakeOptions) {
     return n;
   };
 
-  function rowOf(i: number, index: number, text: string, search: boolean): ViewRow {
+  // Data-model §7: row i + 1 is the one Git parent of row i, so the next match below row i is its one reduced parent.
+  const reducedOf = (i: number): NonNullable<ViewRow["reducedParents"]> => {
+    if (options.reduced) return options.reduced(i);
+    for (let j = i + 1; j < total; j++) if (isMatch(j)) return [{ oid: oid(j), skip: j !== i + 1 }];
+    return [];
+  };
+  // Contract Δ3: the list stops at HISTORY_PARENTS_PER_COMMIT. The count and the skip flag cover all reduced parents.
+  const reducedFields = (all: NonNullable<ViewRow["reducedParents"]>) => ({ reducedParents: all.slice(0, HISTORY_PARENTS_PER_COMMIT), reducedParentCount: all.length, reducedSkips: all.some((p) => p.skip) });
+
+  function rowOf(i: number, index: number, text: string, search: boolean, filter = false): ViewRow {
     const row: ViewRow = {
       index,
       oid: oid(i),
       parents: i === total - 1 ? [] : [oid(i + 1)],
       cell: cellOf(i),
+      ...(filter ? reducedFields(reducedOf(i)) : {}),
       labels: i === 0 ? [{ kind: "branch", name: "main", invalidUtf8: false }] : [],
       checkout: head.state !== "unborn" && oid(i) === head.oid,
       ...(search ? { match: searchDone || i < loaded ? isMatch(i) : null } : {}),
@@ -140,7 +152,7 @@ export function createFake(options: FakeOptions) {
       for (;;) {
         if (ended(payload)) return unknownTarget();
         const step = at.match === "next" ? 1 : -1;
-        for (let i = at.from as number; i >= 0 && i < loaded; i += step) if (isMatch(i)) return later(ok({ target: "found", rows: [rowOf(i, i, payload.text, true)], cut: false, ...rowsState(), bytes: 1024 }));
+        for (let i = at.from as number; i >= 0 && i < loaded; i += step) if (isMatch(i)) return later(ok({ target: "found", rows: [rowOf(i, i, payload.text, true, payload.mode === "filter")], cut: false, ...rowsState(), bytes: 1024 }));
         if (!searching) return later(ok({ target: searchDone ? "none" : "unknown", ...rowsState() }));
         await new Promise<void>((resolve) => waiters.push(resolve));
       }
@@ -157,16 +169,16 @@ export function createFake(options: FakeOptions) {
       for (let k = at.row as number; k < (at.row as number) + payload.count; k++) {
         const i = filter ? matchIndex(k) : k < loaded ? k : null;
         if (i === null) break;
-        rows.push(rowOf(i, k, payload.text, search));
+        rows.push(rowOf(i, k, payload.text, search, filter));
       }
     } else if ("oid" in at) {
       const i = indexOf(at.oid as string);
-      if (i < loaded && (!filter || isMatch(i))) rows.push(rowOf(i, filter ? matchPosition(i) : i, payload.text, search));
+      if (i < loaded && (!filter || isMatch(i))) rows.push(rowOf(i, filter ? matchPosition(i) : i, payload.text, search, filter));
       else if (i >= loaded && !complete()) return later(ok({ target: "unknown", ...rowsState() }));
     } else if ("end" in at) {
       if (filter) {
         const n = matchCount();
-        if (n > 0) rows.push(rowOf(matchIndex(n - 1)!, n - 1, payload.text, search));
+        if (n > 0) rows.push(rowOf(matchIndex(n - 1)!, n - 1, payload.text, search, true));
       } else if (loaded > 0) rows.push(rowOf(loaded - 1, loaded - 1, payload.text, search));
     }
     if (rows.length === 0) return later(ok({ target: "none", ...rowsState() }));

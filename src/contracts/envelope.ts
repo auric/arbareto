@@ -1119,6 +1119,7 @@ const Person = z.strictObject({ name: z.string(), email: z.string() });
 // The row form of `readHistoryRows`. `text: "rows"` adds ROW_TEXT, or `textLimit` for an object above HISTORY_COMMIT_OBJECT_BYTES. `text: "details"` also adds ROW_DETAILS.
 const ROW_TEXT = ["subject", "author", "date", "encoding", "invalidUtf8"] as const;
 const ROW_DETAILS = ["body", "bodyCut", "committer", "committerDate", "children"] as const;
+const ROW_REDUCED = ["reducedParents", "reducedParentCount", "reducedSkips"] as const;
 const allOf = (row: Record<string, unknown>, keys: readonly string[]) => keys.every((k) => row[k] !== undefined);
 const noneOf = (row: Record<string, unknown>, keys: readonly string[]) => keys.every((k) => row[k] === undefined);
 export const HistoryViewRow = z
@@ -1128,6 +1129,11 @@ export const HistoryViewRow = z
     parents: z.array(ObjectId).max(HISTORY_PARENTS_PER_COMMIT),
     // Null in filter mode for a row that is not settled yet.
     cell: GraphCell.nullable(),
+    // Data-model §7: in filter mode, present when `cell` is not null. A limited cell draws no edge, so the row text reads these facts here.
+    // The list stops at HISTORY_PARENTS_PER_COMMIT, so one row fits a HISTORY_PAGE_BYTES page. The count and the skip flag cover all reduced parents.
+    reducedParents: z.array(z.strictObject({ oid: ObjectId, skip: z.boolean() })).max(HISTORY_PARENTS_PER_COMMIT).optional(),
+    reducedParentCount: Count.max(HISTORY_VIEW_COMMITS).optional(),
+    reducedSkips: z.boolean().optional(),
     labels: z.array(z.strictObject({ kind: z.enum(["branch", "remote", "tag", "stash"]), name: z.string(), invalidUtf8: z.boolean() })).max(REF_LISTING_RECORDS),
     checkout: z.boolean(),
     // Present when the request has `searchId`. Null while the match state of the row is not known.
@@ -1153,7 +1159,8 @@ export const HistoryViewRow = z
       (allOf(r, ROW_TEXT) || noneOf(r, ROW_TEXT)) &&
       (allOf(r, ROW_DETAILS) || noneOf(r, ROW_DETAILS)) &&
       (noneOf(r, ROW_DETAILS) || allOf(r, ROW_TEXT)) &&
-      (r.textLimit === undefined || (noneOf(r, ROW_TEXT) && noneOf(r, ROW_DETAILS))),
+      (r.textLimit === undefined || (noneOf(r, ROW_TEXT) && noneOf(r, ROW_DETAILS))) &&
+      (noneOf(r, ROW_REDUCED) || (allOf(r, ROW_REDUCED) && r.cell !== null && r.reducedParents!.length === Math.min(r.reducedParentCount!, HISTORY_PARENTS_PER_COMMIT) && (r.reducedSkips! || !r.reducedParents!.some((p) => p.skip)))),
   )
   .meta({ title: "HistoryViewRow" });
 

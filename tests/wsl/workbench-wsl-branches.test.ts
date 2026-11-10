@@ -62,12 +62,14 @@ describe("switch through the distro Git (quickstart.md Q5 to Q8)", () => {
     expect(shapeState(at(u))).toEqual(untracked);
   });
 
-  W("Q7 FR-012: Stash and reapply with a reapply conflict keeps the stash and shows the unmerged entry; a failed checkout reapplies nothing; both equal the distro Git's own commands on a copy", async (w) => {
+  W("Q7 FR-012: Stash and reapply with a reapply conflict keeps the stash and shows the unmerged entry; a failed checkout reapplies nothing; both equal the distro Git's own commands on a copy; Stash with an untracked file in the way refuses before any Git step", async (w) => {
     const f = copy(w, "switch-conflict");
     const o = copy(w, "switch-conflict");
-    const g = copy(w, "switch-untracked");
-    const p = copy(w, "switch-untracked");
-    for (const x of [g, p]) x.h.write(`${x.repo}/b.txt`, "b changed\n");
+    const g = copy(w, "switch-clean");
+    const p = copy(w, "switch-clean");
+    const u = copy(w, "switch-untracked");
+    for (const x of [g, p, u]) x.h.write(`${x.repo}/b.txt`, "b changed\n");
+    const untracked = shapeState(at(u));
     await withWsl(w, "t081-reapply", async (s) => {
       const r = await open(s, w, f.repo);
       const from = s.runner.calls.length;
@@ -75,9 +77,24 @@ describe("switch through the distro Git (quickstart.md Q5 to Q8)", () => {
       expect(outcome(response)).toEqual(WITH_EFFECTS);
       expect(subcommands(s, from)).toEqual(["stash push", "checkout", "stash apply"]);
       expect(response.result).toMatchObject({ head: { state: "branch", target: TARGET, oid: f.oids.target }, stash: { oid: stashValue(at(f)), state: "kept-conflicts" }, conflicted: 1 });
+      const ru = await open(s, w, u.repo);
+      const before = s.runner.calls.length;
+      expect(refusalOf(await review(s, ru, switchTo("stash")))).toEqual({ state: "failed", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths: ["new.txt"], more: 0 } });
+      expect(steps(s, before)).toEqual([]);
+      // The Stash review refuses an untracked file in the way, so the file appears while the checkout step waits.
       const rg = await open(s, w, g.repo);
+      const rv = await token(s, rg, switchTo("stash"));
+      const isCheckout = (c: { arguments: readonly string[] }) => c.arguments[1] === "checkout";
       const next = s.runner.calls.length;
-      const failed = await reviewRun(s, rg, switchTo("stash"));
+      const release = s.runner.holdStart(isCheckout);
+      const requestId = sendRun(s, rg, rv.workbenchToken);
+      try {
+        await until(() => s.runner.calls.slice(next).some(isCheckout), "the held checkout", RESPONSE_MS);
+        g.h.write(`${g.repo}/new.txt`, "new local\n");
+      } finally {
+        release();
+      }
+      const failed = await s.response<RunResult>(requestId, RESPONSE_MS);
       expect(outcome(failed)).toEqual(WITH_EFFECTS);
       expect(subcommands(s, next)).toEqual(["stash push", "checkout"]);
       expect(failed.result).toMatchObject({ head: { state: "branch", target: "refs/heads/main", oid: g.oids.base }, stash: { oid: stashValue(at(g)), state: "kept-failed-checkout" }, conflicted: 0 });
@@ -90,9 +107,11 @@ describe("switch through the distro Git (quickstart.md Q5 to Q8)", () => {
     own(o, ["stash", "apply", "--index", stashValue(at(o))!], [1]);
     expect(shapeState(at(f))).toEqual(shapeState(at(o)));
     own(p, ["stash", "push", "--quiet", "-m", MESSAGE]);
+    p.h.write(`${p.repo}/new.txt`, "new local\n");
     own(p, ["checkout", "-q", "--no-guess", "target", "--"], [1]);
     expect(shapeState(at(g))).toEqual(shapeState(at(p)));
     expect(g.h.read(`${g.repo}/new.txt`)!.toString("utf8")).toBe("new local\n");
+    expect(shapeState(at(u))).toEqual(untracked);
   });
 
   W("Q8 FR-013: a remote branch with one and zero mapping refspecs, a branch of another worktree with its Linux path, and a switch away from an unreachable detached commit", async (w) => {

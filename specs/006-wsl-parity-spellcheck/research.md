@@ -684,7 +684,7 @@ Independent batch 3 review, reviewer agent, read-only. Verdict: passes after fix
 - The packaged gate makes one case per catalog entry. An entry with a missing cache file skips with `not-cached <id>/<name>`, and the qualification run counts the skip as unverified (spec SC-002).
 - A gate run fails when a sample of its window has no WebView2 private bytes or another root PID. A run without a load skips the menu step, records its values, and fails step 3.
 - The N4 Persian line is its own case. Without `fa`, that case skips with its reason.
-- Open point: each gate run records `maxGapMs`, the largest gap between two samples. Plan.md D3 fixes 250 ms samples but no bound for the gap. A bound needs a plan decision.
+- Open point: each gate run records `maxGapMs`, the largest gap between two samples. Plan.md D3 fixes 250 ms samples. Closed: plan.md D3 bounds the gap at 1,500 ms (user decision 2026-11-10, T064).
 
 ### T041 first packaged run, 2026-10-26, Windows 11 10.0.26300, build 73a9eb7b, WebView2 Edg/155
 

@@ -112,7 +112,8 @@ describe("revert confirmation (FR-008, FR-047)", () => {
       expect([...dialog.querySelectorAll("button")].map((b) => text(b))).toEqual(["Cancel", action]);
       await unmountAll();
     }
-  });
+    // The case mounts the diff 3 times in happy-dom and takes 1.7 to 2.6 s in parallel runs, against the 5 s Bun default.
+  }, 30_000);
 
   test("the focus returns to the opener: the diff after R, the More actions button after its menu", async () => {
     const { dialog } = await linesModal();

@@ -178,9 +178,9 @@ const EFFECT_SENTENCES: Record<string, Record<EffectField, string>> = {
   },
   "failed-with-effects": { head: "HEAD changed.", index: "The index changed.", workingFiles: "Working files changed.", operationState: "The Git operation state changed." },
 };
-const STALL_SENTENCE = "Git may be waiting for input.";
+export const STALL_SENTENCE ="Git may be waiting for input.";
 // Contract §6 "Activity and stall notice".
-const STALL_NOTICE = "Git may be waiting for a prompt that Arbareto cannot show, or for a sign-in window. To answer a hidden prompt, select Cancel and run this command in a terminal.";
+export const STALL_NOTICE = "Git may be waiting for a prompt that Arbareto cannot show, or for a sign-in window. To answer a hidden prompt, select Cancel and run this command in a terminal.";
 // plan.md "Required visible states", Updating submodules.
 const INACTIVITY = "Git sent no output and transferred no data for 5 minutes, so Arbareto stopped it.";
 const FAILED_READ = "Arbareto could not read this submodule. Use Refresh, then try again.";
@@ -437,7 +437,7 @@ function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome, h
   return null;
 }
 
-function readStallRemedy(response: BridgeResponse): StallRemedy | null {
+export function readStallRemedy(response: BridgeResponse): StallRemedy | null {
   const value = isObject(response.result) ? response.result.stallRemedy : undefined;
   if (response.state !== "succeeded" || !isObject(value) || !isText(value.text)) return null;
   return isText(value.command) ? { text: value.text, command: value.command } : { text: value.text };

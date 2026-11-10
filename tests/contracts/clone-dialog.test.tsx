@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
+import { OperationResult } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { button, buttons, click, press, settle, text } from "./sync-fake";
@@ -13,6 +14,7 @@ import { contractChecked, fixtureId } from "./bridge-contract";
 printOrigin("../../src/frontend/clone/CloneDialog.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/RepositoryMenu.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/RepositoryStates.tsx", import.meta.dir);
+printOrigin("../../src/frontend/status/OperationStatus.tsx", import.meta.dir);
 // These modules load Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
 registerDom();
 const { createRoot } = await import("react-dom/client");
@@ -303,5 +305,71 @@ describe("clone run and result (FR-048, FR-050)", () => {
     await act(async () => r.pending("clone").resolve(failed("GIT_FAILED")));
     await settle();
     expect(text(panel())).not.toContain("secret");
+  });
+});
+
+// tasks.md T094 (feature 003). Spec FR-003, FR-048, SC-004. Contract §6 "Activity and stall notice". Plan D12 "Clone panel", 001 plan.md "Required visible states" Busy.
+describe("clone stall notice (FR-003, FR-048)", () => {
+  const STALL_SENTENCE = "Git may be waiting for input.";
+  const STALL_NOTICE = "Git may be waiting for a prompt that Arbareto cannot show, or for a sign-in window. To answer a hidden prompt, select Cancel and run this command in a terminal.";
+  // Sample remedy. The service builds the real one by the contract §4 quoting rule.
+  const REMEDY = { command: "& 'C:\\Git\\cmd\\git.exe' clone -- 'https://example.test/team/tool.git' 'D:\\src\\tool'", text: "Sample remedy text." };
+  const notice = () => panel().querySelector('[data-slot="stall-notice"]');
+  async function progress(r: Awaited<ReturnType<typeof started>>, stalled: boolean) {
+    const onProgress = r.pending("clone").args[1] as (event: unknown) => void;
+    await act(async () => onProgress({ requestId: "c", operationId: fixtureId(0x211), state: "running", phase: "clone", counters: {}, stalled }));
+    await settle();
+  }
+
+  test("a progress event with stalled makes one getOperation call; its stallRemedy shows the notice, the command, and Copy command", async () => {
+    const r = await started();
+    await progress(r, false);
+    expect(notice()).toBeNull();
+    await progress(r, true);
+    await progress(r, true);
+    expect(r.calls.filter((c) => c.operation === "getOperation").map((c) => c.args[0])).toEqual([{ operationId: fixtureId(0x211) }]);
+    expect(text(notice()!)).toContain(STALL_NOTICE);
+    expect(text(panel())).toContain(`Cloning into D:\\src\\tool… ${STALL_SENTENCE}`);
+    expect(notice()!.querySelector('svg.text-warning[aria-hidden="true"]')).not.toBeNull();
+    const result = OperationResult.parse({ operationId: fixtureId(0x211), operation: "clone", state: "running", phase: "clone", stalled: true, stallRemedy: REMEDY });
+    await act(async () => r.pending("getOperation").resolve({ requestId: "g", state: "succeeded", result }));
+    await settle();
+    expect(text(notice()!)).toContain(REMEDY.text);
+    expect([...notice()!.querySelectorAll("code")].map((c) => c.textContent)).toEqual([REMEDY.command]);
+    expect(buttons("Copy command", notice()!).length).toBe(1);
+  });
+
+  test("a progress event without stalled hides the notice", async () => {
+    const r = await started();
+    await progress(r, true);
+    expect(notice()).not.toBeNull();
+    await progress(r, false);
+    expect(notice()).toBeNull();
+    expect(text(panel())).not.toContain(STALL_SENTENCE);
+    // An answer that comes after the stall ended shows nothing.
+    const result = OperationResult.parse({ operationId: fixtureId(0x211), operation: "clone", state: "running", phase: "clone", stalled: true, stallRemedy: REMEDY });
+    await act(async () => r.pending("getOperation").resolve({ requestId: "g", state: "succeeded", result }));
+    await settle();
+    expect(notice()).toBeNull();
+    expect(text(panel())).not.toContain(REMEDY.command);
+  });
+
+  test("a notice whose Copy command holds focus stays after the stall ends, and hides when focus leaves it", async () => {
+    const r = await started();
+    await progress(r, true);
+    const result = OperationResult.parse({ operationId: fixtureId(0x211), operation: "clone", state: "running", phase: "clone", stalled: true, stallRemedy: REMEDY });
+    await act(async () => r.pending("getOperation").resolve({ requestId: "g", state: "succeeded", result }));
+    await settle();
+    const copy = button("Copy command", notice()!);
+    await act(async () => copy.focus());
+    await progress(r, false);
+    expect(text(notice()!)).toContain(STALL_NOTICE);
+    expect(document.activeElement).toBe(copy);
+    expect(text(panel())).not.toContain(STALL_SENTENCE);
+    const cancel = button("Cancel", panel());
+    await act(async () => cancel.focus());
+    await settle();
+    expect(document.activeElement).toBe(cancel);
+    expect(notice()).toBeNull();
   });
 });

@@ -139,7 +139,15 @@ Run 2026-11-05, packaged NSIS build, warm, in the foreground, alone, under the t
 - Control: a scratch build let `AlertConfirm` focus the danger button first (installed SHA-256 `add5319c...1030964`, `ORIGIN` line matches). The FR-044 Cancel focus case failed (0 pass, 1 fail). `RevertConfirm.tsx` was restored byte-equal (SHA-256 `688895e6...24f33d8`). A clean rebuild and reinstall matched its own built exe after the marker patch. The worktree status was clean.
 - WSL record: `tests/windows/commit-menu-perf.test.ts` has three WSL record cases on `Ubuntu-26.04`, with no budget. They are SC-010b on M, SC-010d and SC-011 on M, and SC-010d and SC-011 on M-R. They print `RECORD` lines.
 
-- SC-011 probe (decision 2026-11-05): the probe waits 2 ms between inputs. Thus a run of about 400 ms still gets the minimum of 20 inputs. The 001 SC-005 targets do not change.
+- SC-011 probe (decision 2026-11-05): the probe waits 2 ms between inputs. Thus a run of about 400 ms still gets the minimum of 20 inputs. The 001 SC-005 targets do not change. The decision of 2026-11-10 replaces this decision.
+- SC-011 probe (decision 2026-11-10): the probe sends one input every 10 ms on a fixed timer. It does not wait for the CDP replies of an input before the next input. The test awaits all replies after the window ends. Only keydowns on the history filter count, as before. The spec targets do not change: p95 at most 100 ms, max at most 500 ms, at least 20 inputs per run.
+- Reason: the 2 ms wait did not set the rate. Each input waited for its keyDown and keyUp replies, about 14 to 16 ms per input on the M-R actions. The pre-tag `test:windows` of 2026-11-10 failed: two Abort runs had 19 and 18 inputs. Their p95 was 32 to 40 ms.
+- Risk: a queued input also measures the main-thread queue time. On 2026-11-10 the input p95 rose on Cherry-pick (64 ms, max 88 ms), Revert, Abort, and Continue. It stays under the 100 ms and 500 ms limits.
+- Run 2026-11-10 (packaged, alone, under the test gate): installed SHA-256 `90c2d140...20aa4d`. The test sources came from the change branch (`ORIGIN` lines). Quiet check before the run: CPU 8.3%, MsMpEng 1.5%, free memory 9.5 GB.
+- T018 on M and M-R: 2 pass, 0 fail, 695 s. Abort got 36 to 56 inputs per run. The probe spacing was 10.7 to 11.2 ms for each action.
+- Input p95 and max per action (ms): Soft 32 and 32, Mixed 32 and 32, Create tag 24 and 32, Hard 24 and 40, Cherry-pick 64 and 88, Revert 48 and 64, Abort 56 and 64, Continue 48 and 64, Detached checkout 24 and 48.
+- Control: a 25 ms period in a local scratch copy gave 1 fail on M-R. Abort got 14 to 20 inputs per run. Only the SC-011 Abort `inputs` value was false. The test file in the change branch kept its hash.
+- The WSL record cases did not run.
 
 #### Run 2026-11-06 (final run)
 

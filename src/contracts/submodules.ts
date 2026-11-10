@@ -173,7 +173,7 @@ export function redactUrlUserInfo(text: string): string {
   for (let at = text.indexOf("://"); at >= 0; at = text.indexOf("://", at + 1)) {
     const start = at + 3;
     if (start < from) continue;
-    const end = text.slice(start).search(/[/?#]/);
+    const end = text.indexOf("/", start) - start;
     const authority = end < 0 ? text.slice(start) : text.slice(start, start + end);
     const userEnd = authority.lastIndexOf("@");
     if (userEnd < 0) continue;

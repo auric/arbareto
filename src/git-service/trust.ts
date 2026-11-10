@@ -31,15 +31,15 @@ import type { Workspace } from "./registration";
 
 // ---- URL user information (contract §7) ----
 
-// Contract §7 "URL user information": for each `://`, the authority runs to the next `/`, `?`, `#`, or the end.
-// When it holds `@`, the text before its last `@` becomes `<redacted>`. Git `transport_anonymize_url` does the same for one URL (research R5).
+// Contract §7 "URL user information": for each `://`, the authority runs to the next `/` or the end.
+// When it holds `@`, the text before its last `@` becomes `<redacted>`. Git `transport_anonymize_url` ends the authority at `/` only (research R5).
 export function redactUrlUserInfo(text: string): string {
   let out = "";
   let at = 0;
   for (let scheme = text.indexOf("://"); scheme >= 0; scheme = text.indexOf("://", scheme + 3)) {
     const start = scheme + 3;
     let end = start;
-    while (end < text.length && text[end] !== "/" && text[end] !== "?" && text[end] !== "#") end++;
+    while (end < text.length && text[end] !== "/") end++;
     const user = text.lastIndexOf("@", end - 1);
     if (user < start) continue;
     out += text.slice(at, start) + "<redacted>";

@@ -10,9 +10,9 @@
 // Control mutation: let the Workbench.tsx `onFocus` handler also start Fetch all remotes; the counter assertion must fail.
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, relative, resolve } from "node:path";
-import { fixtureDir, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { fixtureDir, FIXTURE_ROOT, ownedPath, useFixtureRoot } from "../git/fixture-root";
 import { fixtureGitPath, GIT } from "../git/git-binary";
 import { buildCredentialRemote, credentialHelper, gitOut, gitRun, HTTP_PASSWORD, HTTP_USER, nativeEnv, nativeHost, type GitHost } from "../git/remote-fixtures";
 import { printOrigin } from "../origin";
@@ -20,7 +20,7 @@ import { startGitDaemon } from "../support/git-daemon";
 import { startHttpRemote, within } from "../support/http-remote";
 import { makeKeyPair, sshCommand, sshTools, startSshServer, type SshTools } from "../support/ssh-server";
 import { connectPage, freePort, keyEvents, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
-import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type AppEnv, type OwnedProcess } from "./installed-app";
+import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, spawnOwned, startInstalledApp, WAIT_MS, waitExit, type AppEnv, type OwnedProcess } from "./installed-app";
 import { withProbe } from "./probe-window";
 import { close, ControlType, find, findWindow, focus, foregroundPid, foregroundSkip, inputDesktopSkip, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, UiaError, type Element } from "./uia";
 
@@ -42,8 +42,8 @@ const STOP_MS = 10_000;
 // Key generation, the bare remote, and two clones with their configuration.
 const SETUP_MS = 5 * 60_000;
 const FOREGROUND_POLL_MS = 20;
-// The start: 7 UIA steps and the CDP connect. The second open: the folder picker. Each focus return: 2 window finds, 2 foreground waits, 2 page waits.
-const CASE_MS = IDLE_MS + SETUP_MS + (10 + RETURNS * 6) * STEP_MS + 3 * ACTION_WAIT_MS + 3 * GIT_WAIT_MS + 3 * STOP_MS + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS;
+// The start: 7 UIA steps and the CDP connect. The second open: the folder picker. Each focus return: 2 window finds, 2 foreground waits, 2 page waits. Each control Git: its wait, the Job end, and the process audit.
+const CASE_MS = IDLE_MS + SETUP_MS + (10 + RETURNS * 6) * STEP_MS + 3 * ACTION_WAIT_MS + 3 * (GIT_WAIT_MS + WAIT_MS + PROBE_TIMEOUT_MS) + 3 * STOP_MS + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS;
 
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 const REMOTES = ["daemon", "http", "ssh"] as const;
@@ -141,12 +141,29 @@ describe.skipIf(process.platform !== "win32")("T079 packaged no network without 
   const uia = <T>(pid: number, name: string, type: number | undefined, body: (element: Element) => T) => use(find(pid, name, MAX_WAIT_MS, type), body);
 
   // Git answers through servers on this event loop, so the control Git runs asynchronously.
-  async function runGit(args: string[], cwd: string, env: Record<string, string>): Promise<number> {
-    const proc = Bun.spawn([GIT!, ...args], { cwd, env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-    return within(proc.exited, GIT_WAIT_MS, `git ${args.join(" ")}`).catch((error) => {
-      proc.kill();
-      throw error;
-    });
+  // The owned Job ends git-remote-http and ssh.exe with Git after a time-out.
+  async function runGit(git: string, args: string[], cwd: string, env: Record<string, string>): Promise<number> {
+    const proc = spawnOwned([git, ...args], cwd, env);
+    try {
+      return await within(proc.exited, GIT_WAIT_MS, `git ${args.join(" ")}`);
+    } finally {
+      proc.stop();
+    }
+  }
+
+  class GitMismatch extends Error {}
+  // src-tauri/src/settings.rs `SavedGit`: `<profile>/config/settings.json` key `git.executablePath` names the file that runs, `git.exe` of `--exec-path` (001 contract §3).
+  // tests/git/git-binary.ts `FIXTURE_GIT` comes from the same `--exec-path` rule.
+  function appGit(env: AppEnv): string {
+    const file = join(env.set.ARBARETO_PROFILE_ROOT, "config", "settings.json");
+    if (!existsSync(file)) throw new GitMismatch(`no saved Git selection: ${file} is absent`);
+    const saved = (JSON.parse(readFileSync(file, "utf8")) as { git?: { executablePath?: unknown } }).git?.executablePath;
+    if (typeof saved !== "string") throw new GitMismatch(`no saved Git selection: ${file} has no git.executablePath`);
+    const app = realpathSync.native(saved);
+    const test = realpathSync.native(fixtureGitPath(GIT!));
+    // Windows paths ignore case.
+    if (app.toLowerCase() !== test.toLowerCase()) throw new GitMismatch(`the app runs ${app}, the control would run ${test}`);
+    return app;
   }
 
   // A clone of the bare remote by its plain path, so the build reaches no server. `main` tracks `daemon/main`, `http-main` tracks `http/main`, and `ssh-main` tracks `ssh/main`.
@@ -174,8 +191,7 @@ describe.skipIf(process.platform !== "win32")("T079 packaged no network without 
 
   // The Windows folder picker: the Edit has the Name of its label, and its dialog window has the Name of the OK button.
   async function pickFolder(pid: number, repo: string): Promise<void> {
-    const path = resolve(repo);
-    if (!isAbsolute(path) || relative(FIXTURE_ROOT, path).startsWith("..")) throw new Error(`the repository is outside the fixture root: ${js(path)}`);
+    const path = ownedPath(FIXTURE_ROOT, repo);
     await uia(pid, "Folder:", ControlType.Edit, (field) => setValue(field, path));
     await uia(pid, "Select Folder", ControlType.Button, invoke);
   }
@@ -266,6 +282,7 @@ describe.skipIf(process.platform !== "win32")("T079 packaged no network without 
       const clientKey = makeKeyPair(tools, `${h.root}/client_ed25519`);
       const serverEnv = nativeEnv();
       const servers: { stop(): Promise<void>; ended(): boolean }[] = [];
+      let failed = false;
       try {
         const daemon = await startGitDaemon({ git: fixtureGitPath(git), basePath: served, hookFile: `${h.root}/daemon-hook.sh`, counterFile: `${h.root}/daemon-count.txt`, env: serverEnv });
         servers.push(daemon);
@@ -297,7 +314,7 @@ describe.skipIf(process.platform !== "win32")("T079 packaged no network without 
         if (skip !== null) {
           console.log(`SKIP ${TASK} focus return ${returns + 1}: ${skip}`);
           console.log(`OBSERVATION ${TASK}: SC-013 unverified; counts=${js(counts())}`);
-          return;
+          throw new Error(`SKIP ${TASK} focus return ${returns + 1}: ${skip}`);
         }
         await ipcIdle(s);
         const trusted = await s.c.evaluate<number>(FOCUS_COUNT);
@@ -312,21 +329,30 @@ describe.skipIf(process.platform !== "win32")("T079 packaged no network without 
         const sshConfig = `${h.root}/ssh_config`;
         writeFileSync(sshConfig, "");
         const env = { ...s.env.env, GIT_TERMINAL_PROMPT: "0" };
-        const helper = ["-c", `credential.helper=${credentialHelper(HTTP_USER, HTTP_PASSWORD)}`];
+        // gitcredentials(7): an empty `credential.helper` resets the list, so no system helper (Git Credential Manager) stores or asks for the fixture credential.
+        const helper = ["-c", "credential.helper=", "-c", `credential.helper=${credentialHelper(HTTP_USER, HTTP_PASSWORD)}`];
         const repo = repos[0]!;
+        const controlGit = appGit(s.env);
         const exits = {
-          daemon: await runGit(["ls-remote", "--heads", "daemon"], repo, env),
-          http: await runGit([...helper, "ls-remote", "--heads", "http"], repo, env),
-          ssh: await runGit(["ls-remote", "--heads", "ssh"], repo, { ...env, GIT_SSH_COMMAND: sshCommand(tools, { key: clientKey.privateKey, knownHosts, config: sshConfig }) }),
+          daemon: await runGit(controlGit, ["ls-remote", "--heads", "daemon"], repo, env),
+          http: await runGit(controlGit, [...helper, "ls-remote", "--heads", "http"], repo, env),
+          ssh: await runGit(controlGit, ["ls-remote", "--heads", "ssh"], repo, { ...env, GIT_SSH_COMMAND: sshCommand(tools, { key: clientKey.privateKey, knownHosts, config: sshConfig }) }),
         };
         const control = counts();
         console.log(`CONTROL ${TASK}: exits ${js(exits)} counts ${js(control)}`);
         expect({ exits, daemon: control.daemon, http: control.http > 0, ssh: control.ssh }).toEqual({ exits: { daemon: 0, http: 0, ssh: 0 }, daemon: 1, http: true, ssh: 1 });
+      } catch (error) {
+        failed = true;
+        throw error;
       } finally {
         const errors: unknown[] = [];
         for (const server of servers.toReversed()) await server.stop().catch((error) => void errors.push(error));
-        if (errors.length > 0) throw new AggregateError(errors, "a local server did not stop");
-        expect(servers.map((server) => server.ended())).toEqual(servers.map(() => true));
+        // The body error surfaces. A stop error then only gets a log line.
+        if (failed) for (const error of errors) console.log(`STOP_ERROR ${TASK}: ${String(error)}`);
+        else {
+          if (errors.length > 0) throw new AggregateError(errors, "a local server did not stop");
+          expect(servers.map((server) => server.ended())).toEqual(servers.map(() => true));
+        }
       }
     },
     CASE_MS,

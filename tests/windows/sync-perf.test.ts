@@ -6,30 +6,30 @@
 // SC-003 reads the names of the References tree through UI Automation. SC-004 takes the end of an operation from its IPC reply (contract Δ3 `sync`, `clone`).
 // Each timed span is an upper bound: it starts at the last sample before the start event and ends after the sample that saw the end.
 // The app cases take the foreground and run for many minutes, so they run only with `ARBARETO_LIVE_INPUT=1` in the 001 T165 measurement account.
-// Cold runs need a reboot that the user starts: `ARBARETO_SYNC_COLD=prepare`, then one `ARBARETO_SYNC_COLD=run` after each reboot.
+// Cold runs need a reboot that the user starts: `ARBARETO_SYNC_COLD=prepare`, then one `ARBARETO_SYNC_COLD=run` after each reboot. A cold step runs alone.
+// The cold run reads the executable only after the app exits, and it starts the app without the CDP port, so neither warms the start.
 // Control mutation: set BUDGET.counts to 1; the sample pass case and every SC-003 app case must fail.
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { TERMINAL_STATES } from "../../src/contracts/errors";
 import { SUBMODULE_UPDATE_INACTIVITY_MS } from "../../src/contracts/limits";
 import { fixtureDir, FIXTURE_ROOT, ownedPath, removeTree, useFixtureRoot } from "../git/fixture-root";
 import { fixtureGitPath, GIT } from "../git/git-binary";
-import { buildCredentialRemote, buildMany, credentialHelper, gitOut, gitRun, HTTP_PASSWORD, HTTP_USER, MANY_BRANCHES, manyCounts, manyName, nativeEnv, nativeHost, type GitHost } from "../git/remote-fixtures";
+import { buildCredentialRemote, buildMany, gitOut, gitRun, HTTP_PASSWORD, HTTP_USER, MANY_BRANCHES, manyCounts, manyName, nativeEnv, nativeHost, type GitHost } from "../git/remote-fixtures";
 import { printOrigin } from "../origin";
 import { startHttpRemote, type HttpRemote } from "../support/http-remote";
 import { connectPage, freePort, keyEvents, MOD, watchIpc, type Cdp, type IpcCall } from "./cdp";
-import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, powershellJson, processRecords, startInstalledApp, WAIT_MS, waitExit, type AppEnv, type OwnedProcess } from "./installed-app";
+import { appEnv, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type AppEnv, type OwnedProcess } from "./installed-app";
 import { PERF_CACHE_ROOT } from "./perf-fixtures";
-import { median } from "./ratio";
-import { close, ControlType, expand, find, inputDesktopSkip, invoke, isEnabled, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, setValue, UiaError, type Element } from "./uia";
+import { bootId, credentialConfig, guarded, invokeWhenEnabled, js, liveGate, printOriginAfter, summarize, uia, UIA_E_ELEMENTNOTAVAILABLE, useOwnedApps } from "./sync-harness";
+import { ControlType, descendantNames, expand, find, invoke, isEnabled, MAX_CALL_MS, MAX_WAIT_MS, readValue, setValue, UiaError, type Element } from "./uia";
 
-for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./ratio.ts", "./perf-fixtures.ts", "../support/http-remote.ts", "../git/remote-fixtures.ts"]) printOrigin(helper, import.meta.dir);
+for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./sync-harness.ts", "./ratio.ts", "./perf-fixtures.ts", "../support/http-remote.ts", "../git/remote-fixtures.ts"]) printOrigin(helper, import.meta.dir);
 for (const source of ["../../src/contracts/errors.ts", "../../src/contracts/limits.ts", "../../src/frontend/refs/ReferencesSidebar.tsx", "../../src/frontend/state/tracking.ts", "../../src/frontend/status/OperationStatus.tsx", "../../src/frontend/sync/SyncToolbar.tsx", "../../src/frontend/clone/CloneDialog.tsx"]) printOrigin(source, import.meta.dir);
 
 const TASK = "T077";
-const LIVE = process.env.ARBARETO_LIVE_INPUT === "1";
 const COLD = process.env.ARBARETO_SYNC_COLD;
 
 // ---- Budgets and series (the source of each value is named) ----
@@ -44,21 +44,14 @@ const CANCEL_RUNS = 20;
 // shortcut: one limit run per operation, because each run waits 5 minutes. Raise it when plan.md fixes a run count for the SC-004 limit.
 const LIMIT_RUNS = 1;
 
-// ---- Statistic and pass rule (001 plan.md "Responsiveness metrics": every run, median, nearest-rank p95, maximum) ----
+// ---- Pass rule ----
 
-type Summary = { n: number; median: number; p95: number; max: number };
 type Verdict = "pass" | "fail" | "unverified";
-
-function summarize(values: readonly number[]): Summary {
-  if (values.length === 0) return { n: 0, median: Number.NaN, p95: Number.NaN, max: Number.NaN };
-  const sorted = values.toSorted((a, b) => a - b);
-  return { n: values.length, median: median(sorted), p95: sorted[Math.ceil(0.95 * sorted.length) - 1]!, max: sorted.at(-1)! };
-}
 
 // SC-003 and SC-004 bound each run, so one run above the budget fails the series. A series with fewer runs than it needs is unverified, never a pass.
 function verdict(values: readonly number[], budgetMs: number, required: number): Verdict {
   const bad = values.filter((v) => !Number.isFinite(v) || v < 0);
-  if (bad.length > 0) throw new Error(`a run time is not a finite nonnegative number: ${JSON.stringify(bad)}`);
+  if (bad.length > 0) throw new Error(`a run time is not a finite nonnegative number: ${js(bad)}`);
   if (values.some((v) => v > budgetMs)) return "fail";
   return values.length < required ? "unverified" : "pass";
 }
@@ -66,7 +59,7 @@ function verdict(values: readonly number[], budgetMs: number, required: number):
 function report(series: string, values: readonly number[], budgetMs: number, required: number): Verdict {
   const s = summarize(values);
   const v = verdict(values, budgetMs, required);
-  console.log(`SERIES ${TASK} ${series}: runs ${JSON.stringify(values.map((x) => Math.round(x * 10) / 10))}`);
+  console.log(`SERIES ${TASK} ${series}: runs ${js(values.map((x) => Math.round(x * 10) / 10))}`);
   console.log(`SUMMARY ${TASK} ${series}: n=${s.n} of ${required} median=${s.median.toFixed(1)} ms p95=${s.p95.toFixed(1)} ms max=${s.max.toFixed(1)} ms budget=${budgetMs} ms verdict=${v}`);
   return v;
 }
@@ -116,7 +109,7 @@ const CLONE_URL = "Remote URL";
 const CLONE_DESTINATION = "Destination folder";
 const CLONE_BUTTON = "Clone";
 
-// ReferencesSidebar.tsx row name: `<name>, local branch, → <upstream>, <a> ahead, <b> behind` (tracking.ts `countLabel`).
+// ReferencesSidebar.tsx row name: `<name>, local branch, → <upstream>`, then `, <a> ahead, <b> behind` once the count shows (tracking.ts `countLabel`).
 const MANY = Array.from({ length: MANY_BRANCHES }, (_, i) => {
   const name = manyName(i);
   const [ahead, behind] = manyCounts(i);
@@ -144,58 +137,20 @@ const POLL_MS = 50;
 const STOP_MS = 10_000;
 const SETUP_MS = 5 * 60_000;
 const INACTIVITY_MS = SUBMODULE_UPDATE_INACTIVITY_MS;
-// UIA_E_ELEMENTNOTAVAILABLE: a render replaced the element.
-const UIA_E_ELEMENTNOTAVAILABLE = 0x8004_0201;
-
-const js = (value: unknown) => JSON.stringify(value);
-
-// Microsoft Learn `Win32_OperatingSystem.LastBootUpTime`. The FILETIME text keeps all digits.
-function bootTime(): string {
-  return powershellJson("ConvertTo-Json ([string](Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToFileTimeUtc())") as string;
-}
 
 const COLD_DIR = ownedPath(PERF_CACHE_ROOT, "t077-sc003-cold");
 const COLD_STATE = join(COLD_DIR, "state.json");
-type ColdState = { boot: string; runs: { boot: string; ms: number }[] };
+type ColdState = { boot: number; runs: { boot: number; ms: number }[] };
 const readCold = (): ColdState | null => (existsSync(COLD_STATE) ? (JSON.parse(readFileSync(COLD_STATE, "utf8")) as ColdState) : null);
 
 describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 records", () => {
-  // Bun 1.4.4 runs `afterAll` hooks in declaration order. This hook must come before the fixture root removal.
-  const owned = new Set<OwnedProcess>();
-  const sockets = new Set<Cdp>();
-  const stopOwned = async () => {
-    for (const c of sockets) c.close();
-    sockets.clear();
-    for (const app of owned) {
-      owned.delete(app);
-      app.stop();
-      if ((await waitExit(app)) === null) throw new Error(`the app PID ${app.pid} did not exit within ${WAIT_MS} ms of the end`);
-    }
-  };
-  afterEach(stopOwned, 2 * WAIT_MS + PROBE_TIMEOUT_MS);
-  afterAll(async () => {
-    await stopOwned();
-    close();
-  }, 2 * WAIT_MS + PROBE_TIMEOUT_MS);
+  const { owned, sockets } = useOwnedApps();
   useFixtureRoot();
 
-  const discovery = findInstalledApp();
-  const installed = "app" in discovery ? discovery.app : null;
-  if (installed !== null) console.log(`APP ${TASK}: exe=${installed.exe} sha256=${installed.sha256}`);
-  const others = installed === null ? [] : processRecords().filter((r) => r.name.toLowerCase() === installed.mainBinaryName.toLowerCase());
-  const reason =
-    installed === null
-      ? (discovery as { skip: string }).skip
-      : GIT === null
-        ? "Git executable absent"
-        : others.length > 0
-          ? `another-instance: ${installed.mainBinaryName} runs as PID ${others.map((r) => r.pid).join(", ")}`
-          : !LIVE
-            ? "live input needs the measurement account: set ARBARETO_LIVE_INPUT=1 (001 T165); the cases take the foreground and run for many minutes"
-            : inputDesktopSkip();
-  if (reason !== null) console.log(`SKIP ${TASK}: ${reason}`);
+  // A cold run must not read the executable before its start, so its gate does not hash it.
+  const { installed, reason } = liveGate(TASK, "the cases take the foreground and run for many minutes", COLD !== "run");
   // A cold step runs alone, so no other case warms the caches first.
-  const warmReason = reason ?? (COLD !== undefined ? `ARBARETO_SYNC_COLD=${COLD} runs only the cold step` : null);
+  const aloneReason = reason ?? (COLD !== undefined ? `ARBARETO_SYNC_COLD=${COLD} runs only the cold step` : null);
   const coldState = reason === null && COLD === "run" ? readCold() : null;
   const coldReason =
     reason ??
@@ -205,41 +160,10 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
         ? "cold runs need a reboot that the user starts: set ARBARETO_SYNC_COLD=prepare, reboot, then set ARBARETO_SYNC_COLD=run after each reboot"
         : coldState === null
           ? "no prepared cold fixture: run ARBARETO_SYNC_COLD=prepare first"
-          : coldState.boot === bootTime()
-            ? "no reboot since the last cold step: the user must reboot before each cold run"
+          : coldState.boot === bootId()
+            ? "no reboot since the last cold step: the BootId counter is unchanged, so the user must reboot before each cold run"
             : null);
   if (coldReason !== null) console.log(`SKIP ${TASK} cold: ${coldReason}`);
-
-  // ---- UIA helpers ----
-
-  async function use<T>(element: Promise<Element>, body: (element: Element) => T): Promise<T> {
-    const found = await element;
-    try {
-      return body(found);
-    } finally {
-      found.release();
-    }
-  }
-  const uia = <T>(pid: number, name: string, type: number | undefined, body: (element: Element) => T) => use(find(pid, name, MAX_WAIT_MS, type), body);
-
-  // A render can replace the element, so each poll finds it again. Returns `performance.now()` just before the Invoke call.
-  async function invokeWhenEnabled(pid: number, name: string, type: number, ms = MAX_WAIT_MS): Promise<number> {
-    for (const end = performance.now() + ms; ; await Bun.sleep(10)) {
-      const element = await find(pid, name, Math.max(0, Math.ceil(end - performance.now())), type);
-      try {
-        if (isEnabled(element)) {
-          const at = performance.now();
-          invoke(element);
-          return at;
-        }
-      } catch (error) {
-        if (!(error instanceof UiaError && error.hresult === UIA_E_ELEMENTNOTAVAILABLE)) throw error;
-      } finally {
-        element.release();
-      }
-      if (performance.now() >= end) throw new Error(`${js(name)} was not enabled within ${ms} ms`);
-    }
-  }
 
   async function setField(pid: number, name: string, text: string): Promise<void> {
     for (const end = performance.now() + MAX_WAIT_MS; ; await Bun.sleep(10)) {
@@ -267,26 +191,27 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
     }
   }
 
-  // The joined row names of the References tree, or null without the tree (uia.ts `readText`).
-  async function treeNames(pid: number): Promise<string | null> {
+  // `absent`: no References tree. `unknown`: a render replaced the tree during the read, so the read proves nothing.
+  type TreeRead = { kind: "absent" } | { kind: "unknown" } | { kind: "names"; names: string[] };
+  async function treeNames(pid: number): Promise<TreeRead> {
     let tree: Element;
     try {
       tree = await find(pid, REFERENCES, 0, ControlType.Tree);
     } catch (error) {
-      if (error instanceof UiaError && error.code === "TIMEOUT") return null;
+      if (error instanceof UiaError && error.code === "TIMEOUT") return { kind: "absent" };
       throw error;
     }
     try {
-      return readText(tree);
+      return { kind: "names", names: descendantNames(tree, ControlType.TreeItem) };
     } catch (error) {
-      if (error instanceof UiaError && error.hresult === UIA_E_ELEMENTNOTAVAILABLE) return null;
+      if (error instanceof UiaError && error.hresult === UIA_E_ELEMENTNOTAVAILABLE) return { kind: "unknown" };
       throw error;
     } finally {
       tree.release();
     }
   }
 
-  type CountRun = { ms: number; shownAfterMs: number; mounted: number; polls: number; longestPollMs: number };
+  type CountRun = { ms: number; shownAfterMs: number; mounted: number; polls: number; unknown: number; longestPollMs: number };
 
   // From the last read without a fixture branch row to the first read in which every mounted fixture row has its count label.
   // The tree is virtual above 200 rows (ReferencesSidebar.tsx `VIRTUAL_MIN`), so only the mounted rows can show a count.
@@ -294,24 +219,38 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
     let absentAt = absentSince;
     let shownAt: number | null = null;
     let polls = 0;
+    let unknown = 0;
     let longest = 0;
+    let last: Set<string> | null = null;
+    // A fixture row is mounted when a TreeItem Name equals its name without or with its count label. Any other Name of a fixture row is a wrong label.
+    const mountedIn = (names: Set<string>) => MANY.filter((row) => names.has(row.base) || names.has(row.full));
     for (const end = absentSince + OPEN_WAIT_MS; ; await Bun.sleep(1)) {
       const s = performance.now();
-      const names = await treeNames(pid);
+      const read = await treeNames(pid);
       const e = performance.now();
       polls++;
       longest = Math.max(longest, e - s);
-      const mounted = names === null ? [] : MANY.filter((row) => names.includes(row.base));
-      if (mounted.length === 0) {
-        if (shownAt !== null) throw new Error("the fixture branch rows left the References tree");
-        absentAt = s;
-      } else {
-        shownAt ??= e;
-        if (mounted.every((row) => names!.includes(row.full))) return { ms: e - absentAt, shownAfterMs: shownAt - absentAt, mounted: mounted.length, polls, longestPollMs: longest };
+      if (read.kind === "unknown") unknown++;
+      else {
+        const names = read.kind === "names" ? new Set(read.names) : null;
+        last = names;
+        if (names !== null) {
+          const wrong = [...names].filter((n) => MANY.some((row) => n.startsWith(`${row.name}, local branch,`) && n !== row.base && n !== row.full));
+          if (wrong.length > 0) throw new Error(`fixture rows show a wrong label: ${js(wrong.slice(0, 10))}`);
+        }
+        const mounted = names === null ? [] : mountedIn(names);
+        if (mounted.length === 0) {
+          if (shownAt !== null) throw new Error("the fixture branch rows left the References tree");
+          absentAt = s;
+        } else {
+          shownAt ??= e;
+          if (mounted.every((row) => names!.has(row.full))) return { ms: e - absentAt, shownAfterMs: shownAt - absentAt, mounted: mounted.length, polls, unknown, longestPollMs: longest };
+        }
       }
       if (e >= end) {
-        const missing = mounted.filter((row) => !names!.includes(row.full)).map((row) => row.name);
-        throw new Error(`the counts did not show within ${OPEN_WAIT_MS} ms: tree ${names === null ? "absent" : `with ${mounted.length} fixture rows`}, rows without their count label ${js(missing.slice(0, 10))}`);
+        const mounted = last === null ? [] : mountedIn(last);
+        const missing = mounted.filter((row) => !last!.has(row.full)).map((row) => row.name);
+        throw new Error(`the counts did not show within ${OPEN_WAIT_MS} ms: tree ${last === null ? "absent" : `with ${mounted.length} fixture rows`}, rows without their count label ${js(missing.slice(0, 10))}, ${unknown} unknown reads`);
       }
     }
   }
@@ -320,17 +259,6 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
 
   type Reply = IpcCall & { at: number };
   type Session = { app: OwnedProcess; c: Cdp; env: AppEnv; replies: Reply[]; body<T>(call: IpcCall): Promise<T> };
-
-  // Each Git call of the app uses this owned global file. The empty value clears the system helpers, so Git Credential Manager never stores the fixture credential.
-  function credentialConfig(h: GitHost, env: AppEnv): void {
-    const file = env.set.GIT_CONFIG_GLOBAL;
-    const helper = credentialHelper(HTTP_USER, HTTP_PASSWORD);
-    gitRun(h, h.root, ["config", "--file", file, "--add", "credential.helper", ""]);
-    gitRun(h, h.root, ["config", "--file", file, "--add", "credential.helper", helper]);
-    const proc = Bun.spawnSync([fixtureGitPath(GIT!), "config", "--get-all", "--show-scope", "credential.helper"], { cwd: h.root, env: env.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: PROBE_TIMEOUT_MS });
-    const lines = proc.stdout.toString().split("\n").filter((l) => l !== "");
-    expect({ exit: proc.exitCode, last: lines.slice(-2) }).toEqual({ exit: 0, last: ["global\t", `global\t${helper}`] });
-  }
 
   function inside(root: string, path: string): string {
     const full = resolve(path);
@@ -404,11 +332,13 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
   }
 
   const runLine = (series: string, k: number, r: CountRun) =>
-    console.log(`RUN ${TASK} ${series} ${k}: ${r.ms.toFixed(1)} ms (sidebar after ${r.shownAfterMs.toFixed(1)} ms; ${r.mounted} mounted rows; ${r.polls} reads, longest ${r.longestPollMs.toFixed(1)} ms)`);
+    console.log(
+      `RUN ${TASK} ${series} ${k}: ${r.ms.toFixed(1)} ms (sidebar after ${r.shownAfterMs.toFixed(1)} ms; ${r.mounted} mounted rows; ${r.polls} reads, ${r.unknown} unknown, longest ${r.longestPollMs.toFixed(1)} ms)`,
+    );
 
   // ---- SC-003 warm ----
 
-  test.skipIf(warmReason !== null)(
+  test.skipIf(aloneReason !== null)(
     "SC-003 warm: on the 200-branch fixture, every mounted branch row shows its count label within 1 s after the sidebar shows, in 20 counted reopens after one discarded run",
     async () => {
       const h = nativeHost(GIT!, "t077-warm");
@@ -439,7 +369,6 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
   test.skipIf(coldReason !== null)(
     "SC-003 cold: the first app start after a reboot reopens the retained 200-branch fixture, and every mounted branch row shows its count label within 1 s after the sidebar shows",
     async () => {
-      const cold = coldState;
       if (COLD === "prepare") {
         if (existsSync(COLD_DIR)) removeTree(COLD_DIR);
         mkdirSync(join(COLD_DIR, "app"), { recursive: true });
@@ -451,17 +380,22 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
         const s = await session(join(COLD_DIR, "app"), "cold-prepare", COLD_DIR, repo);
         await timeCounts(s.app.pid, performance.now());
         await stopApp(s.app);
-        writeFileSync(COLD_STATE, js({ boot: bootTime(), runs: [] } satisfies ColdState));
+        writeFileSync(COLD_STATE, js({ boot: bootId(), runs: [] } satisfies ColdState));
         console.log(`PREPARED ${TASK} cold: reboot, then run with ARBARETO_SYNC_COLD=run and ARBARETO_LIVE_INPUT=1; repeat ${COLD_RUNS} times`);
         return;
       }
-      const boot = bootTime();
+      const boot = bootId();
+      // No CDP port and no `connectPage`: the cold start stays the start that a user gets. UIA alone times the counts.
+      const env = appEnv(join(COLD_DIR, "app"), false);
+      const records = processRecords();
       const before = performance.now();
-      const s = await start(join(COLD_DIR, "app"), "cold");
-      const r = await timeCounts(s.app.pid, before);
-      const runs = [...cold!.runs, { boot, ms: r.ms }];
+      const app = startInstalledApp(installed!, env, records);
+      owned.add(app);
+      const r = await timeCounts(app.pid, before);
+      const runs = [...coldState!.runs, { boot, ms: r.ms }];
       runLine("cold", runs.length, r);
-      await stopApp(s.app);
+      await stopApp(app);
+      printOriginAfter(installed!);
       writeFileSync(COLD_STATE, js({ boot, runs } satisfies ColdState));
       const v = report("SC-003 cold", runs.map((x) => x.ms), BUDGET.counts, COLD_RUNS);
       if (v === "unverified") console.log(`OBSERVATION ${TASK}: SC-003 cold has ${runs.length} of ${COLD_RUNS} runs; it stays unverified until the series is complete`);
@@ -474,23 +408,6 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
 
   type Sync = { h: GitHost; http: HttpRemote; repo: string; url: string; s: Session };
 
-  // A failure of the body stays the reported failure. A cleanup failure is reported only when the body passed.
-  async function guarded(body: () => Promise<void>, cleanup: () => Promise<unknown[]>): Promise<void> {
-    let failed = false;
-    try {
-      await body();
-    } catch (error) {
-      failed = true;
-      throw error;
-    } finally {
-      const errors = await cleanup();
-      if (errors.length > 0) {
-        if (failed) console.log(`CLEANUP ${TASK}: ${errors.map(String).join("; ")}`);
-        else throw new AggregateError(errors, "the cleanup failed");
-      }
-    }
-  }
-
   // A clone whose `origin` is the T004 HTTP remote. `main` tracks `origin/main` and has one local commit, so a push has work.
   async function withSync(label: string, body: (x: Sync) => Promise<void>): Promise<void> {
     const h = nativeHost(GIT!, `t077-${label}`);
@@ -500,6 +417,7 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
     const http = startHttpRemote({ git: fixtureGitPath(GIT!), projectRoot: served, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
     console.log(`SERVERS ${TASK} ${label}: http port=${http.port}`);
     await guarded(
+      TASK,
       async () => {
         const url = `${http.url}/cred.git`;
         const repo = `${h.root}/repo`;
@@ -556,7 +474,7 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
   const OP_LIST: Op[] = ["fetch", "pull", "push", "clone"];
 
   for (const op of OP_LIST) {
-    test.skipIf(reason !== null)(
+    test.skipIf(aloneReason !== null)(
       `SC-004 Cancel, ${op}: with the T004 pause switch on, ${CANCEL_RUNS} runs each reach a reconciled or unknown state within 5 s of the Cancel invoke`,
       async () => {
         await withSync(`cancel-${op}`, async (x) => {
@@ -591,7 +509,7 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
   }
 
   for (const op of OP_LIST) {
-    test.skipIf(reason !== null)(
+    test.skipIf(aloneReason !== null)(
       `SC-004 limit and stall, ${op}: with the T004 pause switch on, the stall notice shows within 20 s of the last request, and the inactivity end reaches a reconciled or unknown state within 5 s of the limit`,
       async () => {
         await withSync(`limit-${op}`, async (x) => {

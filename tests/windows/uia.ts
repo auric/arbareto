@@ -645,6 +645,38 @@ export function readText(element: Element): string {
   }
 }
 
+// The cap of `descendantNames`. Feature 003 contract REF_LISTING_RECORDS caps the refs at 10,000, and a virtual tree mounts fewer rows.
+export const MAX_DESCENDANT_NAMES = 10_000;
+
+// The Names of the descendants of `element` with control type `controlType`, in tree order.
+// It makes one FindAll call, so the transaction timeout bounds it like `readText`. More than `limit` matches refuse the read.
+export function descendantNames(element: Element, controlType: number, limit = MAX_DESCENDANT_NAMES): string[] {
+  if (!Object.values(ControlType).includes(controlType as never)) throw new UiaError("BAD_ARGUMENT", `controlType ${controlType}`);
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_DESCENDANT_NAMES) throw new UiaError("BAD_ARGUMENT", `limit ${limit} is outside 1..${MAX_DESCENDANT_NAMES}`);
+  const self = element.self;
+  const condition = propertyCondition(UIA_ControlTypePropertyId, controlType);
+  let found: Pointer | null = null;
+  try {
+    found = outCall(self, "FindAll", [i32, P], [TreeScope_Descendants, condition]);
+    if (found === null) return [];
+    const n = length(found);
+    if (n > limit) throw new UiaError("BAD_ARGUMENT", `${n} descendants of control type ${controlType} exceed the limit ${limit}`);
+    const names: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const item = new Element(outCall(found, "GetElement", [i32], [i])!);
+      try {
+        names.push(item.name);
+      } finally {
+        item.release();
+      }
+    }
+    return names;
+  } finally {
+    release(found);
+    release(condition);
+  }
+}
+
 // The process of the top-level window above `self` in the raw view. WebView2 content belongs to the msedgewebview2.exe browser process, and its top-level window to the app.
 function topLevelProcessId(self: Pointer): number | null {
   const walker = outCall(uia(), "get_RawViewWalker", [], [])!;

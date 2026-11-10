@@ -11,7 +11,7 @@ import { withProbe } from "./probe-window";
 import { fixtureDir, fixtureGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { appEnv, COMMIT_VIEW, findInstalledApp, HISTORY_VIEW, PROBE_TIMEOUT_MS, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { autoSetFocus, close, collapse, ControlType, expand, find, findLiveRegions, focus, foregroundSkip, inputDesktopSkip, invoke, isEnabled, isSelected, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, select, setValue, UiaError, waitFocus, type Element } from "./uia";
+import { autoSetFocus, close, collapse, ControlType, descendantNames, expand, find, findLiveRegions, findWindow, focus, foregroundSkip, inputDesktopSkip, invoke, isEnabled, isSelected, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, select, setValue, UiaError, waitFocus, type Element } from "./uia";
 
 const UIA = printOrigin("./uia.ts", import.meta.dir);
 const TEST_TIMEOUT_MS = 60_000;
@@ -149,6 +149,21 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
           console.log(`INVOKE_MS ${elapsed.toFixed(1)}`);
           expect(elapsed).toBeLessThan(INVOKE_MS);
         });
+      }),
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "lists the Names of the descendants of one control type, and refuses a bad control type or limit",
+    () =>
+      withProbe(FIXTURE, async ({ pid }) => {
+        await using(await findWindow(pid, "UIA probe", MAX_WAIT_MS), (window) => {
+          expect(descendantNames(window, ControlType.Edit)).toEqual(["Probe field"]);
+          expect(() => descendantNames(window, 1)).toThrow("controlType 1");
+          expect(() => descendantNames(window, ControlType.Edit, 0)).toThrow("limit 0");
+        });
+        // The group holds two TextBlocks and no Edit.
+        await using(await find(pid, "Probe group", MAX_WAIT_MS), (group) => expect(descendantNames(group, ControlType.Edit)).toEqual([]));
       }),
     TEST_TIMEOUT_MS,
   );

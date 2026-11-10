@@ -203,6 +203,11 @@ export class SearchMerge {
     return cells;
   }
 
+  /** Contract Δ3 `reducedParents` of settled match q, in rising match order (data-model §7). */
+  reducedParents(q: number): { oid: string; skip: boolean }[] {
+    return this.edgesOf(q).map(([to, direct]) => ({ oid: this.topology.oid(this.matchRows[to]!), skip: !direct }));
+  }
+
   // Spec FR-034: the node-to-bottom segment of an edge that skips commits carries `skip`. A match with Git parents gets no root mark.
   private filterCell(q: number, cell: Cell): Cell {
     const direct = this.edgesOf(q).map(([, d]) => d);

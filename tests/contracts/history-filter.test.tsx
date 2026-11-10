@@ -131,11 +131,28 @@ describe("spec FR-032 to FR-035: filter mode", () => {
     expect(view.getState().search).toMatchObject({ state: "finished", matches: 10, mode: "filter" });
     const names = commitNames(host);
     expect(names.map((n) => /Commit (\d+)/.exec(n)![1])).toEqual(["0", "10", "20", "30", "40", "50", "60", "70", "80", "90"]);
-    expect(names.every((n) => n.includes("Skips commits that do not match"))).toBe(true);
+    // Data-model §7: match 90 has no matching ancestor in the linear history of the fake.
+    expect(names.slice(0, -1).every((n) => n.includes("Skips commits that do not match"))).toBe(true);
+    expect(names.at(-1)).toContain("No earlier matching commit");
     const dashed = host.querySelector('[role="option"][data-item="2"] .skip-edge')!;
     expect(dashed.getAttribute("stroke-dasharray")).not.toBeNull();
     expect(text(host)).toContain('Only commits whose message contains "Commit" show.');
     expect(text(host)).toContain("10 matches, search complete");
+  });
+
+  test("a limited filter row states its reduced parents, the skip, and No earlier matching commit from reducedParents (plan.md D4, FR-016)", async () => {
+    const limited = { node: 0, color: 0, merge: false, limited: true, segments: [], marks: [] };
+    const { input, host } = await mount({ total: 100, loaded: 100, matches: (i) => i % 10 === 0, cell: () => limited });
+    await type(input, "Commit");
+    await key(input, "Enter");
+    const names = commitNames(host);
+    expect(names.length).toBe(10);
+    expect(names[0]).toContain(`1 matching ancestor, ${oid(10).slice(0, 12)}`);
+    expect(names[0]).toContain("Skips commits that do not match");
+    expect(names[0]).not.toContain("No earlier matching commit");
+    expect(names.at(-1)).toContain("No earlier matching commit");
+    expect(names.at(-1)).not.toContain("matching ancestor");
+    expect(text(host)).toContain("No earlier matching commit");
   });
 
   test("no match states that no commit message contains the text", async () => {

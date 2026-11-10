@@ -219,12 +219,9 @@ function checkoutText(head: Head): string {
   return head.state === "branch" ? `HEAD, branch ${branchName(head.target)}` : head.state === "detached" ? "HEAD, detached" : "HEAD";
 }
 
-/**
- * A filter-mode match without a node-to-bottom edge has no matching ancestor (plan.md D4): `layoutStep` draws one line per parent lane.
- * Roots and shallow boundaries say so themselves. A limited row draws no edge (data-model §4), so its cell cannot tell (contract gap).
- */
-const noEarlier = (cell: NonNullable<ViewRow["cell"]>) => !cell.limited && cell.marks.length === 0 && !cell.segments.some((s) => s.shape === "line" && s.from.at === "node");
-const skips = (cell: NonNullable<ViewRow["cell"]>) => cell.segments.some((s) => s.shape === "line" && s.skip === true);
+/** A filter row with Git parents and no reduced parent has no matching ancestor (plan.md D4). Roots and shallow boundaries say so themselves. */
+const noEarlier = (row: ViewRow) => row.reducedParents?.length === 0 && row.parents.length > 0;
+const skips = (row: ViewRow) => row.reducedParents?.some((p) => p.skip) === true;
 
 /** One part per label kind, as in "Branches: main, topic". The row name and the label tooltip share them. */
 function labelParts(labels: ViewRow["labels"], tracking?: Tracking): string[] {
@@ -246,12 +243,14 @@ export function viewRowName(row: ViewRow, head: Head, filter: boolean, dateForma
   else if (row.subject !== undefined) parts.push(row.subject, shortId(row.oid), row.author!.name, dateFormat.format(row.date! * 1000));
   else parts.push(shortId(row.oid));
   if (row.parents.length > 0) parts.push(plural(row.parents.length, "parent", "parents"), ...row.parents.map(shortId));
+  const reduced = filter ? row.reducedParents : undefined;
+  if (reduced !== undefined && reduced.length > 0) parts.push(plural(reduced.length, "matching ancestor", "matching ancestors"), ...reduced.map((p) => shortId(p.oid)));
   const cell = row.cell;
   if (cell !== null) {
     for (const mark of cell.marks) parts.push(BOUNDARY_TEXT[mark]);
     if (cell.limited) parts.push(LIMIT_TEXT.lanes);
-    if (filter && skips(cell)) parts.push(SKIP_TEXT);
-    if (filter && noEarlier(cell)) parts.push(NO_EARLIER);
+    if (filter && skips(row)) parts.push(SKIP_TEXT);
+    if (filter && noEarlier(row)) parts.push(NO_EARLIER);
   }
   if (row.encoding != null) parts.push(`Declared encoding: ${row.encoding}`);
   if (row.invalidUtf8) parts.push(INVALID_UTF8_TEXT);
@@ -566,7 +565,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
               {LIMIT_TEXT.lanes}
             </span>
           ) : null}
-          {filter && cell !== null && noEarlier(cell) ? <span className="shrink-0 text-muted-text">{NO_EARLIER}</span> : null}
+          {filter && noEarlier(row) ? <span className="shrink-0 text-muted-text">{NO_EARLIER}</span> : null}
           {cell?.marks.map((m) => (
             <span key={m} className="shrink-0 text-muted-text">
               {BOUNDARY_TEXT[m]}

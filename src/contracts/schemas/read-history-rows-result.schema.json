@@ -188,6 +188,27 @@
                   }
                 ]
               },
+              "reducedParents": {
+                "maxItems": 4000000,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    "skip": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "oid",
+                    "skip"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "labels": {
                 "maxItems": 10000,
                 "type": "array",

@@ -1128,6 +1128,8 @@ export const HistoryViewRow = z
     parents: z.array(ObjectId).max(HISTORY_PARENTS_PER_COMMIT),
     // Null in filter mode for a row that is not settled yet.
     cell: GraphCell.nullable(),
+    // Data-model §7: in filter mode, present when `cell` is not null. A limited cell draws no edge, so the row text reads these facts here.
+    reducedParents: z.array(z.strictObject({ oid: ObjectId, skip: z.boolean() })).max(HISTORY_VIEW_COMMITS).optional(),
     labels: z.array(z.strictObject({ kind: z.enum(["branch", "remote", "tag", "stash"]), name: z.string(), invalidUtf8: z.boolean() })).max(REF_LISTING_RECORDS),
     checkout: z.boolean(),
     // Present when the request has `searchId`. Null while the match state of the row is not known.
@@ -1153,7 +1155,8 @@ export const HistoryViewRow = z
       (allOf(r, ROW_TEXT) || noneOf(r, ROW_TEXT)) &&
       (allOf(r, ROW_DETAILS) || noneOf(r, ROW_DETAILS)) &&
       (noneOf(r, ROW_DETAILS) || allOf(r, ROW_TEXT)) &&
-      (r.textLimit === undefined || (noneOf(r, ROW_TEXT) && noneOf(r, ROW_DETAILS))),
+      (r.textLimit === undefined || (noneOf(r, ROW_TEXT) && noneOf(r, ROW_DETAILS))) &&
+      (r.reducedParents === undefined || r.cell !== null),
   )
   .meta({ title: "HistoryViewRow" });
 

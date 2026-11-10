@@ -116,8 +116,14 @@ export function fetchUrlArgs(remote: string): string[] {
 }
 
 // Feature 011 plan.md D8: the gone check of a stale lease. git-ls-remote(1) `--exit-code` exits 2 when no ref matches.
+// Plan.md D5: `remote` is a remote name or the bound push URL.
 export function lsRemoteArgs(remote: string, dst: string): string[] {
   return [L, "ls-remote", "--exit-code", "--", item(remote), ref(dst)];
+}
+
+// Plan.md D5: git-ls-remote(1) `--get-url` prints the URL after the `insteadOf` rules and does not contact the remote.
+export function lsRemoteUrlArgs(url: string): string[] {
+  return read("ls-remote", "--get-url", "--", item(url));
 }
 
 // Feature 011 plan.md D8: the removal of a stale tracking ref binds the reviewed object ID (git-update-ref(1) `-d`).

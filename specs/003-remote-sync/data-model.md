@@ -34,6 +34,7 @@ Label rule (renderer):
 | `binding.upstream` | `{ref, objectId}` for `pull` and `integrate`. |
 | `binding.destination` | §3 result for `push` and `force-push`. |
 | `binding.lease` | `{trackingRef, expect, count, commits[≤100]}` for `force-push`. Each commit is `{objectId, subject}`. A commit object above `HISTORY_COMMIT_OBJECT_BYTES` gives `subject` null. |
+| `binding.sameUrl`, `binding.urlReread` | For `force-push`: the target of the lease re-read. `sameUrl` names the remote, `urlReread` names the push URL, and both false give no re-read (contract Δ3 "Lease re-read", plan.md D5). |
 | `binding.index` | Index fingerprint and unmerged count for `continue`: the SHA-256 of `ls-files --stage -z` and the number of paths with a stage above 0 (contract Δ3 read 7). |
 | `binding.mode` | For `pull` and `integrate`: the payload mode or null. |
 | `binding.modeConfig` | For `pull` and `integrate`: the last value of each of `pull.ff`, `pull.rebase`, `branch.<branch>.rebase`, and `merge.ff`. A key without an entry is absent, and a key without `=` has null. A changed value gives `STALE_REVIEW` (contract Δ3). |

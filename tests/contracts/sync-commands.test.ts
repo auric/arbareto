@@ -205,6 +205,12 @@ describe("remote branch delete arrays (feature 011)", () => {
     for (const [, build] of reads) for (const item of build()) expect(network).not.toContain(item);
   });
 
+  // 003 plan.md D5: git-ls-remote(1) `--get-url` exits without a remote contact, so it is not in `reads` above.
+  test("ls-remote --get-url of the push URL", () => {
+    expect(sync.lsRemoteUrlArgs("file:///r.git")).toEqual([...R, "ls-remote", "--get-url", "--", "file:///r.git"]);
+    expect(() => sync.lsRemoteUrlArgs("")).toThrow(TypeError);
+  });
+
   // Research.md R2 P2 and P11: without the lease Git deletes a moved or an absent remote branch.
   test("a delete without a lease throws", () => {
     expect(() => sync.pushArgs("origin", null, DST, null, "sha1")).toThrow(TypeError);

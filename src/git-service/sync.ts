@@ -240,7 +240,7 @@ export function createSyncer(o: SyncerOptions) {
       const built = buildRemedyCommand(template, {
         git: { kind: "gitPath", text: git, form: "windows" },
         root: { kind: "worktreeRoot", text: w.worktreeRoot, form: "windows" },
-        ...Object.fromEntries(Object.entries(values).map(([name, text]) => [name, { kind: name === "remote" ? ("remoteName" as const) : ("branchName" as const), text }])),
+        ...Object.fromEntries(Object.entries(values).map(([name, text]) => [name, { kind: name === "remote" ? ("remoteName" as const) : name === "url" ? ("url" as const) : ("branchName" as const), text }])),
       });
       return { text: STEP_REMEDY_TEXT, command: built.command };
     };
@@ -304,13 +304,16 @@ export function createSyncer(o: SyncerOptions) {
     // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No listing decides before the process-end fact.
     const processEnded = async (ends: readonly { exit: GitExit | null }[]) => w.wsl === undefined || ends.every((e) => e.exit !== null && e.exit.exitCode !== null) || (await processEnd(q)) === "fact";
 
-    // Contract Δ3 "Lease re-read" and feature 011 plan.md D8: one `ls-remote --exit-code` of `<dst>`, which reads the fetch URL.
+    // Contract Δ3 "Lease re-read" and feature 011 plan.md D8: one `ls-remote --exit-code` of `<dst>`. A remote name reads the fetch URL.
+    // Plan.md D5: `url` names the bound push URL instead of the remote name.
     // `remote` null: no exit status, a deadline, a limit, another exit, or a malformed listing. `objectId` null: no exact `<dst>` line.
-    const leaseReread = async (d: { remote: string; ref: string }, userInfo: boolean): Promise<{ end: StepEnd; remote: { objectId: string | null } | null }> => {
+    const leaseReread = async (d: { remote: string; ref: string; url: string }, userInfo: boolean, url = false): Promise<{ end: StepEnd; remote: { objectId: string | null } | null }> => {
       const listed = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
       // Contract Δ3 "Remedies": the remedy runs the step itself.
-      const lsRemedy = remedyOf("& {git} --no-lazy-fetch -C {root} ls-remote --exit-code -- {remote} {dst}", { remote: d.remote, dst: d.ref }, userInfo);
-      const end = await networkStep(lsRemoteArgs(d.remote, d.ref), "sync-push", {}, lsRemedy, listed);
+      const lsRemedy = url
+        ? remedyOf("& {git} --no-lazy-fetch -C {root} ls-remote --exit-code -- {url} {dst}", { url: d.url, dst: d.ref }, userInfo)
+        : remedyOf("& {git} --no-lazy-fetch -C {root} ls-remote --exit-code -- {remote} {dst}", { remote: d.remote, dst: d.ref }, userInfo);
+      const end = await networkStep(lsRemoteArgs(url ? d.url : d.remote, d.ref), "sync-push", {}, lsRemedy, listed);
       const x = end.exit;
       if (x === null || x.exitCode === null || x.deadline !== undefined || x.diagnosticLimit || listed.limited) return { end, remote: null };
       // git-ls-remote(1) `--exit-code`: exit 2 when no ref matches. A pattern matches a ref tail, so only an exact `<dst>` line counts (research.md R2 P15).
@@ -467,11 +470,12 @@ export function createSyncer(o: SyncerOptions) {
       const succeeded = exited && SUCCESS.includes(status);
 
       // Contract Δ9: a `[rejected]` line gives no typed cause, and a remote helper can ignore the lease. Only a remote value other than the
-      // lease value proves a stale lease. The read runs only when the fetch URL names the push URL byte for byte (`sameUrl`).
+      // lease value proves a stale lease. The read names the remote when the fetch URL names the push URL byte for byte (`sameUrl`).
+      // Plan.md D5: otherwise it names the push URL, only when `urlReread` holds.
       let stale = false;
       const reread: { exit: GitExit | null }[] = [];
-      if (exited && status === "rejected" && lease !== null && b.sameUrl === true && !signal.aborted) {
-        const check = await leaseReread(d, userInfo);
+      if (exited && status === "rejected" && lease !== null && (b.sameUrl === true || b.urlReread === true) && !signal.aborted) {
+        const check = await leaseReread(d, userInfo, b.sameUrl !== true);
         reread.push(check.end);
         stale = check.remote !== null && check.remote.objectId !== lease;
       }

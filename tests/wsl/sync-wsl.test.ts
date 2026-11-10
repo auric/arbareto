@@ -3,23 +3,24 @@
 
 // T006: the T005 Git facts (a) to (m) inside the WSL distro (plan.md P0.2). The fixtures live in the owned distro folder and use the distro Git, never `/mnt`.
 // Each fact prints `OBSERVATION T006` lines. A `match=false` line is a finding for research.md, not a failure.
-// T075: fetch, pull in each mode, push, force push with lease, and Mark resolved through the distro Git (spec SC-001, SC-014; plan.md D13). `Local: WSL`, alone.
+// T075: fetch, pull in each mode, push, force push with lease, Mark resolved, and clone through the distro Git (spec FR-010, FR-032, SC-001, SC-009, SC-014; plan.md D13). `Local: WSL`, alone.
 // Run it only in `Ubuntu-26.04`. Never set `ARBARETO_WSL_ORDER_DISTROS`. Never run `wsl --shutdown`, `--terminate`, or `--unregister`.
 // The bare remotes lie in the owned distro folder, and their URLs are Linux paths. The oracle is the distro Git's own step on a `cp -a` copy.
 // Control: give the oracle push of the push case the `second` remote. The remote ref comparison must fail.
 
 import { expect } from "bun:test";
+import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { compare, outcome, readOk, SUCCEEDED } from "../git/hunk-harness";
 import { FACTS, gitVersion, observationLine } from "../git/remote-facts";
 import { buildFetchFlags, buildMergeConflict, buildPull, buildPush, configDigests, fc, gitRun, importStream, leftRight, MARKER_TEXT, pullRowCopy, PULL_ROWS, refMap, revParse, stageEntries, type GitHost, type PushFixture } from "../git/remote-fixtures";
 import type { RegistrationResult, Service } from "../git/service-harness";
-import { ANY_EXIT, copyWithRemotes, INTEGRATE_ENV, pullFlags, refreshIndex, remoteCalls, repoShape, sendSync, type Reviewed, type SyncResult } from "../git/sync-harness";
-import { distroGitHost } from "./fixtures";
-import { hostOf, open, request, RESPONSE_MS, useWorkbenchWsl, W, withWsl } from "./workbench-wsl-harness";
-import { WSL_MINIMUM_GIT, wslTest, type WslHost } from "./wsl-host";
+import { ANY_EXIT, copyWithRemotes, hostFor, INTEGRATE_ENV, pullFlags, refreshIndex, remoteCalls, repoShape, sendSync, until, type Reviewed, type SyncResult } from "../git/sync-harness";
+import { distroGitHost, sh } from "./fixtures";
+import { AFTER_CLOSE_MS, hostOf, open, request, RESPONSE_MS, useWorkbenchWsl, W, withWsl } from "./workbench-wsl-harness";
+import { inDistro, listScopes, pgrep, uncPath, WSL_MINIMUM_GIT, wslExec, wslTest, type WslHost } from "./wsl-host";
 
-for (const module of ["sync", "sync-review", "sync-integrate"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+for (const module of ["sync", "sync-review", "sync-integrate", "clone"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 printOrigin("./sync-wsl.test.ts", import.meta.dir);
 useWorkbenchWsl();
 
@@ -66,7 +67,9 @@ const copyOf = (g: GitHost, from: string, tag: string): string => {
   g.copy(from, to);
   return refreshIndex(g, to);
 };
-// The push fixture builds once per file, because its paths under the host root are fixed.
+// The push and fetch fixtures build once per file, because their paths under the host root are fixed.
+let flagsFixture: { origin: string; clone: string } | undefined;
+const flags = (g: GitHost) => (flagsFixture ??= buildFetchFlags(g));
 let pushFixture: PushFixture | undefined;
 function pushCopy(g: GitHost, tag: string): { repo: string; remotes: Record<string, string> } {
   pushFixture ??= buildPush(g);
@@ -100,8 +103,7 @@ function worktreeModes(g: GitHost, repo: string): Record<string, string> {
 
 W("T075 SC-001: a fetch equals the distro Git's own fetch on a copy, lists the same porcelain flags, and keeps the configuration bytes", async (w) => {
   const g = hostOf(w);
-  const f = buildFetchFlags(g);
-  const app = copyOf(g, f.clone, "fetch");
+  const app = copyOf(g, flags(g).clone, "fetch");
   // Without the moved tag, Git's own fetch exits 0.
   gitRun(g, app, ["tag", "-d", "t1"]);
   const oracle = copyOf(g, app, "fetch-oracle");
@@ -220,5 +222,124 @@ W("T075 SC-014: Mark resolved of each accepted unmerged kind gives the index of 
       expect({ path, kind, entries: stageEntries(g, repo, [path]).map((e) => ({ mode: e.mode, stage: e.stage })) }).toEqual({ path, kind, entries: [{ mode: mW!, stage: 0 }] });
       expect({ path, kind, files: g.digests(repo) }).toEqual({ path, kind, files });
     }
+  });
+});
+
+// The hook keeps its PID through `exec`, so the PID file names the sleeping process.
+const HOOK_START_MS = 120_000;
+const sleepingHook = (pidFile: string) => `#!/bin/sh\necho $$ > '${pidFile}'\nexec /usr/bin/sleep 600\n`;
+async function hookPid(g: GitHost, pidFile: string): Promise<string> {
+  await until(() => /^\d+\n$/.test(g.read(pidFile)?.toString("utf8") ?? ""), "hook start", HOOK_START_MS);
+  return g.read(pidFile)!.toString("utf8").trim();
+}
+// proc(5): `/proc/<pid>` exists while the process exists. test(1) exits 1 for an absent path. A live hook gets SIGKILL, so no process outlives the case.
+function hookExit(w: WslHost, pid: string): number | null {
+  const exit = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", "/usr/bin/test", "-e", `/proc/${pid}`]).exitCode;
+  if (exit === 0) inDistro(w.distro, ["/usr/bin/kill", "-KILL", pid], { allowExit: [0, 1] });
+  return exit;
+}
+
+for (const ending of ["cancel", "close"] as const) {
+  W(`T075 SC-009: after ${ending === "cancel" ? "Cancel" : "a simulated close"} during a push with a slow pre-receive hook, no process of the operation and no arbareto-* scope remains in the distro, and no remote ref changes`, async (w) => {
+    const g = hostOf(w);
+    const a = pushCopy(g, `push-${ending}`);
+    const pidFile = `${g.root}/t075-push-${ending}-${++copies}.pid`;
+    g.write(`${a.remotes.origin!}/hooks/pre-receive`, sleepingHook(pidFile));
+    const remote = refMap(g, a.remotes.origin!);
+    await withWsl(w, `t075-push-${ending}`, async (s) => {
+      const r = await open(s, w, a.repo);
+      const rv = await reviewed(s, r, { action: "push" });
+      const requestId = sendSync(s, r, rv.syncReviewToken);
+      const operationId = await s.operationId(requestId);
+      const pid = await hookPid(g, pidFile);
+      if (ending === "cancel") {
+        await s.cancel(operationId);
+        expect(outcome(await s.response<SyncResult>(requestId, RESPONSE_MS))).toEqual({ state: "canceled", code: "CANCELED" });
+      } else s.runner.failService();
+      await Bun.sleep(AFTER_CLOSE_MS);
+      expect({ operation: pgrep(w, operationId), scopes: listScopes(w), hook: hookExit(w, pid) }).toEqual({ operation: [], scopes: [], hook: 1 });
+    });
+    expect(refMap(g, a.remotes.origin!)).toEqual(remote);
+  });
+}
+
+W("T075 FR-037: under plink with a missing plink.exe, a WSL fetch sends no pageant request, gives no PUTTY_UNAVAILABLE, and succeeds", async (w) => {
+  const g = hostOf(w);
+  const app = copyOf(g, flags(g).clone, "plink");
+  gitRun(g, app, ["tag", "-d", "t1"]);
+  await withWsl(w, "t075-plink", async (s) => {
+    const r = await open(s, w, app);
+    const rv = await reviewed(s, r, { action: "fetch" });
+    s.runner.inject.sshClient = { plink: missingPlink() };
+    const done = await runSync(s, r, rv.syncReviewToken);
+    s.runner.inject.sshClient = "git";
+    expect(outcome(done)).toEqual(SUCCEEDED);
+    expect(s.runner.frames.filter((f) => f.type === "pageant")).toEqual([]);
+  });
+});
+
+// Contract Δ3 `clone` step 4: the fixed items, the URL, and the destination in Git's form.
+const CLONE = (url: string, destination: string) => ["--no-lazy-fetch", "clone", "--progress", "--no-recurse-submodules", "--", url, destination];
+// A Windows path under the owned fixture root. No file exists there.
+const missingPlink = () => join(hostFor("t075-plink").root, "putty", "plink.exe");
+// SC-011: the refs, HEAD, the configuration values, the index entries, and the working files.
+const cloneState = (g: GitHost, repo: string) => ({
+  refs: refMap(g, repo),
+  head: gitRun(g, repo, ["symbolic-ref", "-q", "HEAD"], { allowExit: [0, 1] }).stdout.toString("utf8"),
+  config: gitRun(g, repo, ["config", "list", "--local"]).stdout.toString("utf8"),
+  index: stageEntries(g, repo),
+  files: g.digests(repo),
+});
+// The native step of the shell: it binds the clone and discovery contexts of the UNC path and forwards their IDs (contract Δ3).
+const sendClone = (s: Service, w: WslHost, destination: string, url: string) => s.send("clone", { url, ...s.runner.addClone(uncPath(w, destination), url) });
+
+W("T075 SC-011, SC-006: a clone into a missing and into an empty WSL folder runs the distro Git with the Linux path, equals the distro Git's own clone, keeps the owned global and system files, and registers the repository", async (w) => {
+  const g = hostOf(w);
+  const url = flags(g).origin;
+  const oracle = `${g.root}/t075-clone-oracle-${++copies}`;
+  gitRun(g, g.root, ["clone", "-q", "--no-recurse-submodules", "--", url, oracle]);
+  const expected = cloneState(g, oracle);
+  await withWsl(w, "t075-clone", async (s) => {
+    // Contract Δ3 `clone` step 3: a WSL Git gets no pageant request, so the missing plink.exe decides nothing.
+    s.runner.inject.sshClient = { plink: missingPlink() };
+    for (const kind of ["missing", "empty"] as const) {
+      const destination = `${g.root}/t075-clone-${kind}-${++copies}`;
+      if (kind === "empty") sh(w, 'mkdir -- "$1"', [destination]);
+      const before = [g.read(g.systemConfig), g.read(g.globalConfig)];
+      const requestId = sendClone(s, w, destination, url);
+      const operationId = await s.operationId(requestId);
+      const response = await s.response<{ repositoryId?: string }>(requestId, RESPONSE_MS);
+      expect({ kind, ...outcome(response) }).toEqual({ kind, ...SUCCEEDED });
+      expect(Object.keys(response.result!).sort()).toEqual(["generation", "repositoryId", "worktreeKey", "worktreeRoot"]);
+      await readOk(s, response.result!.repositoryId!);
+      expect({ kind, state: cloneState(g, destination) }).toEqual({ kind, state: expected });
+      expect([g.read(g.systemConfig), g.read(g.globalConfig)]).toEqual(before);
+      const step = s.runner.calls.filter((c) => c.operationId === operationId && c.contextKind === "clone");
+      expect(step.map((c) => ({ args: [...c.arguments], policy: c.environmentPolicy }))).toEqual([{ args: CLONE(url, destination), policy: "remote" }]);
+    }
+    expect(s.runner.frames.filter((f) => f.type === "pageant")).toEqual([]);
+    s.runner.inject.sshClient = "git";
+  });
+});
+
+W("T075 contract gap: Cancel during a WSL clone process gives CANCELED with the code only, without exists and empty, and no process of the operation stays in the distro", async (w) => {
+  // The fixture clone runs before the template exists, so its checkout runs no hook.
+  const url = flags(hostOf(w)).origin;
+  const template = `${w.folder}/home/t075-template`;
+  const g = hostOf(w, `[init]\n\ttemplateDir = ${template}\n`);
+  const pidFile = `${g.root}/t075-clone-cancel-${++copies}.pid`;
+  // git-clone(1) runs the post-checkout hook of the new repository inside the clone process.
+  g.write(`${template}/hooks/post-checkout`, sleepingHook(pidFile));
+  const destination = `${g.root}/t075-clone-canceled-${copies}`;
+  await withWsl(w, "t075-clone-cancel", async (s) => {
+    const requestId = sendClone(s, w, destination, url);
+    const operationId = await s.operationId(requestId);
+    const pid = await hookPid(g, pidFile);
+    await s.cancel(operationId);
+    const response = await s.response(requestId, RESPONSE_MS);
+    // Plan.md "Open items": without a registered workspace, no process-end fact exists, so the result holds no destination state.
+    expect({ ...outcome(response), result: response.result }).toEqual({ state: "canceled", code: "CANCELED", result: undefined });
+    await Bun.sleep(AFTER_CLOSE_MS);
+    expect({ operation: pgrep(w, operationId), scopes: listScopes(w), hook: hookExit(w, pid) }).toEqual({ operation: [], scopes: [], hook: 1 });
   });
 });

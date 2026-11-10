@@ -1169,10 +1169,15 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [referencesShown, setReferencesShown] = useState(false);
   // Feature 004 plan D20 "Place": the slot of the "Keys in the tree" panel, outside the constrained profile only.
   const [hintsSlot, setHintsSlot] = useState<HTMLElement | null>(null);
-  // Plan D20 "Keyboard": the switch to the constrained profile removes the content of the wide references section and the sidebar splitter while they can hold the focus.
-  const referencesFocusLost = useRef(false);
+  // Plan D20 "Keyboard": a switch across the constrained boundary removes content that can hold the focus. The value names the focus target.
+  const focusLost = useRef<"toggle" | "references" | "details" | "history" | null>(null);
+  // The profile of the last React commit. Only a change across the constrained boundary remounts the commit details content.
+  const renderedProfile = useRef(profile);
+  const commitDetailsBox = useRef<HTMLDivElement>(null);
   const wideReferences = useRef<HTMLDivElement>(null);
   const wideSplitter = useRef<HTMLDivElement>(null);
+  const dockSplitter = useRef<HTMLDivElement>(null);
+  const historySection = useRef<HTMLElement>(null);
   const referencesToggle = useRef<HTMLButtonElement>(null);
   // The opener of the submodule update. The Submodules group keeps the focused control.
   const reviewOpener = useRef<"notice" | "menu" | "group">("notice");
@@ -1461,15 +1466,25 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   });
   // Plan D20 "Keyboard": React keeps the section element and removes its content before it detaches a ref.
   // So this check reads the old DOM during render.
-  if (profile === "constrained" && (wideReferences.current?.contains(document.activeElement) || wideSplitter.current?.contains(document.activeElement))) referencesFocusLost.current = true;
-  // Plan D20 "Keyboard": in the constrained profile, focus moves to the Show references toggle.
+  const focused = document.activeElement;
+  if (profile === "constrained" && (wideReferences.current?.contains(focused) || wideSplitter.current?.contains(focused))) focusLost.current = "toggle";
+  else if (profile === "constrained" && dockSplitter.current?.contains(focused)) focusLost.current = "history";
+  else if (profile !== "constrained" && referencesSection.current?.contains(focused)) focusLost.current = "references";
+  else if ((profile === "constrained") !== (renderedProfile.current === "constrained") && commitDetailsBox.current?.contains(focused)) focusLost.current = "details";
+  // Plan D20 "Keyboard": focus moves to the Show references toggle, the references section box, the commit details box, or the History section.
   useLayoutEffect(() => {
-    if (!referencesFocusLost.current) return;
-    referencesFocusLost.current = false;
+    renderedProfile.current = profile;
+    const target = focusLost.current;
+    if (target === null) return;
+    focusLost.current = null;
     // The flag can outlive its render, so a live focus stays where it is.
     const active = document.activeElement;
     const lost = active === null || active === document.body || !active.isConnected;
-    if (profile === "constrained" && lost) referencesToggle.current?.focus();
+    if (!lost) return;
+    if (target === "details") commitDetailsBox.current?.focus();
+    else if (target === "history") historySection.current?.focus();
+    else if (target === "references") wideReferences.current?.focus();
+    else if (profile === "constrained") referencesToggle.current?.focus();
   });
   const onSectionFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -2094,7 +2109,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </div>
         )
       ) : panel === "details" && kept !== null && pushPanel === null ? (
-        <div data-section="commitDetails" tabIndex={-1} className="h-full min-h-0">
+        <div ref={commitDetailsBox} data-section="commitDetails" tabIndex={-1} className="h-full min-h-0">
           <ViewCommitDetails
             view={historyView}
             oid={kept}
@@ -2205,14 +2220,19 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           {/* A block wrapper of content height. The sidebar height then resolves to its content, not to the section height. */}
           <div>{sidebar}</div>
         </div>
-        <section aria-label="History" data-section="historyList" tabIndex={-1} className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
-          <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)} onBack={blameBack}>
-            <HistoryView {...pane} />
-          </HistoryListSlot>
-        </section>
-        <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={{ flex: "0 0 auto", minHeight: m.reducedPaneMin, maxHeight: docked ? dockedMax : undefined }}>
-          {dock}
-        </section>
+        {/* Plan D20 "Keyboard": each null holds the slot of a wide splitter. So React keeps the History and Dock sections across the switch. */}
+        {null}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <section ref={historySection} aria-label="History" data-section="historyList" tabIndex={-1} className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
+            <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)} onBack={blameBack}>
+              <HistoryView {...pane} />
+            </HistoryListSlot>
+          </section>
+          {null}
+          <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={{ flex: "0 0 auto", minHeight: m.reducedPaneMin, maxHeight: docked ? dockedMax : undefined }}>
+            {dock}
+          </section>
+        </div>
       </div>
     ) : (
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: `${sideWidth}px ${m.splitter}px minmax(0, 1fr)` }}>
@@ -2222,6 +2242,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         <Splitter ref={wideSplitter} label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
         <div className="flex min-h-0 flex-col">
           <section
+            ref={historySection}
             aria-label="History"
             data-section="historyList"
             tabIndex={-1}
@@ -2236,6 +2257,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </section>
           {/* The dock splitter sets the height of the dock content. A docked panel takes its own height, so the splitter hides. */}
           <Splitter
+            ref={dockSplitter}
             label="Resize dock"
             orientation="horizontal"
             value={dockHeight}

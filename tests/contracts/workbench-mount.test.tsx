@@ -1951,4 +1951,93 @@ describe("keys in the tree mount", () => {
       });
     });
   }
+
+  async function resizeTo(width: number, height: number) {
+    const happy = (window as unknown as SizedWindow).happyDOM;
+    await act(async () => {
+      happy.setInnerWidth(width);
+      happy.setInnerHeight(height);
+      window.dispatchEvent(new Event("resize"));
+    });
+    await settle();
+  }
+  const profileNow = () => document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile;
+  const commitDetails = () => document.querySelector<HTMLElement>('[data-section="commitDetails"]');
+  const WIDE = [1280, 800, "wide"] as const;
+  const CONSTRAINED = [960, 640, "constrained"] as const;
+
+  // tasks.md T170, plan D20 "Keyboard": the constrained tree keeps the slots of the wide tree, so React keeps the History section.
+  for (const [from, to] of [
+    [WIDE, CONSTRAINED],
+    [CONSTRAINED, WIDE],
+  ] as const) {
+    test(`T170: a switch from the ${from[2]} to the ${to[2]} profile keeps the focused History list node`, async () => {
+      await sized(from[0], from[1], async () => {
+        await listed();
+        expect(profileNow()).toBe(from[2]);
+        const list = document.querySelector<HTMLElement>('section[aria-label="History"] [role="listbox"]')!;
+        await act(async () => list.focus());
+        expect(document.activeElement === list).toBe(true);
+        await resizeTo(to[0], to[1]);
+        expect(profileNow()).toBe(to[2]);
+        // Booleans only: a failed DOM comparison would print the whole window.
+        expect(document.activeElement === document.body).toBe(false);
+        expect(list.isConnected).toBe(true);
+        expect(document.activeElement === list).toBe(true);
+      });
+    });
+  }
+
+  // tasks.md T171, plan D20 "Keyboard": the commit details content changes its form at the switch, so the focus goes to the commit details box.
+  for (const [from, to, name, target] of [
+    [WIDE, CONSTRAINED, "commit details splitter", () => commitDetails()!.querySelector<HTMLElement>('[role="separator"][aria-label="Resize commit details"]')!],
+    [CONSTRAINED, WIDE, "Commit tab", () => [...commitDetails()!.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent === "Commit")!],
+  ] as const) {
+    test(`T171: a switch from the ${from[2]} to the ${to[2]} profile while the ${name} has focus moves the focus to the commit details box`, async () => {
+      await sized(from[0], from[1], async () => {
+        const double = await listed();
+        await selectRow(HEAD);
+        await serveHistory(double);
+        const control = target();
+        await act(async () => control.focus());
+        expect(document.activeElement === control).toBe(true);
+        await resizeTo(to[0], to[1]);
+        expect(profileNow()).toBe(to[2]);
+        expect(control.isConnected).toBe(false);
+        expect(document.activeElement === document.body).toBe(false);
+        expect(document.activeElement === commitDetails()).toBe(true);
+      });
+    });
+  }
+
+  // tasks.md T173, plan D20 "Keyboard": the constrained profile has no dock splitter, so the focus goes to the History section.
+  test("T173: a switch to the constrained profile while the dock splitter has focus moves the focus to the History section", async () => {
+    await sized(WIDE[0], WIDE[1], async () => {
+      await listed();
+      const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize dock"]')!;
+      await act(async () => splitter.focus());
+      expect(document.activeElement === splitter).toBe(true);
+      await resizeTo(CONSTRAINED[0], CONSTRAINED[1]);
+      expect(profileNow()).toBe("constrained");
+      expect(splitter.isConnected).toBe(false);
+      expect(document.activeElement === document.body).toBe(false);
+      expect(document.activeElement === document.querySelector('section[aria-label="History"]')).toBe(true);
+    });
+  });
+
+  // tasks.md T172, plan D20 "Keyboard": the switch out of the constrained profile removes the toggle, so the focus goes to the references section box.
+  test("T172: a switch from the constrained to the wide profile while the Show references toggle has focus moves the focus to the references section box", async () => {
+    await sized(CONSTRAINED[0], CONSTRAINED[1], async () => {
+      await listed();
+      expect(profileNow()).toBe("constrained");
+      const toggle = document.querySelector<HTMLElement>('button[aria-label="Show references"]')!;
+      await act(async () => toggle.focus());
+      expect(document.activeElement === toggle).toBe(true);
+      await resizeTo(WIDE[0], WIDE[1]);
+      expect(profileNow()).toBe("wide");
+      expect(toggle.isConnected).toBe(false);
+      expect(document.activeElement === document.body).toBe(false);
+      expect(document.activeElement === document.querySelector('[data-section="references"]')).toBe(true);
+    });
+  });
 });

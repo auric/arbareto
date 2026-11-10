@@ -720,7 +720,7 @@ export const RegistrationResult = z.union([
   // `detail` holds the bounded `wsl.exe` text of `start-failed`. `command` holds the Git PPA remedy of an Ubuntu distro.
   z
     .strictObject({
-      reason: z.enum([...WSL_UNAVAILABLE_REASONS, "version", "windows-git", "no-fs-uuid", "wsl-path", "mixed-location"]).optional(),
+      reason: z.enum([...WSL_UNAVAILABLE_REASONS, "version", "windows-git", "not-elf", "no-fs-uuid", "wsl-path", "mixed-location"]).optional(),
       text: z.string(),
       detectedVersion: z.string().optional(),
       minimumVersion: z.string().optional(),

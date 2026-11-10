@@ -893,10 +893,10 @@ const PROBE_FACTS: [&str; 11] = [
 /// Contract §11 "Git per distro": the Git floor.
 const MINIMUM_GIT: [u64; 3] = [2, 55, 0];
 
-/// `<major>.<minor>.<patch>` and a suffix without white space, at least the floor, and no `.windows.` text.
+/// `<major>.<minor>.<patch>` and a suffix without white space, at least the floor.
 fn admitted_version(text: &str) -> Option<&str> {
     let token = text.strip_prefix("git version ")?;
-    if token.is_empty() || token.contains(char::is_whitespace) || token.contains(".windows.") {
+    if token.is_empty() || token.contains(char::is_whitespace) {
         return None;
     }
     let mut parts = token.splitn(3, '.');
@@ -957,11 +957,11 @@ pub fn bind_probe(distro: &str, guid: &str, output: &[u8], identity: bool) -> Op
     {
         return None;
     }
-    // Contract §11: a resolved path under `/mnt/` or a file that starts with `MZ` is a Windows program.
+    // Contract §11: only a file that starts with the ELF magic is a Linux program.
     let program = |name: &str| -> Option<String> {
         let path = *facts.get(&format!("path {name}"))?;
-        let native = path.starts_with('/') && !path.starts_with("/mnt/");
-        (native && facts.get(&format!("magic {name}")) == Some(&"-")).then(|| path.to_string())
+        (path.starts_with('/') && facts.get(&format!("magic {name}")) == Some(&"ELF"))
+            .then(|| path.to_string())
     };
     let [
         git,
@@ -5268,7 +5268,8 @@ mod tests {
             "sel=$1",
             "command -v",
             "readlink -f",
-            "head -c 2",
+            "head -c 4",
+            r"elf=$(printf '\177ELF')",
             "--version",
             "/usr/bin/stat",
             "/usr/bin/env",
@@ -5488,24 +5489,25 @@ mod tests {
     // ---- The Git probe parse (contract §11 "Git per distro") ----
 
     /// The reference distro output of the `src/contracts/wsl-process.json` probe on 2026-10-06, with Git 2.55.0.
+    /// T412: each program file starts with the ELF magic.
     fn probe_output(change: &[(&str, Option<&str>)]) -> String {
         let mut lines: Vec<(String, String)> = [
             ("path git", "/usr/bin/git"),
-            ("magic git", "-"),
+            ("magic git", "ELF"),
             ("path systemd-run", "/usr/bin/systemd-run"),
-            ("magic systemd-run", "-"),
+            ("magic systemd-run", "ELF"),
             ("path systemctl", "/usr/bin/systemctl"),
-            ("magic systemctl", "-"),
+            ("magic systemctl", "ELF"),
             ("path setsid", "/usr/bin/setsid"),
-            ("magic setsid", "-"),
+            ("magic setsid", "ELF"),
             ("path stat", "/usr/bin/stat"),
-            ("magic stat", "-"),
+            ("magic stat", "ELF"),
             ("path env", "/usr/bin/env"),
-            ("magic env", "-"),
+            ("magic env", "ELF"),
             ("path perl", "/usr/bin/perl"),
-            ("magic perl", "-"),
+            ("magic perl", "ELF"),
             ("path sha256sum", "/usr/bin/sha256sum"),
-            ("magic sha256sum", "-"),
+            ("magic sha256sum", "ELF"),
             ("pathenv", "/usr/local/bin:/usr/bin:/mnt/c/Windows/system32"),
             ("osid", "ubuntu"),
             ("version", "git version 2.55.0"),
@@ -5583,6 +5585,20 @@ mod tests {
         }
     }
 
+    // T412: the ELF magic decides. The path prefix and the version text do not.
+    #[test]
+    fn elf_programs_under_mnt_and_a_windows_version_text_with_the_elf_magic_bind() {
+        let found = bound(&[
+            ("path git", Some("/mnt/tools/bin/git")),
+            ("path stat", Some("/mnt/tools/bin/stat")),
+            ("path perl", Some("/mnt/tools/bin/perl")),
+            ("version", Some("git version 2.55.0.windows.3")),
+        ])
+        .expect("bound");
+        assert_eq!(found.installation.git, "/mnt/tools/bin/git");
+        assert_eq!(found.version, "2.55.0.windows.3");
+    }
+
     #[test]
     fn a_probe_that_fails_a_section_11_rule_binds_nothing() {
         let refused: &[&[(&str, Option<&str>)]] = &[
@@ -5593,12 +5609,15 @@ mod tests {
             &[("path systemctl", None)],
             &[("magic git", Some("MZ"))],
             &[("magic setsid", Some("MZ"))],
-            &[("path git", Some("/mnt/c/Git/cmd/git.exe"))],
+            // T412: a file without the ELF magic, such as a script, and an unknown magic.
+            &[("magic git", Some("-"))],
+            &[("magic systemctl", Some("-"))],
+            &[("magic git", Some("elf"))],
             &[("path systemd-run", Some("relative/systemd-run"))],
             &[("scope", Some("1"))],
             &[("scope", None)],
             &[("version", Some("git version 2.43.0"))],
-            &[("version", Some("git version 2.55.0.windows.1"))],
+            &[("version", Some("git version 2.54.0.windows.1"))],
             &[("version", Some("git version two"))],
             &[("gitfs", Some("1021994:9a8b7c6d5e4f3021"))],
             &[("gitfile", None)],
@@ -5621,18 +5640,18 @@ mod tests {
             // T325: `/usr/bin/sha256sum` (contract §11 "Git per distro").
             &[("path sha256sum", None)],
             &[("magic sha256sum", Some("MZ"))],
-            &[("path sha256sum", Some("/mnt/c/Tools/sha256sum.exe"))],
+            &[("magic sha256sum", Some("-"))],
             &[("absent", Some("sha256sum"))],
             // T225: `/usr/bin/stat` and `/usr/bin/env`. The service maps each to `no-coreutils` (contract §11 "Git per distro").
             &[("magic stat", Some("MZ"))],
-            &[("path stat", Some("/mnt/c/Tools/stat.exe"))],
+            &[("magic stat", Some("-"))],
             &[
                 ("path stat", None),
                 ("magic stat", None),
                 ("absent", Some("stat")),
             ],
             &[("magic env", Some("MZ"))],
-            &[("path env", Some("/mnt/c/Tools/env.exe"))],
+            &[("magic env", Some("-"))],
             &[
                 ("path env", None),
                 ("magic env", None),

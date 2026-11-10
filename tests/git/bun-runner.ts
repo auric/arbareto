@@ -74,7 +74,6 @@ import {
 } from "../../src/git-service/git-runner";
 import type { FILE_FACT_ERRORS } from "../../src/contracts/channel";
 import { printOrigin } from "../origin";
-import { isWindowsProgram } from "../../src/contracts/wsl-route";
 import {
   FACTS_TEXT,
   factsInput,
@@ -372,14 +371,14 @@ function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
   if (WSL_PROBED.some((name) => facts.has(`absent ${name}`) && (facts.has(`path ${name}`) || facts.has(`magic ${name}`)))) return null;
   const program = (name: string) => {
     const path = facts.get(`path ${name}`);
-    return path?.startsWith("/") && facts.get(`magic ${name}`) === "-" && !isWindowsProgram(path, false) ? path : undefined;
+    return path?.startsWith("/") && facts.get(`magic ${name}`) === "ELF" ? path : undefined;
   };
   const [git, systemdRun, systemctl, setsid, stat, env, perl, sha256sum] = WSL_PROBED.map(program);
-  // Contract §11 "Git per distro": the floor, and no `.windows.` version.
+  // Contract §11 "Git per distro": the floor.
   const version = /^git version ((\d+)\.(\d+)\.(\d+)\S*)$/.exec(facts.get("version") ?? "");
   const parts = version?.slice(2, 5).map(BigInt) ?? [];
   const differs = WSL_FLOOR.findIndex((min, i) => parts[i] !== min);
-  const floor = version !== null && !version[1]!.includes(".windows.") && (differs < 0 || parts[differs]! > WSL_FLOOR[differs]!);
+  const floor = version !== null && (differs < 0 || parts[differs]! > WSL_FLOOR[differs]!);
   const fileSystem = /^ef53:([0-9a-f]+)$/.exec(facts.get("gitfs") ?? "")?.[1];
   const gitfile = facts.get("gitfile") ?? "";
   const guid = registryKeys().find((k) => k.name === distro && k.version === 2)?.guid;
@@ -687,6 +686,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Bytes replace the process of a call and go to stderr in 64 KiB chunks. They count toward the operation stderr bound, which closes the Job (contract §5, §6).
     stderr: undefined as ((call: { operationId: string; arguments: readonly string[] }) => Uint8Array | undefined) | undefined,
     // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
+    // With an injected `stderr` of the same call, the stderr bytes go out first, and then the call ends with this code.
     // Null is the exit of a call that a Job close ended, without `deadline` (contract §6 `exit`).
     exit: undefined as ((call: { arguments: readonly string[] }) => number | null | undefined) | undefined,
     // A code refuses a call as the shell refuses it. No process starts (T377).
@@ -1586,9 +1586,9 @@ export function createBunRunner(options: BunRunnerOptions) {
       const refused = inject.refuse?.(call);
       if (refused !== undefined) throw new RunnerRefusal(refused, "injected");
       const exitCode = inject.exit?.({ arguments: call.arguments });
-      if (exitCode !== undefined) return { exitCode, activeDescendants: 0 };
-      const injected = inject.stdout?.({ operationId: call.operationId, arguments: call.arguments, input: call.input });
       const injectedErr = inject.stderr?.({ operationId: call.operationId, arguments: call.arguments });
+      if (exitCode !== undefined && injectedErr === undefined) return { exitCode, activeDescendants: 0 };
+      const injected = inject.stdout?.({ operationId: call.operationId, arguments: call.arguments, input: call.input });
       if (injected === undefined && injectedErr === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout, wrapped);
       leave = joinJob(call.operationId, halt);
       for (let at = 0; injectedErr !== undefined && at < injectedErr.length && !halted; at += NATIVE_CHUNK_BYTES) {
@@ -1609,7 +1609,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         await new Promise((resolve) => setImmediate(resolve));
       }
       // src/git-service/native-runner.ts: each exit after the operation stderr bound carries `diagnosticLimit`.
-      return { exitCode: halted ? null : 0, activeDescendants: 0, ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}) };
+      return { exitCode: halted ? null : (exitCode ?? 0), activeDescendants: 0, ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}) };
     } finally {
       leave();
       call.signal.removeEventListener("abort", halt);

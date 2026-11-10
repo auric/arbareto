@@ -8,7 +8,7 @@ import type { RegistrationResult } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { BOOTSTRAP_DEADLINE_CAP_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, WSL_DISTRO_START_MS } from "../contracts/limits";
 import { buildSubmoduleOutputTail } from "../contracts/submodules";
-import { buildWslRemedy, checkWslGit, isWindowsProgram, routeWslPath, WSL_MINIMUM_GIT_VERSION } from "../contracts/wsl-route";
+import { buildWslRemedy, checkWslGit, foreignGitReason, routeWslPath, type WslMagic, WSL_MINIMUM_GIT_VERSION } from "../contracts/wsl-route";
 import { createCollector, type GitRunner, type WslDistrosResult, type WslRunner } from "./git-runner";
 
 // The approved Linux Git of one distro in this service session (data-model §1).
@@ -47,6 +47,7 @@ const TEXT = {
   "no-coreutils": (name: string) => `Arbareto needs the stat, env, and sha256sum programs in /usr/bin of ${name}. Install the coreutils package in the distro, then open the folder again.`,
   "start-failed": (name: string) => `WSL could not start distro ${name}. Start it in a terminal, then open the folder again.`,
   "windows-git": (name: string) => `The git command in ${name} is Git for Windows. Install Linux Git 2.55.0 or later in the distro.`,
+  "not-elf": (name: string) => `The git command in ${name} is not a Linux program file. It can be a script that starts another Git. Install Linux Git 2.55.0 or later in the distro.`,
   "git-no-fs-uuid": (name: string) => `Arbareto cannot read a file-system UUID for Git in ${name}. Install Git on the distro's own disk.`,
   "git-missing": (name: string) => `Install Git 2.55.0 or later in ${name}.`,
   "wsl-path": () => "This path holds a name that Windows cannot show. Open another folder.",
@@ -89,7 +90,7 @@ const FACTS = ["pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs
 type Fact = (typeof FACTS)[number];
 
 export interface WslProbeFacts {
-  programs: Partial<Record<Probed, { path: string; mz: boolean }>>;
+  programs: Partial<Record<Probed, { path: string; magic: WslMagic }>>;
   facts: Partial<Record<Fact, string>>;
 }
 
@@ -141,8 +142,8 @@ export function parseWslProbe(bytes: Uint8Array): WslProbeFacts | null {
     const mark = magic.get(name);
     if (path === undefined && mark === undefined) continue;
     // A `path` line comes with its `magic` line, and the probe prints only absolute paths.
-    if (path === undefined || !path.startsWith("/") || (mark !== "MZ" && mark !== "-") || absent.has(name)) return null;
-    programs[name] = { path, mz: mark === "MZ" };
+    if (path === undefined || !path.startsWith("/") || (mark !== "ELF" && mark !== "MZ" && mark !== "-") || absent.has(name)) return null;
+    programs[name] = { path, magic: mark };
   }
   return { programs, facts };
 }
@@ -150,8 +151,8 @@ export function parseWslProbe(bytes: Uint8Array): WslProbeFacts | null {
 // Contract §11 "Git per distro": Ubuntu means `ID=ubuntu`. os-release(5): the value can also stand in double or single quotes.
 const isUbuntu = (osid: string | undefined) => osid === "ubuntu" || osid === '"ubuntu"' || osid === "'ubuntu'";
 
-// A Linux program that the §11 rule admits: present, and neither under `/mnt/` nor a file that starts with `MZ`.
-const native = (program: { path: string; mz: boolean } | undefined) => program !== undefined && !isWindowsProgram(program.path, program.mz);
+// A Linux program that the §11 rule admits: present, and a file that starts with the ELF magic.
+const native = (program: { magic: WslMagic } | undefined) => program?.magic === "ELF";
 
 // gaps.md W1 "Typed refusals": the rows of the context path. `src-tauri/src/wsl.rs` `classify` binds only a path that passes them.
 // linux/magic.h: `ef53` is EXT4_SUPER_MAGIC, and `1021997` is V9FS_MAGIC, the 9P share of a Windows drive.
@@ -175,15 +176,16 @@ export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutabl
   if (path !== null) return path;
   const git = programs.git;
   if (git === undefined) return { ok: false, code: "GIT_UNAVAILABLE", result: { text: TEXT["git-missing"](distro) } };
-  if (isWindowsProgram(git.path, git.mz)) return { ok: false, code: "GIT_UNSUPPORTED", result: { reason: "windows-git", text: TEXT["windows-git"](distro) } };
+  const foreign = foreignGitReason(git.magic);
+  if (foreign !== null) return { ok: false, code: "GIT_UNSUPPORTED", result: { reason: foreign, text: TEXT[foreign](distro) } };
   if (!native(programs["systemd-run"]) || !native(programs.systemctl) || facts.scope !== "0") return unavailable("no-user-manager", distro);
   // T378: `noexpand` is the `$?` of `systemd-run --expand-environment=no --version`, a decimal from 0 to 255. Only `verbatim 0` proves unchanged scope arguments.
   const status = facts.noexpand ?? "";
   if (!/^(?:0|[1-9][0-9]{0,2})$/.test(status) || Number(status) > 255 || facts.verbatim !== "0") return unavailable("scope-arguments", distro);
   if (!native(programs.setsid)) return unavailable("no-setsid", distro);
-  const checked = checkWslGit({ path: git.path, mz: git.mz, versionText: facts.version ?? "" });
+  const checked = checkWslGit({ magic: git.magic, versionText: facts.version ?? "" });
   if (!checked.ok) {
-    if (checked.reason === "windows-git") return { ok: false, code: "GIT_UNSUPPORTED", result: { reason: "windows-git", text: TEXT["windows-git"](distro) } };
+    if (checked.reason !== "version") return { ok: false, code: "GIT_UNSUPPORTED", result: { reason: checked.reason, text: TEXT[checked.reason](distro) } };
     const found = checked.detectedVersion === undefined ? "" : ` ${checked.detectedVersion}`;
     let text = `Git${found} in ${distro} is older than ${WSL_MINIMUM_GIT_VERSION}. Install Git ${WSL_MINIMUM_GIT_VERSION} or later in the distro.`;
     const remedy = isUbuntu(facts.osid) ? buildWslRemedy("git-ppa", { wslExecutable, distro }).command : null;

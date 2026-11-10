@@ -95,6 +95,7 @@
                 "start-failed",
                 "version",
                 "windows-git",
+                "not-elf",
                 "no-fs-uuid",
                 "wsl-path",
                 "mixed-location"

@@ -542,3 +542,24 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - Control 2, undone byte for byte: `package:preview:exes` gets the NSIS print back. The workflow test exit 1, 1 of 20 fail, with the `makensis.exe` part of `package:preview:exes`.
 - `package.json` SHA-256 before each mutation and after each restore: `A63E412C3391E0A238931107428BF95F56AB4239AFFAA7FC5B00CF32588FAB5B`.
 - Rerun pending.
+
+### T029 dry run 2 (2026-11-10, GitHub, build commit 5f31d07a)
+
+- Run: https://github.com/auric/arbareto/actions/runs/42771011191. The push fast-forwarded `release-dry-run` from 9a8707ce. Result: success.
+- Job `build` succeeded. Steps: checkout, "Install Bun", "Install Rust and the Tauri CLI", "Install packages", "Check the tag, version, and tree before the build", "Build the executables", "Build the installer", "Record the build tools", "Make the release files", "Check the tag, version, and tree after the build", upload-artifact. The five signing steps were skipped (signing off). Job `publish` was skipped.
+- Times (`gh run view --json jobs`, second resolution): job `build` 16 min 50 s. "Install Rust and the Tauri CLI" 8 min 52 s, with the `cargo install tauri-cli` build. "Install packages" 1 min 4 s. "Build the executables" 5 min 21 s. "Build the installer" 1 min 7 s. "Make the release files" 3 s.
+- `check.ts --mode dry-run --signing off` after the build: success. The `release-files` artifact passes `bun scripts/release/sums.ts verify`, exit 0.
+- Image `windows-2025-vs2026` 20261103.298.1, Windows Server 2025 Datacenter 10.0.26100, runner 2.338.2.
+- Tools: rustc 1.99.0 (b940084d7 2026-09-28), cargo 1.99.0 (5f94df478 2026-08-27), tauri-cli 2.12.0, bun 1.4.4, NSIS v3.11. MSVC toolset 14.51.36231 (Visual Studio 18 Enterprise). Windows SDK 10.0.26100.0.
+- Artifact files, size in bytes and SHA-256:
+  - `Arbareto_0.1.0_x64-setup.exe`: 46,600,550, `5c2ece4748edb0f37e98fa5c2bb6526ba41dbf88dec3b19fa6f0560e7196dfe6`.
+  - `arbareto-0.1.0-hunspell-source.tar.gz`: 2,211,093, `36f0e8eef304e99b837f95354b376cda5f1edbff29e398b2aa6f6ffcbf328dd9`.
+  - `arbareto-0.1.0-third-party-notices.txt`: 650,568, `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
+  - `SHA256SUMS.txt`: 304, `6acec9ff7c94756d36b63808a1c6a4053c8f0f9084062e0afecaa79e9347242e`.
+- Archive against the pins: unpacked with System32 `tar.exe -xzf`, compared with upstream bare clones in local scratch.
+  - hunspell `edb61910…`: 721 files in both, the same list. 720 files have equal SHA-256. `README` is a symlink (mode 120000) in Git and in the archive. Its target text `README.md` equals the Git blob.
+  - hunspell-wasm `8f755ef6…`: 51 files in both, the same list, all equal.
+  - The archive root also holds `SOURCE.txt`.
+- The artifact holds no release notes file, as designed. Only the `publish` job makes it (`release.yml:206-208` tag condition, `:258` notes.ts to `RUNNER_TEMP`, `:268` and `:275` gh release).
+- Against the local T026 rehearsal: the third-party notices are identical, and the tool versions are the same. The installer differs (local 46,599,710 bytes, `eded3c5f…`), because the build is not reproducible across machines. `SHA256SUMS.txt` differs because CI lists the archive.
+- Next: the orchestrator deletes the `release-dry-run` branch. T029 stays open until T028 passes.

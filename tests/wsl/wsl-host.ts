@@ -594,12 +594,16 @@ function fixtureFileSystem(): string | null {
 export function useWslFolder(): void {
   const host = wslHost();
   if (host === null || fixtureFileSystem() !== "ef53") return;
-  beforeAll(() => {
-    // A cleanup hook that timed out leaves its folder. The list names such folders and deletes nothing.
-    for (const name of inDistro(host.distro, ["/usr/bin/find", host.home, "-mindepth", "1", "-maxdepth", "1", "-type", "d", "-name", "arbareto-fixtures-*", "-printf", "%f\\n"]).split("\n").filter((n) => n !== "")) console.log(`WSL_STALE_FIXTURE ${name}`);
-    createOwnedFolder(host);
-    if (fileSystemType(host, host.folder) !== "ef53") throw new Error("the folder type changed");
-  });
+  // The first wsl.exe call can start the stopped WSL VM, so it gets START_TIMEOUT_MS. Two calls of CALL_TIMEOUT_MS follow.
+  beforeAll(
+    () => {
+      // A cleanup hook that timed out leaves its folder. The list names such folders and deletes nothing.
+      for (const name of inDistro(host.distro, ["/usr/bin/find", host.home, "-mindepth", "1", "-maxdepth", "1", "-type", "d", "-name", "arbareto-fixtures-*", "-printf", "%f\\n"], { timeoutMs: START_TIMEOUT_MS }).split("\n").filter((n) => n !== "")) console.log(`WSL_STALE_FIXTURE ${name}`);
+      createOwnedFolder(host);
+      if (fileSystemType(host, host.folder) !== "ef53") throw new Error("the folder type changed");
+    },
+    { timeout: START_TIMEOUT_MS + 2 * CALL_TIMEOUT_MS + 10_000 },
+  );
   // The removal makes two wsl.exe calls of up to CALL_TIMEOUT_MS each. The 5-second default hook timeout leaves the folder.
   afterAll(
     () => {

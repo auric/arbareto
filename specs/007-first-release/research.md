@@ -529,3 +529,16 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - Fact (2026-11-09, read-only `gh api` check): `repos/git/git/commits/refs/tags/v2.45.0` returns `786a3e4b8d754d2b14b1208b98eeb0a554ef19a8`. This is the commit of the annotated tag, equal to the `refs/tags/v2.45.0^{}` line of `git ls-remote`. `repos/git/git/commits/tags/v2.45.0` returns HTTP 422. So the publish step uses the `refs/tags/<tag>` form.
 - Fact (2026-11-09, GitHub docs "Events that trigger workflows", `push` table): `GITHUB_SHA` is the "Tip commit pushed to the ref." actions/checkout `src/ref-helper.ts` `testRef` compares `github.context.sha` with `rev-parse <ref>^{commit}`.
 - T032 gives the live check of the publish tag check.
+
+### T029 dry run 1 (2026-11-09, GitHub, build commit 9a8707ce)
+
+- Run: https://github.com/auric/arbareto/actions/runs/42683284963. Job `build` failed at "Build the executables". Steps 1 to 6 passed.
+- Cause: `build:frontend` ran `bunx --bun vite build`, and the step printed `bun: command not found: bunx`. "Install Bun" puts the folder of `bun-windows-x64.zip` on `PATH`. The zip holds only `bun.exe`.
+- Fix: `build:frontend` runs `bun x --bun vite build`. `bun x` is a `bun` subcommand, so it needs no second file. `bun x --bun vite --version` on the reference host prints `vite/8.3.5`.
+- Second defect, found in the same check: `package:preview:exes` ended with `"$LOCALAPPDATA/tauri/NSIS/makensis.exe" -VERSION`. tauri-cli 2.12.0 `build.rs:132` skips the bundler for `--no-bundle`. Only the bundler gets the NSIS toolset (tauri-bundler 2.10.0 `nsis/mod.rs:80-96`). A new runner has no `makensis.exe` at this step. Fix: `package:preview:exes` skips the NSIS print. `package:preview:bundle` and "Record the build tools" still print the NSIS version.
+- New case in `tests/contracts/release-workflow.test.ts`: every package script that a build step runs, through `bun run`, nested scripts, and the Tauri `beforeBuildCommand`, starts only `bun`, `cargo` or `rustc` after their install step, or `makensis.exe` after the bundler ran.
+- Reference host, the fixed tree: `bun run typecheck` exit 0. `bun test ./tests/contracts/release-workflow.test.ts ./tests/contracts/release-pins.test.ts` exit 0, 33 pass, 0 fail. `bun test ./tests/contracts` exit 0, 6868 pass, 37 skip, 0 fail. The `ORIGIN` lines name the checkout under test.
+- Control 1, undone byte for byte: `build:frontend` goes back to `bunx --bun vite build`. The workflow test exit 1, 1 of 20 fail, with `build:frontend: bunx --bun vite build`.
+- Control 2, undone byte for byte: `package:preview:exes` gets the NSIS print back. The workflow test exit 1, 1 of 20 fail, with the `makensis.exe` part of `package:preview:exes`.
+- `package.json` SHA-256 before each mutation and after each restore: `A63E412C3391E0A238931107428BF95F56AB4239AFFAA7FC5B00CF32588FAB5B`.
+- Rerun pending.

@@ -125,7 +125,7 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `cargo test --locked --manifest-path src-tauri/Cargo.toml`
 - Run the app for development: `bun run dev`
 - `bun run package` builds an unsigned current-user NSIS installer in `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`. It does not install it. Then it prints the `rustc`, `cargo`, `cargo tauri`, `bun`, and NSIS versions for the build record.
-- `bun run package:preview:exes`, then `bun run package:preview:bundle`, build the preview installer in the same folder. The first step needs a clean tree and refuses a `-dirty` build. Both steps print the same versions as `bun run package`.
+- `bun run package:preview:exes`, then `bun run package:preview:bundle`, build the preview installer in the same folder. The first step needs a clean tree and refuses a `-dirty` build. Both steps print the `rustc`, `cargo`, `cargo tauri`, and `bun` versions. The second step also prints the NSIS version.
 - `pwsh -File scripts/windows/measure-ram.ps1 [-RootPid <pid>]` prints the private working set, private bytes, and working set of each process in the running app's tree, with totals per group (Tauri, Bun, WebView2); the main number is the private working set (Task Manager "Memory").
 
 Cloud sessions: paste [.claude/cloud-setup.sh](.claude/cloud-setup.sh) into the cloud environment's setup script field. The cloud runs Bun and TypeScript work and the Linux portability check.

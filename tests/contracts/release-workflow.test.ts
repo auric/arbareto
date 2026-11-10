@@ -10,7 +10,11 @@ import { join } from "node:path";
 // The workflow is a YAML file, not a module, so this file prints its path as the ORIGIN line.
 
 const WORKFLOW = join(import.meta.dir, "..", "..", ".github", "workflows", "release.yml");
+const PACKAGE = join(import.meta.dir, "..", "..", "package.json");
+const TAURI_CONF = join(import.meta.dir, "..", "..", "src-tauri", "tauri.conf.json");
 console.log(`ORIGIN ${WORKFLOW}`);
+console.log(`ORIGIN ${PACKAGE}`);
+console.log(`ORIGIN ${TAURI_CONF}`);
 
 type Env = Record<string, unknown>;
 type Step = { name?: string; id?: string; uses?: string; run?: string; if?: string; env?: Env; with?: Record<string, unknown>; "continue-on-error"?: unknown };
@@ -143,6 +147,61 @@ describe("release workflow", () => {
       expect(install.length).toBe(1);
       expect((install[0]!.run ?? "").split("\n").map((line) => line.trim())).toContain(pin);
     }
+  });
+
+  // bun-windows-x64.zip holds only bun.exe, so Install Bun gives no bunx (T029 dry run 1). tauri-cli 2.12.0 build.rs:132 and 203: build runs
+  // beforeBuildCommand, and only a build without --no-bundle runs the bundler. Only the bundler gets makensis.exe (tauri-bundler 2.10.0 nsis/mod.rs:80-96).
+  test("every package script that a build step runs starts only a tool that an earlier step installs", async () => {
+    const scripts = ((await Bun.file(PACKAGE).json()) as { scripts: Record<string, string> }).scripts;
+    const hooks = ((await Bun.file(TAURI_CONF).json()) as { build?: { beforeBuildCommand?: string; beforeBundleCommand?: string } }).build ?? {};
+    for (const overlay of ["tauri.preview.conf.json", "tauri.windows.conf.json"]) {
+      expect(Object.hasOwn(await Bun.file(join(TAURI_CONF, "..", overlay)).json(), "build")).toBe(false);
+    }
+    const NSIS = '"$LOCALAPPDATA/tauri/NSIS/makensis.exe"';
+    const build = steps("build");
+    const bunAt = build.findIndex((s) => s.name === "Install Bun");
+    const rustAt = build.findIndex((s) => s.name === "Install Rust and the Tauri CLI");
+    expect(bunAt).toBeGreaterThanOrEqual(0);
+    expect(rustAt).toBeGreaterThan(bunAt);
+    const bad: string[] = [];
+    const seen: string[] = [];
+    let bundled = false;
+    const visit = (command: string, from: string, rust: boolean, depth: number) => {
+      if (depth > 8) return void bad.push(`${from}: depth`);
+      // shortcut: splits on " && " without a shell parser. Outside "…" strings, it refuses a part with ", ', `, | or ;. Use a parser when Bun exposes one.
+      for (const part of command.split(" && ")) {
+        const words = part.replace(/^(?:[A-Z_][A-Z0-9_]*=\S+ )+/, "").split(" ");
+        const [tool, sub, arg] = words;
+        if (/["'`|;]/.test(part.replace(/"[^"]*"/g, ""))) bad.push(`${from}: ${part}`);
+        else if (tool === "bun" && sub === "run") {
+          const script = scripts[arg ?? ""];
+          if (script === undefined) bad.push(`${from}: ${part}`);
+          else {
+            seen.push(arg!);
+            visit(script, arg!, rust, depth + 1);
+          }
+        } else if (tool === "bun") continue;
+        else if ((tool === "cargo" || tool === "rustc") && rust) {
+          if (tool !== "cargo" || sub !== "tauri" || (arg !== "build" && arg !== "bundle")) continue;
+          if (arg === "build" && hooks.beforeBuildCommand !== undefined) visit(hooks.beforeBuildCommand, "beforeBuildCommand", rust, depth + 1);
+          if (arg === "bundle" || !words.includes("--no-bundle")) {
+            if (hooks.beforeBundleCommand !== undefined) visit(hooks.beforeBundleCommand, "beforeBundleCommand", rust, depth + 1);
+            bundled = true;
+          }
+        } else if (!(tool === NSIS && bundled)) bad.push(`${from}: ${part}`);
+      }
+    };
+    build.forEach((step, index) => {
+      if (index <= bunAt) return;
+      for (const line of (step.run ?? "").split("\n")) {
+        const match = /^\s*(bun run \S+)\s*$/.exec(line);
+        if (match !== null) visit(match[1]!, step.name ?? `step ${index}`, index > rustAt, 0);
+        else if (/bun run|bunx/.test(line)) bad.push(`${step.name ?? `step ${index}`}: ${line.trim()}`);
+      }
+    });
+    expect(seen).toContain("build:frontend");
+    expect(seen).toContain("package:preview:bundle");
+    expect(bad).toEqual([]);
   });
 });
 

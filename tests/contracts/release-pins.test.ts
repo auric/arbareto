@@ -92,11 +92,14 @@ describe("preview package", () => {
     expect(await Bun.file(join(ROOT, "src-tauri", "installer-hooks.preview.nsh")).text()).not.toContain("NSIS_HOOK_POSTINSTALL");
   });
 
-  test("both preview scripts set the preview channel, name the overlay, and end with the version prints of package; the bundle step skips binary patching", async () => {
+  test("both preview scripts set the preview channel, name the overlay, and end with the version prints of package; the exes step skips the NSIS print; the bundle step skips binary patching", async () => {
     const scripts = ((await Bun.file(join(ROOT, "package.json")).json()) as { scripts: Record<string, string> }).scripts;
     const prints = scripts.package!.slice(scripts.package!.indexOf(" && ") + 4);
     expect(prints.startsWith("rustc --version")).toBe(true);
-    expect(scripts["package:preview:exes"]).toBe(`ARBARETO_RELEASE_CHANNEL=preview cargo tauri build --no-bundle --target ${TARGET} --config ${OVERLAY} -- --locked && ${prints}`);
+    // tauri-cli 2.12.0 build.rs:132 skips the bundler for --no-bundle. Only the bundler gets makensis.exe (tauri-bundler 2.10.0 nsis/mod.rs:80-96).
+    const NSIS_PRINT = ` && "$LOCALAPPDATA/tauri/NSIS/makensis.exe" -VERSION`;
+    expect(prints.endsWith(NSIS_PRINT)).toBe(true);
+    expect(scripts["package:preview:exes"]).toBe(`ARBARETO_RELEASE_CHANNEL=preview cargo tauri build --no-bundle --target ${TARGET} --config ${OVERLAY} -- --locked && ${prints.slice(0, -NSIS_PRINT.length)}`);
     expect(scripts["package:preview:bundle"]).toBe(`ARBARETO_RELEASE_CHANNEL=preview cargo tauri bundle --bundles nsis --no-binary-patching --target ${TARGET} --config ${OVERLAY} && ${prints}`);
   });
 

@@ -9,7 +9,7 @@ import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { MENU_CONTENT } from "../app/RepositoryMenu";
 import { BLOCKED_TEXT, operationBlock } from "../changes/HunkControls";
 import { IconButton } from "../components/icon-button";
-import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
+import { RECONCILING_REASON, RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
@@ -26,9 +26,7 @@ const DETACHED = "No branch checked out.";
 const UNBORN = "The branch has no commits yet.";
 const NO_UPSTREAM = "The branch has no upstream.";
 
-export { RUNNING_REASON };
-// Plan D12: the reason while the reconcile read after a mutation outcome runs. A review before its result names an old generation.
-export const RECONCILING_REASON = "The status read after the last operation is still running.";
+export { RECONCILING_REASON, RUNNING_REASON };
 /** Plan D12: the reason that replaces every sync reason and shows only in the tooltip and the accessible description, or null. */
 export const quietReason = (running: boolean, reconciling: boolean) => (running ? RUNNING_REASON : reconciling ? RECONCILING_REASON : null);
 

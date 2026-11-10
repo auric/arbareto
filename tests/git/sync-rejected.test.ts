@@ -149,12 +149,14 @@ describeGit("rejected push and force push with lease (T035)", () => {
   // the lease refuses every ref (011 research.md R5 U8). So the hook can change the remote between Git's lease check and the re-read.
   // The remote moves after the fetch, so Git's lease check refuses. Then the pre-push hook runs `hook` with the remote path and the lease value.
   // `pushurl`: the push URL in other bytes than the fetch URL, so the review binds `sameUrl` false (011 remote-delete-gone.test.ts P16).
-  const leaseHookCase = async (name: string, hook: (origin: string, expectOid: string) => string, { reason = "rejected", pushurl = false } = {}) => {
+  // `setup` writes more configuration before the registration, so the trust approval covers it.
+  const leaseHookCase = async (name: string, hook: (origin: string, expectOid: string) => string, { reason = "rejected", pushurl = false, setup = (_a: ReturnType<typeof diverged>) => {} } = {}) => {
     const a = diverged(true);
     const expectOid = revParse(a.h, a.repo, "refs/remotes/origin/topic");
     importStream(a.h, a.remotes.origin!, [Buffer.from(`reset refs/heads/topic\nfrom ${expectOid}\n\n`), fc({ mark: 1, ref: "refs/heads/topic", message: "after the fetch\n", files: { "late.txt": "late\n" } })]);
     a.h.write(`${a.repo}/.git/hooks/pre-push`, `#!/bin/sh\ncat > /dev/null\n${hook(a.remotes.origin!, expectOid)}\n`);
     if (pushurl) gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.remotes.origin!)]);
+    setup(a);
     let exits: (number | null | undefined)[] = [];
     let args: string[][] = [];
     await withSync(name, async (service) => {
@@ -202,6 +204,43 @@ describeGit("rejected push and force push with lease (T035)", () => {
     const seen = await leaseHookCase("t093-pushurl-fails", (origin) => `git --git-dir='${origin}' config core.repositoryformatversion 99`, { pushurl: true });
     expect(seen.args.map((a) => a[4])).toEqual([fileUrl(seen.a.remotes.origin!)]);
     expect([0, 2]).not.toContain(seen.exits[0]);
+  }, TIMEOUT_MS);
+
+  // remote.c `alias_all_urls`: `pushInsteadOf` makes the push URL from `url`, and `insteadOf` does not rewrite that push URL.
+  // `ls-remote <push URL>` applies `insteadOf` to it, so it would read the `second` remote. Its `topic` is not the lease value.
+  caseTest("T093", "plan.md D5: when ls-remote --get-url rewrites the push URL to another remote, a [rejected] lease push runs no re-read and gives reason rejected", SHELL, async () => {
+    const seen = await leaseHookCase("t093-insteadof", () => "exit 0", {
+      setup: (a) => {
+        const url = gitOut(a.h, a.repo, ["config", "remote.origin.url"]).trim();
+        gitRun(a.h, a.repo, ["config", `url.${fileUrl(a.remotes.origin!)}.pushInsteadOf`, url]);
+        gitRun(a.h, a.repo, ["config", `url.${fileUrl(a.remotes.second!)}.insteadOf`, fileUrl(a.remotes.origin!)]);
+        expect(gitOut(a.h, a.repo, ["remote", "get-url", "--push", "origin"]).trim()).toBe(fileUrl(a.remotes.origin!));
+        expect(gitOut(a.h, a.repo, ["ls-remote", "--get-url", "--", fileUrl(a.remotes.origin!)]).trim()).toBe(fileUrl(a.remotes.second!));
+      },
+    });
+    expect(seen.args).toEqual([]);
+  }, TIMEOUT_MS);
+
+  // A `remote.origin.vcs` push runs a remote helper and never gives a `[rejected]` line here. So only the review read is checked.
+  // remote.c `remotes_remote_get_1`: a remote named as the push URL gives `ls-remote <url>` its settings.
+  caseTest("T093", "plan.md D5: with a pushurl in other bytes than the URL, a remote.origin.vcs entry or a remote named as the push URL gives no ls-remote --get-url read in the force-push review", SHELL, async () => {
+    const cases: [string, string, (a: ReturnType<typeof diverged>) => [string, string]][] = [
+      ["vcs", "t093-review-vcs", () => ["remote.origin.vcs", "arbareto-none"]],
+      ["remote named as the push URL", "t093-review-named", (a) => [`remote.${fileUrl(a.remotes.origin!)}.uploadpack`, "git-upload-pack"]],
+    ];
+    for (const [name, tag, entry] of cases) {
+      const a = diverged(true);
+      gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.remotes.origin!)]);
+      gitRun(a.h, a.repo, ["config", ...entry(a)]);
+      await withSync(tag, async (service) => {
+        const r = await register(service, a.repo);
+        expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+        const from = service.runner.calls.length;
+        await reviewed(service, r, { action: "force-push" });
+        const getUrl = service.runner.calls.slice(from).filter((c) => c.arguments.includes("--get-url"));
+        expect({ name, getUrl: getUrl.length }).toEqual({ name, getUrl: 0 });
+      });
+    }
   }, TIMEOUT_MS);
 
   // T046 (FR-026, SC-002): the pull choices of the notice.

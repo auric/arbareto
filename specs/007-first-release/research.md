@@ -541,7 +541,7 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - Control 1, undone byte for byte: `build:frontend` goes back to `bunx --bun vite build`. The workflow test exit 1, 1 of 20 fail, with `build:frontend: bunx --bun vite build`.
 - Control 2, undone byte for byte: `package:preview:exes` gets the NSIS print back. The workflow test exit 1, 1 of 20 fail, with the `makensis.exe` part of `package:preview:exes`.
 - `package.json` SHA-256 before each mutation and after each restore: `A63E412C3391E0A238931107428BF95F56AB4239AFFAA7FC5B00CF32588FAB5B`.
-- Rerun pending.
+- Rerun: dry run 2.
 
 ### T029 dry run 2 (2026-11-10, GitHub, build commit 5f31d07a)
 
@@ -561,5 +561,5 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
   - hunspell-wasm `8f755ef6…`: 51 files in both, the same list, all equal.
   - The archive root also holds `SOURCE.txt`.
 - The artifact holds no release notes file, as designed. Only the `publish` job makes it (`release.yml:206-208` tag condition, `:258` notes.ts to `RUNNER_TEMP`, `:268` and `:275` gh release).
-- Against the local T026 rehearsal: the third-party notices are identical, and the tool versions are the same. The installer differs (local 46,599,710 bytes, `eded3c5f…`), because the build is not reproducible across machines. `SHA256SUMS.txt` differs because CI lists the archive.
+- Against the local rehearsal of 9a8707ce (2026-11-09, reference host, driver log in local scratch): the third-party notices are identical. The tool versions are the same: rustc 1.99.0, cargo 1.99.0, tauri-cli 2.12.0, bun 1.4.4, NSIS v3.11. The installer differs (local 46,599,710 bytes, `eded3c5f…`). The build commits differ, so this comparison does not show the cause. The local run left out `hunspell-source.ts`, because it reads github.com. So its `SHA256SUMS.txt` (200 bytes) lists two names. The CI file (304 bytes) lists three names: the installer, the archive, and the notices.
 - Next: the orchestrator deletes the `release-dry-run` branch. T029 stays open until T028 passes.

@@ -6,14 +6,22 @@
 
 import { closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { FIXTURE_ROOT, fixtureEnv, fixturePath, ownedGit, ownedPath, removeTree, type OwnedGitOptions } from "../git/fixture-root";
 import { fiCommit } from "../git/fixtures";
 import { fixtureGitPath } from "../git/git-binary";
 import { indexEntries, refState, sha256, workingFileDigests } from "../git/git-oracle";
 
-// The 8.3 form of the temporary directory differs from the form that Git prints, so the root holds the long form.
-export const PERF_CACHE_ROOT = join(realpathSync.native(tmpdir()), "arbareto-perf-fixtures");
+/** The persistent cache folder: the absolute `ARBARETO_PERF_CACHE` folder when set, else a folder in the temporary directory. */
+export function perfCacheRoot(override: string | undefined): string {
+  // The 8.3 form of a path differs from the form that Git prints, so the root holds the long form.
+  if (override === undefined) return join(realpathSync.native(tmpdir()), "arbareto-perf-fixtures");
+  if (!isAbsolute(override)) throw new Error(`set ARBARETO_PERF_CACHE to an absolute folder: ${JSON.stringify(override)}`);
+  mkdirSync(override, { recursive: true });
+  return realpathSync.native(override);
+}
+
+export const PERF_CACHE_ROOT = perfCacheRoot(process.env.ARBARETO_PERF_CACHE);
 export const PERF_SEED = 42;
 export const C8_PATH = "perf/c8.ts";
 export const MIXED_PATH = "perf/mixed.ts";

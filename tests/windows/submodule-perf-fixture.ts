@@ -32,24 +32,30 @@ interface Manifest {
 }
 
 const currentDigest = () => builderDigest(readFileSync(import.meta.path));
-const gitIn = (exe: string) => (cwd: string, args: string[], input?: Uint8Array) => runGit(exe, PERF_CACHE_ROOT, cwd, args, { input });
+const gitIn = (exe: string, root: string) => (cwd: string, args: string[], input?: Uint8Array) => runGit(exe, root, cwd, args, { input });
 
 // Null when one Git run fails, so a damaged entry never counts as reusable.
-function refLists(exe: string, repo: string, paths: string[]): string[] | null {
+function refLists(exe: string, root: string, repo: string, paths: string[]): string[] | null {
   const lists: string[] = [];
   for (const dir of [repo, ...paths.map((p) => join(repo, ...p.split("/")))]) {
-    const proc = gitExit(exe, PERF_CACHE_ROOT, dir, ["--no-optional-locks", "for-each-ref", "--format=%(objectname) %(refname)"]);
+    const proc = gitExit(exe, root, dir, ["--no-optional-locks", "for-each-ref", "--format=%(objectname) %(refname)"]);
     if (proc.exitCode !== 0) return null;
     lists.push(proc.stdout.toString("utf8"));
   }
   return lists;
 }
 
-function build(exe: string, repo: string, count: number): Omit<SubmoduleWorld, "repo"> {
-  const git = gitIn(exe);
+// A temp clean-up can delete the index and work-tree files and keep the refs. A built entry has an empty status.
+function isClean(exe: string, root: string, repo: string): boolean {
+  const proc = gitExit(exe, root, repo, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--untracked-files=all"]);
+  return proc.exitCode === 0 && proc.stdout.length === 0;
+}
+
+function build(exe: string, root: string, repo: string, count: number): Omit<SubmoduleWorld, "repo"> {
+  const git = gitIn(exe, root);
   const lib = join(repo, "..", "lib");
-  mkdirSync(ownedPath(PERF_CACHE_ROOT, lib), { recursive: true });
-  mkdirSync(ownedPath(PERF_CACHE_ROOT, repo), { recursive: true });
+  mkdirSync(ownedPath(root, lib), { recursive: true });
+  mkdirSync(ownedPath(root, repo), { recursive: true });
   git(lib, ["init", "-q", "-b", "main"]);
   writeFileSync(join(lib, "f.txt"), "lib\n");
   git(lib, ["add", "--", "f.txt"]);
@@ -67,12 +73,13 @@ function build(exe: string, repo: string, count: number): Omit<SubmoduleWorld, "
 }
 
 // Builds once per builder digest and `count` under the cache root. The lock and the temporary folder follow `ensureLargeFixture`.
-export function submoduleWorld(gitExe: string, count: number): SubmoduleWorld {
+// `root` must be a real path. Only the reuse test gives another root.
+export function submoduleWorld(gitExe: string, count: number, root: string = PERF_CACHE_ROOT): SubmoduleWorld {
   const name = `f005-submodules-${count}`;
-  mkdirSync(PERF_CACHE_ROOT, { recursive: true });
-  const folder = ownedPath(PERF_CACHE_ROOT, name);
-  const lock = ownedPath(PERF_CACHE_ROOT, `${name}.lock`);
-  const temp = ownedPath(PERF_CACHE_ROOT, `${name}.tmp`);
+  mkdirSync(root, { recursive: true });
+  const folder = ownedPath(root, name);
+  const lock = ownedPath(root, `${name}.lock`);
+  const temp = ownedPath(root, `${name}.tmp`);
   const manifestPath = join(folder, "manifest.json");
   acquireLock(lock);
   try {
@@ -80,12 +87,12 @@ export function submoduleWorld(gitExe: string, count: number): SubmoduleWorld {
     if (existsSync(manifestPath)) {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
       const repo = join(folder, "repo");
-      if (manifest.builderDigest === currentDigest() && existsSync(repo) && JSON.stringify(refLists(gitExe, repo, manifest.built.paths)) === JSON.stringify(manifest.refs)) return { ...manifest.built, repo };
+      if (manifest.builderDigest === currentDigest() && existsSync(repo) && JSON.stringify(refLists(gitExe, root, repo, manifest.built.paths)) === JSON.stringify(manifest.refs) && isClean(gitExe, root, repo)) return { ...manifest.built, repo };
     }
     if (existsSync(temp)) removeTree(temp);
     mkdirSync(temp);
-    const built = build(gitExe, join(temp, "repo"), count);
-    const refs = refLists(gitExe, join(temp, "repo"), built.paths);
+    const built = build(gitExe, root, join(temp, "repo"), count);
+    const refs = refLists(gitExe, root, join(temp, "repo"), built.paths);
     if (refs === null || refs.some((r) => r === "")) throw new Error(`for-each-ref failed or listed no refs in ${join(temp, "repo")}`);
     writeFileSync(join(temp, "manifest.json"), `${JSON.stringify({ builderDigest: currentDigest(), refs, built } satisfies Manifest, null, 2)}\n`);
     if (existsSync(folder)) removeTree(folder);

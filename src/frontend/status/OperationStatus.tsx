@@ -178,7 +178,7 @@ const EFFECT_SENTENCES: Record<string, Record<EffectField, string>> = {
   },
   "failed-with-effects": { head: "HEAD changed.", index: "The index changed.", workingFiles: "Working files changed.", operationState: "The Git operation state changed." },
 };
-export const STALL_SENTENCE ="Git may be waiting for input.";
+export const STALL_SENTENCE = "Git may be waiting for input.";
 // Contract §6 "Activity and stall notice".
 export const STALL_NOTICE = "Git may be waiting for a prompt that Arbareto cannot show, or for a sign-in window. To answer a hidden prompt, select Cancel and run this command in a terminal.";
 // plan.md "Required visible states", Updating submodules.

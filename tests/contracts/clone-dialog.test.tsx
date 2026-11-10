@@ -372,4 +372,37 @@ describe("clone stall notice (FR-003, FR-048)", () => {
     expect(document.activeElement).toBe(cancel);
     expect(notice()).toBeNull();
   });
+
+  test("a new stall while an ending notice holds focus keeps Copy command and the focus until the new answer", async () => {
+    const r = await started();
+    await progress(r, true);
+    const result = OperationResult.parse({ operationId: fixtureId(0x211), operation: "clone", state: "running", phase: "clone", stalled: true, stallRemedy: REMEDY });
+    await act(async () => r.pending("getOperation").resolve({ requestId: "g", state: "succeeded", result }));
+    await settle();
+    const copy = button("Copy command", notice()!);
+    await act(async () => copy.focus());
+    await progress(r, false);
+    await progress(r, true);
+    expect(r.calls.filter((c) => c.operation === "getOperation")).toHaveLength(2);
+    expect(button("Copy command", notice()!)).toBe(copy);
+    expect(document.activeElement).toBe(copy);
+    expect(text(panel())).toContain(STALL_SENTENCE);
+  });
+
+  // 003 plan.md D12 "Running sync action": the response that removes Cancel moves focus to the action control.
+  for (const end of [failed("GIT_FAILED"), failed("CANCELED", undefined, "canceled")]) {
+    test(`a ${end.state} clone end moves focus from the notice to Clone`, async () => {
+      const r = await started();
+      await progress(r, true);
+      const result = OperationResult.parse({ operationId: fixtureId(0x211), operation: "clone", state: "running", phase: "clone", stalled: true, stallRemedy: REMEDY });
+      await act(async () => r.pending("getOperation").resolve({ requestId: "g", state: "succeeded", result }));
+      await settle();
+      await act(async () => button("Copy command", notice()!).focus());
+      await act(async () => r.pending("clone").resolve(end));
+      await settle();
+      expect(notice()).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(cloneButton());
+    });
+  }
 });

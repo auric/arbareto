@@ -90,7 +90,7 @@ export type CloneDialogProps = {
 const RUNNING_CLOSE = "The clone is running. Select Cancel to stop it, then close the panel.";
 const CANCEL_WAITS = "Cancel is available after the clone starts.";
 
-type Stall = { remedy: ReturnType<typeof readStallRemedy>; ending: boolean };
+type Stall = { remedy: ReturnType<typeof readStallRemedy>; ending: boolean; count: number };
 type Run = { destination: string; operationId?: string; percent?: number; cancelRequested: boolean; stall?: Stall };
 
 /** The non-modal clone panel (plan.md D12). Clone starts only at the explicit start, with the destination that the panel shows. */
@@ -105,6 +105,9 @@ export function CloneDialog({ bridge, separator, onOpened, onClose, guard = (sta
   const [ended, setEnded] = useState<BridgeResponse | null>(null);
   const urlField = useRef<HTMLInputElement>(null);
   const stallNotice = useRef<HTMLDivElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const cloneButton = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
 
   useEffect(() => {
     let current = true;
@@ -120,6 +123,12 @@ export function CloneDialog({ bridge, separator, onOpened, onClose, guard = (sta
     };
   }, []);
 
+  useEffect(() => {
+    if (run !== null || !refocus.current) return;
+    refocus.current = false;
+    cloneButton.current?.focus();
+  }, [run]);
+
   const loaded = settings.state === "loaded" ? settings.value : null;
   const destination = edited ?? suggestCloneName({ url, lastCloneParent: loaded?.lastCloneParent ?? null, defaultCloneFolder: loaded?.defaultCloneFolder ?? null, separator });
   const plink = loaded?.sshClient === "plink";
@@ -130,9 +139,10 @@ export function CloneDialog({ bridge, separator, onOpened, onClose, guard = (sta
     setEnded(null);
     setRun({ destination, cancelRequested: false });
     let stalled = false;
+    let stalls = 0;
     const onProgress = (event: ProgressEvent) => {
       // Contract §6: one `getOperation` call after each progress event that sets `stalled`.
-      const stall: Stall | undefined = event.stalled === true && !stalled ? { remedy: null, ending: false } : undefined;
+      const count = event.stalled === true && !stalled ? ++stalls : null;
       const cleared = event.stalled !== true && stalled;
       // A notice that holds focus stays until focus leaves it.
       const keep = cleared && stallNotice.current?.contains(document.activeElement) === true;
@@ -145,17 +155,21 @@ export function CloneDialog({ bridge, separator, onOpened, onClose, guard = (sta
               operationId: event.operationId,
               percent: event.phase === "clone" ? (event.counters.percent ?? r.percent) : r.percent,
               cancelRequested: r.cancelRequested || event.state === "cancel-requested",
-              stall: stall ?? (!cleared ? r.stall : keep && r.stall !== undefined ? { ...r.stall, ending: true } : undefined),
+              // A new stall keeps the remedy of a notice that still holds focus until its own answer comes.
+              stall: count !== null ? { remedy: r.stall?.remedy ?? null, ending: false, count } : !cleared ? r.stall : keep && r.stall !== undefined ? { ...r.stall, ending: true } : undefined,
             },
       );
-      if (stall === undefined) return;
+      if (count === null) return;
       void bridge.getOperation({ operationId: event.operationId }).then((answer) => {
         const remedy = readStallRemedy(answer);
         // An answer for an older stall changes nothing.
-        setRun((r) => (r === null || r.stall !== stall || remedy === null ? r : { ...r, stall: { ...stall, remedy } }));
+        setRun((r) => (r === null || r.stall?.count !== count || r.stall.ending || remedy === null ? r : { ...r, stall: { ...r.stall, remedy } }));
       });
     };
     const response = await bridge.clone({ url, destination, keyFile: plink && picked ? "picked" : "none" }, onProgress);
+    // Plan.md D12 "Running sync action": when the response removes Cancel while it has focus, focus moves to the action control.
+    const active = document.activeElement;
+    refocus.current = response.state !== "succeeded" && active !== null && (stallNotice.current?.contains(active) === true || active === cancelButton.current);
     setRun(null);
     if (response.state === "succeeded") return onOpened(response);
     setEnded(response);
@@ -245,7 +259,7 @@ export function CloneDialog({ bridge, separator, onOpened, onClose, guard = (sta
         <div className="flex flex-wrap items-center gap-2" style={{ paddingLeft: 142 }}>
           {run === null ? (
             <>
-              <Button type="submit" disabled={reason !== null} focusableWhenDisabled aria-describedby={reason === null ? undefined : ids.reason}>
+              <Button ref={cloneButton} type="submit" disabled={reason !== null} focusableWhenDisabled aria-describedby={reason === null ? undefined : ids.reason}>
                 Clone
               </Button>
               {reason === null ? null : (
@@ -262,6 +276,7 @@ export function CloneDialog({ bridge, separator, onOpened, onClose, guard = (sta
               </span>
               {run.percent === undefined ? null : <span className="tabular-nums">{run.percent}%</span>}
               <Button
+                ref={cancelButton}
                 type="button"
                 variant="outline"
                 size="sm"

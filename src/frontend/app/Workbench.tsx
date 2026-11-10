@@ -93,10 +93,11 @@ import { PushPanel } from "../sync/PushPanel";
 import { CloneDialog } from "../clone/CloneDialog";
 import { ConnectNoticeRow } from "../settings/ConnectTerminal";
 import type { KeyProposal } from "../settings/SettingsDialog";
-import { actionReason, quietReason, RECONCILING_REASON, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
+import { actionReason, quietReason, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
 import { DockRegion } from "../components/docked-panel";
+import { RECONCILING_REASON } from "../components/running-tooltip";
 import { IntegratePanel, type IntegrateRequest } from "../integrate/IntegratePanel";
 import { ResolveView } from "../resolve/ResolveView";
 import { Segmented } from "../components/segmented";
@@ -1763,8 +1764,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // Spec FR-103 and SC-017: the dock names the conflicted count only in the states of the conflict row, and only from a complete read. Feature 010 plan.md D6 adds a cherry-pick and a revert.
   const conflictCount = loading || !IN_APP_STATES.includes(workspace.operationState) ? 0 : conflicted;
   // Data-model 001 §2: `refreshing` and `reconciling` end without a user action, so they are not State unknown (plan.md "State unknown").
-  const recovery = workspace?.recoveryState;
-  const stateBlocked: Blocked = state.blocked ? (recovery === "refreshing" || recovery === "reconciling" ? recovery : "unknown") : workspace !== null ? operationBlock(workspace.operationState) : null;
+  // A restarted service session stays State unknown until Refresh (plan.md "State unknown").
+  const recoveryState = workspace?.recoveryState;
+  const stateBlocked: Blocked = state.blocked ? (!state.sessionBlocked && (recoveryState === "refreshing" || recoveryState === "reconciling") ? recoveryState : "unknown") : workspace !== null ? operationBlock(workspace.operationState) : null;
   const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;
   const blockedReason = blocked === null ? null : BLOCKED_TEXT[blocked];
   const stagingBlocked: Blocked = blocked ?? (loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null);
@@ -1799,6 +1801,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   };
   // Plan D15 running rule: a running mutation blocks the 004 actions with the 003 running reason.
   const mutationReason = running ? RUNNING_REASON : blockedReason;
+  // 003 plan D12: the menus show the running and the reconcile reason only in the tooltip.
+  const quietMutation = running || stateBlocked === "reconciling";
   const branches = useBranchActions({
     bridge,
     askTrust,
@@ -1809,7 +1813,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     workbench: store,
     head: currentHead,
     blockedReason: mutationReason,
-    blockedRunning: running,
+    blockedRunning: quietMutation,
     onNotice: setNotice,
     onRefusal: setPaneStatus,
     onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
@@ -1828,7 +1832,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     repositoryId,
     head: currentHead,
     blockedReason: mutationReason,
-    blockedRunning: running,
+    blockedRunning: quietMutation,
     onOperation: setOperation,
     onNotice: setNotice,
     workbench: store,

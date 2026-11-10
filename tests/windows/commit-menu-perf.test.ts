@@ -150,7 +150,8 @@ const footer = `document.querySelector('[data-slot=status-region] footer')`;
 // The workbench notice cell (the 004 switch outcome) and the operation line (every other outcome) are `role=status` cells of the footer.
 const outcomeShown = (text: string, changed = false) => `[...((${footer})?.querySelectorAll('[role=status]') ?? [])].some((e) => e.textContent.trim() === ${js(text)}${changed ? " && window.__t018.changed.has(e)" : ""})`;
 // src/frontend/app/Workbench.tsx `statusText`: the first status cell shows these texts while a read runs or the state is blocked.
-const settled = `!['Refreshing…', 'State unknown'].includes(((${footer})?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim())`;
+// A reconcile block shows counts there. The Remote sync group then holds its reason (SyncToolbar.tsx `quietText`).
+const settled = `!['Refreshing…', 'State unknown'].includes(((${footer})?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim()) && !(document.querySelector('[role=group][aria-label="Remote sync"]')?.textContent ?? '').includes('The status read after the last operation is still running.')`;
 const list = `document.querySelector('[data-history-list]')`;
 const selectedRow = `(document.querySelector('[data-history-list] [role=option][aria-selected=true]')?.dataset.rowId ?? null)`;
 // HistoryList.tsx: the checkout row holds the HEAD badge.

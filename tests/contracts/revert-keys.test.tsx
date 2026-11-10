@@ -602,6 +602,10 @@ describe("block reasons of a status read that is not ready", () => {
     expect(during).not.toContain("State unknown");
     expect(after).not.toContain("State unknown");
     expect(after).toContain(RECONCILING);
+    // 003 plan D12: the sync controls keep the reconcile reason in the accessible description only.
+    const group = document.querySelector<HTMLElement>('[role="group"][aria-label="Remote sync"]')!;
+    expect(text(document.getElementById(button("Fetch", group).getAttribute("aria-describedby")!)!)).toBe(RECONCILING);
+    expect([...group.querySelectorAll("span")].filter((s) => !s.closest(".sr-only") && text(s).includes(RECONCILING))).toEqual([]);
   });
 
   test("T411: a read with recoveryState unknown still shows State unknown", async () => {

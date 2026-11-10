@@ -141,6 +141,7 @@ Availability: the client reads the latest `readWorkspace` head and operation sta
 | Condition | Unavailable items | Reason (D11 key or source) |
 |---|---|---|
 | A mutation runs | all but Copy | `RUNNING_REASON` (`running-tooltip.tsx:10`), quiet |
+| A read with `recoveryState` `reconciling` (001 T411) | all but Copy | `RECONCILING_REASON` (`running-tooltip.tsx`), quiet, as in the branch menu (003 plan D12) |
 | State unknown or refreshing | all but Copy | `BLOCKED_TEXT.unknown` and `.refreshing` (`HunkControls.tsx:34-46`) |
 | Merge, rebase, cherry-pick, or revert in progress | all but Copy | `BLOCKED_TEXT.operation`, new text in D11 |
 | Conflicts without a marker, `sequencer-active`, unknown operation | all but Copy | `BLOCKED_TEXT.conflicted` (`HunkControls.tsx:35`) |

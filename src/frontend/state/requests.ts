@@ -57,6 +57,8 @@ export type RequestState = {
   capability: Capability | null;
   /** True after a `service-session` event until a `refresh: true` read succeeds, and while the recovery state is not `ready`. */
   blocked: boolean;
+  /** True after a `service-session` event until a `refresh: true` read succeeds. It blocks as State unknown before any `recoveryState` (plan.md "State unknown"). */
+  sessionBlocked: boolean;
   /** The Refreshing marker. Only a user Refresh sets it. */
   refreshing: boolean;
   /** Each repository open and user Refresh adds 1. The History-ready mark counts it. */
@@ -88,6 +90,7 @@ const INITIAL: RequestState = {
   selectedHunk: null,
   capability: null,
   blocked: false,
+  sessionBlocked: false,
   refreshing: false,
   historyEpoch: 0,
   refsSeq: 0,
@@ -188,7 +191,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
   }
   const update = (patch: Partial<RequestState>) => {
     const next = { ...state, ...patch };
-    set({ ...patch, blocked: blocked(next.workspace), capability: capability(next), reconciling: reconciling !== null });
+    set({ ...patch, blocked: blocked(next.workspace), sessionBlocked, capability: capability(next), reconciling: reconciling !== null });
   };
 
   /** `onEnd` runs once when this read ends with any result, also after a newer open drops it. */

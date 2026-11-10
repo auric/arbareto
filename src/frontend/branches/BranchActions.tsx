@@ -64,7 +64,7 @@ export type BranchActionsOptions = {
   head: WorkspaceSnapshot["head"] | null;
   /** The reason that blocks every branch action: an operation in progress, a running mutation, or an unknown state. */
   blockedReason: string | null;
-  /** `blockedReason` is the running reason. It then shows only in the tooltip and the accessible description (plan D15 running rule). */
+  /** `blockedReason` is the running or the reconcile reason. It then shows only in the tooltip and the accessible description (plan D15 running rule, 003 plan D12). */
   blockedRunning?: boolean;
   /** Shows a text in the status bar. Null clears it. */
   onNotice(text: ReactNode): void;

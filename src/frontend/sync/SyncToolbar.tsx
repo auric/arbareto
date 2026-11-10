@@ -26,7 +26,7 @@ const DETACHED = "No branch checked out.";
 const UNBORN = "The branch has no commits yet.";
 const NO_UPSTREAM = "The branch has no upstream.";
 
-export { RECONCILING_REASON, RUNNING_REASON };
+export { RUNNING_REASON };
 /** Plan D12: the reason that replaces every sync reason and shows only in the tooltip and the accessible description, or null. */
 export const quietReason = (running: boolean, reconciling: boolean) => (running ? RUNNING_REASON : reconciling ? RECONCILING_REASON : null);
 

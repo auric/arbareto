@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
 import { cn } from "cn";
 import { splitterStep } from "./profiles";
 
@@ -20,12 +20,13 @@ type SplitterProps = {
   /** The final value of a key step or of a pointer drag. A drag calls `onChange` on each move and this once, at its end. */
   onCommit?: (value: number) => void;
   className?: string;
+  ref?: Ref<HTMLDivElement>;
 };
 
 const MIRROR: Record<string, string> = { ArrowUp: "ArrowDown", ArrowDown: "ArrowUp", ArrowLeft: "ArrowRight", ArrowRight: "ArrowLeft" };
 
 /** An 8 DIP hit area with a thin visible rule (plan.md "Chosen layout, sizes, and DPI"). */
-export function Splitter({ label, orientation, value, min, max, reverse = false, onChange, onCommit, className }: SplitterProps) {
+export function Splitter({ label, orientation, value, min, max, reverse = false, onChange, onCommit, className, ref }: SplitterProps) {
   const drag = useRef<{ pointerId: number; start: number; value: number; last: number | null } | null>(null);
   const [dragging, setDragging] = useState(false);
   const vertical = orientation === "vertical";
@@ -70,6 +71,7 @@ export function Splitter({ label, orientation, value, min, max, reverse = false,
 
   return (
     <div
+      ref={ref}
       role="separator"
       tabIndex={0}
       aria-label={label}

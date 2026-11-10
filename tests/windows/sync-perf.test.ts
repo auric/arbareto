@@ -24,7 +24,7 @@ import { connectPage, freePort, keyEvents, MOD, watchIpc, type Cdp, type IpcCall
 import { appEnv, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type AppEnv, type OwnedProcess } from "./installed-app";
 import { PERF_CACHE_ROOT } from "./perf-fixtures";
 import { bootId, credentialConfig, guarded, invokeWhenEnabled, js, liveGate, printOriginAfter, summarize, uia, UIA_E_ELEMENTNOTAVAILABLE, useOwnedApps } from "./sync-harness";
-import { ControlType, expand, find, invoke, isEnabled, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, setValue, UiaError, type Element } from "./uia";
+import { ControlType, descendantNames, expand, find, invoke, isEnabled, MAX_CALL_MS, MAX_WAIT_MS, readValue, setValue, UiaError, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./sync-harness.ts", "./ratio.ts", "./perf-fixtures.ts", "../support/http-remote.ts", "../git/remote-fixtures.ts"]) printOrigin(helper, import.meta.dir);
 for (const source of ["../../src/contracts/errors.ts", "../../src/contracts/limits.ts", "../../src/frontend/refs/ReferencesSidebar.tsx", "../../src/frontend/state/tracking.ts", "../../src/frontend/status/OperationStatus.tsx", "../../src/frontend/sync/SyncToolbar.tsx", "../../src/frontend/clone/CloneDialog.tsx"]) printOrigin(source, import.meta.dir);
@@ -109,8 +109,7 @@ const CLONE_URL = "Remote URL";
 const CLONE_DESTINATION = "Destination folder";
 const CLONE_BUTTON = "Clone";
 
-// ReferencesSidebar.tsx row name: `<name>, local branch, → <upstream>, <a> ahead, <b> behind` (tracking.ts `countLabel`).
-// uia.ts `readText` joins the Names of the tree descendants without a separator. Each row Name starts with its branch name, so `base` and `full` never span two Names.
+// ReferencesSidebar.tsx row name: `<name>, local branch, → <upstream>`, then `, <a> ahead, <b> behind` once the count shows (tracking.ts `countLabel`).
 const MANY = Array.from({ length: MANY_BRANCHES }, (_, i) => {
   const name = manyName(i);
   const [ahead, behind] = manyCounts(i);
@@ -193,7 +192,7 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
   }
 
   // `absent`: no References tree. `unknown`: a render replaced the tree during the read, so the read proves nothing.
-  type TreeRead = { kind: "absent" } | { kind: "unknown" } | { kind: "names"; names: string };
+  type TreeRead = { kind: "absent" } | { kind: "unknown" } | { kind: "names"; names: string[] };
   async function treeNames(pid: number): Promise<TreeRead> {
     let tree: Element;
     try {
@@ -203,7 +202,7 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
       throw error;
     }
     try {
-      return { kind: "names", names: readText(tree) };
+      return { kind: "names", names: descendantNames(tree, ControlType.TreeItem) };
     } catch (error) {
       if (error instanceof UiaError && error.hresult === UIA_E_ELEMENTNOTAVAILABLE) return { kind: "unknown" };
       throw error;
@@ -222,7 +221,9 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
     let polls = 0;
     let unknown = 0;
     let longest = 0;
-    let last: string | null = null;
+    let last: Set<string> | null = null;
+    // A fixture row is mounted when a TreeItem Name equals its name without or with its count label. Any other Name of a fixture row is a wrong label.
+    const mountedIn = (names: Set<string>) => MANY.filter((row) => names.has(row.base) || names.has(row.full));
     for (const end = absentSince + OPEN_WAIT_MS; ; await Bun.sleep(1)) {
       const s = performance.now();
       const read = await treeNames(pid);
@@ -231,20 +232,24 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
       longest = Math.max(longest, e - s);
       if (read.kind === "unknown") unknown++;
       else {
-        const names = read.kind === "names" ? read.names : null;
+        const names = read.kind === "names" ? new Set(read.names) : null;
         last = names;
-        const mounted = names === null ? [] : MANY.filter((row) => names.includes(row.base));
+        if (names !== null) {
+          const wrong = [...names].filter((n) => MANY.some((row) => n.startsWith(`${row.name}, local branch,`) && n !== row.base && n !== row.full));
+          if (wrong.length > 0) throw new Error(`fixture rows show a wrong label: ${js(wrong.slice(0, 10))}`);
+        }
+        const mounted = names === null ? [] : mountedIn(names);
         if (mounted.length === 0) {
           if (shownAt !== null) throw new Error("the fixture branch rows left the References tree");
           absentAt = s;
         } else {
           shownAt ??= e;
-          if (mounted.every((row) => names!.includes(row.full))) return { ms: e - absentAt, shownAfterMs: shownAt - absentAt, mounted: mounted.length, polls, unknown, longestPollMs: longest };
+          if (mounted.every((row) => names!.has(row.full))) return { ms: e - absentAt, shownAfterMs: shownAt - absentAt, mounted: mounted.length, polls, unknown, longestPollMs: longest };
         }
       }
       if (e >= end) {
-        const mounted = last === null ? [] : MANY.filter((row) => last!.includes(row.base));
-        const missing = mounted.filter((row) => !last!.includes(row.full)).map((row) => row.name);
+        const mounted = last === null ? [] : mountedIn(last);
+        const missing = mounted.filter((row) => !last!.has(row.full)).map((row) => row.name);
         throw new Error(`the counts did not show within ${OPEN_WAIT_MS} ms: tree ${last === null ? "absent" : `with ${mounted.length} fixture rows`}, rows without their count label ${js(missing.slice(0, 10))}, ${unknown} unknown reads`);
       }
     }

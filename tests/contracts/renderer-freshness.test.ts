@@ -384,6 +384,28 @@ describe("service session", () => {
     expect(o.of("restoreWorkspace")).toHaveLength(1);
     o.requests.dispose();
   });
+
+  // tasks.md T411 (feature 001): a restarted session stays State unknown, also when its read is `reconciling`.
+  test("T411: sessionBlocked stays true for a reconciling read after a service-session event, until a refresh: true read is ready", async () => {
+    const o = await shown();
+    expect(o.requests.state().sessionBlocked).toBe(false);
+    o.requests.serviceSession();
+    await flush();
+    const repositoryId = crypto.randomUUID();
+    o.last("restoreWorkspace").resolve({ requestId: crypto.randomUUID(), state: "succeeded", result: { repositoryId, generation: 4, worktreeKey: WORKTREE_KEY } });
+    await flush();
+    for (const call of o.of("readWorkspace").filter((c) => c.target.repositoryId === repositoryId)) workspaceResponse(call, snapshot(4, o.first.entries, { recoveryState: "reconciling" }));
+    await flush();
+    expect(o.requests.state().workspace?.recoveryState).toBe("reconciling");
+    expect(o.requests.state().sessionBlocked).toBe(true);
+    o.requests.refresh();
+    await flush();
+    workspaceResponse(o.last("readWorkspace"), snapshot(5, o.first.entries));
+    await flush();
+    expect(o.requests.state().sessionBlocked).toBe(false);
+    expect(o.requests.state().blocked).toBe(false);
+    o.requests.dispose();
+  });
 });
 
 // Feature 002 contract Δ8: a HEAD move never replaces the view, so the 001 page-to-HEAD binding is gone. The 001 REPOSITORY_CHANGED rule holds for openHistory.

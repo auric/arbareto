@@ -97,6 +97,7 @@ const CHECKING = "Checking ";
 // src/frontend/app/Workbench.tsx `statusText`.
 const REFRESHING = "Refreshing…";
 const STATE_UNKNOWN = "State unknown";
+const RECONCILING = "The status read after the last operation is still running.";
 const NO_HUNK = "No hunk is selected.";
 // src/frontend/changes/PatchView.tsx annotation text.
 const SELECTED_HUNK = "Selected hunk";
@@ -575,7 +576,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   const lineAction = `document.querySelector('[data-section=comparison] [data-slot=line-action]')`;
   const headerMore = `document.querySelector(${js(`[data-section=workingChanges] button[aria-label="${MORE_ACTIONS}"]`)})`;
   // src/frontend/app/Workbench.tsx `statusText`: the first status cell of the footer shows these texts while a read runs or the state is blocked.
-  const settled = `![${js(REFRESHING)}, ${js(STATE_UNKNOWN)}].includes((${footer}?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim())`;
+  // A reconcile block shows counts there. The Remote sync group then holds its reason (SyncToolbar.tsx `quietText`).
+  const settled = `![${js(REFRESHING)}, ${js(STATE_UNKNOWN)}].includes((${footer}?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim()) && !(document.querySelector('[role=group][aria-label="Remote sync"]')?.textContent ?? '').includes(${js(RECONCILING)})`;
   const menuItem = (label: string) => `[...document.querySelectorAll('[role=menu] [role=menuitem]')].find((e) => e.textContent.includes(${js(label)}))`;
   const fmt = new Intl.NumberFormat("en-US");
 
@@ -588,7 +590,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   // Waits for the reviewed state after an external restore. F5 reads the workspace again.
   async function refreshed(c: Cdp, what: string, expression: string): Promise<void> {
     await press(c, "F5");
-    // A reconcile read can end during the F5 read with `recoveryState: "refreshing"`. Then R refuses with BLOCKED_TEXT.unknown, so the wait also needs the settled status cell.
+    // A read can end during the F5 read with `recoveryState` `refreshing` or `reconciling`. R then refuses with that block reason, so the wait also needs `settled`.
     await until<boolean>(c, what, `(${expression}) && ${settled}`, (v) => v);
   }
   async function select(c: Cdp, path: string): Promise<void> {

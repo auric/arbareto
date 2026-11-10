@@ -50,7 +50,7 @@ export type CommitActionsOptions = {
   head: Head | null;
   /** Plan D1 "Availability": the reason that blocks every item but Copy, or null. */
   blockedReason: string | null;
-  /** `blockedReason` is the running reason. It then shows only in the tooltip and the accessible description. */
+  /** `blockedReason` is the running or the reconcile reason. It then shows only in the tooltip and the accessible description. */
   blockedRunning: boolean;
   onOperation(op: StatusOperation): void;
   onNotice(text: ReactNode): void;

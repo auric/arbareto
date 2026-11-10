@@ -134,7 +134,8 @@ const footer = `document.querySelector('[data-slot=status-region] footer')`;
 // The `role=status` cells of the footer. `changed` needs a new render of the cell after `arm`.
 const outcomeShown = (text: string) => `[...((${footer})?.querySelectorAll('[role=status]') ?? [])].some((e) => e.textContent.trim() === ${js(text)} && window.__t020.changed.has(e))`;
 // src/frontend/app/Workbench.tsx `statusText`: the first status cell shows these texts while a read runs or the state is blocked.
-const settled = `!['Refreshing…', 'State unknown'].includes(((${footer})?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim())`;
+// A reconcile block shows counts there. The Remote sync group then holds its reason (SyncToolbar.tsx `quietText`).
+const settled = `!['Refreshing…', 'State unknown'].includes(((${footer})?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim()) && !(document.querySelector('[role=group][aria-label="Remote sync"]')?.textContent ?? '').includes('The status read after the last operation is still running.')`;
 const list = `document.querySelector('[data-history-list]')`;
 const open = (selector: string) => `[...document.querySelectorAll(${js(selector)})].filter((e) => !e.hasAttribute('data-closed') && !e.hasAttribute('data-ending-style'))`;
 const menuOpen = (branch: string) => `${open("[role=menu]")}.some((m) => m.getAttribute('aria-label') === ${js(MENU_NAME(branch))})`;

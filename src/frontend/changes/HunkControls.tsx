@@ -8,7 +8,7 @@ import type { ChangeEntry, Comparison, WorkspaceSnapshot } from "../../contracts
 import { WarningIcon } from "../app/NoticeBand";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
-import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
+import { RECONCILING_REASON, RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
@@ -29,7 +29,7 @@ export type Eligibility = WorkspaceSnapshot["hunkEligibility"];
  * A workspace state that blocks hunk and file actions. `busy` is a running file action, `running` any other mutation.
  * `operation` is a merge, a rebase, a cherry-pick, or a revert in progress, which the notice band conflict row finishes (feature 003 FR-030, feature 010 FR-060). `conflicted` is every other state that is not `normal`.
  */
-export type Blocked = "conflicted" | "operation" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "refreshing" | "unknown" | null;
+export type Blocked = "conflicted" | "operation" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "refreshing" | "reconciling" | "unknown" | null;
 
 export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   conflicted: "Arbareto blocks changes until the Git operation ends outside Arbareto. Then select Refresh (F5).",
@@ -43,6 +43,8 @@ export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   running: "A Git operation is running. Wait for its result, or select Cancel.",
   // plan.md 001 "Loading": the Refreshing marker.
   refreshing: "Refreshing…",
+  // plan.md 001 "State unknown": a read with `recoveryState` `reconciling` is not State unknown.
+  reconciling: RECONCILING_REASON,
   unknown: "State unknown. Select Refresh (F5) first.",
 };
 /** Plan D15 running rule and feature 004 spec FR-105: these blocks show their reason only in the tooltip and the accessible description. */

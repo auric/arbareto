@@ -56,6 +56,7 @@ const comparison = (fields: Record<string, unknown>) => ({
   support: "binary",
   fileAction: "stage",
   remedy: null,
+  fileChange: "modified",
   ...fields,
 });
 

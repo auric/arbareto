@@ -397,7 +397,7 @@ describe("a stopped cherry-pick or revert (feature 010 FR-060 to FR-063)", () =>
     const tools = (operation: World["operationState"]): Record<string, (args: unknown[]) => unknown> => ({
       readComparison: (args) => {
         const p = args[1] as { snapshotId: string; entryId: string };
-        const comparison = { comparisonId: crypto.randomUUID(), snapshotId: p.snapshotId, entryId: p.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: Buffer.from("diff --cc src/app.ts\n").toString("base64"), hunks: [], support: "state", fileAction: "resolve", remedy: null };
+        const comparison = { comparisonId: crypto.randomUUID(), snapshotId: p.snapshotId, entryId: p.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: Buffer.from("diff --cc src/app.ts\n").toString("base64"), hunks: [], support: "state", fileAction: "resolve", remedy: null, fileChange: null };
         return { ...succeeded(comparison), entryId: p.entryId };
       },
       reviewWorkbench: (args) => {

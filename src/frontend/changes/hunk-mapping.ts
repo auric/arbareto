@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
-import type { ComparisonHunk } from "../../contracts/envelope";
+import type { Comparison, ComparisonHunk } from "../../contracts/envelope";
 import type { LineActionReason } from "../../contracts/file-action";
 
 // Contract §4: Pierre parses the canonical service patch for display only.
@@ -38,14 +38,13 @@ export type Side = "deletions" | "additions";
 /** Pierre `SelectedLineRange`: a start and an end point, each a line number on one side. */
 export type LineRange = { start: number; side?: Side; end: number; endSide?: Side };
 export type LineRow = { hunk: number; ordinal: number; type: " " | "-" | "+"; old: number | null; new: number | null };
-export type Patch = { header: string[]; rows: LineRow[]; markers: ReadonlySet<number> };
+export type Patch = { rows: LineRow[]; markers: ReadonlySet<number> };
 export type LinePick = { ok: true; hunk: number; lines: number[] } | { ok: false; reason: LineActionReason };
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 /** The rows of every hunk of a one-file canonical patch, in patch order. `markers` holds the hunks with a `\` line. */
 export function patchRows(patch: string): Patch {
-  const header: string[] = [];
   const rows: LineRow[] = [];
   const markers = new Set<number>();
   let hunk = -1;
@@ -61,10 +60,7 @@ export function patchRows(patch: string): Patch {
       next = Number(start[2]);
       continue;
     }
-    if (hunk < 0) {
-      header.push(line);
-      continue;
-    }
+    if (hunk < 0) continue;
     const type = line[0];
     if (type === "\\") {
       ordinal++;
@@ -74,7 +70,7 @@ export function patchRows(patch: string): Patch {
       rows.push({ hunk, ordinal, type, old: type === "+" ? null : old++, new: type === "-" ? null : next++ });
     }
   }
-  return { header, rows, markers };
+  return { rows, markers };
 }
 
 /** The row of a Pierre point. A deletions point names an old line, and any other point a new line. Each number names one row. */
@@ -98,7 +94,7 @@ export function changeRows(patch: Patch, range: LineRange): LineRow[] | null {
  * Null when a point names no row: the display disagrees with the canonical patch (contract §4 `DISPLAY_MAPPING_FAILED`).
  * The checks follow the service order (src/git-service/line-patch.ts). Only the renderer gives `several-hunks` and `context-only`.
  */
-export function pickLines(patch: Patch, range: LineRange, direction: "stage" | "unstage"): LinePick | null {
+export function pickLines(patch: Patch, range: LineRange, direction: "stage" | "unstage", change: Comparison["fileChange"]): LinePick | null {
   const a = rowOf(patch.rows, range.start, range.side);
   const b = rowOf(patch.rows, range.end, range.endSide ?? range.side);
   if (a < 0 || b < 0) return null;
@@ -106,8 +102,8 @@ export function pickLines(patch: Patch, range: LineRange, direction: "stage" | "
   const hunk = picked[0]!.hunk;
   if (picked.some((r) => r.hunk !== hunk)) return { ok: false, reason: "several-hunks" };
   // apply.c `parse_single_patch`: a partial deletion needs a modify header. Unstage applies a staged addition in reverse.
-  if (patch.header.some((l) => l.startsWith("deleted file mode "))) return { ok: false, reason: "deleted-file" };
-  if (direction === "unstage" && patch.header.some((l) => l.startsWith("new file mode "))) return { ok: false, reason: "new-file" };
+  if (change === "deleted") return { ok: false, reason: "deleted-file" };
+  if (direction === "unstage" && change === "added") return { ok: false, reason: "new-file" };
   const lines = picked.filter((r) => r.type !== " ").map((r) => r.ordinal);
   if (lines.length === 0) return { ok: false, reason: "context-only" };
   const changes = patch.rows.filter((r) => r.hunk === hunk && r.type !== " ").length;

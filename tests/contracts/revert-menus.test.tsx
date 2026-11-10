@@ -108,10 +108,38 @@ describe("hunk More actions menu (FR-012, FR-045, board Menu-hunk)", () => {
     expect(untracked.double.count("reviewWorkbench")).toBe(0);
     await unmountAll();
 
-    await shownDiff(workbench, { patch: DELETED, hunks: [hunk(0, 1, 2, 0, 0)] });
+    await shownDiff(workbench, { patch: DELETED, hunks: [hunk(0, 1, 2, 0, 0)], fileChange: "deleted" });
     await openMore(0);
     expect(describedBy(menuItem("Revert hunk…"))).toBe("Arbareto does not revert lines or hunks of a deleted file. Use Revert file.");
     expect(menuItems()).toHaveLength(1);
+  });
+
+  // tasks.md T063: the service field `fileChange` gives the deleted-file and new-file reasons. The patch text gives no reason.
+  test("fileChange gives the deleted-file and new-file reasons, a null fileChange refuses, and a patch header changes nothing", async () => {
+    await shownDiff(workbench, { fileChange: "deleted" });
+    await selectLines({ start: 2, side: "deletions", end: 2 });
+    await openMore(0);
+    expect(describedBy(menuItem("Revert hunk…"))).toBe("Arbareto does not revert lines or hunks of a deleted file. Use Revert file.");
+    expect(describedBy(menuItem("Revert 1 line…"))).toBe("Arbareto does not revert lines or hunks of a deleted file. Use Revert file.");
+    await unmountAll();
+
+    await shownDiff(workbench, { category: "staged", fileChange: "added" });
+    await openMore(0);
+    expect(describedBy(menuItem("Revert hunk…"))).toBe("Arbareto does not revert lines or hunks of a staged new file. Use Revert file.");
+    await unmountAll();
+
+    const unknown = await shownDiff(workbench, { fileChange: null });
+    await openMore(0);
+    expect(describedBy(menuItem("Revert hunk…"))).toBe("The comparison is incomplete.");
+    await click(menuItem("Revert hunk…"));
+    expect(unknown.double.count("reviewWorkbench")).toBe(0);
+    await unmountAll();
+
+    const header = await shownDiff(workbench, { patch: DELETED, hunks: [hunk(0, 1, 2, 0, 0)], fileChange: "modified" });
+    await openMore(0);
+    expect(menuItem("Revert hunk…").getAttribute("aria-disabled")).not.toBe("true");
+    await click(menuItem("Revert hunk…"));
+    expect(header.double.count("reviewWorkbench")).toBe(1);
   });
 });
 

@@ -46,6 +46,7 @@ function comparison(fileAction: string, entryId: string = crypto.randomUUID(), s
     support: "state",
     fileAction,
     remedy: null,
+    fileChange: null,
   };
 }
 

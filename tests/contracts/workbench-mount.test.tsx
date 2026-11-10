@@ -781,6 +781,7 @@ const shownComparison = (entryId: string, patch: string) => ({
     support: "supported",
     fileAction: "stage",
     remedy: null,
+    fileChange: "modified",
   }),
   entryId,
 });

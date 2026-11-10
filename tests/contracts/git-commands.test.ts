@@ -225,7 +225,7 @@ describe("service arrays", () => {
 
   caseTest(
     "T067",
-    "the service starts every Git array with --no-lazy-fetch except the gitProbe --exec-path and version --build-options probes, and reads add the read options",
+    "the service starts every Git array with --no-lazy-fetch except the gitProbe --exec-path and version probes, and reads add the read options",
     ["shell-double"],
     async () => {
       const git = gitPath();
@@ -242,8 +242,8 @@ describe("service arrays", () => {
         expect((await service.request("readHistoryRows", { viewId: view.result!.viewId, mode: "full", at: { row: 0 }, count: 1, text: "details" }, { repositoryId })).state).toBe("succeeded");
         const calls = service.runner.calls;
         const probes = calls.filter((c) => c.contextKind === "gitProbe").map((c) => [...c.arguments]);
-        expect(probes).toContainEqual(["version", "--build-options"]);
-        for (const args of probes) expect([["--exec-path"], ["version", "--build-options"], ["--no-lazy-fetch", "var", "GIT_CONFIG_SYSTEM"], ["--no-lazy-fetch", "var", "GIT_CONFIG_GLOBAL"]]).toContainEqual(args);
+        expect(probes).toContainEqual(["version"]);
+        for (const args of probes) expect([["--exec-path"], ["version"], ["--no-lazy-fetch", "var", "GIT_CONFIG_SYSTEM"], ["--no-lazy-fetch", "var", "GIT_CONFIG_GLOBAL"]]).toContainEqual(args);
         const others = calls.filter((c) => c.contextKind !== "gitProbe");
         expect(others.map((c) => c.contextKind)).toEqual(expect.arrayContaining(["repositoryDiscovery", "registeredOperation"]));
         for (const c of others) expect({ args: c.arguments, first: c.arguments[0] }).toEqual({ args: c.arguments, first: "--no-lazy-fetch" });

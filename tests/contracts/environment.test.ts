@@ -51,7 +51,7 @@ const installation = {
   gitInstallationId: "11111111-1111-4111-8111-111111111111",
   selectedPath: GIT_PATH,
   executablePath: GIT_PATH,
-  executableIdentity: { file: IDENTITY, versionOutput: `git version ${MINIMUM}\ncpu: x86_64\n`, digest: "c".repeat(64) },
+  executableIdentity: { file: IDENTITY, versionOutput: `git version ${MINIMUM}\n`, digest: "c".repeat(64) },
   version: MINIMUM,
   admission: "admitted" as const,
 };

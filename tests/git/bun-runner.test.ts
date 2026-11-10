@@ -179,10 +179,10 @@ describeGit("bun runner", (git) => {
       call({ context: { contextKind: "gitProbe", bootstrapId }, environmentPolicy: "probe", arguments: args });
     await expect(runner.run(probe(runner.addContext("gitProbe", git), ["--no-lazy-fetch", "version"]))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     expect(runner.spawned).toBe(before);
-    const version = probe(runner.addContext("gitProbe", git), ["version", "--build-options"]);
+    const version = probe(runner.addContext("gitProbe", git), ["version"]);
     expect(await runner.run(version)).toMatchObject({ exitCode: 0 });
     expect(text(version.stdout)).toStartWith("git version ");
-    await expect(runner.run(probe(id(), ["version", "--build-options"]))).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
+    await expect(runner.run(probe(id(), ["version"]))).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
   });
 
   test("each policy builds the child environment from src/contracts/git-environment.json", async () => {

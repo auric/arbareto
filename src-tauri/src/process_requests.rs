@@ -5893,7 +5893,7 @@ pub(crate) mod tests {
                 .expect("context");
             json!({
                 "type": "run", "callId": call, "operationId": uuid(), "contextKind": "gitProbe", "bootstrapId": bootstrap,
-                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+                "arguments": ["version"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
             })
         };
         let cases: Vec<(&str, Edit)> = vec![(
@@ -6026,7 +6026,7 @@ pub(crate) mod tests {
                     .expect("context");
                 json!({
                     "type": "run", "callId": call, "operationId": uuid(), "contextKind": "gitProbe", "bootstrapId": bootstrap,
-                    "arguments": ["version", "--build-options"], "environmentPolicy": policy, "limits": network_limits(1000, 1000),
+                    "arguments": ["version"], "environmentPolicy": policy, "limits": network_limits(1000, 1000),
                 })
             };
             let cases: Vec<(&str, Edit)> = vec![("a bootstrap run", remove("transactionId"))];
@@ -6281,7 +6281,7 @@ pub(crate) mod tests {
         let probe = |call: &str, operation: &str, bootstrap: &str| {
             json!({
                 "type": "run", "callId": call, "operationId": operation, "contextKind": "gitProbe", "bootstrapId": bootstrap,
-                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+                "arguments": ["version"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
             })
         };
         let new_probe = || {
@@ -6312,7 +6312,7 @@ pub(crate) mod tests {
                 "probe with --no-lazy-fetch",
                 set(
                     "arguments",
-                    json!(["--no-lazy-fetch", "version", "--build-options"]),
+                    json!(["--no-lazy-fetch", "version"]),
                 ),
             ),
             (
@@ -6401,7 +6401,7 @@ pub(crate) mod tests {
         let probe = |call: &str, operation: &str, bootstrap: &str, kind: &str| {
             json!({
                 "type": "run", "callId": call, "operationId": operation, "contextKind": kind, "bootstrapId": bootstrap,
-                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+                "arguments": ["version"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
             })
         };
         let mut calls = Vec::new();
@@ -6768,7 +6768,7 @@ pub(crate) mod tests {
         let probe = |call: &str, operation: &str, bootstrap: &str| {
             json!({
                 "type": "run", "callId": call, "operationId": operation, "contextKind": "gitProbe", "bootstrapId": bootstrap,
-                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+                "arguments": ["version"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
             })
         };
         let other = uuid();

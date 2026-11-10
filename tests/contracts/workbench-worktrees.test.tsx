@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, hoverTooltip, itemLabel, keyboardFocus, mountWorkbench, oid, press, REGISTRATION, settle, sizeSwitcherList, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, click, createWorld, hoverTooltip, itemLabel, keyboardFocus, mountWorkbench, oid, press, REGISTRATION, settle, sizeSwitcherList, snapshot, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T064 (feature 004, WP21). Story US5. Spec FR-049 to FR-057. Plan D10, D15. Data-model §8. Contract Δ3, Δ9.
@@ -749,6 +749,23 @@ describe("Prune missing worktrees (FR-057)", () => {
     expect(reviews(double)).toEqual([{ action: "worktree-prune" }]);
     expect(double.count("runWorkbench")).toBe(1);
     expect(text(document.body)).toContain("Removed the records of 1 missing worktree.");
+  });
+});
+
+// 001 tasks.md T411 and 003 plan D12: the reconcile reason follows the running reason rule.
+describe("the quiet reconcile reason (001 T411, 003 plan D12)", () => {
+  test("T411: a read with recoveryState reconciling makes Open, Remove, and Prune unavailable without a visible reason line; the description holds it", async () => {
+    const world = worktreeWorld();
+    world.answers.readWorkspace = () => succeeded({ ...snapshot(world), recoveryState: "reconciling" });
+    await mountWorkbench(workbench, world);
+    await rowMenu("repo-hotfix");
+    for (const label of ["Open", "Remove worktree…", "Prune missing worktrees"]) {
+      const item = menuItem(label)!;
+      expect(item.getAttribute("aria-disabled")).toBe("true");
+      const reason = document.getElementById(item.getAttribute("aria-describedby")!)!;
+      expect(text(reason)).toBe("The status read after the last operation is still running.");
+      expect(reason.hidden).toBe(true);
+    }
   });
 });
 

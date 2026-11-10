@@ -124,12 +124,12 @@ export function WorktreesGroup({ actions, rowHeight }: { actions: WorktreeAction
           onOpenChange={(next) => void (next || setMenu(null))}
           groups={[
             [
-              { label: W.open, icon: FolderOpenIcon, reason: actions.openReason(e), onSelect: () => actions.open(e) },
-              { label: W.remove, icon: Delete02Icon, keys: { aria: KEYS.delete.aria, text: KEYS.delete.text }, reason: actions.removeReason(e), danger: true, onSelect: () => actions.startRemove(e) },
+              { label: W.open, icon: FolderOpenIcon, reason: actions.openReason(e), running: actions.quiet(actions.openReason(e)), onSelect: () => actions.open(e) },
+              { label: W.remove, icon: Delete02Icon, keys: { aria: KEYS.delete.aria, text: KEYS.delete.text }, reason: actions.removeReason(e), running: actions.quiet(actions.removeReason(e)), danger: true, onSelect: () => actions.startRemove(e) },
             ],
             [
               { label: W.add, icon: PlusSignIcon, onSelect: () => actions.startAdd(menu!.anchor) },
-              { label: W.prune, icon: FolderRemoveIcon, reason: actions.pruneReason, onSelect: actions.prune },
+              { label: W.prune, icon: FolderRemoveIcon, reason: actions.pruneReason, running: actions.quiet(actions.pruneReason), onSelect: actions.prune },
             ],
           ]}
         />

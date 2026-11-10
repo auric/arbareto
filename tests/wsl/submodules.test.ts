@@ -209,6 +209,7 @@ async function registerTrusted(s: WslSession, sup: WslRepo): Promise<string> {
 // A fresh snapshot, then the timed list review. `update` holds the review token for `sendUpdate`.
 async function listReview(s: WslSession, repositoryId: string, timeoutMs?: number): Promise<{ review: Awaited<ReturnType<WslSession["response"]>>; ms: number; update: Omit<Prepared, "trustId"> }> {
   const read = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }), timeoutMs);
+  expect({ state: read.state, code: read.code }).toEqual({ state: "succeeded", code: undefined });
   const snapshot = read.result as { snapshotId: string; generation: number };
   const at = performance.now();
   const review = await s.response(s.request("reviewSubmodules", { snapshotId: snapshot.snapshotId }, { repositoryId, repositoryGeneration: snapshot.generation }), timeoutMs);
@@ -562,7 +563,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
         const repositoryId = await registerTrusted(s, m.sup);
         const listed = async (mode: string) => {
           const { review, ms } = await listReview(s, repositoryId, T162_WAIT_MS);
-          expect({ mode, state: review.state, rows: reviewRows(review) }).toEqual({ mode, state: "succeeded", rows: point.rows });
+          expect({ mode, state: review.state, code: review.code, rows: reviewRows(review) }).toEqual({ mode, state: "succeeded", code: undefined, rows: point.rows });
           return ms;
         };
         // The detached twin: the build leaves each HEAD detached at `main`.
@@ -574,7 +575,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
         moveRows(m, paths);
         const updated = async () => {
           const { review, update } = await listReview(s, repositoryId, T162_WAIT_MS);
-          expect({ state: review.state, rows: reviewRows(review) }).toEqual({ state: "succeeded", rows: point.rows });
+          expect({ state: review.state, code: review.code, rows: reviewRows(review) }).toEqual({ state: "succeeded", code: undefined, rows: point.rows });
           const u = await timedUpdate(s, runner, update, T162_WAIT_MS, true);
           eachRow(m.sup, `git checkout -q --detach ${m.main}`, T162_WAIT_MS);
           expect(u.step?.counters).toEqual({ rowIndex: 1, rowCount: point.rows });

@@ -217,7 +217,9 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - It counts `rev-list --count T ^HEAD` and reads up to 100 subjects with `rev-list --max-count=100 T ^HEAD` and the 001 `cat-file --batch-command` reader.
 - The modal names the destination, the count, and the subjects, and says that other people can lose work. Cancel has the initial focus.
 - `sync` re-reads T. A changed T gives `STALE_REVIEW`, and the modal must show again.
-- The lease is `--force-with-lease=<dst>:<T>`. A `[rejected]` status of this push means that the remote branch changed (spec Assumptions). The notice then offers Fetch.
+- The lease is `--force-with-lease=<dst>:<T>`. After a `[rejected]` status of this push, `sync` reads the remote ref once with `ls-remote` (contract Δ3 "Lease re-read", T092). The review binds `sameUrl` for this read.
+- A remote value other than T, or no remote ref, gives reason `stale-lease`. The notice then states that the remote branch changed and offers Fetch.
+- A remote value equal to T, a failed read, or no read gives reason `rejected` and no new notice. The status bar shows "<action name> did not complete: PUSH_REJECTED rejected: <reasonText>" (proposed 2026-11-10, T092).
 
 ### D6 Pull: fetch, count, decide, integrate
 
@@ -455,6 +457,10 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 | `fetch --porcelain` prints `<flag> <old> <new> <local-ref>` on stdout. | git-fetch(1) OUTPUT; builtin/fetch.c |
 | `push --porcelain` prints `<flag>\t<from>:<to>\t<summary> (<reason>)` with full ref names, a `To` line with an anonymized URL, and `Done`, also after a rejected push. The summaries are untranslated. | git-push(1) OUTPUT; transport.c `print_ref_status`, `transport_anonymize_url`; research R16 b |
 | A lease refusal is `[rejected]` with "stale info". | transport.c `REF_STATUS_REJECT_STALE`; t5533 |
+| With `--force-with-lease=<dst>:<expect>` over Git's own transport, Git refuses the ref only when the remote value differs from `<expect>`. `--force-if-includes` is a no-op with this form. A shallow `[rejected]` comes only from a fetch. | git-push(1) `--force-with-lease`, `--force-if-includes`; remote.c `set_ref_status_for_push`, `apply_cas`; fetch-pack.c (only setter of `REF_STATUS_REJECT_SHALLOW`) |
+| A remote helper reports each ref as `ok` or `error <dst> <why>`. transport-helper.c maps "non-fast forward", "fetch first", "needs force", and "already exists" to `[rejected]` too. It ignores an unsupported `cas` option, and http-push (dumb HTTP) drops it. | transport-helper.c `push_update_ref_status`, `push_refs_with_push`; remote-curl.c `push_dav`; http-push.c |
+| So a `[rejected]` line does not prove a stale lease. The `ls-remote` re-read does: exit 2 means no matching ref, and an exact `<dst>` line gives the remote value. `ls-remote <remote>` reads the fetch URL. | git-ls-remote(1) `--exit-code`; 011 research.md R2 P15, P16 |
+| Git sets the lease status before it runs the pre-push hook, and runs the hook also when the lease refuses every ref. The T092 tests use this to change the remote between Git's check and the re-read. | transport.c `transport_push`, `run_pre_push_hook`; 011 research.md R5 U8 |
 | `for-each-ref` track text is untranslated. | ref-filter.c `msgs` "Untranslated plumbing messages"; only builtin/branch.c and builtin/tag.c call `setup_ref_filter_porcelain_msg` |
 | `%(push:remoteref)` is filled only with `remote.<name>.push` refspecs. | remote.c `remote_ref_for_branch` |
 | `rev-list --left-right --count` prints left TAB right. | git-rev-list(1) `--count` |

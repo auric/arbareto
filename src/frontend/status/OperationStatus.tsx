@@ -431,8 +431,9 @@ function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome, h
   if (response.state === "canceled" && (name === SYNC_NAMES.push || name === SYNC_NAMES["force-push"])) return { lead: `${name} canceled. ${PUSH_CANCELED}`, tail: "" };
   const push = outcome.push;
   if (response.code === "PUSH_REJECTED" && push?.status === "remote-rejected") return { lead: REMOTE_REJECTED, tail: push.reasonText === null ? "" : `: ${push.reasonText}` };
-  // Data-model §5: a `rejected` status with a lease is `stale-lease` (contract Δ9).
-  if (response.code === "PUSH_REJECTED" && push !== undefined) return { lead: `${name} did not complete: `, code: "PUSH_REJECTED", tail: ` ${push.status === "rejected" && push.lease ? "stale-lease" : push.status}` };
+  // Contract Δ9: a lease rejection with reason `rejected` shows Git's `reasonText`, because no fact names its cause.
+  const unproven = push?.status === "rejected" && push.lease && outcome.reason === "rejected" && push.reasonText !== null ? `: ${push.reasonText}` : "";
+  if (response.code === "PUSH_REJECTED" && push !== undefined) return { lead: `${name} did not complete: `, code: "PUSH_REJECTED", tail: ` ${outcome.reason ?? push.status}${unproven}` };
   return null;
 }
 

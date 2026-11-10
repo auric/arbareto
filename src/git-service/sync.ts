@@ -449,11 +449,28 @@ export function createSyncer(o: SyncerOptions) {
       const line = exited ? parsePushPorcelain(out.take(), refspec, end.exit!.exitCode!) : null;
       const status: PushStatus = line?.status ?? "none";
       const succeeded = exited && SUCCESS.includes(status);
+
+      // Contract Δ9: a `[rejected]` line gives no typed cause, and a remote helper can ignore the lease. Only a remote value other than the
+      // lease value proves a stale lease. The read runs only when the fetch URL names the push URL byte for byte (`sameUrl`).
+      let stale = false;
+      const reread: { exit: GitExit | null }[] = [];
+      if (exited && status === "rejected" && lease !== null && b.sameUrl === true) {
+        const listed = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+        const lsRemedy = remedyOf("& {git} --no-lazy-fetch -C {root} ls-remote --exit-code -- {remote} {dst}", { remote: d.remote, dst: d.ref }, userInfo);
+        const check = await networkStep(lsRemoteArgs(d.remote, d.ref), "sync-push", {}, lsRemedy, listed);
+        reread.push(check);
+        const x = check.exit;
+        const read = x !== null && x.exitCode !== null && x.deadline === undefined && !x.diagnosticLimit && !listed.limited;
+        // git-ls-remote(1) `--exit-code`: exit 2 when no ref matches. A pattern matches a ref tail, so only the exact `<dst>` line counts.
+        const lines = read && x.exitCode === 0 ? parseLsRemote(listed.take(), w.objectFormat) : null;
+        stale = read && (x.exitCode === 2 || (lines !== null && lines.find((l) => l.ref === refKey(d.ref))?.objectId !== lease));
+      }
+
       // Contract Δ3 Set upstream: only after a successful push, with the bound keys. A failed write leaves the push succeeded.
       const writes = upstreamArgs(branch, d.remote, d.ref, d.upstreamRebase);
       const upstream = succeeded && d.setUpstream ? await writeUpstream(writes) : { set: true, ends: [] };
       const upstreamNotSet = !upstream.set;
-      enterReconciling(registry, operationId, deadline, lastDescendants);
+      enterReconciling(registry, operationId, deadline || reread.some((e) => e.exit?.deadline !== undefined), lastDescendants);
       const tracking = d.trackingRef ?? trackingOf(entries, d.remote, d.ref);
       const pushResult = (after: Refs | null, upstreamWritten: boolean) => ({
         status,
@@ -465,7 +482,7 @@ export function createSyncer(o: SyncerOptions) {
         upstreamNotSet,
         outputTail: end.outputTail,
       });
-      if (!(await processEnded([end, ...upstream.ends]))) return unknown({ code: "GIT_FAILED" }, { action: b.payload.action, push: pushResult(null, false) });
+      if (!(await processEnded([end, ...upstream.ends, ...reread]))) return unknown({ code: "GIT_FAILED" }, { action: b.payload.action, push: pushResult(null, false) });
       const read = await readAfter({ action: b.payload.action, push: pushResult(null, false) });
       if (read === null) return;
       const { after, head: observedHead, state } = read;
@@ -492,8 +509,7 @@ export function createSyncer(o: SyncerOptions) {
       keepTarget("url", d.url);
       if (changed) return finish({ type: "failed-with-effects" }, { ...result, remedy });
       if (status === "rejected" || status === "remote-rejected" || status === "remote-failure") {
-        // Contract Δ3 and Δ9: a `[rejected]` status of a push with a lease means that the remote changed.
-        const reason = status !== "rejected" ? status : lease === null ? "rejected" : "stale-lease";
+        const reason = status !== "rejected" ? status : stale ? "stale-lease" : "rejected";
         return finish({ type: "no-effects", observed: "failed", code: "PUSH_REJECTED" }, { ...result, reason });
       }
       const code: ErrorCode | undefined = deadline ? undefined : end.refused ?? (out.limited || end.exit?.diagnosticLimit ? "OUTPUT_LIMIT" : exited && line === null ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED");

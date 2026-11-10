@@ -122,30 +122,33 @@ export function buildWslRemedy(kind: WslRemedyKind, values: WslRemedyValues): Re
   return buildRemedyCommand(template, { wsl: { kind: "wslExecutable", text: values.wslExecutable, form: "windows" }, ...linux });
 }
 
-export type WslGitCheck =
-  | { ok: true; version: string }
-  | { ok: false; code: "GIT_UNSUPPORTED"; reason: "windows-git" | "not-elf" }
-  | { ok: false; code: "GIT_UNSUPPORTED"; reason: "version"; detectedVersion?: string; minimumVersion: string };
+export type WslVersionCheck = { ok: true; version: string } | { ok: false; code: "GIT_UNSUPPORTED"; reason: "version"; detectedVersion?: string; minimumVersion: string };
+export type WslGitCheck = WslVersionCheck | { ok: false; code: "GIT_UNSUPPORTED"; reason: "windows-git" | "not-elf" | "unreadable" };
 
 // The probe `magic` fact (`src/contracts/wsl-process.json`): the first four bytes are the elf(5) magic `7f 45 4c 46`, the first two bytes are `MZ`, or neither.
-export type WslMagic = "ELF" | "MZ" | "-";
+// `?`: `head` failed, so the probe read no bytes.
+export type WslMagic = "ELF" | "MZ" | "-" | "?";
 
 // Contract §11 "Git per distro": `MZ` is the magic of the `WSLInterop` binary format, so interop runs the file as a Windows program.
 // Any other file without the ELF magic, such as a script, can start any program.
-export const foreignGitReason = (magic: WslMagic): "windows-git" | "not-elf" | null => (magic === "ELF" ? null : magic === "MZ" ? "windows-git" : "not-elf");
+export const foreignGitReason = (magic: WslMagic): "windows-git" | "not-elf" | "unreadable" | null =>
+  magic === "ELF" ? null : magic === "MZ" ? "windows-git" : magic === "?" ? "unreadable" : "not-elf";
 
 const MINIMUM_PARTS = WSL_MINIMUM_GIT_VERSION.split(".").map(BigInt);
 // The shell parses each part as an unsigned 64-bit number (`src-tauri/src/wsl.rs` `admitted_version`).
 const PART_MAX = 2n ** 64n - 1n;
 
-// `versionText` is the `git --version` output line. The rule compares `major.minor.patch` numerically.
 export function checkWslGit(git: { magic: WslMagic; versionText: string }): WslGitCheck {
   const foreign = foreignGitReason(git.magic);
-  if (foreign !== null) return { ok: false, code: "GIT_UNSUPPORTED", reason: foreign };
-  const m = /^git version ((\d+)\.(\d+)\.(\d+)\S*)$/.exec(git.versionText);
+  return foreign === null ? checkWslVersion(git.versionText) : { ok: false, code: "GIT_UNSUPPORTED", reason: foreign };
+}
+
+// `versionText` is the `git --version` output line. The rule compares `major.minor.patch` numerically.
+export function checkWslVersion(versionText: string): WslVersionCheck {
+  const m = /^git version ((\d+)\.(\d+)\.(\d+)\S*)$/.exec(versionText);
   if (!m || m.slice(2, 5).some((part) => BigInt(part) > PART_MAX)) {
     // Contract §11: the text names the found version, also an unparseable one.
-    const found = git.versionText.replace(/^git version /, "");
+    const found = versionText.replace(/^git version /, "");
     return { ok: false, code: "GIT_UNSUPPORTED", reason: "version", ...(found === "" ? {} : { detectedVersion: found }), minimumVersion: WSL_MINIMUM_GIT_VERSION };
   }
   const parts = m.slice(2, 5).map(BigInt);

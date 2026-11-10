@@ -8,7 +8,7 @@ import type { RegistrationResult } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { BOOTSTRAP_DEADLINE_CAP_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, WSL_DISTRO_START_MS } from "../contracts/limits";
 import { buildSubmoduleOutputTail } from "../contracts/submodules";
-import { buildWslRemedy, checkWslGit, foreignGitReason, routeWslPath, type WslMagic, WSL_MINIMUM_GIT_VERSION } from "../contracts/wsl-route";
+import { buildWslRemedy, checkWslVersion, foreignGitReason, routeWslPath, type WslMagic, WSL_MINIMUM_GIT_VERSION } from "../contracts/wsl-route";
 import { createCollector, type GitRunner, type WslDistrosResult, type WslRunner } from "./git-runner";
 
 // The approved Linux Git of one distro in this service session (data-model §1).
@@ -47,7 +47,8 @@ const TEXT = {
   "no-coreutils": (name: string) => `Arbareto needs the stat, env, and sha256sum programs in /usr/bin of ${name}. Install the coreutils package in the distro, then open the folder again.`,
   "start-failed": (name: string) => `WSL could not start distro ${name}. Start it in a terminal, then open the folder again.`,
   "windows-git": (name: string) => `The git command in ${name} is Git for Windows. Install Linux Git 2.55.0 or later in the distro.`,
-  "not-elf": (name: string) => `The git command in ${name} is not a Linux program file. It can be a script that starts another Git. Install Linux Git 2.55.0 or later in the distro.`,
+  "not-elf": (name: string) => `The git command in ${name} is not an ELF program file. Arbareto runs only an ELF Git. Put Linux Git 2.55.0 or later first on the PATH.`,
+  unreadable: (name: string) => `Arbareto cannot read the git command file in ${name}. Make the file readable, or put Linux Git 2.55.0 or later first on the PATH.`,
   "git-no-fs-uuid": (name: string) => `Arbareto cannot read a file-system UUID for Git in ${name}. Install Git on the distro's own disk.`,
   "git-missing": (name: string) => `Install Git 2.55.0 or later in ${name}.`,
   "wsl-path": () => "This path holds a name that Windows cannot show. Open another folder.",
@@ -142,7 +143,7 @@ export function parseWslProbe(bytes: Uint8Array): WslProbeFacts | null {
     const mark = magic.get(name);
     if (path === undefined && mark === undefined) continue;
     // A `path` line comes with its `magic` line, and the probe prints only absolute paths.
-    if (path === undefined || !path.startsWith("/") || (mark !== "ELF" && mark !== "MZ" && mark !== "-") || absent.has(name)) return null;
+    if (path === undefined || !path.startsWith("/") || (mark !== "ELF" && mark !== "MZ" && mark !== "-" && mark !== "?") || absent.has(name)) return null;
     programs[name] = { path, magic: mark };
   }
   return { programs, facts };
@@ -183,9 +184,8 @@ export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutabl
   const status = facts.noexpand ?? "";
   if (!/^(?:0|[1-9][0-9]{0,2})$/.test(status) || Number(status) > 255 || facts.verbatim !== "0") return unavailable("scope-arguments", distro);
   if (!native(programs.setsid)) return unavailable("no-setsid", distro);
-  const checked = checkWslGit({ magic: git.magic, versionText: facts.version ?? "" });
+  const checked = checkWslVersion(facts.version ?? "");
   if (!checked.ok) {
-    if (checked.reason !== "version") return { ok: false, code: "GIT_UNSUPPORTED", result: { reason: checked.reason, text: TEXT[checked.reason](distro) } };
     const found = checked.detectedVersion === undefined ? "" : ` ${checked.detectedVersion}`;
     let text = `Git${found} in ${distro} is older than ${WSL_MINIMUM_GIT_VERSION}. Install Git ${WSL_MINIMUM_GIT_VERSION} or later in the distro.`;
     const remedy = isUbuntu(facts.osid) ? buildWslRemedy("git-ppa", { wslExecutable, distro }).command : null;

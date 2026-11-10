@@ -1609,7 +1609,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         await new Promise((resolve) => setImmediate(resolve));
       }
       // src/git-service/native-runner.ts: each exit after the operation stderr bound carries `diagnosticLimit`.
-      return { exitCode: halted ? null : (exitCode ?? 0), activeDescendants: 0, ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}) };
+      return { exitCode: halted ? null : exitCode === undefined ? 0 : exitCode, activeDescendants: 0, ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}) };
     } finally {
       leave();
       call.signal.removeEventListener("abort", halt);

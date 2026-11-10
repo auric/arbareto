@@ -303,6 +303,8 @@ describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
     expect(git("git version 2.55.0.windows.3", "MZ")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "windows-git" });
     expect(git("git version 2.56.0", "-")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "not-elf" });
     expect(git("git version 2.55.0.windows.3", "-")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "not-elf" });
+    // `?`: `head` failed, so the probe read no bytes.
+    expect(git("git version 2.56.0", "?")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "unreadable" });
     expect(git("git version 2.55.0.windows.3")).toEqual({ ok: true, version: "2.55.0.windows.3" });
     expect(git("git version 2.54.0.windows.1")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "version", detectedVersion: "2.54.0.windows.1", minimumVersion: "2.55.0" });
   });

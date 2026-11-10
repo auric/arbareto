@@ -204,6 +204,8 @@ describe("WSL registration seams (T207)", () => {
       expect({ name, found: checked(name) }).toEqual({ name, found: { code, reason } });
       // A script or another file without the ELF magic. Git gets its own reason.
       expect({ name, found: checked(name, undefined, "-") }).toEqual({ name, found: { code, reason: name === "git" ? "not-elf" : reason } });
+      // `?`: `head` failed, so the probe read no bytes. Git gets its own reason.
+      expect({ name, found: checked(name, undefined, "?") }).toEqual({ name, found: { code, reason: name === "git" ? "unreadable" : reason } });
     }
     expect(checked("git", undefined, "elf")).toBe("unparsed");
   });

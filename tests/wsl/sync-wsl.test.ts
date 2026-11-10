@@ -11,14 +11,15 @@
 import { expect } from "bun:test";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
+import { FIXTURE_ROOT } from "../git/fixture-root";
 import { compare, outcome, readOk, SUCCEEDED } from "../git/hunk-harness";
 import { FACTS, gitVersion, observationLine } from "../git/remote-facts";
 import { buildFetchFlags, buildMergeConflict, buildPull, buildPush, configDigests, fc, gitRun, importStream, leftRight, MARKER_TEXT, pullRowCopy, PULL_ROWS, refMap, revParse, stageEntries, type GitHost, type PushFixture } from "../git/remote-fixtures";
 import type { RegistrationResult, Service } from "../git/service-harness";
-import { ANY_EXIT, copyWithRemotes, hostFor, INTEGRATE_ENV, pullFlags, refreshIndex, remoteCalls, repoShape, sendSync, until, type Reviewed, type SyncResult } from "../git/sync-harness";
+import { ANY_EXIT, copyWithRemotes, INTEGRATE_ENV, pullFlags, refreshIndex, remoteCalls, repoShape, sendSync, until, type Reviewed, type SyncResult } from "../git/sync-harness";
 import { distroGitHost, sh } from "./fixtures";
 import { AFTER_CLOSE_MS, hostOf, open, request, RESPONSE_MS, useWorkbenchWsl, W, withWsl } from "./workbench-wsl-harness";
-import { inDistro, listScopes, pgrep, uncPath, WSL_MINIMUM_GIT, wslExec, wslTest, type WslHost } from "./wsl-host";
+import { listScopes, pgrep, uncPath, WSL_MINIMUM_GIT, wslTest, type WslHost } from "./wsl-host";
 
 for (const module of ["sync", "sync-review", "sync-integrate", "clone"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 printOrigin("./sync-wsl.test.ts", import.meta.dir);
@@ -228,16 +229,23 @@ W("T075 SC-014: Mark resolved of each accepted unmerged kind gives the index of 
 // The hook keeps its PID through `exec`, so the PID file names the sleeping process.
 const HOOK_START_MS = 120_000;
 const sleepingHook = (pidFile: string) => `#!/bin/sh\necho $$ > '${pidFile}'\nexec /usr/bin/sleep 600\n`;
-async function hookPid(g: GitHost, pidFile: string): Promise<string> {
+// proc(5) `/proc/<pid>/stat`: field 22 is the start time. The `comm` field can hold spaces, so the fields count after its closing `) `.
+const START_TIME = 's=$(cat "/proc/$1/stat" 2>/dev/null) || exit 3; s=${s##*) }; set -- $s; shift 19; printf %s "$1"';
+// The kill happens only while the PID still has the recorded start time, so a reused PID gets no signal. Exit 1: the hook is gone.
+const KILL_SAME = 'p=$1; t=$2; s=$(cat "/proc/$p/stat" 2>/dev/null) || exit 1; s=${s##*) }; set -- $s; shift 19; [ "$1" = "$t" ] || exit 1; kill -KILL "$p"; exit 0';
+interface Hook {
+  pid: string;
+  // Null: the hook ended before its start time was read.
+  start: string | null;
+}
+async function hookOf(w: WslHost, g: GitHost, pidFile: string): Promise<Hook> {
   await until(() => /^\d+\n$/.test(g.read(pidFile)?.toString("utf8") ?? ""), "hook start", HOOK_START_MS);
-  return g.read(pidFile)!.toString("utf8").trim();
+  const pid = g.read(pidFile)!.toString("utf8").trim();
+  const read = sh(w, START_TIME, [pid], { allowExit: [0, 3] });
+  return { pid, start: read.exitCode === 0 ? Buffer.from(read.bytes).toString("utf8") : null };
 }
-// proc(5): `/proc/<pid>` exists while the process exists. test(1) exits 1 for an absent path. A live hook gets SIGKILL, so no process outlives the case.
-function hookExit(w: WslHost, pid: string): number | null {
-  const exit = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", "/usr/bin/test", "-e", `/proc/${pid}`]).exitCode;
-  if (exit === 0) inDistro(w.distro, ["/usr/bin/kill", "-KILL", pid], { allowExit: [0, 1] });
-  return exit;
-}
+// Exit 0: the hook was alive and got SIGKILL. Exit 1: the hook was gone.
+const hookExit = (w: WslHost, hook: Hook): number | null => (hook.start === null ? 1 : sh(w, KILL_SAME, [hook.pid, hook.start], { allowExit: [0, 1] }).exitCode);
 
 for (const ending of ["cancel", "close"] as const) {
   W(`T075 SC-009: after ${ending === "cancel" ? "Cancel" : "a simulated close"} during a push with a slow pre-receive hook, no process of the operation and no arbareto-* scope remains in the distro, and no remote ref changes`, async (w) => {
@@ -247,17 +255,24 @@ for (const ending of ["cancel", "close"] as const) {
     g.write(`${a.remotes.origin!}/hooks/pre-receive`, sleepingHook(pidFile));
     const remote = refMap(g, a.remotes.origin!);
     await withWsl(w, `t075-push-${ending}`, async (s) => {
-      const r = await open(s, w, a.repo);
-      const rv = await reviewed(s, r, { action: "push" });
-      const requestId = sendSync(s, r, rv.syncReviewToken);
-      const operationId = await s.operationId(requestId);
-      const pid = await hookPid(g, pidFile);
-      if (ending === "cancel") {
-        await s.cancel(operationId);
-        expect(outcome(await s.response<SyncResult>(requestId, RESPONSE_MS))).toEqual({ state: "canceled", code: "CANCELED" });
-      } else s.runner.failService();
-      await Bun.sleep(AFTER_CLOSE_MS);
-      expect({ operation: pgrep(w, operationId), scopes: listScopes(w), hook: hookExit(w, pid) }).toEqual({ operation: [], scopes: [], hook: 1 });
+      let hook: Hook | undefined;
+      try {
+        const r = await open(s, w, a.repo);
+        const rv = await reviewed(s, r, { action: "push" });
+        const requestId = sendSync(s, r, rv.syncReviewToken);
+        const operationId = await s.operationId(requestId);
+        hook = await hookOf(w, g, pidFile);
+        if (ending === "cancel") {
+          await s.cancel(operationId);
+          expect(outcome(await s.response<SyncResult>(requestId, RESPONSE_MS))).toEqual({ state: "canceled", code: "CANCELED" });
+        } else s.runner.failService();
+        await Bun.sleep(AFTER_CLOSE_MS);
+        const [operation, scopes, alive] = [pgrep(w, operationId), listScopes(w), hookExit(w, hook)];
+        hook = undefined;
+        expect({ operation, scopes, hook: alive }).toEqual({ operation: [], scopes: [], hook: 1 });
+      } finally {
+        if (hook !== undefined) hookExit(w, hook);
+      }
     });
     expect(refMap(g, a.remotes.origin!)).toEqual(remote);
   });
@@ -270,9 +285,8 @@ W("T075 FR-037: under plink with a missing plink.exe, a WSL fetch sends no pagea
   await withWsl(w, "t075-plink", async (s) => {
     const r = await open(s, w, app);
     const rv = await reviewed(s, r, { action: "fetch" });
-    s.runner.inject.sshClient = { plink: missingPlink() };
+    s.runner.inject.sshClient = { plink: MISSING_PLINK };
     const done = await runSync(s, r, rv.syncReviewToken);
-    s.runner.inject.sshClient = "git";
     expect(outcome(done)).toEqual(SUCCEEDED);
     expect(s.runner.frames.filter((f) => f.type === "pageant")).toEqual([]);
   });
@@ -280,8 +294,8 @@ W("T075 FR-037: under plink with a missing plink.exe, a WSL fetch sends no pagea
 
 // Contract Δ3 `clone` step 4: the fixed items, the URL, and the destination in Git's form.
 const CLONE = (url: string, destination: string) => ["--no-lazy-fetch", "clone", "--progress", "--no-recurse-submodules", "--", url, destination];
-// A Windows path under the owned fixture root. No file exists there.
-const missingPlink = () => join(hostFor("t075-plink").root, "putty", "plink.exe");
+// A Windows path under the owned fixture root. No test writes a file there.
+const MISSING_PLINK = join(FIXTURE_ROOT, "t075-putty", "plink.exe");
 // SC-011: the refs, HEAD, the configuration values, the index entries, and the working files.
 const cloneState = (g: GitHost, repo: string) => ({
   refs: refMap(g, repo),
@@ -301,7 +315,7 @@ W("T075 SC-011, SC-006: a clone into a missing and into an empty WSL folder runs
   const expected = cloneState(g, oracle);
   await withWsl(w, "t075-clone", async (s) => {
     // Contract Δ3 `clone` step 3: a WSL Git gets no pageant request, so the missing plink.exe decides nothing.
-    s.runner.inject.sshClient = { plink: missingPlink() };
+    s.runner.inject.sshClient = { plink: MISSING_PLINK };
     for (const kind of ["missing", "empty"] as const) {
       const destination = `${g.root}/t075-clone-${kind}-${++copies}`;
       if (kind === "empty") sh(w, 'mkdir -- "$1"', [destination]);
@@ -318,7 +332,6 @@ W("T075 SC-011, SC-006: a clone into a missing and into an empty WSL folder runs
       expect(step.map((c) => ({ args: [...c.arguments], policy: c.environmentPolicy }))).toEqual([{ args: CLONE(url, destination), policy: "remote" }]);
     }
     expect(s.runner.frames.filter((f) => f.type === "pageant")).toEqual([]);
-    s.runner.inject.sshClient = "git";
   });
 });
 
@@ -332,14 +345,21 @@ W("T075 contract gap: Cancel during a WSL clone process gives CANCELED with the 
   g.write(`${template}/hooks/post-checkout`, sleepingHook(pidFile));
   const destination = `${g.root}/t075-clone-canceled-${copies}`;
   await withWsl(w, "t075-clone-cancel", async (s) => {
-    const requestId = sendClone(s, w, destination, url);
-    const operationId = await s.operationId(requestId);
-    const pid = await hookPid(g, pidFile);
-    await s.cancel(operationId);
-    const response = await s.response(requestId, RESPONSE_MS);
-    // Plan.md "Open items": without a registered workspace, no process-end fact exists, so the result holds no destination state.
-    expect({ ...outcome(response), result: response.result }).toEqual({ state: "canceled", code: "CANCELED", result: undefined });
-    await Bun.sleep(AFTER_CLOSE_MS);
-    expect({ operation: pgrep(w, operationId), scopes: listScopes(w), hook: hookExit(w, pid) }).toEqual({ operation: [], scopes: [], hook: 1 });
+    let hook: Hook | undefined;
+    try {
+      const requestId = sendClone(s, w, destination, url);
+      const operationId = await s.operationId(requestId);
+      hook = await hookOf(w, g, pidFile);
+      await s.cancel(operationId);
+      const response = await s.response(requestId, RESPONSE_MS);
+      // Plan.md "Open items": without a registered workspace, no process-end fact exists, so the result holds no destination state.
+      expect({ ...outcome(response), result: response.result }).toEqual({ state: "canceled", code: "CANCELED", result: undefined });
+      await Bun.sleep(AFTER_CLOSE_MS);
+      const [operation, scopes, alive] = [pgrep(w, operationId), listScopes(w), hookExit(w, hook)];
+      hook = undefined;
+      expect({ operation, scopes, hook: alive }).toEqual({ operation: [], scopes: [], hook: 1 });
+    } finally {
+      if (hook !== undefined) hookExit(w, hook);
+    }
   });
 });

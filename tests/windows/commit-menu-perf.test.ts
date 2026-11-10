@@ -45,8 +45,8 @@ const OPEN_WAIT_MS = 300_000;
 const IDLE_POLL_MS = 10;
 // Spec SC-011: at least 20 inputs per run. The probe sends one input to the history filter every PROBE_INTERVAL_MS.
 const MIN_INPUTS = 20;
-// The wait between probe inputs. The 20-input minimum must also hold for runs near 400 ms.
-const PROBE_INTERVAL_MS = 2;
+// The probe timer period. The loop does not wait for CDP replies, so the 20-input minimum also holds for runs near 400 ms.
+const PROBE_INTERVAL_MS = 10;
 // The Event Timing API reports no entry below its 16 ms minimum `durationThreshold`, so such an input counts as 16 ms.
 const EVENT_THRESHOLD_MS = 16;
 // One keyboard walk ends after this many presses. Target row 100 of M-R lies about 104 rows down.
@@ -124,16 +124,23 @@ const MODIFIER_KEYS = [
   { bit: MOD.Ctrl, key: "Control", code: "ControlLeft", vk: 0x11 },
   { bit: MOD.Shift, key: "Shift", code: "ShiftLeft", vk: 0x10 },
 ];
-async function press(c: Cdp, name: string, modifiers = 0): Promise<void> {
+function keyParams(name: string, modifiers = 0): object[] {
   const k = KEYS[name];
   if (k === undefined) throw new Error(`no key ${JSON.stringify(name)}`);
   const held = MODIFIER_KEYS.filter((m) => modifiers & m.bit);
   const typed = k.text !== undefined && modifiers === 0;
-  for (const m of held) await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers });
-  await c.send("Input.dispatchKeyEvent", { type: typed ? "keyDown" : "rawKeyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, modifiers, ...(typed ? { text: k.text, unmodifiedText: k.text } : {}) });
-  await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, modifiers });
-  for (const m of held.toReversed()) await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers: 0 });
+  return [
+    ...held.map((m) => ({ type: "rawKeyDown", key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers })),
+    { type: typed ? "keyDown" : "rawKeyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, modifiers, ...(typed ? { text: k.text, unmodifiedText: k.text } : {}) },
+    { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, modifiers },
+    ...held.toReversed().map((m) => ({ type: "keyUp", key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers: 0 })),
+  ];
 }
+async function press(c: Cdp, name: string, modifiers = 0): Promise<void> {
+  for (const params of keyParams(name, modifiers)) await c.send("Input.dispatchKeyEvent", params);
+}
+// Sends all events of one press at once. CDP keeps the send order, and the result settles when each reply arrives.
+const queue = (c: Cdp, name: string) => Promise.all(keyParams(name).map((params) => c.send("Input.dispatchKeyEvent", params))).then(() => undefined);
 
 const js = (value: unknown) => JSON.stringify(value);
 
@@ -273,7 +280,8 @@ const step = (name: string) => console.log(`STEP ${TASK} ${name} ${new Date().to
 type Timed = { ok: boolean; why: string | null; armed: number; start: number | null; times: (number | null)[]; origin: number };
 // Arms the page, runs `act`, and calls `during` until the page holds the result. `kind` is the DOM event that starts the time.
 // `during` starts together with `act`. CDP sends its input events in order, so each probe input reaches the page after the run press.
-// The key loop never waits for a page evaluation, so an input also waits in the queue of a main-thread task. Event Timing then holds that wait.
+// The key loop calls `during` on a fixed timer and waits for no CDP reply, so an input also waits in the queue of a main-thread task. Event Timing then holds that wait.
+// The loop awaits all `during` results after the window ends.
 async function timed(s: { c: Cdp; ipc: IpcLog }, name: string, checks: string[], act: () => Promise<void>, kind: "keydown" | "contextmenu" = "keydown", during?: () => Promise<void>): Promise<number> {
   const c = s.c;
   step(name);
@@ -289,8 +297,14 @@ async function timed(s: { c: Cdp; ipc: IpcLog }, name: string, checks: string[],
     const acting = act();
     acting.catch(() => (ended = true));
     if (during !== undefined) {
-      for (const end = Date.now() + STEP_LIMIT_MS + 5_000; !ended && Date.now() < end; await Bun.sleep(PROBE_INTERVAL_MS)) await during();
+      const sent: Promise<void>[] = [];
+      for (const end = Date.now() + STEP_LIMIT_MS + 5_000; !ended && Date.now() < end; await Bun.sleep(PROBE_INTERVAL_MS)) {
+        const p = during();
+        p.catch(() => (ended = true));
+        sent.push(p);
+      }
       ended = true;
+      await Promise.all(sent);
     }
     await acting;
     if (during !== undefined && !signalled) throw new Error(`the page gave no ${DONE_BINDING} call within ${STEP_LIMIT_MS + 5_000} ms: ${js(await c.evaluate<unknown>(FACTS))}`);
@@ -619,7 +633,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
   // One SC-011 probe: an x or a Backspace in the history filter. The pair keeps the field short. The page moves the focus (`arm` with `probe`).
   const probe = (c: Cdp) => {
     let n = 0;
-    return () => press(c, n++ % 2 === 0 ? "x" : "Backspace");
+    return () => queue(c, n++ % 2 === 0 ? "x" : "Backspace");
   };
   const clearFilter = (c: Cdp) => c.evaluate(`(() => { const f = ${filterField}; if (f && f.value !== '') { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(f, ''); f.dispatchEvent(new Event('input', { bubbles: true })); } return true; })()`);
 

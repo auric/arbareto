@@ -14,7 +14,7 @@ import { printOrigin } from "../origin";
 import { FIXTURE_ROOT } from "../git/fixture-root";
 import { compare, outcome, readOk, SUCCEEDED } from "../git/hunk-harness";
 import { FACTS, gitVersion, observationLine } from "../git/remote-facts";
-import { buildFetchFlags, buildMergeConflict, buildPull, buildPush, configDigests, fc, gitRun, importStream, leftRight, MARKER_TEXT, pullRowCopy, PULL_ROWS, refMap, revParse, stageEntries, type GitHost, type PushFixture } from "../git/remote-fixtures";
+import { buildFetchFlags, buildMergeConflict, buildPull, buildPush, configDigests, fc, gitRun, importStream, leftRight, MARKER_TEXT, pullRowCopy, PULL_ROWS, refMap, revParse, stageEntries, type GitHost, type PullFixture, type PushFixture } from "../git/remote-fixtures";
 import type { RegistrationResult, Service } from "../git/service-harness";
 import { ANY_EXIT, copyWithRemotes, INTEGRATE_ENV, pullFlags, refreshIndex, remoteCalls, repoShape, sendSync, until, type Reviewed, type SyncResult } from "../git/sync-harness";
 import { distroGitHost, sh } from "./fixtures";
@@ -78,6 +78,8 @@ function pushCopy(g: GitHost, tag: string): { repo: string; remotes: Record<stri
   gitRun(g, c.repo, ["checkout", "-q", "topic"]);
   return c;
 }
+let pullFixture: PullFixture | undefined;
+const pullOf = (g: GitHost) => (pullFixture ??= buildPull(g));
 
 async function reviewed(s: Service, r: RegistrationResult, payload: object): Promise<Reviewed & { syncReviewToken: string }> {
   const read = await readOk(s, r.repositoryId);
@@ -128,7 +130,7 @@ W("T075 SC-001: a fetch equals the distro Git's own fetch on a copy, lists the s
 
 W("T075 SC-001: pull with mode merge and with mode rebase equals the distro Git's own pull on a copy and keeps the configuration bytes", async (w) => {
   const g = hostOf(w);
-  const f = buildPull(g);
+  const f = pullOf(g);
   for (const row of PULL_MODES) {
     const app = refreshIndex(g, pullRowCopy(g, f, row, `${g.root}/t075-pull-${++copies}`));
     const oracle = copyOf(g, app, "pull-oracle");
@@ -276,6 +278,48 @@ for (const ending of ["cancel", "close"] as const) {
     });
     expect(refMap(g, a.remotes.origin!)).toEqual(remote);
   });
+}
+
+// git-config(1) `remote.<name>.uploadpack` and transport.c `transport_get`: a fetch over a local path runs this program through the shell in place of `git-upload-pack`.
+// The wrapper sends no ref advertisement, so the fetch waits in its first step. A pull runs this fetch before it integrates.
+for (const action of ["fetch", "pull"] as const) {
+  for (const ending of ["cancel", "close"] as const) {
+    W(`T075 SC-009: after ${ending === "cancel" ? "Cancel" : "a simulated close"} during a ${action} with a slow upload-pack wrapper, no process of the operation and no arbareto-* scope remains in the distro, and no ref changes`, async (w) => {
+      const g = hostOf(w);
+      const tag = `${action}-${ending}`;
+      const row = PULL_MODES[0]!;
+      const app = action === "fetch" ? copyOf(g, flags(g).clone, tag) : refreshIndex(g, pullRowCopy(g, pullOf(g), row, `${g.root}/t075-${tag}-${++copies}`));
+      const pidFile = `${g.root}/t075-${tag}-${++copies}.pid`;
+      const wrapper = `${g.root}/t075-${tag}-${copies}.sh`;
+      g.write(wrapper, sleepingHook(pidFile));
+      gitRun(g, app, ["config", "remote.origin.uploadpack", `'${wrapper}'`]);
+      const refs = refMap(g, app);
+      await withWsl(w, `t075-${tag}`, async (s) => {
+        let hook: Hook | undefined;
+        try {
+          const r = await open(s, w, app);
+          // Feature 003 contract Δ7: a repository-controlled transport program sets `approvalRequired.sync`.
+          await s.readTrust(r.repositoryId);
+          expect((await s.approveTrust(r.repositoryId)).state).toBe("succeeded");
+          const rv = await reviewed(s, r, action === "fetch" ? { action } : { action, mode: row.payload });
+          const requestId = sendSync(s, r, rv.syncReviewToken);
+          const operationId = await s.operationId(requestId);
+          hook = await hookOf(w, g, pidFile);
+          if (ending === "cancel") {
+            await s.cancel(operationId);
+            expect(outcome(await s.response<SyncResult>(requestId, RESPONSE_MS))).toEqual({ state: "canceled", code: "CANCELED" });
+          } else s.runner.failService();
+          await Bun.sleep(AFTER_CLOSE_MS);
+          const [operation, scopes, alive] = [pgrep(w, operationId), listScopes(w), hookExit(w, hook)];
+          hook = undefined;
+          expect({ operation, scopes, hook: alive }).toEqual({ operation: [], scopes: [], hook: 1 });
+        } finally {
+          if (hook !== undefined) hookExit(w, hook);
+        }
+      });
+      expect(refMap(g, app)).toEqual(refs);
+    });
+  }
 }
 
 W("T075 FR-037: under plink with a missing plink.exe, a WSL fetch sends no pageant request, gives no PUTTY_UNAVAILABLE, and succeeds", async (w) => {

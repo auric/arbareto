@@ -142,9 +142,9 @@ Availability: the client reads the latest `readWorkspace` head and operation sta
 |---|---|---|
 | A mutation runs | all but Copy | `RUNNING_REASON` (`running-tooltip.tsx:10`), quiet |
 | A read with `recoveryState` `reconciling` (001 T411) | all but Copy | `RECONCILING_REASON` (`running-tooltip.tsx`), quiet, as in the branch menu (003 plan D12) |
-| State unknown or refreshing | all but Copy | `BLOCKED_TEXT.unknown` and `.refreshing` (`HunkControls.tsx:34-46`) |
+| State unknown or refreshing | all but Copy | `BLOCKED_TEXT.unknown` and `.refreshing` (`HunkControls.tsx` `BLOCKED_TEXT`) |
 | Merge, rebase, cherry-pick, or revert in progress | all but Copy | `BLOCKED_TEXT.operation`, new text in D11 |
-| Conflicts without a marker, `sequencer-active`, unknown operation | all but Copy | `BLOCKED_TEXT.conflicted` (`HunkControls.tsx:35`) |
+| Conflicts without a marker, `sequencer-active`, unknown operation | all but Copy | `BLOCKED_TEXT.conflicted` (`HunkControls.tsx` `BLOCKED_TEXT`) |
 | Detached HEAD | Cherry-pick, Revert, Reset | `TEXTS.detached` (`integrate/texts.ts:64`) |
 | Unborn current branch | Cherry-pick, Revert, Reset | `TEXTS.unborn` (`integrate/texts.ts:65`) |
 | Detached HEAD at this commit | Check out | `AT_COMMIT` (D11) |

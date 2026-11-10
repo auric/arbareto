@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, closeSync, copyFileSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, copyFileSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { GIT_EXECUTABLE_DIGEST_BYTES } from "../../src/contracts/limits";
+import { IMAGE_HEAD_BYTES } from "../../src/git-service/admission";
 import { probeGit, revalidateGit, revalidateSavedGit } from "../../src/git-service/git-installation";
 import type { GitCall, GitRunner, RegisterRequest } from "../../src/git-service/git-runner";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
@@ -14,6 +15,7 @@ import { fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { readIdentity } from "./win32";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
+printOrigin("../../src/git-service/admission.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-installation.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
@@ -55,8 +57,8 @@ if (args.length === 1 && args[0] === "--exec-path") {
   process.stdout.write((existsSync(execPath) ? readFileSync(execPath, "utf8") : dir).replaceAll("\\\\", "/") + "\\n");
   process.exit(0);
 }
-if (args.length === 2 && args[0] === "version" && args[1] === "--build-options") {
-  process.stdout.write("git version " + version + "\\ncpu: x86_64\\nsizeof-long: 4\\nsizeof-size_t: 8\\n");
+if (args.length === 1 && args[0] === "version") {
+  process.stdout.write("git version " + version + "\\n");
   process.exit(0);
 }
 process.exit(1);
@@ -165,10 +167,10 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
         expect(run.context).toEqual({ contextKind: "gitProbe", bootstrapId });
         expect(run.environmentPolicy).toBe("probe");
       }
-      expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"], ["version", "--build-options"]]);
+      expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"], ["version"]]);
       expect(stubCalls(exe)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
-        { args: ["version", "--build-options"], cwd: launchDirectory },
+        { args: ["version"], cwd: launchDirectory },
       ]);
       // The service never selects another executable.
       expect(registers).toEqual([]);
@@ -214,7 +216,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       expect(installation.executableIdentity.digest).toBe(sha256(exe));
       expect(stubCalls(exe)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
-        { args: ["version", "--build-options"], cwd: launchDirectory },
+        { args: ["version"], cwd: launchDirectory },
         ...VAR_ARGS.map((args) => ({ args, cwd: launchDirectory })),
       ]);
       // Contract §7 "Configuration file paths": the lines as `git var` printed them.
@@ -237,7 +239,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       expect(result).toMatchObject({ ok: false, gitCode: "GIT_UNSUPPORTED", detectedVersion: MINIMUM, minimumVersion: MINIMUM });
       expect(stubCalls(exe)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
-        { args: ["version", "--build-options"], cwd: launchDirectory },
+        { args: ["version"], cwd: launchDirectory },
         { args: VAR_ARGS[0], cwd: launchDirectory },
       ]);
       expect(registers).toEqual([]);
@@ -279,7 +281,9 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
     async () => {
       const exe = join(fixtureDir("oversize"), "git.exe");
       // NTFS extends the file without writing its bytes, so the fixture costs no disk writes.
+      // The x64 head of the stub keeps the T413 machine check out of this refusal.
       const fd = openSync(exe, "w");
+      writeSync(fd, readFileSync(compiled).subarray(0, IMAGE_HEAD_BYTES));
       ftruncateSync(fd, GIT_EXECUTABLE_DIGEST_BYTES + 1);
       closeSync(fd);
       try {
@@ -295,6 +299,33 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       } finally {
         rmSync(exe);
       }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  // T413: the PE header decides the machine (Microsoft "PE Format": `e_lfanew` at 0x3C, `PE\0\0`, then `Machine`).
+  test(
+    "a stub copy with IMAGE_FILE_MACHINE_ARM64 gives GIT_UNSUPPORTED and runs nothing, and the AMD64 control copy is admitted",
+    async () => {
+      const arm64 = stub("arm64", MINIMUM);
+      const bytes = readFileSync(arm64);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const machine = view.getUint32(0x3c, true) + 4;
+      expect(view.getUint16(machine, true)).toBe(0x8664);
+      view.setUint16(machine, 0xaa64, true);
+      writeFileSync(arm64, bytes);
+      const bootstrapId = runner.addContext("gitProbe", arm64);
+      const spawnedBefore = runner.spawned;
+      runs.length = 0;
+      registers.length = 0;
+      const result = await probeGit(counted, { bootstrapId, executablePath: arm64 });
+      expect(result).toEqual({ ok: false, gitCode: "GIT_UNSUPPORTED", minimumVersion: MINIMUM });
+      expect(runs).toEqual([]);
+      expect(registers).toEqual([]);
+      expect(runner.spawned).toBe(spawnedBefore);
+      expect(stubCalls(arm64)).toEqual([]);
+      const amd64 = stub("amd64", MINIMUM);
+      expect(await probeGit(counted, { bootstrapId: runner.addContext("gitProbe", amd64), executablePath: amd64 })).toMatchObject({ ok: true });
     },
     TEST_TIMEOUT_MS,
   );
@@ -331,7 +362,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
         ]);
         const probes = [
           { args: ["--exec-path"], cwd: launchDirectory },
-          { args: ["version", "--build-options"], cwd: launchDirectory },
+          { args: ["version"], cwd: launchDirectory },
           ...VAR_ARGS.map((args) => ({ args, cwd: launchDirectory })),
         ];
         expect(stubCalls(first)).toEqual(probes);
@@ -381,7 +412,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       expect(stubCalls(wrapper)).toEqual([{ args: ["--exec-path"], cwd: launchDirectory }]);
       expect(stubCalls(real)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
-        { args: ["version", "--build-options"], cwd: launchDirectory },
+        { args: ["version"], cwd: launchDirectory },
         ...VAR_ARGS.map((args) => ({ args, cwd: launchDirectory })),
       ]);
       expect(registers).toHaveLength(1);
@@ -464,7 +495,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       expect(stubCalls(wrapper)).toEqual([{ args: ["--exec-path"], cwd: launchDirectory }]);
       expect(stubCalls(upgraded)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
-        { args: ["version", "--build-options"], cwd: launchDirectory },
+        { args: ["version"], cwd: launchDirectory },
         ...VAR_ARGS.map((args) => ({ args, cwd: launchDirectory })),
       ]);
       // The shell saves these register fields without a confirmation.

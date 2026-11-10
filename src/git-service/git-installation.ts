@@ -6,7 +6,7 @@ import type { GitReason } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_EXECUTABLE_DIGEST_BYTES, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
-import { admitGitProbe, MINIMUM_GIT_VERSION } from "./admission";
+import { admitGitProbe, IMAGE_HEAD_BYTES, isX64Image, MINIMUM_GIT_VERSION } from "./admission";
 import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
 import { createCollector, isChannelPath, RunnerRefusal, type GitRunner, type IdentityReply, type ProcessContext } from "./git-runner";
 
@@ -74,16 +74,19 @@ export const failure = (gitCode: ErrorCode, detectedVersion?: string): GitProbeR
 });
 
 // Contract §5 "Git executable digest input": a file above the bound gives GIT_UNSUPPORTED. An unreadable file gives GIT_UNAVAILABLE.
-async function fileDigest(path: string): Promise<{ digest: string } | { gitCode: ErrorCode }> {
+// `head` holds the first `IMAGE_HEAD_BYTES` of the same read, so the machine check and the digest see the same bytes.
+async function fileDigest(path: string): Promise<{ digest: string; head: Uint8Array } | { gitCode: ErrorCode }> {
   try {
     const hasher = new Bun.CryptoHasher("sha256");
+    const head = new Uint8Array(IMAGE_HEAD_BYTES);
     let bytes = 0;
     for await (const chunk of Bun.file(path).stream()) {
+      if (bytes < IMAGE_HEAD_BYTES) head.set(chunk.subarray(0, IMAGE_HEAD_BYTES - bytes), bytes);
       bytes += chunk.byteLength;
       if (bytes > GIT_EXECUTABLE_DIGEST_BYTES) return { gitCode: "GIT_UNSUPPORTED" };
       hasher.update(chunk);
     }
-    return { digest: hasher.digest("hex") };
+    return { digest: hasher.digest("hex"), head: head.subarray(0, Math.min(bytes, IMAGE_HEAD_BYTES)) };
   } catch {
     return { gitCode: "GIT_UNAVAILABLE" };
   }
@@ -105,7 +108,7 @@ async function runProbe(
   runner: GitRunner,
   operationId: string,
   context: ProcessContext,
-  args: ["--exec-path"] | ["version", "--build-options"],
+  args: ["--exec-path"] | ["version"],
   signal: AbortSignal,
 ): Promise<string | GitProbeResult> {
   const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
@@ -173,6 +176,8 @@ async function probeCandidate(
   const signal = options.signal ?? new AbortController().signal;
   const read = await fileDigest(target.executablePath);
   if ("gitCode" in read) return failure(read.gitCode);
+  // T413: a file that is not an x64 image gives GIT_UNSUPPORTED, and no Git process starts.
+  if (!isX64Image(read.head)) return failure("GIT_UNSUPPORTED");
   const digest = read.digest;
   try {
     const identity = await runner.identities(operationId, context, [target.executablePath], signal);
@@ -197,7 +202,7 @@ async function probeCandidate(
       if ("stop" in resolved) return failure("DEADLINE");
       return await probeCandidate(runner, { bootstrapId: resolved.bootstrapId, executablePath: git }, operationId, options, selected, true);
     }
-    const versionOutput = await runProbe(runner, operationId, context, ["version", "--build-options"], signal);
+    const versionOutput = await runProbe(runner, operationId, context, ["version"], signal);
     if (typeof versionOutput !== "string") return versionOutput;
     const admitted = admitGitProbe(versionOutput);
     if (!("admission" in admitted) || admitted.admission !== "admitted") return failure(admitted.gitCode, "detectedVersion" in admitted ? admitted.detectedVersion : undefined);

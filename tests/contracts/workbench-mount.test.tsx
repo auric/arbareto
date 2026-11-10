@@ -1925,11 +1925,13 @@ describe("keys in the tree mount", () => {
   const inGroup = (element: HTMLElement) => element.closest('[data-slot="submodules-group"]') !== null;
   const MAIN = { kind: "branch" as const, name: "main", invalidUtf8: false, objectId: HEAD, objectType: "commit" as const, peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId: HEAD };
   const REFS = { generation: 1, refs: [MAIN], refsDigest: "0".repeat(64), current: { name: "main", objectId: HEAD }, completeness: { state: "complete" as const } };
-  for (const [name, target] of [
-    ["Submodules tree", () => tabStopRows().find(inGroup)!],
-    ["references tree", () => tabStopRows().find((row) => !inGroup(row))!],
+  // tasks.md T169: the sidebar splitter sits outside the references section and leaves the DOM at the same switch.
+  for (const [task, name, target] of [
+    ["T167", "Submodules tree row", () => tabStopRows().find(inGroup)!],
+    ["T167", "references tree row", () => tabStopRows().find((row) => !inGroup(row))!],
+    ["T169", "sidebar splitter", () => document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize references sidebar"]')!],
   ] as const) {
-    test(`T167: a switch to the constrained profile while the ${name} row has focus moves the focus to the Show references toggle`, async () => {
+    test(`${task}: a switch to the constrained profile while the ${name} has focus moves the focus to the Show references toggle`, async () => {
       await sized(1280, 800, async () => {
         const double = await listed();
         await resolve(latest(double, "readRefs"), succeeded(REFS));

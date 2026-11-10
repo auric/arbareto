@@ -1169,9 +1169,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [referencesShown, setReferencesShown] = useState(false);
   // Feature 004 plan D20 "Place": the slot of the "Keys in the tree" panel, outside the constrained profile only.
   const [hintsSlot, setHintsSlot] = useState<HTMLElement | null>(null);
-  // Plan D20 "Keyboard": the switch to the constrained profile removes the content of the wide references section while it can hold the focus.
+  // Plan D20 "Keyboard": the switch to the constrained profile removes the content of the wide references section and the sidebar splitter while they can hold the focus.
   const referencesFocusLost = useRef(false);
   const wideReferences = useRef<HTMLDivElement>(null);
+  const wideSplitter = useRef<HTMLDivElement>(null);
   const referencesToggle = useRef<HTMLButtonElement>(null);
   // The opener of the submodule update. The Submodules group keeps the focused control.
   const reviewOpener = useRef<"notice" | "menu" | "group">("notice");
@@ -1460,7 +1461,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   });
   // Plan D20 "Keyboard": React keeps the section element and removes its content before it detaches a ref.
   // So this check reads the old DOM during render.
-  if (profile === "constrained" && wideReferences.current?.contains(document.activeElement)) referencesFocusLost.current = true;
+  if (profile === "constrained" && (wideReferences.current?.contains(document.activeElement) || wideSplitter.current?.contains(document.activeElement))) referencesFocusLost.current = true;
   // Plan D20 "Keyboard": in the constrained profile, focus moves to the Show references toggle.
   useLayoutEffect(() => {
     if (!referencesFocusLost.current) return;
@@ -2218,7 +2219,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         <div ref={wideReferences} data-section="references" tabIndex={-1} className="min-h-0 border-r border-divider">
           {sidebar}
         </div>
-        <Splitter label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
+        <Splitter ref={wideSplitter} label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
         <div className="flex min-h-0 flex-col">
           <section
             aria-label="History"

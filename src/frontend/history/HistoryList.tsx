@@ -220,8 +220,8 @@ function checkoutText(head: Head): string {
 }
 
 /** A filter row with Git parents and no reduced parent has no matching ancestor (plan.md D4). Roots and shallow boundaries say so themselves. */
-const noEarlier = (row: ViewRow) => row.reducedParents?.length === 0 && row.parents.length > 0;
-const skips = (row: ViewRow) => row.reducedParents?.some((p) => p.skip) === true;
+const noEarlier = (row: ViewRow) => row.reducedParentCount === 0 && row.parents.length > 0;
+const skips = (row: ViewRow) => row.reducedSkips === true;
 
 /** One part per label kind, as in "Branches: main, topic". The row name and the label tooltip share them. */
 function labelParts(labels: ViewRow["labels"], tracking?: Tracking): string[] {
@@ -243,10 +243,15 @@ export function viewRowName(row: ViewRow, head: Head, filter: boolean, dateForma
   else if (row.subject !== undefined) parts.push(row.subject, shortId(row.oid), row.author!.name, dateFormat.format(row.date! * 1000));
   else parts.push(shortId(row.oid));
   if (row.parents.length > 0) parts.push(plural(row.parents.length, "parent", "parents"), ...row.parents.map(shortId));
-  const reduced = filter ? row.reducedParents : undefined;
-  if (reduced !== undefined && reduced.length > 0) parts.push(plural(reduced.length, "matching ancestor", "matching ancestors"), ...reduced.map((p) => shortId(p.oid)));
   const cell = row.cell;
   if (cell !== null) {
+    // Plan.md D4: only a limited filter row names its reduced parents, because it draws no edge.
+    const count = row.reducedParentCount ?? 0;
+    if (filter && cell.limited && count > 0) {
+      const listed = row.reducedParents!;
+      parts.push(plural(count, "matching ancestor", "matching ancestors"), ...listed.map((p) => shortId(p.oid)));
+      if (count > listed.length) parts.push(plural(count - listed.length, "more matching ancestor", "more matching ancestors"));
+    }
     for (const mark of cell.marks) parts.push(BOUNDARY_TEXT[mark]);
     if (cell.limited) parts.push(LIMIT_TEXT.lanes);
     if (filter && skips(row)) parts.push(SKIP_TEXT);

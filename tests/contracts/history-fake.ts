@@ -6,7 +6,7 @@
 
 import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { filterText } from "../../src/contracts/filter-text";
-import { FILTER_TEXT_BYTES, HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
+import { FILTER_TEXT_BYTES, HISTORY_LOAD_MARGIN, HISTORY_PARENTS_PER_COMMIT } from "../../src/contracts/limits";
 import type { Head, HistoryBridge, ViewRow } from "../../src/frontend/state/history-view";
 import { contractChecked, fixtureId } from "./bridge-contract";
 
@@ -34,7 +34,7 @@ export type FakeOptions = {
   hold?: { load?: boolean; search?: boolean };
   /** The cell of a row. */
   cell?: (i: number) => ViewRow["cell"];
-  /** The `reducedParents` of a filter row. The default is the next match below row i, in the linear history of the fake. */
+  /** All reduced parents of a filter row. The default is the next match below row i, in the linear history of the fake. */
   reduced?: (i: number) => NonNullable<ViewRow["reducedParents"]>;
   /** The terminal response of the next load, instead of a success. */
   loadResponse?: (payload: Record<string, unknown>) => BridgeResponse | null;
@@ -105,6 +105,8 @@ export function createFake(options: FakeOptions) {
     for (let j = i + 1; j < total; j++) if (isMatch(j)) return [{ oid: oid(j), skip: j !== i + 1 }];
     return [];
   };
+  // Contract Δ3: the list stops at HISTORY_PARENTS_PER_COMMIT. The count and the skip flag cover all reduced parents.
+  const reducedFields = (all: NonNullable<ViewRow["reducedParents"]>) => ({ reducedParents: all.slice(0, HISTORY_PARENTS_PER_COMMIT), reducedParentCount: all.length, reducedSkips: all.some((p) => p.skip) });
 
   function rowOf(i: number, index: number, text: string, search: boolean, filter = false): ViewRow {
     const row: ViewRow = {
@@ -112,7 +114,7 @@ export function createFake(options: FakeOptions) {
       oid: oid(i),
       parents: i === total - 1 ? [] : [oid(i + 1)],
       cell: cellOf(i),
-      ...(filter ? { reducedParents: reducedOf(i) } : {}),
+      ...(filter ? reducedFields(reducedOf(i)) : {}),
       labels: i === 0 ? [{ kind: "branch", name: "main", invalidUtf8: false }] : [],
       checkout: head.state !== "unborn" && oid(i) === head.oid,
       ...(search ? { match: searchDone || i < loaded ? isMatch(i) : null } : {}),

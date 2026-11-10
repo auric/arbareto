@@ -5,7 +5,7 @@
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, HISTORY_PARENTS_PER_COMMIT } from "../contracts/limits";
 import { MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP, MATCHING_PROBE_WSL_FOLDER } from "../contracts/matching-probe";
 import { NATIVE } from "../contracts/native-path";
 import { isObjectId, probeImportArgs, probeInitArgs, probeScriptArgs, probeSearchArgs, type ObjectFormat } from "./commands";
@@ -203,9 +203,14 @@ export class SearchMerge {
     return cells;
   }
 
-  /** Contract Δ3 `reducedParents` of settled match q, in rising match order (data-model §7). */
-  reducedParents(q: number): { oid: string; skip: boolean }[] {
-    return this.edgesOf(q).map(([to, direct]) => ({ oid: this.topology.oid(this.matchRows[to]!), skip: !direct }));
+  /** Contract Δ3 `reducedParents`, `reducedParentCount`, and `reducedSkips` of settled match q (data-model §7). */
+  reduced(q: number): { reducedParents: { oid: string; skip: boolean }[]; reducedParentCount: number; reducedSkips: boolean } {
+    const edges = this.edgesOf(q);
+    return {
+      reducedParents: edges.slice(0, HISTORY_PARENTS_PER_COMMIT).map(([to, direct]) => ({ oid: this.topology.oid(this.matchRows[to]!), skip: !direct })),
+      reducedParentCount: edges.length,
+      reducedSkips: edges.some(([, direct]) => !direct),
+    };
   }
 
   // Spec FR-034: the node-to-bottom segment of an edge that skips commits carries `skip`. A match with Git parents gets no root mark.

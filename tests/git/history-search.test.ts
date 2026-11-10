@@ -6,7 +6,7 @@
 
 import { describe, expect, spyOn, test } from "bun:test";
 import { cpSync } from "node:fs";
-import { HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
+import { HISTORY_LOAD_MARGIN, HISTORY_PARENTS_PER_COMMIT } from "../../src/contracts/limits";
 import { EMPTY_STATE, layoutStep, type Cell } from "../../src/git-service/history-layout";
 import { SearchMerge } from "../../src/git-service/history-search";
 import { HistoryTopology } from "../../src/git-service/history-topology";
@@ -89,25 +89,33 @@ function chainRepo(name: string): string {
   return repo;
 }
 
-// T064: one matching merge of WIDE matching branches from a root that does not match. Its filter row needs more than GRAPH_LANES (24) lanes.
-// Branch 0 has one commit that does not match between its match and the merge, so that reduced edge skips commits.
-const WIDE = 30;
-function wideRepo(): string {
-  const repo = fixtureDir("t064-wide/repo");
+// One main line of [mark, matches, parents] commits. Commit times rise with the mark.
+function importRepo(dir: string, commits: [number, boolean, number[]][]): string {
+  const repo = fixtureDir(dir);
   git(repo, ["init", "-q", "-b", "main"]);
-  const commit = (mark: number, message: string, parents: number[]) => fiCommit({ mark, time: 1_767_225_600 + mark, message: `${message}\n`, from: parents[0], merge: parents.slice(1) });
-  const branches = Array.from({ length: WIDE }, (_, j) => commit(j + 2, `c${j + 2} ${MARKER_WORD}`, [1]));
-  const gap = WIDE + 2;
-  const merge = commit(gap + 1, `merge ${MARKER_WORD}`, [gap, ...Array.from({ length: WIDE - 1 }, (_, j) => j + 3)]);
-  git(repo, ["fast-import", "--quiet"], { input: Buffer.concat([commit(1, "root", []), ...branches, commit(gap, "gap", [2]), merge]) });
+  const message = (mark: number, match: boolean) => `c${mark}${match ? ` ${MARKER_WORD}` : ""}\n`;
+  const input = Buffer.concat(commits.map(([mark, match, parents]) => fiCommit({ mark, time: 1_767_225_600 + mark, message: message(mark, match), from: parents[0], merge: parents.slice(1) })));
+  git(repo, ["fast-import", "--quiet"], { input });
   git(repo, ["reset", "-q", "--hard"]);
   return repo;
 }
+const marks = (from: number, count: number) => Array.from({ length: count }, (_, j) => from + j);
+// `count` matching branches, marks `from` and up, on the root (mark 1) that does not match.
+const branches = (from: number, count: number): [number, boolean, number[]][] => marks(from, count).map((mark) => [mark, true, [1]]);
+
+// T064: one matching merge of WIDE matching branches. Its filter row needs more than GRAPH_LANES (24) lanes.
+// Branch 0 has one commit that does not match between its match and the merge, so that reduced edge skips commits.
+const WIDE = 30;
+const wideRepo = () => importRepo("t064-wide/repo", [[1, false, []], ...branches(2, WIDE), [WIDE + 2, false, [2]], [WIDE + 3, true, [WIDE + 2, ...marks(3, WIDE - 1)]]]);
+// T064: a matching commit above two merges that do not match. Each merge joins FAN matching branches, so the commit has 2 * FAN reduced parents.
+// 2 * FAN is above HISTORY_PARENTS_PER_COMMIT, and each Git commit stays below it.
+const FAN = 40;
+const fanRepo = () => importRepo("t064-fan/repo", [[1, false, []], ...branches(2, 2 * FAN), [2 * FAN + 2, false, marks(2, FAN)], [2 * FAN + 3, false, marks(FAN + 2, FAN)], [2 * FAN + 4, true, [2 * FAN + 2, 2 * FAN + 3]]]);
 
 // The filter rows of SC-008 by brute force. A nearest matching ancestor has no other match on some parent path (FR-033).
 // The reduced parents of a match are its nearest matching ancestors in stream order. Each cell is the T009 fold over the matches.
 // A skip edge marks its node-to-bottom segment with `skip: true` (FR-034). A match with Git parents has no root mark.
-// `reduced` holds the `reducedParents` of each match (data-model §7).
+// `reduced` holds all reduced parents of each match (data-model §7).
 type Reduced = { oid: string; skip: boolean }[];
 function filterOracle(view: readonly OracleRow[], matches: ReadonlySet<string>, shallow: ReadonlySet<string>): { oids: string[]; cells: Cell[]; reduced: Reduced[] } {
   const index = new Map(view.map((r, i) => [r.oid, i]));
@@ -139,8 +147,11 @@ function filterOracle(view: readonly OracleRow[], matches: ReadonlySet<string>, 
 
 // The cells that differ from the oracle, by match index.
 const wrongCells = (got: readonly ViewRow[], cells: readonly Cell[]) => got.flatMap((r, q) => (Bun.deepEquals(r.cell, cells[q], true) ? [] : [q]));
-// The `reducedParents` that differ from the oracle, by match index.
-const wrongReduced = (got: readonly ViewRow[], reduced: readonly Reduced[]) => got.flatMap((r, q) => (Bun.deepEquals(r.reducedParents, reduced[q], true) ? [] : [q]));
+// Contract Δ3: the row fields of all reduced parents. The list stops at HISTORY_PARENTS_PER_COMMIT.
+const reducedFields = (all: Reduced | undefined) => (all === undefined ? undefined : { reducedParents: all.slice(0, HISTORY_PARENTS_PER_COMMIT), reducedParentCount: all.length, reducedSkips: all.some((p) => p.skip) });
+const rowReduced = (r: ViewRow) => (r.reducedParents === undefined && r.reducedParentCount === undefined && r.reducedSkips === undefined ? undefined : { reducedParents: r.reducedParents, reducedParentCount: r.reducedParentCount, reducedSkips: r.reducedSkips });
+// The reduced fields that differ from the oracle, by match index.
+const wrongReduced = (got: readonly ViewRow[], reduced: readonly Reduced[]) => got.flatMap((r, q) => (Bun.deepEquals(rowReduced(r), reducedFields(reduced[q]), true) ? [] : [q]));
 
 // Sends a search and returns its request ID and its `searchId`, the operation ID of the accepted event (contract Δ2).
 async function startSearch(service: Service, repositoryId: string, viewId: string, text: string): Promise<{ request: string; searchId: string }> {
@@ -281,8 +292,8 @@ describe("filter mode against Git and the BFS oracle (SC-008, FR-032, FR-033)", 
             expect(running.result).toMatchObject({ target: "found", rowCount: 1 + 2 * HISTORY_LOAD_MARGIN, complete: false });
             // Match 2 at row 2,000 waits for the root row, so its cell stays null (data-model §5).
             expect(running.result!.rows!.map((r) => r.cell)).toEqual([expected.cells[0]!, expected.cells[1]!, null]);
-            // Contract Δ3: a row without a cell omits `reducedParents`.
-            expect(running.result!.rows!.map((r) => r.reducedParents)).toEqual([expected.reduced[0]!, expected.reduced[1]!, undefined]);
+            // Contract Δ3: a row without a cell omits the reduced fields.
+            expect(running.result!.rows!.map(rowReduced)).toEqual([reducedFields(expected.reduced[0]), reducedFields(expected.reduced[1]), undefined]);
             expect((await load(service, repositoryId, opening.viewId, { end: true })).code).toBe("BUSY");
             const loads = service.runner.calls.filter(isLoad);
             expect(loads.length).toBe(2);
@@ -305,27 +316,34 @@ describe("filter mode against Git and the BFS oracle (SC-008, FR-032, FR-033)", 
 
   caseTest(
     "T064",
-    "a limited filter row carries its reduced parents with their skip flags, and a limited match without a matching ancestor carries none (contract Δ3 `reducedParents`)",
+    "a limited filter row carries its reduced parents, their count, and the skip flag; the list stops at HISTORY_PARENTS_PER_COMMIT (contract Δ3 `reducedParents`)",
     SHELL,
     () =>
       withService("t064-wide", async (service) => {
-        const repo = wideRepo();
-        const view = oracle(repo);
-        const greps = grepOracle(repo, MARKER_WORD);
-        const expected = filterOracle(view, new Set(greps), new Set());
-        await unchanged(repo, async () => {
-          const { repositoryId, generation } = await service.register(repo);
-          const opening = await opened(service, repositoryId, generation);
-          const { request, searchId } = await startSearch(service, repositoryId, opening.viewId, MARKER_WORD);
-          expect((await service.response<Searched>(request)).state).toBe("succeeded");
-          const got = await allFilterRows(service, repositoryId, opening.viewId, searchId, greps.length);
-          expect({ wrong: wrongCells(got, expected.cells), reduced: wrongReduced(got, expected.reduced) }).toEqual({ wrong: [], reduced: [] });
-          const limited = got.filter((r) => r.cell!.limited);
-          expect(limited[0]!.oid).toBe(greps[0]!);
-          expect({ parents: limited[0]!.reducedParents!.length, skips: limited[0]!.reducedParents!.filter((p) => p.skip).length }).toEqual({ parents: WIDE, skips: 1 });
-          // plan.md D4: a match with Git parents and no matching ancestor shows "No earlier matching commit".
-          expect(limited.some((r) => r.parents.length > 0 && r.reducedParents!.length === 0)).toBe(true);
-        });
+        // [repository, reduced parents of the first match, of them listed, skip flags among the listed]
+        const cases: [string, number, number, number][] = [
+          [wideRepo(), WIDE, WIDE, 1],
+          [fanRepo(), 2 * FAN, HISTORY_PARENTS_PER_COMMIT, HISTORY_PARENTS_PER_COMMIT],
+        ];
+        for (const [repo, count, listed, skips] of cases) {
+          const view = oracle(repo);
+          const greps = grepOracle(repo, MARKER_WORD);
+          const expected = filterOracle(view, new Set(greps), new Set());
+          await unchanged(repo, async () => {
+            const { repositoryId, generation } = await service.register(repo);
+            const opening = await opened(service, repositoryId, generation);
+            const { request, searchId } = await startSearch(service, repositoryId, opening.viewId, MARKER_WORD);
+            expect((await service.response<Searched>(request)).state).toBe("succeeded");
+            const got = await allFilterRows(service, repositoryId, opening.viewId, searchId, greps.length);
+            expect({ repo, wrong: wrongCells(got, expected.cells), reduced: wrongReduced(got, expected.reduced) }).toEqual({ repo, wrong: [], reduced: [] });
+            const limited = got.filter((r) => r.cell!.limited);
+            expect(limited[0]!.oid).toBe(greps[0]!);
+            const first = limited[0]!;
+            expect({ count: first.reducedParentCount, listed: first.reducedParents!.length, skips: first.reducedParents!.filter((p) => p.skip).length, any: first.reducedSkips }).toEqual({ count, listed, skips, any: true });
+            // plan.md D4: a match with Git parents and no matching ancestor shows "No earlier matching commit".
+            expect(limited.some((r) => r.parents.length > 0 && r.reducedParentCount === 0 && r.reducedParents!.length === 0 && r.reducedSkips === false)).toBe(true);
+          });
+        }
       }),
     TIMEOUT_MS,
   );

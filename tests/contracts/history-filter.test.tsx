@@ -119,8 +119,11 @@ describe("spec FR-027 to FR-031: the filter text", () => {
 });
 
 describe("spec FR-032 to FR-035: filter mode", () => {
+  // Match 90 has no matching ancestor in the linear history of the fake, so it draws no edge.
   const skip = (i: number) =>
-    i % 10 === 0
+    i === 90
+      ? { node: 0, color: 0, merge: false, limited: false, segments: [], marks: [] }
+      : i % 10 === 0
       ? { node: 0, color: 0, merge: false, limited: false, segments: [{ shape: "line" as const, from: { lane: 0, at: "node" as const }, to: { lane: 0, at: "bottom" as const }, color: 0, skip: true as const }], marks: [] }
       : null;
 
@@ -134,6 +137,8 @@ describe("spec FR-032 to FR-035: filter mode", () => {
     // Data-model §7: match 90 has no matching ancestor in the linear history of the fake.
     expect(names.slice(0, -1).every((n) => n.includes("Skips commits that do not match"))).toBe(true);
     expect(names.at(-1)).toContain("No earlier matching commit");
+    // Plan.md D4: only a limited row names its matching ancestors.
+    expect(names.some((n) => n.includes("matching ancestor"))).toBe(false);
     const dashed = host.querySelector('[role="option"][data-item="2"] .skip-edge')!;
     expect(dashed.getAttribute("stroke-dasharray")).not.toBeNull();
     expect(text(host)).toContain('Only commits whose message contains "Commit" show.');
@@ -153,6 +158,21 @@ describe("spec FR-032 to FR-035: filter mode", () => {
     expect(names.at(-1)).toContain("No earlier matching commit");
     expect(names.at(-1)).not.toContain("matching ancestor");
     expect(text(host)).toContain("No earlier matching commit");
+  });
+
+  test("a limited filter row with more reduced parents than HISTORY_PARENTS_PER_COMMIT lists 64 IDs and states the full count and the rest (plan.md D4)", async () => {
+    const limited = { node: 0, color: 0, merge: false, limited: true, segments: [], marks: [] };
+    // `oid(k)` IDs share their first 12 digits, so these IDs differ in their short form.
+    const id = (k: number) => k.toString(16).padStart(2, "0").repeat(20);
+    const wide = Array.from({ length: 70 }, (_, k) => ({ oid: id(k + 1), skip: k > 0 }));
+    const { input, host } = await mount({ total: 100, loaded: 100, matches: (i) => i === 0 || i > 70, cell: () => limited, reduced: (i) => (i === 0 ? wide : []) });
+    await type(input, "Commit");
+    await key(input, "Enter");
+    const first = commitNames(host)[0]!;
+    expect(first).toContain(`70 matching ancestors, ${id(1).slice(0, 12)}`);
+    expect(first).toContain(`${id(64).slice(0, 12)}, 6 more matching ancestors`);
+    expect(first).not.toContain(id(65).slice(0, 12));
+    expect(first).toContain("Skips commits that do not match");
   });
 
   test("no match states that no commit message contains the text", async () => {

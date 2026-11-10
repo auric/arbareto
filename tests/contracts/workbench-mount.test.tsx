@@ -1906,13 +1906,7 @@ describe("keys in the tree mount", () => {
       await feed(728, 441, 24);
       await act(async () => hintsButton().focus());
       expect(document.activeElement).toBe(hintsButton());
-      const happy = (window as unknown as SizedWindow).happyDOM;
-      await act(async () => {
-        happy.setInnerWidth(960);
-        happy.setInnerHeight(640);
-        window.dispatchEvent(new Event("resize"));
-      });
-      await settle();
+      await resizeTo(960, 640);
       expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
       expect(document.querySelector('[data-slot="submodules-group"]')).toBeNull();
       expect(document.activeElement === document.body).toBe(false);
@@ -1938,13 +1932,7 @@ describe("keys in the tree mount", () => {
         const row = target();
         await act(async () => row.focus());
         expect(document.activeElement).toBe(row);
-        const happy = (window as unknown as SizedWindow).happyDOM;
-        await act(async () => {
-          happy.setInnerWidth(960);
-          happy.setInnerHeight(640);
-          window.dispatchEvent(new Event("resize"));
-        });
-        await settle();
+        await resizeTo(960, 640);
         expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
         expect(document.activeElement === document.body).toBe(false);
         expect(document.activeElement?.getAttribute("aria-label")).toBe("Show references");

@@ -185,6 +185,24 @@ caseTest(TASK, "FR-018, research.md R21 F10, and data-model §4: onlyHere equals
   expect(headLog.includes(oid(f, "refs/heads/held"))).toBe(false);
 }, TIMEOUT_MS);
 
+// 001 T412: builtin/reflog.c `cmd_reflog_exists` prints nothing when it exits 1. Exit 1 with output is no reflog answer.
+caseTest("T412", "data-model §4 reflogKeeps: a reflog exists step that exits 1 with stderr text gives GIT_FAILED, and the review holds no plan", SHELL, async () => {
+  const f = build();
+  await withSync("t412-reflog-exit", async (service) => {
+    const r = await open(service, f.repo);
+    const isExists = (args: readonly string[]) => args.includes("reflog") && args.includes("exists");
+    service.runner.inject.exit = (call) => (isExists(call.arguments) ? 1 : undefined);
+    service.runner.inject.stderr = (call) => (isExists(call.arguments) ? new TextEncoder().encode("warning: text\n") : undefined);
+    try {
+      expect(outcome(await review(service, r, { action: "delete-branch", ref: "refs/heads/unmerged" }))).toEqual({ state: "failed", code: "GIT_FAILED" });
+    } finally {
+      service.runner.inject.exit = undefined;
+      service.runner.inject.stderr = undefined;
+    }
+    expect((await reviewed(service, r, { action: "delete-branch", ref: "refs/heads/unmerged" })).plan).toMatchObject({ ref: "refs/heads/unmerged" });
+  });
+}, TIMEOUT_MS);
+
 caseTest(TASK, "FR-019 and SC-004: a branch that moved after the review is never deleted; before the run it gives STALE_REVIEW, during the run update-ref refuses, and no ref changes", SHELL, async () => {
   const f = build();
   await withSync("t022-moved-before", async (service) => {

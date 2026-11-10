@@ -148,7 +148,7 @@ describe("WSL registration seams (T207)", () => {
   // T378, contract §11 "Git per distro": `noexpand` is the `$?` of `systemd-run --expand-environment=no --version`.
   // Only `verbatim 0` shows that a probe scope got its arguments unchanged. T379: any other value gives its own reason `scope-arguments`.
   test("T378, T379: the probe facts noexpand and verbatim set the wrapper flag, and a missing or malformed value gives WSL_UNAVAILABLE reason scope-arguments", () => {
-    const programs = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"].flatMap((name) => [`path ${name} /usr/bin/${name}`, `magic ${name} -`]);
+    const programs = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"].flatMap((name) => [`path ${name} /usr/bin/${name}`, `magic ${name} ELF`]);
     const base = ["pathenv /usr/bin", "selfs ef53:fedc9aa3bd65bc57", "selino 4242", "selstat ok", "version git version 2.55.0", "gitfs ef53:fedc9aa3bd65bc57", "gitfile 7:1:1", "scope 0"];
     const checked = (facts: string[]) => {
       const parsed = parseWslProbe(new TextEncoder().encode(`${[...programs, ...base, ...facts].join("\n")}\n`));
@@ -175,6 +175,39 @@ describe("WSL registration seams (T207)", () => {
     // Each line kind appears at most once.
     expect(checked(["noexpand 0", "noexpand 0", "verbatim 0"])).toBe("unparsed");
     expect(checked(["noexpand 0", "verbatim 0", "verbatim 0"])).toBe("unparsed");
+  });
+
+  // T412, contract §11 "Git per distro": only the ELF magic marks a Linux program. The wsl.conf `automount.root` can move `/mnt`, so a path prefix proves nothing.
+  test("T412: ELF programs under /mnt/tools on ext4 pass, an MZ or a non-ELF program gives its reason, and a .windows. version of an ELF Git is a version", () => {
+    const names = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"];
+    const base = ["pathenv /usr/bin", "selfs ef53:fedc9aa3bd65bc57", "selino 4242", "selstat ok", "gitfs ef53:fedc9aa3bd65bc57", "gitfile 7:1:1", "scope 0", "noexpand 0", "verbatim 0"];
+    const checked = (other: string | null, version = "git version 2.55.0", mark = "MZ") => {
+      const programs = names.flatMap((name) => [`path ${name} /mnt/tools/bin/${name}`, `magic ${name} ${name === other ? mark : "ELF"}`]);
+      const parsed = parseWslProbe(new TextEncoder().encode(`${[...programs, ...base, `version ${version}`].join("\n")}\n`));
+      if (parsed === null) return "unparsed";
+      const result = checkWslProbe("Ubuntu-26.04", parsed, "C:\\Windows\\System32\\wsl.exe");
+      return result.ok ? { path: result.git.path, version: result.git.version } : { code: result.code, reason: (result.result as { reason?: string }).reason };
+    };
+    expect(checked(null)).toEqual({ path: "/mnt/tools/bin/git", version: "2.55.0" });
+    expect(checked(null, "git version 2.55.0.windows.3")).toEqual({ path: "/mnt/tools/bin/git", version: "2.55.0.windows.3" });
+    const reasons: Record<string, [string, string]> = {
+      git: ["GIT_UNSUPPORTED", "windows-git"],
+      "systemd-run": ["WSL_UNAVAILABLE", "no-user-manager"],
+      systemctl: ["WSL_UNAVAILABLE", "no-user-manager"],
+      setsid: ["WSL_UNAVAILABLE", "no-setsid"],
+      stat: ["WSL_UNAVAILABLE", "no-coreutils"],
+      env: ["WSL_UNAVAILABLE", "no-coreutils"],
+      sha256sum: ["WSL_UNAVAILABLE", "no-coreutils"],
+      perl: ["WSL_UNAVAILABLE", "no-perl"],
+    };
+    for (const [name, [code, reason]] of Object.entries(reasons)) {
+      expect({ name, found: checked(name) }).toEqual({ name, found: { code, reason } });
+      // A script or another file without the ELF magic. Git gets its own reason.
+      expect({ name, found: checked(name, undefined, "-") }).toEqual({ name, found: { code, reason: name === "git" ? "not-elf" : reason } });
+      // `?`: `head` failed, so the probe read no bytes. Git gets its own reason.
+      expect({ name, found: checked(name, undefined, "?") }).toEqual({ name, found: { code, reason: name === "git" ? "unreadable" : reason } });
+    }
+    expect(checked("git", undefined, "elf")).toBe("unparsed");
   });
 
   // Contract §6 "Walks" (T314): a `register` deadline reply gives DEADLINE.

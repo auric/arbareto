@@ -93,6 +93,8 @@
             "start-failed",
             "version",
             "windows-git",
+            "not-elf",
+            "unreadable",
             "no-fs-uuid",
             "wsl-path",
             "mixed-location"

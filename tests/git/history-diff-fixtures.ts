@@ -254,6 +254,7 @@ function refList(git: string, root: string, repo: string): string | null {
 }
 
 // A temp clean-up can delete the index and work-tree files and keep the refs. Null when Git fails.
+// shortcut: status reads no blob of a clean entry, so a lost loose object still passes reuse; add a connectivity check if that damage occurs.
 function statusDigest(git: string, root: string, repo: string): string | null {
   const proc = gitExit(git, root, repo, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--untracked-files=all"]);
   return proc.exitCode === 0 ? sha256(proc.stdout) : null;

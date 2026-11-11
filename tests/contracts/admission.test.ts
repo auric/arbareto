@@ -112,9 +112,16 @@ describe("Git admission on other platforms (T293)", () => {
     });
   });
 
-  test("a Git for Windows version gives GIT_UNSUPPORTED with the minimum 2.55.0", () => {
-    const result = admitGitProbe(versionOutput("2.55.0.windows.3"), false);
-    expect(result).toMatchObject({ admission: "unsupported", gitCode: "GIT_UNSUPPORTED", minimumVersion: POSIX_MINIMUM, qualification: "unverified" });
+  // T412 and T413: the image header decides the build, so a version suffix is no refusal, as in `checkWslVersion`.
+  for (const version of ["2.55.0.windows.3", "2.55.0-rc1", "2.56.0.gfe0a1b2"]) {
+    test(`${version} is admitted, because the version text names no build`, () => {
+      expect(admitGitProbe(versionOutput(version), false)).toEqual({ admission: "admitted", detectedVersion: version, minimumVersion: POSIX_MINIMUM, qualification: "unverified" });
+    });
+  }
+
+  test("2.54.9.windows.1 gives GIT_UNSUPPORTED, and a non-ASCII suffix gives no detected version", () => {
+    expect(admitGitProbe(versionOutput("2.54.9.windows.1"), false)).toEqual({ admission: "unsupported", gitCode: "GIT_UNSUPPORTED", detectedVersion: "2.54.9.windows.1", minimumVersion: POSIX_MINIMUM, qualification: "unverified" });
+    expect(admitGitProbe(versionOutput("2.55.0é"), false)).toEqual({ admission: "unsupported", gitCode: "GIT_UNSUPPORTED", minimumVersion: POSIX_MINIMUM, qualification: "unverified" });
   });
 
   test("version output without a cpu line is admitted with the minimum 2.55.0", () => {

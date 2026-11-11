@@ -123,7 +123,6 @@ export function buildWslRemedy(kind: WslRemedyKind, values: WslRemedyValues): Re
 }
 
 export type WslVersionCheck = { ok: true; version: string } | { ok: false; code: "GIT_UNSUPPORTED"; reason: "version"; detectedVersion?: string; minimumVersion: string };
-export type WslGitCheck = WslVersionCheck | { ok: false; code: "GIT_UNSUPPORTED"; reason: "windows-git" | "not-elf" | "unreadable" };
 
 // The probe `magic` fact (`src/contracts/wsl-process.json`): the first four bytes are the elf(5) magic `7f 45 4c 46`, the first two bytes are `MZ`, or neither.
 // `?`: `head` failed, so the probe read no bytes.
@@ -137,11 +136,6 @@ export const foreignGitReason = (magic: WslMagic): "windows-git" | "not-elf" | "
 const MINIMUM_PARTS = WSL_MINIMUM_GIT_VERSION.split(".").map(BigInt);
 // The shell parses each part as an unsigned 64-bit number (`src-tauri/src/wsl.rs` `admitted_version`).
 const PART_MAX = 2n ** 64n - 1n;
-
-export function checkWslGit(git: { magic: WslMagic; versionText: string }): WslGitCheck {
-  const foreign = foreignGitReason(git.magic);
-  return foreign === null ? checkWslVersion(git.versionText) : { ok: false, code: "GIT_UNSUPPORTED", reason: foreign };
-}
 
 // `versionText` is the `git --version` output line. The rule compares `major.minor.patch` numerically.
 export function checkWslVersion(versionText: string): WslVersionCheck {

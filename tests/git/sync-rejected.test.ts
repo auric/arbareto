@@ -243,6 +243,22 @@ describeGit("rejected push and force push with lease (T035)", () => {
     }
   }, TIMEOUT_MS);
 
+  // User decision 2026-11-11 (contract "Contract gaps"): an scp form has no password field, so its user name may go into process arguments.
+  // The test sends no token: a push to the `.invalid` host would start ssh. So only the review read is checked.
+  caseTest("T093", "contract gaps: with an scp pushurl user@host:path, the force-push review runs ls-remote --get-url on the push URL", SHELL, async () => {
+    const a = diverged(true);
+    const scp = "git@arbareto.invalid:org/repo.git";
+    gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", scp]);
+    expect(gitOut(a.h, a.repo, ["ls-remote", "--get-url", "--", scp]).trim()).toBe(scp);
+    await withSync("t093-review-scp", async (service) => {
+      const r = await register(service, a.repo);
+      const from = service.runner.calls.length;
+      await reviewed(service, r, { action: "force-push" });
+      const getUrl = service.runner.calls.slice(from).filter((c) => c.arguments.includes("--get-url"));
+      expect(getUrl.map((c) => c.arguments.at(-1))).toEqual([scp]);
+    });
+  }, TIMEOUT_MS);
+
   // T046 (FR-026, SC-002): the pull choices of the notice.
   caseTest("T046", "FR-026: after a rejected push, pull with mode rebase and with mode merge each equal Git's own pull --rebase and pull --no-rebase on a copy, and a push then succeeds", SHELL, async () => {
     for (const mode of ["rebase", "merge"] as const) {

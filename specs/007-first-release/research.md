@@ -563,3 +563,87 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - The artifact holds no release notes file, as designed. Only the `publish` job makes it (`release.yml:206-208` tag condition, `:258` notes.ts to `RUNNER_TEMP`, `:268` and `:275` gh release).
 - Against the local rehearsal of 9a8707ce (2026-11-09, reference host, driver log in local scratch): the third-party notices are identical. The tool versions are the same: rustc 1.99.0, cargo 1.99.0, tauri-cli 2.12.0, bun 1.4.4, NSIS v3.11. The installer differs (local 46,599,710 bytes, `eded3c5f…`). The build commits differ, so this comparison does not show the cause. The local run left out `hunspell-source.ts`, because it reads github.com. So its `SHA256SUMS.txt` (200 bytes) lists two names. The CI file (304 bytes) lists three names: the installer, the archive, and the notices.
 - Next: the orchestrator deletes the `release-dry-run` branch. T029 stays open until T028 passes.
+
+### T028 pre-tag verification (2026-11-10 at b9fbda78, 2026-11-11 at e89a5faa)
+
+- Source: the driver logs in local scratch.
+- Run 1 at b9fbda78 (2026-11-10, Bun 1.4.4) on Windows 11 x64: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, and `bun run export:schemas --check` exit 0.
+- Run 1: `cargo test --locked --manifest-path src-tauri/Cargo.toml` exit 0, 666 passed, 0 failed, 16 ignored. `bun run package` exit 0. The SHA-256 of the installed exe equals the build.
+- Run 1: `bun run test:all` exit 1. Parallel part: 9089 pass, 45 skip, 51 fail. Serial part: 976 pass, 25 skip, 0 fail.
+- All 51 fails are in `tests/contracts/workbench-worktrees.test.tsx`. The case "more than 200 worktrees" took 5019.80 ms, over the 5 s Bun default. Then the 50 later cases of that file failed.
+- Run 1: `bun run test:windows` stopped at its 400 min limit. Two cases failed:
+  - 010 T018 SC-010d and SC-011 in `commit-menu-perf.test.ts`: Hard median 4097 ms, budget 4000 ms.
+  - 005 T060 SC-007 in `inspection-packaged.test.ts`, with 3 opens per kind.
+- Run 1: three `test:windows` files did not start: `submodule-update-packaged`, `uia`, and `workbench-packaged`.
+- Run 1: `bun test ./tests/gate` 175 pass, 0 fail.
+- User decision 2026-11-10: a targeted rerun replaces a second full `test:all`.
+- User decision 2026-11-11: fix the tests, then do one targeted run on the final head. The run includes the five Windows files and the T026 rehearsal.
+- Test-only fixes:
+  - dcde6cc1: 30 s per-case limits in 8 heavy DOM and fixture test files.
+  - 78a5cee3: SC-007 compares the medians of 7 opens per kind. The 150 ms allowance does not change.
+  - 823c0d1f: CHANGELOG text.
+- `git diff b9fbda78 e89a5faa -- src src-tauri package.json bun.lock scripts` is empty. So the product code is the same at both commits, and the packaged steps ran the installed b9fbda78 build.
+- Run 2 at e89a5faa (2026-11-11) on Windows 11 x64: install, typecheck, schema check, and `tests/groups` exit 0.
+- Run 2: the 8 changed test files give 291 pass, 0 fail. The "more than 200 worktrees" case passes. Control: the 30 s limit of the "more than 200 worktrees" case became 1 s. That case and 50 later cases failed, and 22 passed. The restore left the tree clean.
+- Run 2: `bun test --parallel=8 --isolate ./tests/contracts` gives 6869 pass, 37 skip, 0 fail, 143 files.
+- Windows files at e89a5faa:
+  - `submodule-update-packaged`: 5 pass, 0 skip, 0 fail.
+  - `uia`: 11 pass, 0 skip, 0 fail.
+  - `workbench-packaged`: 8 pass, 6 skip. The T082 live-input cases need `ARBARETO_LIVE_INPUT=1`.
+  - `commit-menu-perf`: 8 pass, 0 skip, 0 fail.
+  - `inspection-packaged`: 11 pass, 1 skip. The skip is FR-028 N2: no volume without a Recycle Bin.
+- 005 T060 SC-007, 7 opens per kind: submodule open median 428 ms, normal parent 365 ms, parent button 349 ms, normal submodule 347 ms. The allowance is 150 ms. The gap is 63 ms.
+- SC-007 control: with the allowance set to -1000, the case fails. The hash after the restore is equal.
+- 010 T018 SC-010d medians, budget in brackets: Hard 3460.6 ms (4000), Detached checkout 2139.8 (4000), Continue 810.9 (2000), Cherry-pick 748.8 (2000), Revert 693.7 (2000), Mixed 626.4 (2000), Create tag 632.2 (1000), Soft 549.8 (1000), Abort 461.1 (2000).
+- SC-011: every Windows series has at least 20 inputs, p95 at most 64 ms, and max at most 88 ms.
+- 010 T018 control: the probe interval becomes 25 ms instead of 10 ms. The case fails: Abort got 12 inputs, minimum 20. The hash after the restore is equal.
+- The 2026-11-10 Hard miss (4097 ms): an A/B run on 2026-11-11 gave 3258 ms and 3196.9 ms with the old probe, and 3147.1 ms with the release probe. The A/B rules out the probe. The cause stays unknown.
+- Platform split:
+  - Run 1 used OS build 26300 before KB5132061. KB5132061 was installed on 2026-11-11 at 01:41, during `test:windows`.
+  - Run 1 used WebView2 157.0.4341.42. This value is probable and comes from the update log.
+  - The A/B run and run 2 used OS 26300.9974 and WebView2 157.0.4341.46. WebView2 was updated on 2026-11-11 at 08:32.
+- Run 2 tools: Bun 1.4.4, cargo and rustc 1.99.0, Git 2.56.0.windows.2, makensis 3.11.
+- ORIGIN: every test step of run 2 printed `ORIGIN` lines in the checkout under test. No line names another origin.
+- T028 control mutations at e89a5faa in the T026 clone, each undone, the clone clean after each:
+  - m4: `@v4` in the workflow. The workflow test fails.
+  - m5: `build` gets `contents: write`. The workflow test fails.
+  - m6: `sums.ts` without the extra-file check. The `extra` case fails.
+- `OBSERVATION T028: b9fbda78 test:all 51 fail in one file by the 5 s timeout, test:windows 2 fail and 3 files not started; e89a5faa after test-only fixes: tests/contracts 0 fail, five Windows files 0 fail, three control mutations fail as stated`
+- T028 rests on the two user decisions above, not on one green `test:all` run.
+
+### Review of 6bb2235d and 5f31d07a (independent reviewer, 2026-11-11)
+
+No finding blocks T028. The workflow permissions, the `release` environment gate, the commit-ID pins, and the SignPath token use did not change since 195b03df. The publish tag check compares the tag commit with `GITHUB_SHA` exactly and refuses on a `gh` failure. The `info/attributes` line turns off every working-tree conversion in `git archive` and changes no user config.
+
+- Low: the tag check runs before the asset upload, so a tag move during the upload is not detected. Move the check before `--draft=false`. Deferred to v0.1.1.
+- Low: no test covers a tree `text eol=crlf`, `ident`, or `filter` attribute. Deferred to v0.1.1.
+- Suspicion: `--upstream` accepts an option-like value. Add `--end-of-options` before the fetch URL. Deferred to v0.1.1.
+
+### T026 Local rehearsal of the build job, third run (2026-11-11, clean clone at e89a5faa)
+
+- Exit 0 in the targeted run: c0 to c6 and c8 to c11. These are the install, `check.ts --mode dry-run --signing off`, the build, `package:preview:exes`, `package:preview:bundle`, `notices-text.ts`, `sums.ts write` and `verify`, `notes.ts`, and `cargo tauri --version` (tauri-cli 2.12.0).
+- The driver left out c7 (`hunspell-source.ts`), because it reads the network. On the same day, c7 ran in the same clean clone: exit 0, 9 s. Then `sums.ts write` and `verify` ran again on the four files: exit 0.
+- The verified folder holds exactly four files:
+  - `Arbareto_0.1.0_x64-setup.exe` 46601572 bytes `b83a762792cde895086e60e69de1c7b36397ee79a9c9ce7ad83ddca37896cb65`.
+  - `arbareto-0.1.0-third-party-notices.txt` 650568 bytes `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
+  - `arbareto-0.1.0-hunspell-source.tar.gz` 2211093 bytes `6dc4bdde6c15ab6909d7d1a6a5ebe98b2f13e718e509a95f18613e2ddb2eee90`.
+  - `SHA256SUMS.txt` 304 bytes `25e5d4a062e86151cd26d17fd1dbc7437767adaa24f31d902e8a19d372c95dc5`.
+- The release notes file has 5443 bytes, `06e7bd112e194519a7c9a1d4767d683fb32e45831a3b2500dd1c56ea2dd987be`.
+- Archive content check by the T029 method:
+  - `hunspell` pin edb619100791110d3e34f09ec35392ad327c1135: 721 files.
+  - `hunspell-wasm` pin 8f755ef64e8b047b77b676f9698b3dfa5cb1887d: 51 files.
+  - The file lists equal `git ls-tree`. 0 SHA-256 mismatches. The one symlink is a symlink, and its target is the blob text.
+- The archive hash differs from dry run 2. The size is the same, 2211093 bytes. The gzip header MTIME is the build time, and the tar entries carry the commit time. So the archive bytes are not reproducible, but the content is.
+- `git status --porcelain --untracked-files=all` in the clone printed nothing after the install, after Q2, and at the end.
+- Q3: m1, m2a, m2b, m3, m4, m5, and m6 exit 1 as stated. m7 gives 74 pass. m8 and m9 exit 0.
+- Tools: Bun 1.4.4 (`bun install v1.4.4 (38afee6c8)`), `rustc 1.99.0 (b940084d7 2026-09-28)`, `cargo 1.99.0 (5f94df478 2026-08-27)`, `git version 2.56.0.windows.2`, makensis `v3.11`, `tauri-cli 2.12.0`.
+- `OBSERVATION T026: e89a5faa every Q2 step exit 0 (c7 in a second step); four files; sums verify exit 0; archive content equals both pins; porcelain empty; Q3 mutations fail as stated`
+
+### T031 release settings read-back (2026-11-11, GitHub API, `auric/arbareto`)
+
+- 2026-11-11T16:35:17Z: an unauthenticated `GET https://api.github.com/repos/auric/arbareto` sent no token. Response: `"full_name": "auric/arbareto"`, `"private": false`, `"visibility": "public"`.
+- `environments/release` (16:35:18Z): required reviewer `auric`. `deployment_branch_policy` is `{"custom_branch_policies":true,"protected_branches":false}`. Deployment branch policies: one, `{"name":"v*","type":"tag"}`.
+- `immutable-releases` (16:35:19Z): `{"enabled":true,"enforced_by_owner":false}`.
+- FR-006: `origin/main` at a7ba0473 holds 005 (63c11bf0, 11d447aa), 006 (0d2cfbe1), 008 (6ee8f7fd), 010 (5ac06581), 011 (49577237), and the 004 Submodules tree (6b405b35, 5fb6d74f, 95ce6cc1).
+- e89a5faa contains all of `origin/main`.
+- `OBSERVATION T031: public, environment release with reviewer auric and tag policy v*, immutable releases on; main at a7ba0473 holds 005, 006, 008, 010, 011, and the 004 Submodules tree`

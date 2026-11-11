@@ -647,3 +647,27 @@ No finding blocks T028. The workflow permissions, the `release` environment gate
 - FR-006: `origin/main` at a7ba0473 holds 005 (63c11bf0, 11d447aa), 006 (0d2cfbe1), 008 (6ee8f7fd), 010 (5ac06581), 011 (49577237), and the 004 Submodules tree (6b405b35, 5fb6d74f, 95ce6cc1).
 - e89a5faa contains all of `origin/main`.
 - `OBSERVATION T031: public, environment release with reviewer auric and tag policy v*, immutable releases on; main at a7ba0473 holds 005, 006, 008, 010, 011, and the 004 Submodules tree`
+
+### T030 Sandbox install of the dry-run installer (2026-11-11, reference host, dry run 2 build commit 5f31d07a)
+
+- Source: artifact `release-files` of run https://github.com/auric/arbareto/actions/runs/42771011191.
+- Files, bytes, SHA-256:
+  - `Arbareto_0.1.0_x64-setup.exe` 46600550 bytes `5c2ece4748edb0f37e98fa5c2bb6526ba41dbf88dec3b19fa6f0560e7196dfe6`.
+  - `arbareto-0.1.0-hunspell-source.tar.gz` 2211093 bytes `36f0e8eef304e99b837f95354b376cda5f1edbff29e398b2aa6f6ffcbf328dd9`.
+  - `arbareto-0.1.0-third-party-notices.txt` 650568 bytes `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
+  - `SHA256SUMS.txt` 304 bytes `6acec9ff7c94756d36b63808a1c6a4053c8f0f9084062e0afecaa79e9347242e`.
+- `sums.ts verify` exit 0. All four files equal the "T029 dry run 2" record.
+- Host: Windows 11 Pro x64, build 26300.9974.
+- The Sandbox WebView2 is registered (`pv=156.0.4314.50`), but its runtime folder is absent. The script maps the host runtime 157.0.4341.46 read-only, as in the T017 record.
+- The script maps host Git 2.56.0.windows.2 read-only. Networking is off.
+- Install `/S` as the Sandbox user `WDAGUtilityAccount`: exit 0, no `consent.exe` process.
+- The Sandbox user is an administrator. So this run proves a silent per-user install, not a standard-user install.
+- The app starts. About shows `Build: 0.1.0 5f31d07adb69459d1bf78b7e038b86f7992bd807` and `Preview`, without `-dirty`.
+- The start page shows "This preview is not a qualified release. The qualification of Windows 11 x64 continues."
+- HKCU `Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto`: `DisplayName=Arbareto`, `DisplayVersion=0.1.0`, `Publisher=Ihor Lifanov`. No HKLM entry. The Settings page was not opened.
+- `arbareto.exe` 17552384 bytes `a2a2afb8b838a67160127dc44d2a880e95da5f3a79373fdaa469d57ed7cf530c`. CompanyName `Ihor Lifanov`, LegalCopyright `Copyright (c) 2026 Ihor Lifanov`.
+- `arbareto-git.exe` 116966912 bytes `b1ef33ea57a95da48ab74738483b723147a984f5212bd008fc267bb8fed16715`. CompanyName `Ihor Lifanov`, LegalCopyright `Copyright (c) 2026 Ihor Lifanov`.
+- `uninstall.exe` 79264 bytes `5b03c9ae81700718248168ff47415188f787a08d2c5cd3c5781750678061a24e`. This equals the 8185cef5 uninstaller record.
+- `uninstall.exe /S` exit 0. After it, the HKCU key, the install folder, and the Start menu shortcut are absent.
+- Outside `specs/` and `tests/`, 5f31d07a..e89a5faa changes only `CHANGELOG.md` and `README.md`. So this installer holds the release code.
+- `OBSERVATION T030: dry run 2 installer 5c2ece47…7196dfe6, sums verify exit 0; silent install exit 0 as an administrator Sandbox user; About Build: 0.1.0 5f31d07adb69459d1bf78b7e038b86f7992bd807, Preview; HKCU entry only; uninstall exit 0, key, folder, and shortcut absent`

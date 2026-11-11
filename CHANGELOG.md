@@ -2,7 +2,7 @@
 
 Each section lists the changes that a user of Arbareto sees in that release.
 
-## [0.1.0]
+## [0.1.0] - 2026-11-11
 
 The first preview release for Windows 11 x64.
 

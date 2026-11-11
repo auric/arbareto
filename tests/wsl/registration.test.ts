@@ -5,6 +5,7 @@
 // The F24 floor case and the seam cases need no Git 2.55.0 (tasks.md "Test harness rules"). They run before the other cases.
 
 import { afterEach, describe, expect, test } from "bun:test";
+import type { ErrorCode } from "../../src/contracts/errors";
 import { createCollector, type GitRunner, type WslRunner } from "../../src/git-service/git-runner";
 import { requestWslIdentities, type PhysicalIdentity } from "../../src/git-service/identity";
 import { dismissWslMarker, type DismissalOutcome } from "../../src/git-service/registration";
@@ -190,7 +191,7 @@ describe("WSL registration seams (T207)", () => {
     };
     expect(checked(null)).toEqual({ path: "/mnt/tools/bin/git", version: "2.55.0" });
     expect(checked(null, "git version 2.55.0.windows.3")).toEqual({ path: "/mnt/tools/bin/git", version: "2.55.0.windows.3" });
-    const reasons: Record<string, [string, string]> = {
+    const reasons: Record<string, [ErrorCode, string]> = {
       git: ["GIT_UNSUPPORTED", "windows-git"],
       "systemd-run": ["WSL_UNAVAILABLE", "no-user-manager"],
       systemctl: ["WSL_UNAVAILABLE", "no-user-manager"],

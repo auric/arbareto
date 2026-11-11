@@ -467,7 +467,7 @@ describe.skipIf(process.platform !== "win32")("T077 packaged SC-003 and SC-004 r
   async function stateOf(x: Sync, r: Reply): Promise<string> {
     const body = await x.s.body<{ state?: string; code?: string }>(r);
     console.log(`REPLY ${TASK}: ${r.command} state=${body.state} code=${body.code ?? "none"}`);
-    expect(TERMINAL_STATES as readonly string[]).toContain(body.state);
+    expect(TERMINAL_STATES as readonly (string | undefined)[]).toContain(body.state);
     return body.state!;
   }
 

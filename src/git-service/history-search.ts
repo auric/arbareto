@@ -204,7 +204,7 @@ export class SearchMerge {
   }
 
   /** Contract Δ3 `reducedParents`, `reducedParentCount`, and `reducedSkips` of settled match q (data-model §7). */
-  reduced(q: number): { reducedParents: { oid: string; skip: boolean }[]; reducedParentCount: number; reducedSkips: boolean } {
+  reducedRow(q: number): { reducedParents: { oid: string; skip: boolean }[]; reducedParentCount: number; reducedSkips: boolean } {
     const edges = this.edgesOf(q);
     return {
       reducedParents: edges.slice(0, HISTORY_PARENTS_PER_COMMIT).map(([to, direct]) => ({ oid: this.topology.oid(this.matchRows[to]!), skip: !direct })),

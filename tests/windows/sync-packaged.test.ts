@@ -352,7 +352,7 @@ describe.skipIf(process.platform !== "win32")("T078 packaged SC-008 workloads", 
 
         const reply = await s.body<{ state?: string; code?: string }>(s.replies.slice(since).find((call) => call.command === "sync")!);
         console.log(`REPLY ${TASK} ${op}: state=${reply.state} code=${reply.code ?? "none"}`);
-        expect(TERMINAL_STATES as readonly string[]).toContain(reply.state);
+        expect(TERMINAL_STATES as readonly (string | undefined)[]).toContain(reply.state);
         // The workload moved data: the remote-tracking ref, HEAD, or the remote branch holds the blob commit.
         const moved = op === "fetch" ? revParse(h, repo, "refs/remotes/origin/main") : op === "pull" ? revParse(h, repo, "HEAD") : revParse(h, bare, "refs/heads/main");
         expect({ state: reply.state, moved }).toEqual({ state: "succeeded", moved: target });

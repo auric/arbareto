@@ -786,7 +786,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     const rows = oids.map((oid, i) => {
       const index = rowAt(i);
       const row: Record<string, unknown> = { index: start + i, oid, parents: topology.parents(index), cell: cells[i], labels: view.labels.get(oid) ?? [], checkout: oid === head };
-      if (filter !== null && cells[i] !== null) Object.assign(row, filter.merge.reduced(start + i));
+      if (filter !== null && cells[i] !== null) Object.assign(row, filter.merge.reducedRow(start + i));
       if (s !== null) row.match = filter !== null || s.merge.stateOf(index);
       const found = text?.[i];
       if (found === "large") row.textLimit = true;

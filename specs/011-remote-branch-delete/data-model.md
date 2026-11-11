@@ -47,7 +47,7 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 | Field | Content |
 | --- | --- |
 | `push` | `PushResult` with `status` `deleted`, `rejected`, `remote-rejected`, `remote-failure`, or `none`. `oldObjectId` and `newObjectId` are the tracking ref before and after. `lease` is true. `upstreamWritten` and `upstreamNotSet` are false. |
-| `reason`, `reasonText` | As in 003. `reasonText` is display text only. A stale lease gives `reason: stale-lease`. |
+| `reason`, `reasonText` | As in 003. `reasonText` is display text only. `reason: stale-lease` needs the plan D8 re-read to show a remote value other than `<expect>`, or no remote ref. Another `[rejected]` gives `rejected` (user decision 2026-11-11). |
 | `remoteGone` | `true` only when the gone recovery removed the stale ref (plan D8). Only this action carries it. |
 | `localNotDeleted` | `true` only when the remote delete or the gone recovery succeeded, and the fresh ref listing after the run still holds the local ref. Exit codes do not set it. Only this action carries it. A result without the fresh listing does not carry it. |
 | `remedy` | The terminal command and its text, as for a push. A URL with user information gives text only. |

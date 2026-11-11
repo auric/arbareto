@@ -78,8 +78,6 @@ export interface PushLine {
   status: PushStatus;
   // Display only (FR-015).
   reasonText: string | null;
-  // Feature 011 plan.md D5: the line names the `alias` field. transport.c `print_ref_status` prints the peer ref, which remote.c `alloc_delete_ref` names `(delete)`.
-  alias?: true;
 }
 
 // transport.c `print_ok_ref_status` prints `-` only for a deletion (feature 011 research.md R3).
@@ -124,7 +122,6 @@ export function parsePushPorcelain(stdout: Uint8Array, refspec: string, exitCode
       matches++;
       found = pushLine(m[1]!, m[3]!);
       if (!found) unknown = true;
-      else if (m[2] !== refspec) found.alias = true;
     }
   }
   if (matches > 1) return null;

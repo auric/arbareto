@@ -20,7 +20,7 @@ The user gave these decisions on 2026-11-06. Each decision is binding.
 - Q: Does the local Delete dialog also delete the remote branch? → A: When the branch has an upstream remote-tracking branch, the dialog offers a check box (plan D13 X9). It is unchecked by default. One confirmation covers both deletes (FR-010).
 - Q: Can the user delete the default branch of a remote? → A: No. The review refuses the branch that `refs/remotes/<remote>/HEAD` names after the last fetch, with the reason. When that ref is absent, the review refuses and tells the user to fetch (FR-004).
 - Q: Which budgets apply? → A: The budgets of SC-009a to SC-009e, as the design plan proposed them. Each cold run has a budget of 2 times the warm budget of its measure. WSL times are recorded only.
-- Q: What happens when the remote branch is already gone? → A: After a stale-lease refusal, Arbareto checks the remote with `ls-remote --exit-code`. When the branch is gone, Arbareto removes the stale remote-tracking ref and says so. The removal binds to the shown object ID (FR-012).
+- Q: What happens when the remote branch is already gone? → A: After a stale-lease refusal, Arbareto checks the remote with `ls-remote --exit-code`. When the branch is gone, Arbareto removes the stale remote-tracking ref and says so. The removal binds to the shown object ID (FR-012). Superseded 2026-11-11 for the reason rule: the check runs after each `[rejected]` delete, and only its result gives stale-lease (FR-012).
 - Q: Does Del on a remote-tracking row open the confirmation? → A: Yes. Cancel has the first focus, so one key never deletes (FR-001).
 - Q: Does the stale outcome offer a Fetch button? → A: No. The outcome names Fetch as text only (plan D13 X22).
 - Q: Which menu label applies? → A: "Delete remote branch…" (plan D13 X1).
@@ -87,7 +87,7 @@ Another clone deleted the remote branch. Fetch does not prune by default, so the
 
 1. **Given** `origin/gone1` here and no `refs/heads/gone1` on the remote. **When** I confirm X8. **Then** the lease delete refuses, the check finds no branch, Arbareto removes `refs/remotes/origin/gone1`, and the status bar states X23.
 2. **Given** the remote branch moved after the last fetch. **When** I confirm. **Then** the check finds the branch, nothing changes, and the status bar states X22.
-3. **Given** the remote has a `pushurl` that differs from its fetch URL. **When** the lease refuses. **Then** Arbareto does not check the remote and states X22.
+3. **Given** the remote has a `pushurl` that differs from its fetch URL. **When** the lease refuses. **Then** Arbareto does not check the remote. The status bar states "Delete remote branch did not complete: PUSH_REJECTED rejected: <reasonText>" without a remedy (user decision 2026-11-11).
 4. **Given** the combined delete and a gone remote branch. **When** I confirm. **Then** Arbareto removes the stale ref and deletes the local branch. The status bar states X23, then X26.
 
 ---
@@ -178,7 +178,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 - **FR-006**: The confirmation MUST be a modal alert dialog. It MUST name the remote branch. It MUST list the removed commits with their count and subjects, up to 100. It MUST state that other people can lose work, and that the delete stops on a remote change. Cancel MUST have the first focus. The dialog MUST NOT have a default button.
 - **FR-007**: The delete MUST bind to the shown remote-tracking object ID through the Git lease `--force-with-lease=<dst>:<expect>`. Git MUST refuse when the remote branch differs, so no remote commit is lost. The application MUST NOT offer a delete without a lease.
-- **FR-008**: The outcome MUST come from the push porcelain line, the exit code, and the listings before and after. A stale lease line names its source `(delete):<dst>`, and the parse MUST accept it. Network, credential, and hook failures MUST share one outcome with the terminal remedy (003 FR-006, 001 FR-051).
+- **FR-008**: The outcome MUST come from the push porcelain line, the exit code, and the listings before and after. A stale lease line names its source `(delete):<dst>`, and the parse MUST accept it. This alias selects the line only and MUST NOT decide the reason (FR-012). Network, credential, and hook failures MUST share one outcome with the terminal remedy (003 FR-006, 001 FR-051).
 - **FR-009**: The remote-only delete MUST change no Git configuration. Local branches that track the deleted branch MUST keep their upstream setting.
 
 #### Combined delete
@@ -188,7 +188,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Gone recovery
 
-- **FR-012**: After a stale-lease refusal, the application MUST check the remote with `ls-remote --exit-code -- <remote> <dst>`. It MUST check only when the fetch URL equals the push URL byte for byte. Exit 2, or exit 0 with no exact `<dst>` line, means gone. Then the application MUST remove the remote-tracking ref with `update-ref --no-deref -d <ref> <expect>`, and say so. Any other result MUST keep the stale outcome.
+- **FR-012**: After a `[rejected]` delete, the application MUST check the remote with `ls-remote --exit-code -- <remote> <dst>`. It MUST check only when the fetch URL equals the push URL byte for byte. The reason MUST be stale-lease only when the check shows no remote ref or a value other than `<expect>`. Otherwise the reason MUST be `rejected` (user decision 2026-11-11). Exit 2, or exit 0 with no exact `<dst>` line, means gone. Then the application MUST remove the remote-tracking ref with `update-ref --no-deref -d <ref> <expect>`. It MUST state the removal. Any other result after a gone fact MUST keep the stale outcome.
 
 #### Common rules
 

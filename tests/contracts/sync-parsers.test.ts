@@ -198,8 +198,8 @@ describe("remote branch delete porcelain (feature 011)", () => {
     ["P3 receive.denyDeletes", out(TO, "!\t:refs/heads/feature3\t[remote rejected] (deletion prohibited)", "Done"), "refs/heads/feature3", 1, { status: "remote-rejected", reasonText: "deletion prohibited" }],
     ["P7 a declined local pre-push hook", bytes(""), "refs/heads/feature8", 1, { status: "none", reasonText: null }],
     // Research.md R3 `transport.c:773` and `remote.c:1105-1110`: a refusal that prints the peer ref names the source `(delete)`.
-    ["P8 a stale lease, remote moved", out(TO, "!\t(delete):refs/heads/feature4\t[rejected] (stale info)", "Done"), "refs/heads/feature4", 1, { status: "rejected", reasonText: "stale info", alias: true }],
-    ["P9 a stale lease, remote branch absent", out(TO, "!\t(delete):refs/heads/feature6\t[rejected] (stale info)", "Done"), "refs/heads/feature6", 1, { status: "rejected", reasonText: "stale info", alias: true }],
+    ["P8 a stale lease, remote moved", out(TO, "!\t(delete):refs/heads/feature4\t[rejected] (stale info)", "Done"), "refs/heads/feature4", 1, { status: "rejected", reasonText: "stale info" }],
+    ["P9 a stale lease, remote branch absent", out(TO, "!\t(delete):refs/heads/feature6\t[rejected] (stale info)", "Done"), "refs/heads/feature6", 1, { status: "rejected", reasonText: "stale info" }],
     ["P10 an equal lease", out(TO, "-\t:refs/heads/feature4\t[deleted]", "Done"), "refs/heads/feature4", 0, { status: "deleted", reasonText: null }],
     // Research.md R3 `transport.c:743` prints no source ref (R5 U2: no probe caused it).
     ["no delete capability", out(TO, "!\t:refs/heads/x\t[rejected] (remote does not support deleting refs)", "Done"), "refs/heads/x", 1, { status: "rejected", reasonText: "remote does not support deleting refs" }],

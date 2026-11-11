@@ -227,7 +227,8 @@ describeGit("hunspell-source.ts", (git) => {
     expect(count(source, pins.hunspell)).toBe(1);
     expect(count(source, pins.hunspellWasm)).toBe(1);
     expect(source).toContain("LGPL-2.1");
-  });
+    // The case builds 2 Git repositories with bare clones and an archive, and takes 3 to 3.7 s, near the 5 s Bun default.
+  }, 30_000);
 
   test("core.autocrlf=true in the Git config leaves the archive files equal to the pinned blobs", () => {
     const { base, pins } = upstream("autocrlf");
@@ -241,7 +242,8 @@ describeGit("hunspell-source.ts", (git) => {
     const blob = fixtureGit(git, base, ["--git-dir", join(base, "hunspell", "hunspell"), "cat-file", "blob", `${pins.hunspell}:hunspell.txt`]);
     expect(blob).toBe("hunspell.txt\n");
     expect(readFileSync(join(unpacked, "hunspell", "hunspell.txt"), "utf8")).toBe(blob);
-  });
+    // The case builds 2 Git repositories with bare clones and an archive, and takes 3 to 3.4 s, near the 5 s Bun default.
+  }, 30_000);
 
   test("a relative out folder gets the archive", () => {
     const { base, pins } = upstream("relative");
@@ -251,7 +253,8 @@ describeGit("hunspell-source.ts", (git) => {
     const result = hunspellSource({ version: "0.1.0", out: rel, upstream: base, pins, git: fixtureGitPath(git), env: fixtureEnv(), work: fixtureDir("source-relative-work") });
     expect(result).toEqual({ path: join(out, archiveName("0.1.0")) });
     expect(existsSync(join(out, archiveName("0.1.0")))).toBe(true);
-  });
+    // The case builds 2 Git repositories with bare clones and an archive, and takes 2.9 to 3.5 s, near the 5 s Bun default.
+  }, 30_000);
 
   test("a pin that the upstream lacks gives RELEASE_SOURCE fetch", () => {
     const { base, pins } = upstream("absent");

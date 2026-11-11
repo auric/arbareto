@@ -280,5 +280,6 @@ describe("refusal texts (plan D15 Submodules, US6-5)", () => {
     }
     await contextMenu(groupRow("lib"));
     expect(describedBy(menuItem("Open submodule"))).toBe("Arbareto opens at most 8 nested submodules in a row. Open this submodule with Open repository.");
-  });
+    // The case opens 8 nested submodules with keys in happy-dom and takes 2 to 3.2 s in parallel runs, near the 5 s Bun default.
+  }, 30_000);
 });

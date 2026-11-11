@@ -87,7 +87,7 @@ Another clone deleted the remote branch. Fetch does not prune by default, so the
 
 1. **Given** `origin/gone1` here and no `refs/heads/gone1` on the remote. **When** I confirm X8. **Then** the lease delete refuses, the check finds no branch, Arbareto removes `refs/remotes/origin/gone1`, and the status bar states X23.
 2. **Given** the remote branch moved after the last fetch. **When** I confirm. **Then** the check finds the branch, nothing changes, and the status bar states X22.
-3. **Given** the remote has a `pushurl` that differs from its fetch URL. **When** the lease refuses. **Then** Arbareto does not check the remote. The status bar states "Delete remote branch did not complete: PUSH_REJECTED rejected: <reasonText>" without a remedy (user decision 2026-11-11).
+3. **Given** the remote has a `pushurl` that differs from its fetch URL. **When** the lease refuses. **Then** Arbareto does not check the remote. The status bar states "Delete remote branch did not complete: PUSH_REJECTED rejected: <reasonText>" without a remedy (user decision 2026-11-11). A combined delete appends the X25 text ". <branch> stays."
 4. **Given** the combined delete and a gone remote branch. **When** I confirm. **Then** Arbareto removes the stale ref and deletes the local branch. The status bar states X23, then X26.
 
 ---

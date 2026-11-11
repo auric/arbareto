@@ -218,7 +218,7 @@ Steps:
 3. `pageant(R)` on a Windows repository (`sync.ts:249-255`).
 4. The push: `pushArgs(R, null, dst, expect, of)` through `networkStep(..., "sync-push", ...)`. Policy `remote`, `PROCESS_LIMITS.network`, and the stall notice. Remedy: `& {git} --no-lazy-fetch -C {root} push --force-with-lease={lease} -- {remote} {refspec}`. A URL with user information gets the remedy as text only (`sync.ts:173-174`).
 5. Parse: `parsePushPorcelain(stdout, ":<dst>", exit, "(delete):<dst>")`.
-6. Gone recovery (D8), only when the status is `rejected` and `sameUrl` holds.
+6. Lease re-read and gone recovery (D8), only when the push status is `rejected`, the review bound `sameUrl: true`, and no Cancel came.
 7. With `local`, after `deleted` or `remoteGone`: the local writes `deleteRefArgs(branch, oid)` and, when `section`, `removeBranchSectionArgs(branch)` (`workbench-commands.ts:275-282`), through `writeUpstream`. It stops at the first nonzero exit and at Cancel (`sync.ts:310`). Before the first local write, the service reports the phase `sync-delete-local`. The status bar shows X28 for that phase.
 8. Enter reconciling. Wait for the WSL process-end fact (`processEnded`). Read refs, HEAD, the operation state, and the trust listing.
 9. Outcome (table below).

@@ -48,6 +48,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 | 2. Release files, workflow, 001 | 4, 5, 6 | P3, P4, P5 | T018–T028 | US2, US3, US4 | WP5 and WP6 (implementer, disjoint files), then WP7 (implementer) |
 | 3. Dry run and release | 7 | P6, P7 | T029–T033 | US1, US2, US3 | WP8 (scout runs, orchestrator GitHub steps) |
 | Later. Signing switch-on | 8 | — | T034–T037 | US5 | User, orchestrator, implementer |
+| Later. v0.1.1 follow-ups | 9 | — | T038–T039 | — | Implementer, scout, orchestrator |
 
 ---
 
@@ -190,7 +191,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 
 ### Batch 3 verification
 
-- [ ] T033 Run the batch 3 verification (WP8): confirm that research.md R7 holds the T029 to T032 records, and that the release page and the README show the Smart App Control sentence. Control mutation: push a tag `v0.1.99` on a scratch commit outside `main` in a disposable fork or after the user's OK; the run fails with `RELEASE_CHECK not-on-main`, and no release appears; delete the tag. If a publish step fails, rerun the failed run and record that it completes the draft without a new tag. Otherwise record FR-017 rerun as unverified. The task passes only after one independent review of batch 3 is recorded in research.md R7. Depends on T032.
+- [x] T033 Run the batch 3 verification (WP8): confirm that research.md R7 holds the T029 to T032 records, and that the release page and the README show the Smart App Control sentence. Control mutation: push a tag `v0.1.99` on a scratch commit outside `main` in a disposable fork or after the user's OK; the run fails with `RELEASE_CHECK not-on-main`, and no release appears; delete the tag. If a publish step fails, rerun the failed run and record that it completes the draft without a new tag. Otherwise record FR-017 rerun as unverified. The task passes only after one independent review of batch 3 is recorded in research.md R7. Depends on T032. Note (2026-11-11): passed; record in research.md R7 "T033 Batch 3 verification".
 
 **Checkpoint**: Preview v0.1.0 is public, verifiable, and immutable.
 
@@ -207,6 +208,15 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 
 ---
 
+## Phase 9: v0.1.1 follow-ups
+
+**Agent**: implementer (T038), scout and orchestrator (T039). This phase does not gate v0.1.0.
+
+- [ ] T038 Harden the release workflow and the verify text (`.github/workflows/release.yml`, `scripts/release/hunspell-source.ts`, README.md, `.github/release-notes/unsigned.md`). Move the publish tag check (`RELEASE_CHECK not-tag-commit` and the tag-moved refusal) to just before `gh release edit --draft=false`. Give `GH_TOKEN` only to the step that needs it. Add `--end-of-options` before the fetch URL in `hunspell-source.ts`. Add a test fixture with a tree `.gitattributes` `text eol=crlf ident` and an `$Id$` file. The blob-equality assert then covers those attributes. Add `--signer-workflow auric/arbareto/.github/workflows/release.yml` to the attestation command. Source: research.md R7 "Review of 6bb2235d and 5f31d07a" and "T033 Batch 3 verification". Spec: FR-017, FR-019, FR-023, FR-024, FR-028, FR-029. Depends on T033.
+- [ ] T039 Close the batch 3 verification gaps in the v0.1.1 release check. Files: `specs/007-first-release/spec.md` (SC-002 wording) and the v0.1.1 release record in research.md R7. Start the app as a standard Sandbox user and read About. Press both About buttons with network on and check the opened URL. Reword SC-002 to "3 of 3 lines of `SHA256SUMS.txt`, and the checksum file matches its attestation". Source: research.md R7 "T033 Batch 3 verification". Spec: SC-001, SC-002, SC-007. Depends on T033.
+
+---
+
 ## Dependencies & Execution Order
 
 - Batch 0: T001 to T004 in parallel, then T005; T006 and T007 in parallel, then T008, T009, T010.
@@ -214,6 +224,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 - Batch 2: WP5 (T018 to T023) and WP6 (T024 to T026) in disjoint files; T025 needs T019 to T022; T027 any time in batch 2; T028 last.
 - Batch 3: T029, T030, T032, and T033 in order. T031 runs any time after the public switch and before T032. T031 needs the user's public switch. T032 needs 005, 006, 008 (`008-discard-changes`), 010 (`010-commit-menu`), 011 (`011-remote-branch-delete`), and the 004 Submodules tree (004 User Story 12) on `main` and this feature merged. The `v0.1.0` tag waits for 008, 010, 011, and the 004 Submodules tree (user decisions 2026-10-27, 2026-11-04, 2026-11-06, 2026-11-03, and 2026-11-07).
 - Phase 8 after T032 and the SignPath approval.
+- Phase 9 after T033, with the v0.1.1 release.
 
 ### Parallel examples
 
@@ -232,20 +243,20 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 | FR-006 | T031 |
 | FR-007 | T027 |
 | FR-010 to FR-016 | T006 to T009, T024 to T026, T029 |
-| FR-017 to FR-019 | T024, T025, T032 |
-| FR-020 to FR-024 | T018 to T022, T024, T025, T032 |
+| FR-017 to FR-019 | T024, T025, T032, T038 (FR-017, FR-019) |
+| FR-020 to FR-024 | T018 to T022, T024, T025, T032, T038 (FR-023, FR-024) |
 | FR-025 to FR-027 | T018, T022, T023 |
-| FR-028 | T031, T032 |
-| FR-029 | T023 |
+| FR-028 | T031, T032, T038 |
+| FR-029 | T023, T038 |
 | FR-030 to FR-032 | T011, T013, T015, T016, T032 |
 | FR-033, FR-034 | T002, T003, T014, T017 |
 | FR-040 to FR-043 | T024, T025, T036, T037 |
 | FR-044 to FR-046 | T022, T034, T035 |
-| SC-001, SC-004 | T017, T030, T032 |
-| SC-002, SC-003 | T018, T020, T032 |
+| SC-001, SC-004 | T017, T030, T032, T039 (SC-001) |
+| SC-002, SC-003 | T018, T020, T032, T039 (SC-002) |
 | SC-005 | T007, T010, T017, T024, T033 (wrong version and dirty identity: local T007 and T026 Q3; outside `main`: GitHub T033; pin mismatch: static workflow check T024, no run) |
 | SC-006 | T029, T032 (times recorded) |
-| SC-007 | T032 |
+| SC-007 | T032, T039 |
 | SC-008 | T024, T036 |
 
 ## Implementation Strategy

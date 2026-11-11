@@ -597,7 +597,7 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - 010 T018 SC-010d medians, budget in brackets: Hard 3460.6 ms (4000), Detached checkout 2139.8 (4000), Continue 810.9 (2000), Cherry-pick 748.8 (2000), Revert 693.7 (2000), Mixed 626.4 (2000), Create tag 632.2 (1000), Soft 549.8 (1000), Abort 461.1 (2000).
 - SC-011: every Windows series has at least 20 inputs, p95 at most 64 ms, and max at most 88 ms.
 - 010 T018 control: the probe interval becomes 25 ms instead of 10 ms. The case fails: Abort got 12 inputs, minimum 20. The hash after the restore is equal.
-- The 2026-11-10 Hard miss (4097 ms): an A/B run on 2026-11-11 gave 3258 ms and 3196.9 ms with the old probe, and 3147.1 ms with the release probe. The A/B rules out the probe. The cause stays unknown.
+- The 2026-11-10 Hard miss (4097 ms): an A/B run on 2026-11-11 gave 3258 ms and 3196.9 ms with the old probe, and 3147.1 ms with the release probe. The A/B rules out the probe. The cause stays unknown. The miss stays an open, unexplained miss. The v0.1.1 runs measure the Hard series again (user decision 2026-11-11).
 - Platform split:
   - Run 1 used OS build 26300 before KB5132061. KB5132061 was installed on 2026-11-11 at 01:41, during `test:windows`.
   - Run 1 used WebView2 157.0.4341.42. This value is probable and comes from the update log.
@@ -690,7 +690,7 @@ No finding blocks T028. The workflow permissions, the `release` environment gate
 - The annotated tag `v0.1.0` (tag object 1b50ddee) points to 7545e5b857258863257cb1bd7bc280a827711481.
 - Run https://github.com/auric/arbareto/actions/runs/43065949221: `build` success in about 12 min (17:12:58Z to 17:25:13Z).
 - Build tools: image `win25-vs2026` 20261103.298.1, rustc and cargo 1.99.0, tauri-cli 2.12.0, Bun 1.4.4, MSVC toolset 14.51.36231.
-- The log does not print the Windows SDK.
+- The "Record the build tools" step prints Windows SDK 10.0.26100.0 (link probe) and NSIS v3.11.
 - `check.ts` before and after the build exited 0. Signing was off.
 - The user approved `publish` in the `release` environment. `publish` success, 17:48:56Z to 17:49:38Z.
 - Release "Arbareto Preview v0.1.0": prerelease, immutable, not a draft, published 2026-11-11T17:49:34Z.
@@ -711,11 +711,41 @@ No finding blocks T028. The workflow permissions, the `release` environment gate
 - Both exes have CompanyName `Ihor Lifanov` and LegalCopyright `Copyright (c) 2026 Ihor Lifanov`.
 - Uninstall exit 0. Then the key, the folder, and the shortcut are absent.
 - As the standard user `arbstd` (`Users` only): install exit 0, HKCU entry only, uninstall exit 0.
+- The app start and About as a standard user are unverified. Only install and uninstall ran as `arbstd`.
 - So T030 holds for the release installer.
 - About links without sign-in (`src-tauri/src/release_link.rs`):
   - `https://github.com/auric/arbareto/tree/7545e5b857258863257cb1bd7bc280a827711481` HTTP 200.
   - `https://github.com/auric/arbareto/releases/download/v0.1.0/arbareto-0.1.0-hunspell-source.tar.gz` HTTP 200.
-- The button targets were not read from the page.
+- The About buttons did not open a browser, because the Sandbox had no network. So the button targets were not read from the page. The button open path is unverified; the URLs come from `src-tauri/src/release_link.rs`.
 - The release body (line 66) and README.md on `main` hold "Unsigned builds do not run when Smart App Control is on."
 - The README Status line and the Download section now use the present tense (this commit).
 - `OBSERVATION T032: v0.1.0 at 7545e5b8, prerelease, immutable, not latest, four files; sums verify exit 0; attestation exit 0 for each file, exit 1 for a changed byte; upload refused with HTTP 422; Sandbox install as T030; both About links HTTP 200 signed out`
+
+### T033 Batch 3 verification (2026-11-11)
+
+- research.md R7 holds the records of T029 (dry run 2), T030, T031, and T032.
+- The release body (line 66) and README.md hold "Unsigned builds do not run when Smart App Control is on."
+- Control: the annotated tag `v0.1.99` pointed to the scratch commit 07be9777, outside `main`.
+- The scratch commit set the version 0.1.99 in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`. So the tag-version check passed, and `not-on-main` was the first refusal.
+- The user approved this control in the public repository.
+- Run https://github.com/auric/arbareto/actions/runs/43073623966: the step "Check the tag, version, and tree before the build" printed `RELEASE_CHECK not-on-main` and exited 1.
+- `build` failed, and `publish` was skipped. No `v0.1.99` release appeared (`gh release view v0.1.99`: release not found).
+- The tag `v0.1.99` was deleted from GitHub and locally. `git ls-remote` lists only `refs/tags/v0.1.0`.
+- The scratch commit 07be9777 is on no branch, but GitHub still serves it by its SHA.
+- SC-005: on GitHub, only the "outside `main`" case ran. The other cases are local or static (tasks.md Coverage, SC-005 row).
+- FR-017 rerun: unverified. No publish step failed, so no rerun ran.
+
+#### Review of batch 3 (independent reviewer, 2026-11-11)
+
+No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest, with four files. Each file digest has a provenance attestation and a release attestation. The `release` environment needs the approval of `auric`, and admins cannot bypass it. The build token had only read access. The publish token had contents and attestations write. The logs show no secret. Signed-out downloads and both About URLs give HTTP 200.
+
+- Medium: 90d11428 ticked nine 001 tasks with the 007 exception. Fixed: the nine tasks are open again.
+- Medium: the T032 record said that the log does not print the Windows SDK. Fixed.
+- Low: no run starts the app as a standard user. Recorded as unverified; planned in T039.
+- Low: the About buttons did not open a browser. Recorded as unverified; planned in T039.
+- Low: SC-002 counts four files, but `SHA256SUMS.txt` lists three. Planned in T039.
+- Low: the publish job gives `GH_TOKEN` to every step. Planned in T038.
+- Low: README Download did not link the Releases page. Fixed.
+- Suspicion: the README attestation command does not pin the signer workflow. Planned in T038.
+- Suspicion: the SC-010d miss of 2026-11-10 passed only on later runs, and its cause is unknown. Recorded as an open miss in the T028 record.
+- `OBSERVATION T033: v0.1.99 outside main refused with RELEASE_CHECK not-on-main, exit 1, publish skipped, no release; tag deleted; FR-017 rerun unverified; one independent review recorded, no blocking finding`

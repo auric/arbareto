@@ -329,7 +329,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
 
   // Contract §11 "Route". The service holds only the bootstrap ID, so the shell names the context path. A WSL path needs no Windows Git.
   // The reply path, and for a WSL path the approved WSL Git of the distro. The caller handles a runner refusal.
-  async function routeGit(target: RouteTarget): Promise<{ ok: true; path: string; wsl?: { git: WslGit; linuxPath: string; identityPath: string } } | Exclude<RegistrationOutcome, { ok: true }>> {
+  async function routeGit(target: RouteTarget & { cloneDestination?: boolean }): Promise<{ ok: true; path: string; wsl?: { git: WslGit; linuxPath: string; identityPath: string } } | Exclude<RegistrationOutcome, { ok: true }>> {
     const { operationId, bootstrapId, signal } = target;
     const reply = await runner.wslDistros({ operationId, bootstrapId });
     const route = routeRegistration(reply);
@@ -397,7 +397,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const cloner = createCloner({
     runner,
     registry,
-    route: (target) => routeGit(target).catch((error: unknown) => refusedRoute(error, target.signal)),
+    route: (target) => routeGit({ ...target, cloneDestination: true }).catch((error: unknown) => refusedRoute(error, target.signal)),
     windowsGit: () => (git?.ok ? git.installation : gitCode()),
     register: (target) => registerRouted(target, windowsRegistration(target)),
   });

@@ -661,7 +661,7 @@ No finding blocks T028. The workflow permissions, the `release` environment gate
 - The Sandbox WebView2 is registered (`pv=156.0.4314.50`), but its runtime folder is absent. The script maps the host runtime 157.0.4341.46 read-only, as in the T017 record.
 - The script maps host Git 2.56.0.windows.2 read-only. Networking is off.
 - Install `/S` as the Sandbox user `WDAGUtilityAccount`: exit 0, no `consent.exe` process.
-- The Sandbox user is an administrator. So this run proves a silent per-user install, not a standard-user install.
+- The Sandbox user is an administrator. So this run proves only a silent per-user install.
 - The app starts. About shows `Build: 0.1.0 5f31d07adb69459d1bf78b7e038b86f7992bd807` and `Preview`, without `-dirty`.
 - The start page shows "This preview is not a qualified release. The qualification of Windows 11 x64 continues."
 - HKCU `Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto`: `DisplayName=Arbareto`, `DisplayVersion=0.1.0`, `Publisher=Ihor Lifanov`. No HKLM entry. The Settings page was not opened.
@@ -670,4 +670,9 @@ No finding blocks T028. The workflow permissions, the `release` environment gate
 - `uninstall.exe` 79264 bytes `5b03c9ae81700718248168ff47415188f787a08d2c5cd3c5781750678061a24e`. This equals the 8185cef5 uninstaller record.
 - `uninstall.exe /S` exit 0. After it, the HKCU key, the install folder, and the Start menu shortcut are absent.
 - Outside `specs/` and `tests/`, 5f31d07a..e89a5faa changes only `CHANGELOG.md` and `README.md`. So this installer holds the release code.
-- `OBSERVATION T030: dry run 2 installer 5c2ece47…7196dfe6, sums verify exit 0; silent install exit 0 as an administrator Sandbox user; About Build: 0.1.0 5f31d07adb69459d1bf78b7e038b86f7992bd807, Preview; HKCU entry only; uninstall exit 0, key, folder, and shortcut absent`
+- The installer manifest (read with the Windows SDK `mt.exe`, NSIS 3.11 build) has `requestedExecutionLevel level="asInvoker" uiAccess="false"`. So Windows asks for no elevation.
+- A second Sandbox run on 2026-11-11 created the standard user `arbstd`: member of `Users` only, no Administrators SID in `whoami /groups`, Medium integrity level.
+- As `arbstd`, `setup.exe /S` exit 0 (not 740). The user's `%LOCALAPPDATA%\Arbareto` holds `arbareto.exe` (17552384 bytes), `arbareto-git.exe` (116966912), and `uninstall.exe` (79264). The HKCU uninstall key holds `DisplayName=Arbareto`, `DisplayVersion=0.1.0`, `Publisher=Ihor Lifanov`. No HKLM uninstall entry exists.
+- As `arbstd`, `uninstall.exe /S` exit 0. Then the HKCU key and the folder are absent.
+- This proves SC-001 "no administrator rights" for the silent `/S` install on a fresh Windows 11 x64. It does not cover the interactive installer pages or domain policies.
+- `OBSERVATION T030: dry run 2 installer 5c2ece47…7196dfe6, sums verify exit 0; silent install exit 0 as an administrator Sandbox user; About Build: 0.1.0 5f31d07adb69459d1bf78b7e038b86f7992bd807, Preview; HKCU entry only; uninstall exit 0, key, folder, and shortcut absent; standard user install and uninstall exit 0`

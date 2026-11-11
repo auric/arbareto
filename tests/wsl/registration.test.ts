@@ -178,6 +178,21 @@ describe("WSL registration seams (T207)", () => {
     expect(checked(["noexpand 0", "verbatim 0", "verbatim 0"])).toBe("unparsed");
   });
 
+  // Feature 003 contract Δ6: before the clone, the destination can be absent. For a missing path, `stat` prints empty `selfs` and `selino` values.
+  test("a clone destination with selstat absent passes the probe check, and selstat error or a registration path with selstat absent still gives UNSUPPORTED_REPOSITORY", () => {
+    const programs = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"].flatMap((name) => [`path ${name} /usr/bin/${name}`, `magic ${name} ELF`]);
+    const base = ["pathenv /usr/bin", "selfs ", "selino ", "version git version 2.55.0", "gitfs ef53:fedc9aa3bd65bc57", "gitfile 7:1:1", "scope 0", "noexpand 0", "verbatim 0"];
+    const checked = (selstat: string, cloneDestination: boolean) => {
+      const parsed = parseWslProbe(new TextEncoder().encode(`${[...programs, ...base, `selstat ${selstat}`].join("\n")}\n`));
+      if (parsed === null) return "unparsed";
+      const result = checkWslProbe("Ubuntu-26.04", parsed, "C:\\Windows\\System32\\wsl.exe", cloneDestination);
+      return result.ok ? "ok" : result.code;
+    };
+    expect(checked("absent", true)).toBe("ok");
+    expect(checked("absent", false)).toBe("UNSUPPORTED_REPOSITORY");
+    for (const selstat of ["error", "", "ok", "ABSENT"]) expect({ selstat, found: checked(selstat, true) }).toEqual({ selstat, found: "UNSUPPORTED_REPOSITORY" });
+  });
+
   // T412, contract §11 "Git per distro": only the ELF magic marks a Linux program. The wsl.conf `automount.root` can move `/mnt`, so a path prefix proves nothing.
   test("T412: ELF programs under /mnt/tools on ext4 pass, an MZ or a non-ELF program gives its reason, and a .windows. version of an ELF Git is a version", () => {
     const names = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"];

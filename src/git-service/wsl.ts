@@ -169,11 +169,12 @@ function checkPath(distro: string, facts: WslProbeFacts["facts"]): WslRefusal | 
 }
 
 // Contract §11 "Git per distro". The order: the path programs, the context path, no Git, a Windows Git, the other helper programs, the version, then the Git file identity.
-export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutable: string): { ok: true; git: Omit<WslGit, "gitInstallationId" | "guid"> } | WslRefusal {
+// `cloneDestination`: feature 003 contract Δ6, a clone destination before the clone. It can be absent, and the shell binds no identity for it.
+export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutable: string, cloneDestination = false): { ok: true; git: Omit<WslGit, "gitInstallationId" | "guid"> } | WslRefusal {
   const { programs, facts } = probe;
   if (!native(programs.stat) || !native(programs.env) || !native(programs.sha256sum)) return unavailable("no-coreutils", distro);
   if (!native(programs.perl)) return unavailable("no-perl", distro);
-  const path = checkPath(distro, facts);
+  const path = cloneDestination && facts.selstat === "absent" ? null : checkPath(distro, facts);
   if (path !== null) return path;
   const git = programs.git;
   if (git === undefined) return { ok: false, code: "GIT_UNAVAILABLE", result: { text: TEXT["git-missing"](distro) } };
@@ -244,6 +245,7 @@ export interface WslProbeTarget {
   signal: AbortSignal;
   // Contract §11 "Distro start": called with the listed distro name before the probe of a distro that the running list does not name.
   starting(distro: string): void;
+  cloneDestination?: boolean;
 }
 
 // Contract §11 "Distro start": the probe run and its parsed lines. `canceled` means that the signal ended the probe.
@@ -288,7 +290,7 @@ export async function probeWslGit(
 ): Promise<{ ok: true; git: Omit<WslGit, "gitInstallationId"> } | WslRefusal | { ok: false; canceled: true }> {
   const probe = await runWslProbe(runner, route, target);
   if (!probe.ok) return probe;
-  const checked = checkWslProbe(route.distro, probe.facts, route.wslExecutable);
+  const checked = checkWslProbe(route.distro, probe.facts, route.wslExecutable, target.cloneDestination);
   return checked.ok ? { ok: true, git: { ...checked.git, guid: route.guid } } : checked;
 }
 

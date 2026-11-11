@@ -676,3 +676,46 @@ No finding blocks T028. The workflow permissions, the `release` environment gate
 - As `arbstd`, `uninstall.exe /S` exit 0. Then the HKCU key and the folder are absent.
 - This proves SC-001 "no administrator rights" for the silent `/S` install on a fresh Windows 11 x64. It does not cover the interactive installer pages or domain policies.
 - `OBSERVATION T030: dry run 2 installer 5c2ece47…7196dfe6, sums verify exit 0; silent install exit 0 as an administrator Sandbox user; About Build: 0.1.0 5f31d07adb69459d1bf78b7e038b86f7992bd807, Preview; HKCU entry only; uninstall exit 0, key, folder, and shortcut absent; standard user install and uninstall exit 0`
+
+### T032 Release v0.1.0 (2026-11-11, GitHub, tag commit 7545e5b8)
+
+- Merge 7545e5b8 went to `main`. It joins origin/main a7ba0473 and `007-first-release` 6a1f307e with `--no-ff`.
+- The merge tree equals the checked 007 head, except one research.md record.
+- The post-merge check passed: install, typecheck, schema check, and `tests/contracts/groups.test.ts`.
+- Before the tag, the CHANGELOG 0.1.0 heading got the date 2026-11-11.
+- `notes.ts` read the dated heading: 36 of 36 bullets, exit 0.
+- `check.ts --mode dry-run --signing off` exit 0. The release tests gave 54 pass, 0 fail.
+- Each CHANGELOG 0.1.0 line matched a feature on `main`. This includes the 1,024 bounds (`SUBMODULE_TREE_FOLDERS`, `SUBMODULE_REVIEW_SUBMODULES`).
+- It also includes the 256 bound in index order (`SUBMODULE_WORK_TARGETS`, stage-0 gitlinks of the index list).
+- The annotated tag `v0.1.0` (tag object 1b50ddee) points to 7545e5b857258863257cb1bd7bc280a827711481.
+- Run https://github.com/auric/arbareto/actions/runs/43065949221: `build` success in about 12 min (17:12:58Z to 17:25:13Z).
+- Build tools: image `win25-vs2026` 20261103.298.1, rustc and cargo 1.99.0, tauri-cli 2.12.0, Bun 1.4.4, MSVC toolset 14.51.36231.
+- The log does not print the Windows SDK.
+- `check.ts` before and after the build exited 0. Signing was off.
+- The user approved `publish` in the `release` environment. `publish` success, 17:48:56Z to 17:49:38Z.
+- Release "Arbareto Preview v0.1.0": prerelease, immutable, not a draft, published 2026-11-11T17:49:34Z.
+- `releases/latest` gives HTTP 404. So the release is not latest.
+- Four files, downloaded without sign-in. Each SHA-256 equals the API digest:
+  - `Arbareto_0.1.0_x64-setup.exe` 46596079 bytes `82a8901efebe547025fd21ab5a72e3f0114df1ecca02ab8a24c8f5e060894b17`.
+  - `arbareto-0.1.0-hunspell-source.tar.gz` 2211104 bytes `cc827b77ca8fa6e21fcff6aa922546cc2ecd3c382c2da2661009eebcb8c699ad`.
+  - `arbareto-0.1.0-third-party-notices.txt` 650568 bytes `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
+  - `SHA256SUMS.txt` 304 bytes `1a37590964e42d75b580bb8034dcc2a1f028b8af23852f4e24b49bf45995ffcd`.
+- `sums.ts verify` exit 0. `sha256sum --ignore-missing --check SHA256SUMS.txt` exit 0, three OK lines.
+- `gh attestation verify <file> -R auric/arbareto` exit 0 for each file.
+- The signer is `.github/workflows/release.yml@refs/tags/v0.1.0`. The source digest is 7545e5b8.
+- A copy of the installer with one changed byte gives exit 1 (HTTP 404, no attestation for that digest).
+- `gh release upload v0.1.0 <file>` exit 1: "HTTP 422: Cannot upload assets to an immutable release." The asset list stayed at four files.
+- Sandbox install of the downloaded installer, networking off, as the administrator Sandbox user: exit 0.
+- About shows `Build: 0.1.0 7545e5b857258863257cb1bd7bc280a827711481` and `Preview`, without `-dirty`. The start page shows the preview sentence.
+- HKCU `Publisher=Ihor Lifanov`, `DisplayVersion=0.1.0`. No HKLM entry.
+- Both exes have CompanyName `Ihor Lifanov` and LegalCopyright `Copyright (c) 2026 Ihor Lifanov`.
+- Uninstall exit 0. Then the key, the folder, and the shortcut are absent.
+- As the standard user `arbstd` (`Users` only): install exit 0, HKCU entry only, uninstall exit 0.
+- So T030 holds for the release installer.
+- About links without sign-in (`src-tauri/src/release_link.rs`):
+  - `https://github.com/auric/arbareto/tree/7545e5b857258863257cb1bd7bc280a827711481` HTTP 200.
+  - `https://github.com/auric/arbareto/releases/download/v0.1.0/arbareto-0.1.0-hunspell-source.tar.gz` HTTP 200.
+- The button targets were not read from the page.
+- The release body (line 66) and README.md on `main` hold "Unsigned builds do not run when Smart App Control is on."
+- The README Status line and the Download section now use the present tense (this commit).
+- `OBSERVATION T032: v0.1.0 at 7545e5b8, prerelease, immutable, not latest, four files; sums verify exit 0; attestation exit 0 for each file, exit 1 for a changed byte; upload refused with HTTP 422; Sandbox install as T030; both About links HTTP 200 signed out`

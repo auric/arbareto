@@ -1041,10 +1041,7 @@ pub(crate) mod tests {
         let id = contexts
             .create(ContextKind::GitProbe, &git, now)
             .expect("create");
-        assert_eq!(
-            contexts.permits(&id, &strings(&["version"]), now),
-            Ok(())
-        );
+        assert_eq!(contexts.permits(&id, &strings(&["version"]), now), Ok(()));
         assert_eq!(
             contexts.permits(&id, &strings(&["--exec-path"]), now),
             Ok(())

@@ -6310,10 +6310,7 @@ pub(crate) mod tests {
         let probe_cases: Vec<(&str, Edit)> = vec![
             (
                 "probe with --no-lazy-fetch",
-                set(
-                    "arguments",
-                    json!(["--no-lazy-fetch", "version"]),
-                ),
+                set("arguments", json!(["--no-lazy-fetch", "version"])),
             ),
             (
                 "probe with other arguments",
@@ -14505,7 +14502,8 @@ pub(crate) mod tests {
         let (old, new) = ("b".repeat(40), "a".repeat(40));
         let at = ["--no-optional-locks", "-C", "lib/core", "--git-dir=.git"];
         let range = format!("{old}...{new}");
-        let (commit, include, exclude) = (format!("{new}^{{commit}}"), new.clone(), format!("^{old}"));
+        let (commit, include, exclude) =
+            (format!("{new}^{{commit}}"), new.clone(), format!("^{old}"));
         let tails: Vec<Vec<&str>> = vec![
             vec!["rev-parse", "--show-toplevel"],
             vec!["rev-parse", "--verify", "-q", "HEAD"],
@@ -14545,11 +14543,22 @@ pub(crate) mod tests {
         for tail in &tails {
             let array: Vec<&str> = at.iter().copied().chain(tail.iter().copied()).collect();
             let call = uuid();
-            let admitted = outcome(run_body(&call, &uuid(), &workspace, &array, "read", limits.clone()));
+            let admitted = outcome(run_body(
+                &call,
+                &uuid(),
+                &workspace,
+                &array,
+                "read",
+                limits.clone(),
+            ));
             assert_eq!(admitted["type"], "exit", "{array:?}: {admitted}");
         }
         let call = uuid();
-        let bound: Vec<&str> = at.iter().copied().chain(["worktree", "add", "--", "x", "main"]).collect();
+        let bound: Vec<&str> = at
+            .iter()
+            .copied()
+            .chain(["worktree", "add", "--", "x", "main"])
+            .collect();
         assert_eq!(
             outcome(run_body(&call, &uuid(), &workspace, &bound, "read", limits)),
             refused(&call, "INVALID_REQUEST")

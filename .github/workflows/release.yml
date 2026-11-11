@@ -214,7 +214,6 @@ jobs:
       id-token: write
       attestations: write
     env:
-      GH_TOKEN: ${{ github.token }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       SIGNING: ${{ vars.ARBARETO_SIGNING || 'off' }}
       TAG: ${{ github.ref_name }}
@@ -252,15 +251,13 @@ jobs:
           subject-path: ${{ runner.temp }}/release-files/*
 
       - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $files = Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'release-files') -File | ForEach-Object { $_.FullName }
           $version = $env:TAG.Substring(1)
           $notes = bun scripts/release/notes.ts --version $version --signing $env:SIGNING --out $env:RUNNER_TEMP
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          # The tag can move while publish waits for approval. GITHUB_SHA is the commit of the build.
-          $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/refs/tags/$env:TAG" --jq .sha
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          if ("$tagCommit" -cne $env:GITHUB_SHA) { [Console]::Error.WriteLine("RELEASE_CHECK not-tag-commit $env:TAG $tagCommit"); exit 1 }
           $drafts = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name == env.TAG) | .draft')
           if ($LASTEXITCODE -ne 0) { exit 1 }
           if ($drafts -contains 'false' -or $drafts.Count -gt 1) { [Console]::Error.WriteLine("RELEASE_CHECK exists $env:TAG"); exit 1 }
@@ -277,5 +274,9 @@ jobs:
             gh release upload $env:TAG @files --clobber
           }
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # The tag can move during the approval wait or the upload. GITHUB_SHA is the commit of the build. The draft is not public before the next edit.
+          $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/refs/tags/$env:TAG" --jq .sha
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ("$tagCommit" -cne $env:GITHUB_SHA) { [Console]::Error.WriteLine("RELEASE_CHECK not-tag-commit $env:TAG $tagCommit"); exit 1 }
           gh release edit $env:TAG --draft=false --prerelease --latest=false
           if ($LASTEXITCODE -ne 0) { exit 1 }

@@ -1403,7 +1403,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 45] = [
+    const NOT_READ: [&str; 46] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1452,6 +1452,8 @@ mod tests {
         "dictionary-run-result",
         "remove-dictionary-result",
         "open-licence-link-result",
+        // Feature 007 contracts/release.md §5. The shell writes the `openReleaseLink` result and never reads it.
+        "open-release-link-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -1609,13 +1611,15 @@ mod tests {
         // The batch 3 review adds the `progress` vector of the removed phase `ignore`.
         // Feature 004 T127 adds 2 `native-first-envelope` vectors for the `track` branch form (contract Δ3).
         // Feature 006 T061 adds the 5 `read-dictionary-result` chunk vectors, 2 of them new (contract Δ1).
+        // Feature 007 T011 adds the 2 `handshake` vectors of a `signing` key and a `release` channel.
+        // Feature 007 T013 adds 3 `native-first-envelope` vectors for `openReleaseLink` (contracts/release.md §5).
         // Feature 008 T006 adds 4 `mutation-request`, 4 `progress`, 9 `fileReplace`, 2 `tempRemove`, and 2 `fileFacts` vectors (contract Δ10).
         // WP4 adds the 2 `run` vectors of the size rule. The batch 1 gaps add 4 `fileReplace` and 1 `tempRemove` request vectors.
         // Feature 004 T159 adds the 2 `confirmRun` vectors of the 1,024-path bound (contract Δ12 "Submodule bound").
         // Feature 010 T003 adds 5 `mutation-request` and 8 `progress` vectors (contract Δ10).
         assert_eq!(
             checked,
-            if cfg!(windows) { 276 } else { 271 },
+            if cfg!(windows) { 281 } else { 276 },
             "shell-read vectors"
         );
     }

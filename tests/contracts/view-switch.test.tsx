@@ -201,7 +201,8 @@ describe("View menu choices", () => {
     }
     const stored = JSON.parse(localStorage.getItem("arbareto.preferences.v1")!);
     expect([stored.theme, stored.darkPalette]).toEqual(["dark", "graphite"]);
-  });
+    // The case makes 6 menu choices in happy-dom and takes 1.3 to 2.8 s in parallel runs, against the 5 s Bun default.
+  }, 30_000);
 
   test("System names the palette it uses when Windows is dark, Light names none, and the Theme submenu holds no palette item outside Dark", async () => {
     await openChanges();

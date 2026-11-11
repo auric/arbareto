@@ -38,15 +38,18 @@
           "type": "string",
           "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?:-dirty)?$"
         },
-        "signing": {
+        "channel": {
           "type": "string",
-          "const": "unsigned"
+          "enum": [
+            "local",
+            "preview"
+          ]
         }
       },
       "required": [
         "version",
         "commit",
-        "signing"
+        "channel"
       ],
       "additionalProperties": false
     },

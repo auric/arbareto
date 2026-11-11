@@ -24,6 +24,8 @@
   },
   "bundle": {
     "targets": ["nsis"],
+    "publisher": "Ihor Lifanov",
+    "copyright": "Copyright (c) 2026 Ihor Lifanov",
     "icon": ["icons/icon.ico"],
     "windows": {
       "webviewInstallMode": { "type": "skip" },

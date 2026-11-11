@@ -61,7 +61,8 @@ describe("submoduleLocks (contract §8 \"Observed locks\")", () => {
     const locks = await submoduleLocks(ctx, null, modules);
     if (!Array.isArray(locks)) throw new Error(`no locks: ${JSON.stringify(locks)}`);
     expect({ length: locks.length, first: locks[0], last: locks.at(-1) }).toEqual({ length: 2_053, first: `${gitDir}/index.lock`, last: `${modules[1_024]}/index.lock` });
-  });
+    // The case writes 1,028 folders and 2,060 lock files and takes 3.1 to 3.5 s, near the 5 s Bun default.
+  }, 30_000);
 });
 
 // Contract §11 "Paths and file access" and §12 "WSL repositories": a WSL workspace whose lock files lie in a local folder, so `lstat` reads no distro.

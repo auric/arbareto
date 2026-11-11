@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { decodeRequest, RecoveryStatement, WorkspaceSnapshot } from "../../src/contracts/envelope";
+import { decodeRequest, EnvironmentResult, RecoveryStatement, WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { HISTORY_ROWS_PER_REQUEST, HISTORY_VIEW_COMMITS, PIPE_FRAME_BYTES, PUBLIC_REQUEST_BYTES, STATUS_PAGE_BYTES } from "../../src/contracts/limits";
 import { isWindows } from "../../src/contracts/native-path";
 import { OPERATIONS } from "../../src/contracts/operations";
@@ -141,6 +141,8 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   removeDictionary: { renderer: () => ({ language: "uk" }), service: () => ({ language: "uk" }) },
   setSpelling: { renderer: () => ({ enabled: true, languages: ["en", "uk"] }) },
   openLicenceLink: { renderer: () => ({ language: "en" }) },
+  // Feature 007 contracts/release.md §5.
+  openReleaseLink: { renderer: () => ({ target: "tag-source" }) },
 };
 
 const NAMES = Object.keys(PAYLOADS);
@@ -245,9 +247,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, the 8 feature 005 contract Δ1 operations, and the 7 feature 006 contract Δ1 operations", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, the 8 feature 005 contract Δ1 operations, the 7 feature 006 contract Δ1 operations, and the feature 007 openReleaseLink", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(66);
+    expect(OPERATIONS.length).toBe(67);
   });
 
   for (const name of NAMES) {
@@ -808,6 +810,22 @@ describe("history view payloads", () => {
   test("an unknown field in a nested payload object gives INVALID_REQUEST", () => {
     expectCode(load({ row: 1, skip: 10 }), "INVALID_REQUEST");
     expectCode(rows({ at: { row: 1, extra: true } }), "INVALID_REQUEST");
+  });
+});
+
+// Feature 007 contracts/release.md §4: `channel` replaces `signing` in the getEnvironment build identity.
+describe("getEnvironment build identity", () => {
+  const result = (buildIdentity: Json) => ({ buildIdentity, platformScope: "other", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [], damagedMarkers: [] });
+  const commit = "0".repeat(40);
+
+  test("buildIdentity holds version, commit, and channel local or preview", () => {
+    for (const channel of ["local", "preview"]) expect(EnvironmentResult.safeParse(result({ version: "0.1.0", commit, channel })).success).toBe(true);
+  });
+
+  test("signing is an unknown key, and any other channel value fails", () => {
+    const bad = [{ version: "0.1.0", commit, signing: "unsigned" }, { version: "0.1.0", commit, channel: "local", signing: "unsigned" }, { version: "0.1.0", commit }];
+    for (const channel of ["release", "Preview", ""]) bad.push({ version: "0.1.0", commit, channel } as never);
+    for (const buildIdentity of bad) expect(EnvironmentResult.safeParse(result(buildIdentity)).success).toBe(false);
   });
 });
 

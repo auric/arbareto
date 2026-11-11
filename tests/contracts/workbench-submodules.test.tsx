@@ -923,7 +923,8 @@ describe("Submodules group tree (FR-107 to FR-111)", () => {
     expect(await hoverTooltip(row("vendor/tools/lint").querySelector('[data-slot="gone-mark"]')!)).toEqual(["The upstream origin/lint no longer exists."]);
     // The mark and the label shrink and end with an ellipsis.
     for (const slot of ["row-label", "branch-mark"]) expect(row("libs/ui").querySelector(`[data-slot="${slot}"]`)!.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
-  });
+    // The case waits 700 ms for each of 6 tooltips in happy-dom and takes 4.5 to 4.7 s, near the 5 s Bun default.
+  }, 30_000);
 
   // 001 plan.md "Icons": the row keeps the tooltip text that its accessible name leaves out in its description.
   test("the accessible description gives the full folder path, the upstream, and the 003 count note", async () => {

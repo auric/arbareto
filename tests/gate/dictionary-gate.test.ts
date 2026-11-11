@@ -169,7 +169,7 @@ const writer = {
 const runner = { closeJob() {}, ended() {}, receive: () => false };
 const session = createSession({ writer, runner, fail() {}, dictionaryFolder: job.dictionaries, catalog, fetch });
 const send = (frame) => session.receive({ type: "frame", body: new TextEncoder().encode(JSON.stringify(frame)) });
-send({ kind: "handshake", handshake: { version: 1, restarted: false, platformScope: "other", osBuild: 26200, webView2Version: "140.0.0.0", buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" }, markers: [], unloadedMarkers: 0, damagedMarkers: [], trustRecords: [] } });
+send({ kind: "handshake", handshake: { version: 1, restarted: false, platformScope: "other", osBuild: 26200, webView2Version: "140.0.0.0", buildIdentity: { version: "0.1.0", commit: "0".repeat(40), channel: "local" }, markers: [], unloadedMarkers: 0, damagedMarkers: [], trustRecords: [] } });
 if (session.sessionId === null) throw new Error("handshake refused");
 const request = (operation, payload) => new Promise((resolve) => {
   const requestId = crypto.randomUUID();

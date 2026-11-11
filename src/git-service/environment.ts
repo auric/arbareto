@@ -14,13 +14,13 @@ export const QUALIFIED_VERSION_SETS: readonly { git: string; webView2: string; o
 
 // `git` is null when the handshake carried no `savedGit` and no `chooseGit` succeeded.
 export function getEnvironment(handshake: Handshake, git: GitProbeResult | null): Environment {
-  const { version, commit, signing } = handshake.buildIdentity;
+  const { version, commit, channel } = handshake.buildIdentity;
   const detectedVersion = git === null ? undefined : git.ok ? git.installation.version : git.detectedVersion;
   const qualified =
     git?.ok === true && QUALIFIED_VERSION_SETS.some((s) => s.git === detectedVersion && s.webView2 === handshake.webView2Version && s.osBuild === handshake.osBuild);
   const markers = handshake.markers.map(({ markerId, kind, startedAt, worktreeRoot }) => ({ markerId, kind, startedAt, worktreeRoot }));
   return {
-    buildIdentity: { version, commit, signing },
+    buildIdentity: { version, commit, channel },
     platformScope: handshake.platformScope,
     ...(git?.ok ? { selectedPath: git.installation.selectedPath, executablePath: git.installation.executablePath } : {}),
     ...(detectedVersion === undefined ? {} : { detectedVersion }),

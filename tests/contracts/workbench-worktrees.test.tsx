@@ -414,7 +414,8 @@ describe("virtual worktree list (FR-086, SC-007, T100)", () => {
     } finally {
       restore();
     }
-  });
+    // The case presses 251 keys over 252 options in happy-dom and takes 2 to 5 s in parallel runs, near the 5 s Bun default.
+  }, 30_000);
 });
 
 describe("Remove (FR-054 to FR-056)", () => {

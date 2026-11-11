@@ -51,6 +51,7 @@
     "tests/wsl/workbench-wsl-staging.test.ts": "runs Git fact cases inside the distro"
   },
   "parallel": [
+    "tests/contracts/about-dialog.test.tsx",
     "tests/contracts/admission.test.ts",
     "tests/contracts/blame-parser.test.ts",
     "tests/contracts/boot-view.test.tsx",
@@ -112,6 +113,7 @@
     "tests/contracts/notices.test.ts",
     "tests/contracts/operation-registry.test.ts",
     "tests/contracts/operation-states.test.ts",
+    "tests/contracts/perf-cache-root.test.ts",
     "tests/contracts/platform-label.test.tsx",
     "tests/contracts/preferences.test.ts",
     "tests/contracts/private-paths.test.ts",
@@ -120,6 +122,9 @@
     "tests/contracts/remote-delete-contract.test.ts",
     "tests/contracts/remote-delete.test.tsx",
     "tests/contracts/references-sidebar.test.tsx",
+    "tests/contracts/release-files.test.ts",
+    "tests/contracts/release-pins.test.ts",
+    "tests/contracts/release-workflow.test.ts",
     "tests/contracts/renderer-freshness.test.ts",
     "tests/contracts/repository-states.test.tsx",
     "tests/contracts/repository-switcher.test.tsx",
@@ -252,6 +257,7 @@
     "tests/git/publish-index.test.ts",
     "tests/git/read-branches.test.ts",
     "tests/git/refs.test.ts",
+    "tests/git/release-check.test.ts",
     "tests/git/remote-delete.test.ts",
     "tests/git/remote-delete-gone.test.ts",
     "tests/git/remote-delete-local.test.ts",

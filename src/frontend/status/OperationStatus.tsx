@@ -407,6 +407,11 @@ function deleteOutcome(name: string, response: BridgeResponse, outcome: Outcome,
   if (response.state === "unknown") return null;
   if (response.state === "canceled") return { lead: `${name} canceled. ${PUSH_CANCELED}${stays}`, tail: "" };
   if (response.code === "PUSH_REJECTED" && push?.status === "rejected" && outcome.reason === "stale-lease") return { lead: `${tracking} changed on ${remote} since the last fetch, so Git deleted nothing. Fetch ${remote}, then try again.${stays}`, tail: "" };
+  // User decision 2026-11-11: a `[rejected]` delete without a stale fact takes the push text. E2 stays for the remote refusals.
+  if (response.code === "PUSH_REJECTED" && push?.status === "rejected") {
+    const line = pushRejected(name, outcome, push);
+    return { ...line, tail: `${line.tail}${stays === "" ? "" : `.${stays}`}` };
+  }
   if (response.code === "PUSH_REJECTED" && push !== undefined) return { lead: REMOTE_REJECTED, tail: `${push.reasonText === null ? "" : `: ${push.reasonText}`}.${stays}` };
   if (branch === null || response.state === "succeeded") return null;
   return { lead: `${name} ${response.state === "rejected" ? "did not start" : "did not complete"}: `, code: response.code ?? response.state, tail: `${outcome.reason === undefined ? "" : ` ${outcome.reason}`}.${stays}` };
@@ -431,10 +436,15 @@ function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome, h
   if (response.state === "canceled" && (name === SYNC_NAMES.push || name === SYNC_NAMES["force-push"])) return { lead: `${name} canceled. ${PUSH_CANCELED}`, tail: "" };
   const push = outcome.push;
   if (response.code === "PUSH_REJECTED" && push?.status === "remote-rejected") return { lead: REMOTE_REJECTED, tail: push.reasonText === null ? "" : `: ${push.reasonText}` };
-  // Contract Δ9: a lease rejection with reason `rejected` shows Git's `reasonText`, because no fact names its cause.
-  const unproven = push?.status === "rejected" && push.lease && outcome.reason === "rejected" && push.reasonText !== null ? `: ${push.reasonText}` : "";
-  if (response.code === "PUSH_REJECTED" && push !== undefined) return { lead: `${name} did not complete: `, code: "PUSH_REJECTED", tail: ` ${outcome.reason ?? push.status}${unproven}` };
+  if (response.code === "PUSH_REJECTED" && push !== undefined) return pushRejected(name, outcome, push);
   return null;
+}
+
+// Feature 003 plan.md D5 (T092): "<action name> did not complete: PUSH_REJECTED rejected: <reasonText>".
+function pushRejected(name: string, outcome: Outcome, push: NonNullable<Outcome["push"]>): Line {
+  // Contract Δ9: a lease rejection with reason `rejected` shows Git's `reasonText`, because no fact names its cause.
+  const unproven = push.status === "rejected" && push.lease && outcome.reason === "rejected" && push.reasonText !== null ? `: ${push.reasonText}` : "";
+  return { lead: `${name} did not complete: `, code: "PUSH_REJECTED", tail: ` ${outcome.reason ?? push.status}${unproven}` };
 }
 
 export function readStallRemedy(response: BridgeResponse): StallRemedy | null {

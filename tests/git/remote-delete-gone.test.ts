@@ -8,7 +8,7 @@ import { expect } from "bun:test";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { buildBase, copyOf, DELETE_ARGS, fileUrl, gitDelete, isLsRemote, isUpdateRef, LS_REMOTE_ARGS, logHook, moveRemote, NETWORK_LIMITS, outcome, payloadOf, phasesOf, stateOf, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
-import { gitRun, revParse } from "./remote-fixtures";
+import { gitOut, gitRun, revParse } from "./remote-fixtures";
 import { caseTest, type Service } from "./service-harness";
 import { callsFrom, register, remoteCalls, reviewed, sendSync, sync, TIMEOUT_MS, withSync, type SyncResult } from "./sync-harness";
 
@@ -76,7 +76,61 @@ describeGit("gone recovery (011 T012)", () => {
     expect(stateOf(a)).toEqual(before);
   }, TIMEOUT_MS);
 
-  caseTest(TASK, "P16: with a pushurl in other bytes than the URL, a gone remote branch runs no gone check and keeps the stale outcome", SHELL, async () => {
+  // Contract Δ9 (user decision 2026-11-11). Git sets the lease status before it runs the pre-push hook (research.md R5 U8).
+  // The hook moves the remote branch back to the lease value, so the re-read equals it.
+  caseTest(TASK, "Δ9: a [rejected] delete whose re-read equals the lease value gives reason rejected; no update-ref runs", SHELL, async () => {
+    const a = own();
+    const expectOid = revParse(a.h, a.repo, FEATURE);
+    moveRemote(a, "feature");
+    const log = `${a.h.root}/${a.repo.split("/").at(-1)}-pre-push.log`;
+    logHook(a, "pre-push", log, `git --git-dir='${a.origin}' update-ref ${DST} ${expectOid}\nexit 0`);
+    const before = stateOf(a);
+    await withSync("t012-reread-equal", async (service) => {
+      const r = await register(service, a.repo);
+      await approve(service, r.repositoryId);
+      const review = await reviewed(service, r, payloadOf(FEATURE));
+      const from = service.runner.calls.length;
+      const response = await sync(service, r, review.syncReviewToken);
+      expect({ ...outcome(response), reason: response.result!.reason, remedy: response.result!.remedy, remoteGone: (response.result as DeleteResult).remoteGone }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "rejected", remedy: undefined, remoteGone: undefined });
+      expect(response.result!.push).toMatchObject({ status: "rejected", lease: true, reasonText: "stale info" });
+      expect(callsFrom(service, from).filter(isLsRemote).map((c) => c.exit?.exitCode)).toEqual([0]);
+      expect(callsFrom(service, from).filter(isUpdateRef)).toEqual([]);
+    });
+    expect(a.h.read(log)?.toString("utf8")).toBe("run\n");
+    expect(stateOf(a)).toEqual({ ...before, remote: { ...before.remote, [DST]: expectOid } });
+  }, TIMEOUT_MS);
+
+  // git-ls-remote(1) runs `git-upload-pack` in the remote. setup.c `check_repository_format_gently` refuses a format version above 1 (003 sync-rejected.test.ts T092).
+  caseTest(TASK, "Δ9: a [rejected] delete whose re-read fails gives reason rejected; no remedy and no update-ref", SHELL, async () => {
+    const a = own();
+    moveRemote(a, "feature");
+    const config = `${a.origin}/config`;
+    const version = gitOut(a.h, a.repo, ["config", "--file", config, "core.repositoryformatversion"]).trim();
+    const log = `${a.h.root}/${a.repo.split("/").at(-1)}-pre-push.log`;
+    logHook(a, "pre-push", log, `git config --file '${config}' core.repositoryformatversion 99\nexit 0`);
+    const before = stateOf(a);
+    try {
+      await withSync("t012-reread-fails", async (service) => {
+        const r = await register(service, a.repo);
+        await approve(service, r.repositoryId);
+        const review = await reviewed(service, r, payloadOf(FEATURE));
+        const from = service.runner.calls.length;
+        const response = await sync(service, r, review.syncReviewToken);
+        expect({ ...outcome(response), reason: response.result!.reason, remedy: response.result!.remedy, remoteGone: (response.result as DeleteResult).remoteGone }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "rejected", remedy: undefined, remoteGone: undefined });
+        expect(response.result!.push).toMatchObject({ status: "rejected", lease: true, reasonText: "stale info" });
+        const exits = callsFrom(service, from).filter(isLsRemote).map((c) => c.exit?.exitCode);
+        expect(exits).toHaveLength(1);
+        expect([0, 2]).not.toContain(exits[0]);
+        expect(callsFrom(service, from).filter(isUpdateRef)).toEqual([]);
+      });
+    } finally {
+      gitRun(a.h, a.repo, ["config", "--file", config, "core.repositoryformatversion", version]);
+    }
+    expect(a.h.read(log)?.toString("utf8")).toBe("run\n");
+    expect(stateOf(a)).toEqual(before);
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "P16: with a pushurl in other bytes than the URL, a gone remote branch runs no gone check and gives reason rejected", SHELL, async () => {
     const a = own();
     goneOnRemote(a);
     gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.origin)]);
@@ -86,7 +140,7 @@ describeGit("gone recovery (011 T012)", () => {
       const review = await reviewed(service, r, payloadOf(FEATURE));
       const from = service.runner.calls.length;
       const response = await sync(service, r, review.syncReviewToken);
-      expect({ ...outcome(response), reason: response.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "stale-lease" });
+      expect({ ...outcome(response), reason: response.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "rejected" });
       expect(callsFrom(service, from).filter(isLsRemote)).toEqual([]);
     });
     expect(stateOf(a)).toEqual(before);

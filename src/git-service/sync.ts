@@ -551,14 +551,14 @@ export function createSyncer(o: SyncerOptions) {
       const line = exited ? parsePushPorcelain(out.take(), refspec, end.exit!.exitCode!, `(delete):${d.ref}`) : null;
       const status: PushStatus = line?.status ?? "none";
       const deleted = exited && status === "deleted";
-      // Research.md R3 transport.c `print_ref_status`: of the `[rejected]` lines of a delete, only a lease refusal names the source `(delete)`.
-      const stale = exited && status === "rejected" && line?.alias === true;
-
-      // Plan.md D8: the gone check runs only after a stale lease, and only when the fetch URL names the push URL byte for byte.
+      // Contract Δ9 (user decision 2026-11-11): a `[rejected]` line gives no typed cause, and a remote helper can set any status.
+      // Only a re-read value other than the lease value proves a stale lease. Plan.md D8: the re-read runs only when the fetch URL names the push URL byte for byte.
+      let stale = false;
       let remoteGone = false;
-      if (stale && b.sameUrl === true) {
+      if (exited && status === "rejected" && b.sameUrl === true && !signal.aborted) {
         const check = await leaseReread(d, userInfo);
         ends.push(check.end);
+        stale = check.remote !== null && check.remote.objectId !== lease.expect;
         if (check.remote !== null && check.remote.objectId === null) {
           const removal = await writeUpstream([trackingDeleteArgs(lease.trackingRef, lease.expect, of)]);
           ends.push(...removal.ends);

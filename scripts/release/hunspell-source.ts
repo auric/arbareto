@@ -78,7 +78,7 @@ export function hunspellSource(options: SourceOptions): { path: string } | { ref
       mkdirSync(dirname(attributesPath), { recursive: true });
       // `-text` also turns off `eol` (gitattributes(5)). `git archive` applies the working-tree conversion otherwise.
       writeFileSync(attributesPath, "* -text -ident -filter -working-tree-encoding -export-ignore -export-subst\n");
-      const fetch = run([git, "fetch", "--quiet", "--no-tags", "--depth", "1", `${upstream}/${repo}`, commit], dir);
+      const fetch = run([git, "fetch", "--quiet", "--no-tags", "--depth", "1", "--end-of-options", `${upstream}/${repo}`, commit], dir);
       if (fetch.exitCode !== 0) return { refusal: `RELEASE_SOURCE fetch ${repo} ${code(fetch)}` };
       const parsed = run([git, "rev-parse", "--verify", "FETCH_HEAD^{commit}"], dir);
       const actual = parsed.exitCode === 0 ? parsed.stdout.toString().trimEnd() : "none";

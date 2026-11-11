@@ -134,7 +134,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - Release mode: `git rev-parse --verify HEAD^{commit}` must equal `git rev-parse --verify refs/tags/<tag>^{commit}`. Else exit 1 with `RELEASE_CHECK not-tag-commit` (spec FR-014). A non-zero `rev-parse` exit fails with `RELEASE_CHECK git-failed <code>`.
 - Both modes: `git --no-optional-locks status --porcelain --untracked-files=all` must print nothing, before and after the build (spec FR-014).
 - Release mode: `gh api repos/{owner}/{repo}/releases --paginate` JSON; a published release with the same `tag_name` fails with `RELEASE_CHECK exists`. A draft with that tag is reused (spec FR-015, FR-017). A draft asset name outside the release files of the run also fails with `RELEASE_CHECK exists`. This check runs in the publish job, because the build job has no `contents: write` token and drafts need it to be visible.
-- Release mode, publish job, before the release lookup: `gh api repos/{owner}/{repo}/commits/refs/tags/<tag> --jq .sha` must equal `GITHUB_SHA`. Else exit 1 with `RELEASE_CHECK not-tag-commit <tag> <commit>`. A failed `gh api` exits 1 (contracts/release.md §2).
+- Release mode, publish job, after the asset upload and before `gh release edit --draft=false`: `gh api repos/{owner}/{repo}/commits/refs/tags/<tag> --jq .sha` must equal `GITHUB_SHA`. Else exit 1 with `RELEASE_CHECK not-tag-commit <tag> <commit>`. A failed `gh api` exits 1 (contracts/release.md §2).
 - All downloads and outputs go below `$env:RUNNER_TEMP`, never into the checkout.
 
 ### D4 Build channel and clean identity
@@ -160,7 +160,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 - `scripts/release/notices-text.ts` reads `src/frontend/generated/notices.json` from the same build and writes the text file: the project licence and notice, then each licence group, each package with its version, and each licence text. The rendering is a pure function with a contract test: every package and every text of the JSON appears once, in JSON order.
 - `scripts/release/hunspell-source.ts`:
-  - For each pin (hunspell/hunspell `edb619100791110d3e34f09ec35392ad327c1135`, rotemdan/hunspell-wasm `8f755ef64e8b047b77b676f9698b3dfa5cb1887d`): `git init` in a temp folder, `git fetch --depth 1 https://github.com/<repo> <commit>`, then `git rev-parse FETCH_HEAD^{commit}` must equal the pin. Git verifies the object IDs on fetch.
+  - For each pin (hunspell/hunspell `edb619100791110d3e34f09ec35392ad327c1135`, rotemdan/hunspell-wasm `8f755ef64e8b047b77b676f9698b3dfa5cb1887d`): `git init` in a temp folder, `git fetch --depth 1 --end-of-options https://github.com/<repo> <commit>`, then `git rev-parse FETCH_HEAD^{commit}` must equal the pin. Git verifies the object IDs on fetch.
   - `git archive --format=tar --prefix=<repo-name>/ <commit>`, extracted into one staging folder.
   - `SOURCE.txt` in the staging root: both repository URLs, both commit IDs, the licence "LGPL-2.1 (Hunspell is also available under GPL-2.0 and MPL-1.1)", the statement that the 30 files of `hunspell-wasm/lib/hunspell/` equal `hunspell/src/hunspell/` (006 F16), and the statement that the Emscripten version of the shipped `hunspell.wasm` is not recorded upstream.
   - `C:\Windows\System32\tar.exe -czf` packs the staging folder. The shell path is literal.
@@ -190,11 +190,11 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - `CHANGELOG.md`: one `## [<version>] - <date>` section per release, user-visible changes only (global changelog rule). The 0.1.0 section lists the feature set of README "Features" after 005, 006, 008, 010, 011, and the 004 Submodules tree.
 - `.github/release-notes/` holds the fixed blocks: `preview.md` (preview and qualification state, spec FR-003), `prerequisites.md` (spec FR-027), `unsigned.md` (SmartScreen prompt, Smart App Control block, checksum and attestation commands, spec FR-026), and `signed.md` (code signing policy, unsigned uninstaller and plugin DLL, spec FR-044, FR-046).
 - `scripts/release/notes.ts --version <v> --signing off|signpath` writes the notes: the CHANGELOG section, then the blocks. A missing section fails with `RELEASE_NOTES missing <version>`.
-- The publish job: `gh release create v<v> --draft --prerelease --verify-tag --title "Arbareto Preview v<v>" --notes-file <notes>` when no draft exists, `gh release upload --clobber` for the files of a draft after the asset name check (`RELEASE_CHECK exists` on a stale asset), then `gh release edit v<v> --draft=false --prerelease --latest=false`.
+- The publish job: `gh release create v<v> --draft --prerelease --verify-tag --title "Arbareto Preview v<v>" --notes-file <notes>` when no draft exists, `gh release upload --clobber` for the files of a draft after the asset name check (`RELEASE_CHECK exists` on a stale asset), then the tag commit check (D3), then `gh release edit v<v> --draft=false --prerelease --latest=false`.
 
 ### D10 README
 
-- A "Download" section: the Releases link, the prerequisites, the checksum command for PowerShell and for `sha256sum`, the `gh attestation verify <file> -R auric/arbareto` command, the SmartScreen prompt, and the sentence "Unsigned builds do not run when Smart App Control is on." (user, 2026-10-24).
+- A "Download" section: the Releases link, the prerequisites, the checksum command for PowerShell and for `sha256sum`, the `gh attestation verify <file> -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml` command, the SmartScreen prompt, and the sentence "Unsigned builds do not run when Smart App Control is on." (user, 2026-10-24).
 - The Status bullet "No installer release exists yet" changes to name the preview in the future tense. After the publish, the Status bullet and the "Download" section change to the present tense (tasks.md T032).
 - A "Code signing policy" section waits for the SignPath approval (signing switch-on tasks).
 

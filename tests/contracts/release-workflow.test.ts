@@ -130,6 +130,27 @@ describe("release workflow", () => {
     expect(found.sort()).toEqual([...signpath, "/jobs/build/env/SIGNPATH_TOKEN_SET ${{ secrets.SIGNPATH_API_TOKEN != '' }}"].sort());
   });
 
+  test("GH_TOKEN is only in the env of the publish step, and the publish job env has no GH_TOKEN", () => {
+    expect(Object.hasOwn(jobs.publish?.env ?? {}, "GH_TOKEN")).toBe(false);
+    expect(Object.hasOwn(workflow.env ?? {}, "GH_TOKEN")).toBe(false);
+    const holders = Object.entries(jobs).flatMap(([job, j]) => (j.steps ?? []).flatMap((s) => (s.env?.GH_TOKEN === undefined ? [] : [`${job}/${s.name} ${s.env.GH_TOKEN}`])));
+    expect(holders).toEqual(["publish/Publish the release ${{ github.token }}"]);
+  });
+
+  test("the publish script checks the tag commit after the last upload and before --draft=false, and only there", () => {
+    const script = (steps("publish").find((s) => s.name === "Publish the release")?.run ?? "").split("\n");
+    const at = (pattern: RegExp) => script.flatMap((line, i) => (pattern.test(line) ? [i] : []));
+    const check = at(/RELEASE_CHECK not-tag-commit/);
+    const tagApi = at(/gh api "repos\/\$env:GITHUB_REPOSITORY\/commits\/refs\/tags\/\$env:TAG"/);
+    const writes = at(/^\s*gh release (create|upload) /);
+    const publish = at(/^\s*gh release edit \$env:TAG --draft=false /);
+    expect([check.length, tagApi.length, publish.length]).toEqual([1, 1, 1]);
+    expect(writes.length).toBe(2);
+    expect(tagApi[0]!).toBeGreaterThan(Math.max(...writes));
+    expect(check[0]!).toBeGreaterThan(tagApi[0]!);
+    expect(check[0]!).toBeLessThan(publish[0]!);
+  });
+
   test("in publish, sums.ts verify runs before actions/attest, and actions/attest runs before the publish step", () => {
     const publish = steps("publish");
     const verify = publish.findIndex((s) => /bun scripts\/release\/sums\.ts verify /.test(s.run ?? ""));
@@ -243,11 +264,16 @@ describe.skipIf(PWSH === null)("publish script with a reused draft", () => {
     expect(result.gh).not.toContain("release upload");
   });
 
-  test("a tag on another commit than GITHUB_SHA gives RELEASE_CHECK not-tag-commit and no release change", () => {
+  test("a tag on another commit than GITHUB_SHA after the upload gives RELEASE_CHECK not-tag-commit and no publish", () => {
     const moved = "2222222222222222222222222222222222222222";
     const result = publish("moved", PLANNED.slice(1), moved);
     expect([result.code, result.stderr.trim()]).toEqual([1, `RELEASE_CHECK not-tag-commit v0.1.0 ${moved}`]);
-    expect(result.gh).not.toContain("release ");
+    const calls = result.gh.split(/\r?\n/);
+    const upload = calls.findIndex((c) => c.startsWith("release upload v0.1.0"));
+    const check = calls.findIndex((c) => c.startsWith("api repos/auric/arbareto/commits/refs/tags/v0.1.0"));
+    expect(upload).toBeGreaterThanOrEqual(0);
+    expect(check).toBeGreaterThan(upload);
+    expect(result.gh).not.toContain("--draft=false");
   });
 
   test("a draft with only planned assets gets the upload and the publish", () => {

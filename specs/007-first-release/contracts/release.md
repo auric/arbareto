@@ -26,7 +26,7 @@
 | `hunspell-source.ts` | exit 0, prints the archive path | `RELEASE_SOURCE fetch <repo> <code>` (also a failed `git init` or `git rev-parse --git-path`), `RELEASE_SOURCE commit <repo> <expected> <actual>` (`<actual>` is `none` when `rev-parse` fails), `RELEASE_SOURCE archive <repo> <code>`, `RELEASE_SOURCE tar <code>`; `<code>` is the exit code, or the signal name when the process has no exit code |
 | `notes.ts` | exit 0, prints the notes path | `RELEASE_NOTES missing <version>`, `RELEASE_NOTES block <file>` (a block file of `.github/release-notes/` is absent) |
 | `notices-text.ts` | exit 0, prints the file path | `RELEASE_NOTICES input <path>` (absent, not JSON, or not the notices.json shape) |
-| publish tag check, before the release lookup | exit 0 | `RELEASE_CHECK not-tag-commit <tag> <commit>` (`gh api repos/<repo>/commits/refs/tags/<tag> --jq .sha` is not `GITHUB_SHA`, spec FR-014, FR-028); a failed `gh api` exits 1 without a line |
+| publish tag check, after the asset upload and before `gh release edit --draft=false` | exit 0 | `RELEASE_CHECK not-tag-commit <tag> <commit>` (`gh api repos/<repo>/commits/refs/tags/<tag> --jq .sha` is not `GITHUB_SHA`, spec FR-014, FR-028); a failed `gh api` exits 1 without a line |
 | publish release lookup | exit 0 | `RELEASE_CHECK exists <tag>` (a published release with the tag, more than one draft, or a draft asset name outside the release files of the run), `RELEASE_CHECK private` |
 | any script, wrong arguments | — | `RELEASE_CHECK usage` (not a `--signing` value, which gives `signing-value`), `RELEASE_SUMS usage`, `RELEASE_SOURCE usage`, `RELEASE_NOTES usage` (also a `--signing` value other than `off` or `signpath`), `RELEASE_NOTICES usage`, each followed by the usage text |
 

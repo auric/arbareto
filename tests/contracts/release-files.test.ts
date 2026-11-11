@@ -191,6 +191,14 @@ describe("notes.ts", () => {
     const result = script("notes.ts", ["--version", "0.0.0", "--signing", "off", "--out", fixtureDir("notes-missing")]);
     expect([result.code, result.tokens]).toEqual([1, "RELEASE_NOTES missing"]);
   });
+
+  test("README.md, unsigned.md, and signed.md give the attestation command with the signer workflow", () => {
+    const line = "gh attestation verify <file> -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml";
+    for (const path of [join(import.meta.dir, "..", "..", "README.md"), join(BLOCKS, "unsigned.md"), join(BLOCKS, "signed.md")]) {
+      const lines = readFileSync(path, "utf8").split(/\r?\n/).filter((l) => l.startsWith("gh attestation verify "));
+      expect({ path, lines }).toEqual({ path, lines: [line] });
+    }
+  });
 });
 
 describeGit("hunspell-source.ts", (git) => {
@@ -200,9 +208,10 @@ describeGit("hunspell-source.ts", (git) => {
     const commit = (repo: string, file: string) => {
       const work = fixtureDir(`work-${label}-${file}`);
       fixtureGit(git, work, ["init", "--quiet"]);
-      writeFileSync(join(work, file), `${file}\n`);
-      // The archive must hold a file that a tree attribute marks export-ignore (git-archive "ATTRIBUTES").
-      writeFileSync(join(work, ".gitattributes"), `${file} export-ignore\n`);
+      writeFileSync(join(work, file), `${file} $Id$\n`);
+      // The archive must hold the blob of a file with tree attributes that change `git archive` output (git-archive "ATTRIBUTES", gitattributes(5)).
+      // The `filter` driver has no command. Only `filter.release-test.required=true` in the config makes `git archive` fail on it.
+      writeFileSync(join(work, ".gitattributes"), `${file} export-ignore text eol=crlf ident filter=release-test\n`);
       fixtureGit(git, work, ["add", "--", file, ".gitattributes"]);
       fixtureGit(git, work, ["commit", "--quiet", "-m", file]);
       const bare = join(base, repo);
@@ -221,8 +230,8 @@ describeGit("hunspell-source.ts", (git) => {
     const unpacked = fixtureDir("source-unpacked");
     const tar = Bun.spawnSync([TAR, "-xzf", join(out, archiveName("0.1.0")), "-C", unpacked], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     expect(tar.exitCode).toBe(0);
-    expect(readFileSync(join(unpacked, "hunspell", "hunspell.txt"), "utf8")).toBe("hunspell.txt\n");
-    expect(readFileSync(join(unpacked, "hunspell-wasm", "wasm.txt"), "utf8")).toBe("wasm.txt\n");
+    expect(readFileSync(join(unpacked, "hunspell", "hunspell.txt"), "utf8")).toBe("hunspell.txt $Id$\n");
+    expect(readFileSync(join(unpacked, "hunspell-wasm", "wasm.txt"), "utf8")).toBe("wasm.txt $Id$\n");
     const source = readFileSync(join(unpacked, "SOURCE.txt"), "utf8");
     expect(count(source, pins.hunspell)).toBe(1);
     expect(count(source, pins.hunspellWasm)).toBe(1);
@@ -230,17 +239,17 @@ describeGit("hunspell-source.ts", (git) => {
     // The case builds 2 Git repositories with bare clones and an archive, and takes 3 to 3.7 s, near the 5 s Bun default.
   }, 30_000);
 
-  test("core.autocrlf=true in the Git config leaves the archive files equal to the pinned blobs", () => {
+  test("core.autocrlf=true and a required filter in the Git config leave the archive files equal to the pinned blobs", () => {
     const { base, pins } = upstream("autocrlf");
     const out = fixtureDir("source-autocrlf-out");
-    const env = fixtureEnv({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.autocrlf", GIT_CONFIG_VALUE_0: "true" });
+    const env = fixtureEnv({ GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "core.autocrlf", GIT_CONFIG_VALUE_0: "true", GIT_CONFIG_KEY_1: "filter.release-test.required", GIT_CONFIG_VALUE_1: "true" });
     const result = hunspellSource({ version: "0.1.0", out, upstream: base, pins, git: fixtureGitPath(git), env, work: fixtureDir("source-autocrlf-work") });
     expect(result).toEqual({ path: join(out, archiveName("0.1.0")) });
     const unpacked = fixtureDir("source-autocrlf-unpacked");
     const tar = Bun.spawnSync([TAR, "-xzf", join(out, archiveName("0.1.0")), "-C", unpacked], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     expect(tar.exitCode).toBe(0);
     const blob = fixtureGit(git, base, ["--git-dir", join(base, "hunspell", "hunspell"), "cat-file", "blob", `${pins.hunspell}:hunspell.txt`]);
-    expect(blob).toBe("hunspell.txt\n");
+    expect(blob).toBe("hunspell.txt $Id$\n");
     expect(readFileSync(join(unpacked, "hunspell", "hunspell.txt"), "utf8")).toBe(blob);
     // The case builds 2 Git repositories with bare clones and an archive, and takes 3 to 3.4 s, near the 5 s Bun default.
   }, 30_000);

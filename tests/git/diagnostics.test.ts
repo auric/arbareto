@@ -4,10 +4,9 @@
 import { describe, expect } from "bun:test";
 import { chmodSync, existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
-import { buildSubmoduleOutputTail } from "../../src/contracts/submodules";
+import { buildSubmoduleOutputTail, redactUrlUserInfo } from "../../src/contracts/submodules";
 import { discoverRepository } from "../../src/git-service/discovery";
 import { createCollector } from "../../src/git-service/git-runner";
-import { redactUrlUserInfo } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { createBunRunner } from "./bun-runner";
 import { FIXTURE_ROOT, fixtureDir, fixtureEnv, fixtureGit, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";

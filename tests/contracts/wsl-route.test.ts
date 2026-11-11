@@ -6,7 +6,8 @@ import { printOrigin } from "../origin";
 import { ERROR_CODES, WSL_UNAVAILABLE_REASONS as ERROR_REASONS } from "../../src/contracts/errors";
 import {
   buildWslRemedy,
-  checkWslGit,
+  checkWslVersion,
+  foreignGitReason,
   routeWslPath,
   WSL_MINIMUM_GIT_VERSION,
   WSL_UNAVAILABLE_REASONS,
@@ -257,7 +258,7 @@ describe("WSL Git PPA remedy (T212, contract §11 Git per distro)", () => {
 });
 
 describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
-  const git = (versionText: string, magic: WslMagic = "ELF") => checkWslGit({ magic, versionText });
+  const git = checkWslVersion;
 
   test("the floor is 2.55.0", () => {
     expect(WSL_MINIMUM_GIT_VERSION).toBe("2.55.0");
@@ -299,12 +300,9 @@ describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
 
   // T412: the probe magic decides the program kind. The version text decides only the floor.
   test("an MZ file gives reason windows-git, a file without the ELF magic gives reason not-elf, and a .windows. version text of an ELF Git is a version", () => {
-    expect(git("git version 2.56.0", "MZ")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "windows-git" });
-    expect(git("git version 2.55.0.windows.3", "MZ")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "windows-git" });
-    expect(git("git version 2.56.0", "-")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "not-elf" });
-    expect(git("git version 2.55.0.windows.3", "-")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "not-elf" });
+    const magics: WslMagic[] = ["ELF", "MZ", "-", "?"];
     // `?`: `head` failed, so the probe read no bytes.
-    expect(git("git version 2.56.0", "?")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "unreadable" });
+    expect(magics.map(foreignGitReason)).toEqual([null, "windows-git", "not-elf", "unreadable"]);
     expect(git("git version 2.55.0.windows.3")).toEqual({ ok: true, version: "2.55.0.windows.3" });
     expect(git("git version 2.54.0.windows.1")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "version", detectedVersion: "2.54.0.windows.1", minimumVersion: "2.55.0" });
   });

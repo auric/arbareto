@@ -16,11 +16,14 @@ export type GitAdmission =
   | { gitCode: "GIT_UNAVAILABLE"; minimumVersion: string; qualification: "unverified" };
 
 const VERSION = /^(\d+)\.(\d+)\.(\d+)(?:\.windows\.(\d+))?$/;
+// T412 and T413: the image header decides the build, so any suffix passes, as in `checkWslVersion`. The register `version` field is printable ASCII.
+const OTHER_VERSION = /^(\d+)\.(\d+)\.(\d+)[\x21-\x7e]*$/;
 
-// Numeric parts of a version. The Windows rule needs `windows.N`. The other rule refuses it.
+// Numeric parts of a version. The Windows rule needs `windows.N`. The other rule compares `major.minor.patch`.
 function versionParts(version: string, windows: boolean): bigint[] | null {
+  if (!windows) return OTHER_VERSION.exec(version)?.slice(1, 4).map(BigInt) ?? null;
   const m = VERSION.exec(version);
-  return m && (m[4] !== undefined) === windows ? m.slice(1, windows ? 5 : 4).map(BigInt) : null;
+  return m && m[4] !== undefined ? m.slice(1, 5).map(BigInt) : null;
 }
 
 function compare(a: bigint[], b: bigint[]): number {
@@ -56,7 +59,7 @@ export function admitGitProbe(output: string | null, windows = isWindows): GitAd
   const lines = output.split(/\r?\n/);
   const token = /^git version (\S+)$/.exec(lines[0])?.[1];
   // The register `version` field is printable ASCII with at most 64 bytes (contract §6 "Context rules").
-  const detectedVersion = token !== undefined && token.length <= REGISTER_VERSION_BYTES && VERSION.test(token) ? token : undefined;
+  const detectedVersion = token !== undefined && token.length <= REGISTER_VERSION_BYTES && (windows ? VERSION : OTHER_VERSION).test(token) ? token : undefined;
   const unsupported = { admission: "unsupported" as const, gitCode: "GIT_UNSUPPORTED" as const, ...(detectedVersion ? { detectedVersion } : {}), ...base };
   const parts = detectedVersion === undefined ? null : versionParts(detectedVersion, windows);
   if (!parts || compare(parts, windows ? WINDOWS_PARTS : OTHER_PARTS) < 0) return unsupported;

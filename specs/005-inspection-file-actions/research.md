@@ -554,6 +554,7 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Open submodule and Open parent repository may take 150 ms more. The parent safety checks of FR-049 run before the registration, and they stay there.
 - Each Open submodule adds a recent entry (FR-051, `service.rs` `registered_root`), so the Recent repositories list holds both repositories.
 - The earlier T060 runs measured the normal open from the `choose_repository` reply: medians of 218 to 384 ms against 445 to 566 ms for the key opens.
+- Samples (user decision 2026-11-11): 7 opens of each kind instead of 3. The 150 ms allowance does not change.
 
 *SC-009 Delete probes.*
 - The Q32 Delete case sends at least 20 probe inputs during the Delete, so one slow frame does not decide the p95. The Enter that starts the Delete counts in the p95 and in the 500 ms maximum.

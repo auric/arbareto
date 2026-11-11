@@ -34,8 +34,8 @@ const caseTimeout = (steps: number) => steps * STEP_MS + 2 * PROBE_TIMEOUT_MS + 
 const KEY_WAIT_MS = 10_000;
 // A Recycle Bin batch or a Git read after an action.
 const ACTION_WAIT_MS = 30_000;
-// SC-007 compares the medians of this many opens of each kind.
-const OPEN_RUNS = 3;
+// SC-007 compares the medians of this many opens of each kind (user decision 2026-11-11). Keep it odd, because `median` takes the middle element.
+const OPEN_RUNS = 7;
 // Spec SC-007: the parent safety checks before the registration may add at most this time to Open submodule and Open parent repository.
 const OPEN_ALLOWANCE_MS = 150;
 // Spec SC-012: a submodule preview shows within this time after the selection (warm package, median of 10 after one warm-up run).

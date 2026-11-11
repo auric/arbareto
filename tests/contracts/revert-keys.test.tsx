@@ -152,7 +152,8 @@ describe("R in the staged diff (US4)", () => {
       expect(statusBar()).not.toContain("Arbareto changed nothing");
       await unmountAll();
     }
-  });
+    // The case runs 2 staged reverts in happy-dom and takes 1.7 to 2.6 s in parallel runs, against the 5 s Bun default.
+  }, 30_000);
 
   test("the index part stays and the write failed: the FR-017 partial result names the reason", async () => {
     const { file, runCall } = await runStaged();

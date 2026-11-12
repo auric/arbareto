@@ -218,7 +218,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - **SC-001**: A clean Windows 11 x64 Sandbox with only the documented prerequisites installs and starts the preview from the public release page. The install needs no administrator rights.
 - **SC-002**: The SHA-256 value of every downloaded release file equals its line in the checksum file: 4 of 4 files.
 - **SC-003**: The documented attestation check passes for every release file, and it fails for a copy with one changed byte.
-- **SC-004**: About in the installed preview shows `0.1.0`, the preview marker, and the full tag commit ID without `-dirty`.
+- **SC-004**: About in the installed preview shows the release version, the preview marker, and the full tag commit ID without `-dirty`.
 - **SC-005**: A tag with a wrong version, a tag outside `main`, a dirty identity, and a pin mismatch each fail the run, and none of them creates a public release: 4 of 4.
 - **SC-006**: From the approval to the published release takes at most 15 minutes. The build before the approval takes at most 90 minutes on a GitHub-hosted runner. These are starting budgets, not measurements.
 - **SC-007**: Both About links (Hunspell source archive and tag source) reach their targets without a sign-in.

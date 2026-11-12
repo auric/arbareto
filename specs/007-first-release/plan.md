@@ -265,6 +265,6 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 - The SignPath stages cannot run before the approval. Their YAML is checked only by the contract test. Mitigation: switch-on tasks with a test release `v0.1.1` (research R1 Q9).
 - `windows-2025` updates weekly. The pins hold the versions; the run record shows the image.
-- `cargo install tauri-cli` built from source on each run and took 377 s to 605 s. T040 replaces it with the hash-pinned prebuilt zip (research R2 "Caching").
+- The step "Install Rust and the Tauri CLI" took 377 s to 605 s. The `cargo install tauri-cli` source build took most of this time. T040 replaces it with the hash-pinned prebuilt zip (research R2 "Caching").
 - The dry run uses a standard GitHub-hosted runner in the public repository. These runners are free for public repositories (research R2).
 - The uninstaller and the NSIS plugin DLL stay unsigned under SignPath (user, Q3).

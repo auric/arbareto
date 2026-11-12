@@ -10,7 +10,7 @@
 | `publish`: `needs: build`, `environment: release`, `if` limited to tag pushes `refs/tags/v`, `permissions` exactly `contents: write`, `id-token: write`, `attestations: write`. | Workflow test. |
 | Every `uses:` value is `<owner>/<repo>[/path]@<40 hex>`. | Workflow test. |
 | No `actions/cache` and no `continue-on-error: true`. | Workflow test. |
-| "Install Bun" and "Install the Tauri CLI" compare the downloaded zip SHA-256 with `BUN_ZIP_SHA256` and `TAURI_CLI_ZIP_SHA256`. A different hash exits 1 with `RELEASE_CHECK pin <zip name> <hash>`. No step runs `cargo install tauri-cli`. | Workflow test, pins test. |
+| "Install Bun" and "Install the Tauri CLI" compare the downloaded zip SHA-256 with `BUN_ZIP_SHA256` and `TAURI_CLI_ZIP_SHA256`. A different hash exits 1 with `RELEASE_CHECK pin <zip name> <hash>`. No step runs `cargo install tauri-cli`. "Install the Tauri CLI" comes before "Install Rust and check the tools". | Workflow test, pins test. |
 | No `env` map at workflow, job, or step level has a `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` key. Either key replaces the `/Brepro` flag of `.cargo/config.toml` (plan.md D1). | Workflow test. |
 | Sign steps carry `if: vars.ARBARETO_SIGNING == 'signpath'`. | Workflow test. |
 | No step writes below the checkout. Every output path starts with `${{ runner.temp }}` or `$env:RUNNER_TEMP`, except the Tauri target folder and the Git-ignored externalBin source folder `src-tauri/binaries/`. The NSIS bundler reads the sidecar from its externalBin source path (tauri-bundler 2.10.0 `nsis/mod.rs:864-866`), so the signed sidecar replaces the file there. | Workflow test, dry-run `git status` check. |

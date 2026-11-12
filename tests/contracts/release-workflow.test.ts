@@ -175,6 +175,8 @@ describe("release workflow", () => {
     const install = steps("build").filter((s) => s.name === "Install the Tauri CLI");
     expect(install.length).toBe(1);
     expect((install[0]!.run ?? "").split("\n").map((line) => line.trim())).toContain(pin);
+    const tauriAt = steps("build").findIndex((s) => s.name === "Install the Tauri CLI");
+    expect(steps("build").findIndex((s) => s.name === "Install Rust and check the tools")).toBeGreaterThan(tauriAt);
     expect(allSteps.filter((s) => /cargo\s+install\s+tauri-cli/.test(s.run ?? ""))).toEqual([]);
   });
 

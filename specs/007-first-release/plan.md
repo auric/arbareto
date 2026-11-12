@@ -12,7 +12,7 @@ A tag `v0.1.0` on `main` starts one GitHub Actions workflow on `windows-2025`. T
 
 **Language/Version**: TypeScript `7.0.2` on Bun `1.4.4` (exact, constitution VIII exception) for the release scripts and tests. Rust `1.99.0` through a new `rust-toolchain.toml` (001 minimum `1.98.0` stays the minimum). GitHub Actions workflow YAML.
 
-**Primary Dependencies**: No new package. Build tools: tauri-cli `2.12.0` (`cargo install --locked`; it pins tauri-bundler `=2.10.0`, which downloads NSIS `3.11` by SHA-1, research R2). GitHub-hosted runner `windows-2025` (Windows Server 2025 with Visual Studio 2026, image `20261007.264.1` on 2026-10-24). Actions, each by full commit SHA: `actions/checkout`, `actions/upload-artifact`, `actions/download-artifact`, `actions/attest`, and, for the signing switch, `signpath/github-action-submit-signing-request`. The preinstalled `gh` CLI creates the release. The GitHub JavaScript actions run on the runner's own Node: a CI-only Node use (constitution II disclosure). Windows `C:\Windows\System32\tar.exe` packs the source archive.
+**Primary Dependencies**: No new package. Build tools: tauri-cli `2.12.0` (prebuilt release zip with a pinned SHA-256 in CI, T040; it pins tauri-bundler `=2.10.0`, which downloads NSIS `3.11` by SHA-1, research R2). GitHub-hosted runner `windows-2025` (Windows Server 2025 with Visual Studio 2026, image `20261007.264.1` on 2026-10-24). Actions, each by full commit SHA: `actions/checkout`, `actions/upload-artifact`, `actions/download-artifact`, `actions/attest`, and, for the signing switch, `signpath/github-action-submit-signing-request`. The preinstalled `gh` CLI creates the release. The GitHub JavaScript actions run on the runner's own Node: a CI-only Node use (constitution II disclosure). Windows `C:\Windows\System32\tar.exe` packs the source archive.
 
 **Storage**: None. Release files live as GitHub workflow artifacts and release assets.
 
@@ -117,13 +117,13 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 ### D2 Pins
 
-- `scripts/release/pins.ts` exports one record: Bun `1.4.4`, `bun-windows-x64.zip` SHA-256 `cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5`, Rust `1.99.0`, tauri-cli `2.12.0`, NSIS `v3.11`, runner `windows-2025`. A contract test compares it with `package.json` (`packageManager`, the `build:service` check), `rust-toolchain.toml`, `TAURI_CLI_VERSION` and `NSIS_VERSION` in `src/frontend/build/notices.ts`, and the workflow file.
+- `scripts/release/pins.ts` exports one record: Bun `1.4.4`, `bun-windows-x64.zip` SHA-256 `cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5`, Rust `1.99.0`, tauri-cli `2.12.0`, `cargo-tauri-x86_64-pc-windows-msvc.zip` SHA-256 `78785c9b574bbe4bbfe6cc3008422df068a0f661931a9fa9d13d08407604b6a9`, NSIS `v3.11`, runner `windows-2025`. A contract test compares it with `package.json` (`packageManager`, the `build:service` check), `rust-toolchain.toml`, `TAURI_CLI_VERSION` and `NSIS_VERSION` in `src/frontend/build/notices.ts`, and the workflow file.
 - `rust-toolchain.toml` at the repository root: `channel = "1.99.0"`, `profile = "minimal"`, `components = ["clippy", "rustfmt"]`, `targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]`. rustup reads it from the working folder and its parents. The cloud setup installs Rust from a tarball without rustup and is not affected; its `1.98.0` stays the minimum (001 plan.md:23).
 - Bun on the runner: download `https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64.zip` into `$env:RUNNER_TEMP`, compare `Get-FileHash -Algorithm SHA256` with the pin, extract there, and prepend the folder to `GITHUB_PATH`. No `setup-bun` action.
 - Rust on the runner: `rustup toolchain install` reads `rust-toolchain.toml`. Then `rustc --version` must print `rustc 1.99.0 `.
-- tauri-cli: `cargo install tauri-cli --version 2.12.0 --locked`. Then `cargo tauri --version` must print `tauri-cli 2.12.0`. The notices check (001 T375) also refuses any other value.
+- tauri-cli: download `https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.0/cargo-tauri-x86_64-pc-windows-msvc.zip` into `$env:RUNNER_TEMP`, compare `Get-FileHash -Algorithm SHA256` with the pin, extract there, and prepend the folder to `GITHUB_PATH`. The pin is the GitHub asset digest (research R2 "Caching", T040). No `cargo install tauri-cli`. Then `cargo tauri --version` must print `tauri-cli 2.12.0`. The notices check (001 T375) also refuses any other value.
 - Actions: each `uses:` names a 40-hex commit ID and the version tag in a trailing comment. The workflow contract test refuses any other form. The implementer reads each SHA from the action repository tag at implementation time and records it in research.md R7.
-- No `actions/cache` step (research R2).
+- No `actions/cache` step (research R2). Each downloaded tool has a pinned SHA-256, and the workflow builds no tool from source.
 
 ### D3 Tag, version, and tree checks (`scripts/release/check.ts`)
 
@@ -265,6 +265,6 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 - The SignPath stages cannot run before the approval. Their YAML is checked only by the contract test. Mitigation: switch-on tasks with a test release `v0.1.1` (research R1 Q9).
 - `windows-2025` updates weekly. The pins hold the versions; the run record shows the image.
-- `cargo install tauri-cli` builds from source on each run. No measurement yet. T029 records the time.
+- `cargo install tauri-cli` built from source on each run and took 377 s to 605 s. T040 replaces it with the hash-pinned prebuilt zip (research R2 "Caching").
 - The dry run uses a standard GitHub-hosted runner in the public repository. These runners are free for public repositories (research R2).
 - The uninstaller and the NSIS plugin DLL stay unsigned under SignPath (user, Q3).

@@ -210,10 +210,11 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 
 ## Phase 9: v0.1.1 follow-ups
 
-**Agent**: implementer (T038), scout and orchestrator (T039). This phase does not gate v0.1.0.
+**Agent**: implementer (T038, T040), scout and orchestrator (T039). This phase does not gate v0.1.0.
 
 - [ ] T038 Harden the release workflow and the verify text (`.github/workflows/release.yml`, `scripts/release/hunspell-source.ts`, README.md, `.github/release-notes/unsigned.md`). Move the publish tag check (`RELEASE_CHECK not-tag-commit` and the tag-moved refusal) to just before `gh release edit --draft=false`. Give `GH_TOKEN` only to the step that needs it. Add `--end-of-options` before the fetch URL in `hunspell-source.ts`. Add a test fixture with a tree `.gitattributes` `text eol=crlf ident` and an `$Id$` file. The blob-equality assert then covers those attributes. Add `--signer-workflow auric/arbareto/.github/workflows/release.yml` to the attestation command. Source: research.md R7 "Review of 6bb2235d and 5f31d07a" and "T033 Batch 3 verification". Spec: FR-017, FR-019, FR-023, FR-024, FR-028, FR-029. Depends on T033. Note (2026-11-11): code and tests on branch `v011-release-hardening`; the tick waits for the v0.1.1 full run.
 - [ ] T039 Close the batch 3 verification gaps in the v0.1.1 release check. Files: `specs/007-first-release/spec.md` (SC-002 wording) and the v0.1.1 release record in research.md R7. Start the app as a standard Sandbox user and read About. Press both About buttons with network on and check the opened URL. Reword SC-002 to "3 of 3 lines of `SHA256SUMS.txt`, and the checksum file matches its attestation". Source: research.md R7 "T033 Batch 3 verification". Spec: SC-001, SC-002, SC-007. Depends on T033.
+- [ ] T040 Install the Tauri CLI from the prebuilt release zip in the release workflow. Files: `.github/workflows/release.yml`, `scripts/release/pins.ts`, `tests/contracts/release-workflow.test.ts`, `tests/contracts/release-pins.test.ts`. The new step "Install the Tauri CLI" downloads `cargo-tauri-x86_64-pc-windows-msvc.zip` of tag `tauri-cli-v2.12.0`. It compares the zip SHA-256 with `TAURI_CLI_ZIP_SHA256`. It prepends the extract folder to `GITHUB_PATH`. Remove `cargo install tauri-cli`. Keep the workflow cache-free. The workflow test checks the hash line and the absence of `cargo install tauri-cli`. The pins test checks the URL and hash pins. Source: research.md R2 "Caching". Spec: FR-011, SC-005 (pin mismatch, static), SC-006. Depends on T038 (same file `release.yml`; T038 is already in this branch base). Pass condition: a `release-dry-run` run where "Install the Tauri CLI" and "Install Rust and check the tools" pass and `cargo tauri --version` prints `tauri-cli 2.12.0`. Record both step times in research.md R7 as an `OBSERVATION`. The tick waits for that run.
 
 ---
 
@@ -242,7 +243,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 | FR-005 | T006, T008 |
 | FR-006 | T031 |
 | FR-007 | T027 |
-| FR-010 to FR-016 | T006 to T009, T024 to T026, T029 |
+| FR-010 to FR-016 | T006 to T009, T024 to T026, T029, T040 (FR-011) |
 | FR-017 to FR-019 | T024, T025, T032, T038 (FR-017, FR-019) |
 | FR-020 to FR-024 | T018 to T022, T024, T025, T032, T038 (FR-023, FR-024) |
 | FR-025 to FR-027 | T018, T022, T023 |
@@ -254,8 +255,8 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 | FR-044 to FR-046 | T022, T034, T035 |
 | SC-001, SC-004 | T017, T030, T032, T039 (SC-001) |
 | SC-002, SC-003 | T018, T020, T032, T039 (SC-002) |
-| SC-005 | T007, T010, T017, T024, T033 (wrong version and dirty identity: local T007 and T026 Q3; outside `main`: GitHub T033; pin mismatch: static workflow check T024, no run) |
-| SC-006 | T029, T032 (times recorded) |
+| SC-005 | T007, T010, T017, T024, T033 (wrong version and dirty identity: local T007 and T026 Q3; outside `main`: GitHub T033; pin mismatch: static workflow check T024 and T040, no run) |
+| SC-006 | T029, T032 (times recorded), T040 |
 | SC-007 | T032, T039 |
 | SC-008 | T024, T036 |
 
@@ -272,4 +273,4 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 - Run `/speckit-analyze` after every edit of this file.
 - Run `/speckit-converge` at the end of each batch.
 - The orchestrator commits after each task or logical group.
-- The tauri-cli 2.12.4 and NSIS 3.13 update is not part of this feature (user, 2026-10-24). After it, `pins.ts`, `notices.ts`, and the NSIS licence folder change together.
+- The tauri-cli 2.12.4 and NSIS 3.13 update is not part of this feature (user, 2026-10-24). After it, `pins.ts`, `notices.ts`, the NSIS licence folder, and the Tauri CLI zip URL and SHA-256 (pins.ts, release.yml env) change together.

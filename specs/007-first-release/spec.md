@@ -162,7 +162,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 #### Build
 
 - **FR-010**: A pushed tag that matches `v*` MUST start the release workflow. The workflow MUST build the current-user NSIS installer on a GitHub-hosted Windows x64 runner. Other events MUST NOT start the publish step.
-- **FR-011**: Every build tool MUST be pinned: Bun at `1.4.4` with the published SHA-256 value of its Windows archive, the Rust toolchain, the Tauri CLI, and the NSIS version that the pinned Tauri CLI downloads and checks. Every third-party action MUST be pinned by a full commit ID. A pin mismatch MUST fail the run.
+- **FR-011**: Every build tool MUST be pinned: Bun at `1.4.4` with the published SHA-256 value of its Windows archive, the Rust toolchain, the Tauri CLI at `2.12.0` with the SHA-256 value of its Windows release archive (the GitHub asset digest), and the NSIS version that the pinned Tauri CLI downloads and checks. Every third-party action MUST be pinned by a full commit ID. A pin mismatch MUST fail the run.
 - **FR-012**: The workflow MUST compare the tag version with the application version that the build embeds. A difference MUST fail the run before the build.
 - **FR-013**: The workflow MUST fail when `main` does not contain the tag commit.
 - **FR-014**: The build identity MUST be the full commit ID of the tag commit without `-dirty`. A dirty identity MUST fail the run.

@@ -273,6 +273,7 @@ Order: remote first, then local.
 - Gone fact: exit 2, or exit 0 with no exact `<dst>` line (`parseLsRemote`). An exact `<dst>` line with a value other than `<expect>` means the branch moved, so the stale outcome stays. An exact line equal to `<expect>`, another exit, a parse failure, or Cancel gives reason `rejected`.
 - Cancel: the re-read does not start after Cancel, as in the push (`sync.ts` `!signal.aborted`).
 - Removal: `update-ref --no-deref -d <ref> <expect>` as one more write through `writeUpstream`. Exit 0 marks `remoteGone`. A nonzero exit keeps the stale outcome. The expect value makes Git refuse a ref that changed after the review.
+- No-delete fact: a remote without the delete-refs capability gives `[rejected] (remote does not support deleting refs)`, and this status can replace a stale lease. The re-read still runs. See research R3 and U2.
 - A different `pushurl` skips the check, because the fetch URL could name another repository than the push URL. The reason is then `rejected`, with E5 and no remedy.
 
 ### D9 Sync action, trust, and shell
@@ -359,7 +360,7 @@ New texts:
 | X19 | status bar step | Deleting the remote branch on {remote}… |
 | X20 | outcome | Deleted the remote branch {tracking}. |
 | X21 | outcome | Deleted {branch} and the remote branch {tracking}. |
-| X22 | outcome | Git deleted nothing: {reasonText}. {tracking} changed on {remote} since the last fetch. Fetch {remote}, then try again. (No `reasonText`: "Git deleted nothing.") |
+| X22 | outcome | Git deleted nothing: {reasonText}. {tracking} changed on {remote} since the last fetch. Fetch {remote}, then try again. (No `reasonText` or an empty one: "Git deleted nothing.") Accepted display gap: a `reasonText` that ends in "." shows "..", because the text does not change Git's reason. |
 | X23 | outcome | {remote} lists no branch {name}. Arbareto deleted the remote-tracking branch {tracking}. |
 | X24 | outcome | Deleted the remote branch {tracking}. {branch} stays. |
 | X25 | outcome suffix | {branch} stays. |

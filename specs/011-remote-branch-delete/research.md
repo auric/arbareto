@@ -48,6 +48,7 @@ Git source, tag `v2.55.0`:
 - Source `transport.c:620-640` `print_ref_status`: porcelain prints `<flag>\t<from>:<to>\t<summary>[ (<msg>)]`, or `<flag>\t:<to>\t...` without a source ref.
 - Source `transport.c:664-690` `print_ok_ref_status`: a deletion prints `-` and `[deleted]` with no source ref. The flag `-` prints only when `ref->deletion` is set.
 - Source `transport.c:743`: `[rejected] (remote does not support deleting refs)` prints no source ref.
+- Source order for a lease delete: `transport_push` (`transport.c:1475`) runs `set_ref_status_for_push`, which sets `REF_STATUS_REJECT_STALE` (`remote.c:1700`, `remote.c:1751`). Later `send_pack` sets `REF_STATUS_REJECT_NODELETE` on every deletion when the server lacks `delete-refs` (`send-pack.c:569-570`, `send-pack.c:642-643`). That loop does not check the earlier status. So the no-delete line can replace a stale lease, and `[rejected]` names no single cause.
 - Source `transport.c:773`: `[rejected] (stale info)` prints `ref->peer_ref`. `remote.c:1105-1110` `alloc_delete_ref` names that ref `(delete)`. So a stale lease line reads `(delete):<dst>` (P8, P9). A remote helper can set any status on that line (transport-helper.c `push_update_ref_status`). So the alias does not prove a stale lease (user decision 2026-11-11).
 - Source `transport.c:788-796`: `[remote rejected]` and `[remote failure]` print no source ref for a deletion.
 - Source `transport.c:574-616` `update_one_tracking_ref`: after a successful deletion, Git deletes the tracking ref of the fetch refspec mapping, with no old-value check.
@@ -80,7 +81,7 @@ Git documentation:
 ## R5 Unverified assumptions
 
 - U1 (resolved by T001, Probe and Doc): `push.useForceIfIncludes=true` in the owned global configuration does not change a lease delete with an explicit expect. An equal expect gives the P10 line and exit 0. A wrong expect gives the P8 line and exit 1. git-push(1) `--force-if-includes` calls this combination a no-op.
-- U2 (unverified): `[rejected] (remote does not support deleting refs)` (`transport.c:743`) needs a server without the delete-refs capability. No probe caused it. T007 covers its `:<dst>` line form from the R3 source format. No real-server test exists, so this item stays an assumption.
+- U2 (unverified): `[rejected] (remote does not support deleting refs)` (`transport.c:743`) needs a server without the delete-refs capability. No probe caused it. T007 covers its `:<dst>` line form from the R3 source format. No real-server test exists, so this item stays an assumption. The source order is verified: this status replaces a stale lease status (R3).
 - U3 (resolved by T001, Probe): a lease delete of `refs/heads/fëature-ж` gives `-	:refs/heads/fëature-ж	[deleted]` and exit 0. The status line holds the raw UTF-8 bytes, without quotes or escapes. The tracking ref goes. In a SHA-256 repository, a lease delete with a 64-digit expect gives the P10 line and exit 0. A wrong 64-digit expect gives the P8 line and exit 1.
 - U4 (resolved by T005, Check): the generated Rust identifier of the new action is `A::DeleteRemoteBranch` (`StartedAction::DeleteRemoteBranch`). See R7 "Shell (T005)".
 - U5 (unverified): fixtures L and M hold no remote-tracking refs, so M-D adds them. T020 checks the fixture shape.

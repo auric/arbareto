@@ -233,6 +233,34 @@ describe("obsolete responses", () => {
     o.requests.dispose();
   });
 
+  // Contract §3 `readWorkspace`: a `retained` result carries the `recoveryState` of its reply time. The renderer applies it to the shown snapshot.
+  test("a late refresh: true reply with an older generation never leaves recoveryState refreshing shown", async () => {
+    const o = await opened();
+    await o.advance(1000);
+    const poll = o.last("readWorkspace");
+    expect(poll.payload).toEqual({ refresh: false, check: "changes" });
+    o.requests.refresh();
+    await flush();
+    const user = o.last("readWorkspace");
+    expect(user.payload).toEqual({ refresh: true, check: "full" });
+    const polled = snapshot(3, [entry("unstaged", "c.txt")], { recoveryState: "refreshing" });
+    workspaceResponse(poll, polled);
+    await flush();
+    workspaceResponse(user, snapshot(2, [entry("unstaged", "c.txt")]));
+    echo(o.last("openHistory"), { result: {} });
+    await flush();
+    expect(o.requests.state().workspace?.snapshotId).toBe(polled.snapshotId);
+    expect(o.requests.state().blocked).toBe(true);
+    await o.advance(1000);
+    const next = o.last("readWorkspace");
+    expect(next.payload).toEqual({ refresh: false, check: "changes" });
+    workspaceResponse(next, retainedOf(polled, { recoveryState: "ready" }));
+    await flush();
+    expect(o.requests.state().workspace?.recoveryState).toBe("ready");
+    expect(o.requests.state().blocked).toBe(false);
+    o.requests.dispose();
+  });
+
   test("an operation end with a discarded display result still runs the reconcile read and resolves when it ends", async () => {
     const o = await opened();
     await o.advance(1000);
@@ -382,6 +410,28 @@ describe("service session", () => {
     await flush();
     expect(o.requests.state().blocked).toBe(false);
     expect(o.of("restoreWorkspace")).toHaveLength(1);
+    o.requests.dispose();
+  });
+
+  // tasks.md T414 (feature 001): a succeeded `refresh: true` reply releases the restart block also when its generation is older.
+  test("a ready refresh: true reply with an older generation after a service-session event releases the restart block", async () => {
+    const o = await opened();
+    o.requests.serviceSession();
+    await flush();
+    const repositoryId = crypto.randomUUID();
+    o.last("restoreWorkspace").resolve({ requestId: crypto.randomUUID(), state: "succeeded", result: { repositoryId, generation: 4, worktreeKey: WORKTREE_KEY } });
+    await flush();
+    for (const call of o.of("readWorkspace").filter((c) => c.target.repositoryId === repositoryId)) workspaceResponse(call, snapshot(5, o.first.entries));
+    await flush();
+    expect(o.requests.state().blocked).toBe(true);
+    o.requests.refresh();
+    await flush();
+    const refresh = o.last("readWorkspace");
+    expect(refresh.payload).toEqual({ refresh: true, check: "full" });
+    workspaceResponse(refresh, snapshot(4, o.first.entries));
+    await flush();
+    expect(o.requests.state().sessionBlocked).toBe(false);
+    expect(o.requests.state().blocked).toBe(false);
     o.requests.dispose();
   });
 

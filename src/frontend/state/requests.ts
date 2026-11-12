@@ -263,13 +263,13 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       update({ readFailure: response });
       return;
     }
+    // Contract §8 "Service restart": only a succeeded `refresh: true` read releases the block. The epoch check above drops replies sent before a restart, so a reply of an older generation also releases it.
+    if (refresh && response.state === "succeeded" && result.recoveryState === "ready") sessionBlocked = false;
     if (result.generation < generation) {
       update({});
       return;
     }
     generation = result.generation;
-    // Contract §8 "Service restart": only a succeeded `refresh: true` read releases the block.
-    if (refresh && response.state === "succeeded" && result.recoveryState === "ready") sessionBlocked = false;
     const headChanged = observedHead !== null && !sameHead(observedHead, result.head);
     observedHead = result.head;
     // The "References changed" notice reads only `head` and whether `seq` is above `openedSeq`. An equal head above it changes neither.
@@ -283,7 +283,14 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       // Contract §8 "Equal full read": the snapshot fields are those of the known snapshot, so the entries stay. The summary fields are fresh.
       // An equal read can follow a working-file change that no entry shows, so a full read reads the shown comparison again.
       // A `retained` reply keeps the state object, so a no-change poll notifies no listener.
-      if (result.readKind !== "full") return void update({ readFailure: null });
+      // A `retained` reply carries the current `recoveryState` (contract §3).
+      // shortcut: an unfocused window sends no poll, so a shown `refreshing` stays until focus return or Refresh; add a read at Refresh end if that matters.
+      if (result.readKind !== "full") {
+        if (paging?.snapshot.snapshotId === result.snapshotId) paging.snapshot = { ...paging.snapshot, recoveryState: result.recoveryState };
+        const workspace = state.workspace;
+        if (workspace?.snapshotId === result.snapshotId && workspace.recoveryState !== result.recoveryState) return void update({ workspace: { ...workspace, recoveryState: result.recoveryState }, readFailure: null });
+        return void update({ readFailure: null });
+      }
       if (paging?.snapshot.snapshotId === result.snapshotId) paging.snapshot = result;
       if (state.workspace?.snapshotId !== result.snapshotId) return void update({ readFailure: null });
       update({ workspace: result, readFailure: null });

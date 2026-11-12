@@ -580,11 +580,49 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     await press(c, "x");
   };
 
+  // Contract §2: the page calls `currentSession` only at load and after a `service-session` event. So a later reply marks a service restart.
+  const F5_TRACE = ["read_workspace", "current_session", "restore_workspace"] as const;
+  // The facts after F5 in reply arrival order. It prints request flags, reply summary fields, and page status texts, never file contents. The Remote sync text can hold fixture branch names.
+  async function f5Trace(s: Session, from: Record<string, number>): Promise<string> {
+    type Sent = { payload?: { refresh?: unknown; check?: unknown } };
+    type Reply = { state?: string; result?: { generation?: unknown; snapshotId?: unknown; readKind?: unknown; recoveryState?: unknown } };
+    const ends = new Map(s.ipc.calls().map((t) => [t.requestId, t.end ?? Number.POSITIVE_INFINITY]));
+    const calls = F5_TRACE.flatMap((command) => s.ipc.finished(command).slice(from[command])).sort((x, y) => ends.get(x.requestId)! - ends.get(y.requestId)!);
+    const replies = await Promise.all(
+      calls.map(async (call) => {
+        if (call.command !== "read_workspace") return { command: call.command };
+        const request = await s.c
+          .send("Network.getRequestPostData", { requestId: call.requestId })
+          .then((post) => {
+            const { postData, base64Encoded } = post as { postData: string; base64Encoded?: boolean };
+            const sent = JSON.parse(Buffer.from(postData, base64Encoded ? "base64" : "utf8").toString("utf8")) as Sent;
+            return { refresh: sent.payload?.refresh, check: sent.payload?.check };
+          })
+          .catch((e) => ({ requestError: (e as Error).message }));
+        const reply = await s.ipc
+          .body<Reply>(call)
+          .then(({ state, result: r }) => ({ state, generation: r?.generation, snapshotId: r?.snapshotId, readKind: r?.readKind, recoveryState: r?.recoveryState }))
+          .catch((e) => ({ replyError: (e as Error).message }));
+        return { command: call.command, ...request, ...reply };
+      }),
+    );
+    // The renderer `blocked` value has no DOM attribute. The footer status and the Remote sync group show its reason.
+    const page = await s.c.evaluate<unknown>(
+      `({ hasFocus: document.hasFocus(), workbenchStatus: (${footer}?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim(), remoteSync: (document.querySelector('[role=group][aria-label="Remote sync"]')?.textContent ?? '').trim() })`,
+    );
+    return js({ before: from, replies, pendingReadWorkspace: s.ipc.pending("read_workspace").length, page });
+  }
+
   // Waits for the reviewed state after an external restore. F5 reads the workspace again.
-  async function refreshed(c: Cdp, what: string, expression: string): Promise<void> {
-    await press(c, "F5");
+  async function refreshed(s: Session, what: string, expression: string): Promise<void> {
+    const from = Object.fromEntries(F5_TRACE.map((command) => [command, s.ipc.finished(command).length]));
+    await press(s.c, "F5");
     // A read can end during the F5 read with `recoveryState` `refreshing` or `reconciling`. R then refuses with that block reason, so the wait also needs `SETTLED`.
-    await until<boolean>(c, what, `(${expression}) && ${SETTLED}`, (v) => v);
+    try {
+      await until<boolean>(s.c, what, `(${expression}) && ${SETTLED}`, (v) => v);
+    } catch (e) {
+      throw new Error(`${(e as Error).message} checks expression, settled: ${await facts(s.c, [expression, SETTLED])} after F5: ${await f5Trace(s, from)}`);
+    }
   }
   async function select(c: Cdp, path: string): Promise<void> {
     await focusOn(c, row(path), path);
@@ -673,7 +711,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         // Each restore starts from a state without the text row, so the wait for the row proves the new read.
         const restoreText = () => {
           writeFileSync(join(repo, RV_TEXT), rvText(true));
-          return refreshed(s.c, "the restored text file", `!!${row(RV_TEXT)}`);
+          return refreshed(s, "the restored text file", `!!${row(RV_TEXT)}`);
         };
         const series: Record<string, { busy: number[]; confirm: number[]; shown: number[] }> = {};
         const add = (kind: string, r: { busy: number; confirm: number; shown: number }) => {
@@ -699,7 +737,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             const binary = await revertRun(s, row(RV_BINARY), `!${row(RV_BINARY)} && !${heading}.startsWith(${js(RV_BINARY)})`, probe, undefined, `binary run ${run}`);
             if (counted("binary file", binary.reply, winRead(repo), binaryOld) && !probe && run > 0) add("binary file", binary);
             writeFileSync(join(repo, RV_BINARY), rvBinary(true));
-            await refreshed(s.c, "the restored binary file", `!!${row(RV_BINARY)}`);
+            await refreshed(s, "the restored binary file", `!!${row(RV_BINARY)}`);
           }
         }
         // Lines run after the other kinds: a restore gives the same patch text, and the view keeps a line selection of an equal patch (ComparisonView.tsx `lines`).
@@ -723,7 +761,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             }
             // The text row stays after a lines revert. The HEAD bytes remove it, so the restore wait stays definitive.
             writeFileSync(join(repo, RV_TEXT), rvText(false));
-            await refreshed(s.c, "the clean text file", `!${row(RV_TEXT)}`);
+            await refreshed(s, "the clean text file", `!${row(RV_TEXT)}`);
             await restoreText();
           }
         }
@@ -766,7 +804,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           if (counted("100 files", r.reply, winRead(repo), targets) && !probe && run > 0) ends.push(r.shown);
           applyRevertChanges(GIT!, FIXTURE_ROOT, repo, { both: true });
           // The run left 0 staged files, so 100 staged files prove the new read.
-          await refreshed(s.c, "the restored 100 files", `${count("Staged")} === ${js(fmt.format(RV_BOTH))}`);
+          await refreshed(s, "the restored 100 files", `${count("Staged")} === ${js(fmt.format(RV_BOTH))}`);
         }
         expect(record("SC-007 Revert file of 100 files: the revert button to the end", ends, FILES_100_MS)).toBeLessThanOrEqual(FILES_100_MS);
       } finally {
@@ -826,7 +864,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             series.end.push(r.end);
           }
           applyRevertChanges(GIT!, FIXTURE_ROOT, repo, { small: true });
-          await refreshed(s.c, "the restored 1,000 files", `${count("Changes")} === ${js(n)}`);
+          await refreshed(s, "the restored 1,000 files", `${count("Changes")} === ${js(n)}`);
         }
         record("SC-007 Revert all unstaged changes of 1,000 files: the menu item to the busy state", series.busy);
         const m = { confirm: record("SC-007 Revert all unstaged changes of 1,000 files: the menu item to the confirmation", series.confirm, CONFIRM_1000_MS), end: record("SC-007 Revert all unstaged changes of 1,000 files on Windows: the revert button to the end", series.end, UNSTAGED_1000_MS) };
@@ -877,7 +915,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             if (run > 0) ends.push(r.end);
           }
           restore();
-          await refreshed(s.c, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
+          await refreshed(s, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
         }
         const limitEnd = record("SC-007 Revert all unstaged changes of 10,000 files: the revert button to the end", ends, LIMIT_END_MS);
         // Cancel after the first REVERT_PROGRESS line. A run that ends before the Cancel measures nothing and fails the case.
@@ -899,7 +937,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           if (reply.state !== "canceled") throw new Error(`the Cancel run gave ${reply.state}`);
           if (run > 0) cancels.push(stopped!);
           restore();
-          await refreshed(s.c, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
+          await refreshed(s, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
         }
         const cancel = record("SC-007 Cancel of a 10,000-file run: Cancel to the end", cancels, CANCEL_MS);
         // Run 0 is the first revert after the app start. It has the first-run bounds; runs 1 to RUNS have the later-run bounds. A W9 run leaves its series.
@@ -982,7 +1020,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
               grown.push({ run, growth: g.growth });
             }
             write(true);
-            await refreshed(s.c, "the restored 1 GiB file", `!!${row(path)}`);
+            await refreshed(s, "the restored 1 GiB file", `!!${row(path)}`);
           }
           const m = record("SC-007 Revert file of one 1 GiB binary file: the revert button to the end", ends, GIB_MS);
           console.log(`OBSERVATION ${TASK}: SC-007 1 GiB service growth: ${runsText(grown.map((x) => x.run))}, max ${mib(Math.max(...grown.map((x) => x.growth)))} MiB, budget ${mib(MEMORY_BYTES)} MiB`);
@@ -1045,7 +1083,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           const r = await revertAll(s, probe, LIMIT_RUN_MS);
           if (counted("WSL 1,000 unstaged files", r.reply, distroRead, smallTargets()) && !probe && run > 0) ends.push(r.end);
           toDistro(restoreRoot, "rv", linuxRepo);
-          await refreshed(s.c, "the restored 1,000 files", `${count("Changes")} === ${js(n)}`);
+          await refreshed(s, "the restored 1,000 files", `${count("Changes")} === ${js(n)}`);
         }
         expect(record("SC-007 Revert all unstaged changes of 1,000 files on WSL: the revert button to the end", ends, UNSTAGED_1000_WSL_MS)).toBeLessThanOrEqual(UNSTAGED_1000_WSL_MS);
       } finally {

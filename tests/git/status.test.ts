@@ -646,6 +646,48 @@ describe("F16 status bounds (contract §5)", () => {
     TIMEOUT_MS,
   );
 
+  // Contract §3 `readWorkspace` and data-model §2 `recoveryState`: a read that ends while a `refresh: true` read runs gives `refreshing`.
+  caseTest(
+    "T414",
+    'a check "changes" read that runs Git while a refresh: true read is held gives recoveryState refreshing, and the Refresh read then gives ready',
+    ["shell-double"],
+    async () => {
+      const service = await openService({ git: gitPath(), name: "t414-refreshing-check", watchHints: false });
+      try {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t414-refreshing-check"));
+        const { repositoryId } = await service.register(repo);
+        // Contract §8 "New candidates": the second full read makes the compared tuple.
+        await service.readWorkspace(repositoryId, { refresh: false, check: "full" });
+        const before = (await service.readWorkspace(repositoryId, { refresh: false, check: "full" })).result!;
+        // A new index file changes the tuple, so the change check runs Git.
+        put(repo, "keep.txt", "keep changed\n");
+        ownedGit(git, FIXTURE_ROOT, repo, ["add", "keep.txt"]);
+        const release = service.runner.pauseStdout(once(statusCall));
+        try {
+          const refresh = service.send("readWorkspace", { refresh: true, check: "full" }, { repositoryId });
+          await heldCall(service, await service.operationId(refresh), statusCall);
+          const check = await service.readWorkspace(repositoryId, { refresh: false, check: "changes" });
+          expect({ ...outcome(check), readKind: readKind(check.result!), recoveryState: check.result!.recoveryState, newer: check.result!.generation > before.generation }).toEqual({
+            state: "succeeded",
+            code: undefined,
+            readKind: "full",
+            recoveryState: "refreshing",
+            newer: true,
+          });
+          release();
+          const late = await service.response<WorkspaceResult>(refresh);
+          expect({ ...outcome(late), recoveryState: late.result!.recoveryState, older: late.result!.generation <= check.result!.generation }).toEqual({ state: "succeeded", code: undefined, recoveryState: "ready", older: true });
+        } finally {
+          release();
+        }
+      } finally {
+        await service.dispose();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
   // Contract §2 and §8: a late read that records nothing returns the first page of the snapshot that a newer read retained with an equal observation.
   caseTest(
     PAGING,

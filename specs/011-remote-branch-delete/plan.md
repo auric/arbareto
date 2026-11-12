@@ -380,7 +380,7 @@ Existing texts that this feature reuses unchanged:
 | X5 | dialog, list end | force-push list (`ForcePushConfirm.tsx:45-53`) | and 1 more commit / and {n} more commits |
 | X12 | local dialog, review runs | existing loading text | Loading… |
 | E1 | key text of X1 | `KEYS.delete` (`shortcuts.ts:182`) | Del |
-| E2 | outcome, `remote-rejected` or `remote-failure` | `OperationStatus.tsx` `REMOTE_REJECTED` | Rejected by the remote, then `: <reasonText>` (No `reasonText` or an empty one: no `: {reasonText}` tail.) |
+| E2 | outcome, `remote-rejected` or `remote-failure` | `OperationStatus.tsx` `REMOTE_REJECTED` | Rejected by the remote, then `: {reasonText}` (No `reasonText` or an empty one: no `: {reasonText}` tail.) |
 | E3 | outcome, failure | `OperationStatus.tsx`, `STEP_REMEDY_TEXT` and the command (`sync.ts:34`) | {name} did not complete: {code}. |
 | E4 | outcome, canceled | `OperationStatus.tsx:397` | {name} canceled. The remote can hold this push. Fetch to see the remote state. |
 | E5 | outcome, `rejected` without a stale fact (user decision 2026-11-11) | 003 plan D5 (T092), `OperationStatus.tsx` `pushRejected` | {name} did not complete: PUSH_REJECTED rejected: {reasonText} (No `reasonText` or an empty one: no `: {reasonText}` tail.) |

@@ -163,6 +163,16 @@ describe("force push with lease (FR-024, FR-025)", () => {
     expect(text(document.querySelector("footer")!)).toContain("Force push with lease did not complete: PUSH_REJECTED rejected: non-fast-forward");
   });
 
+  test("a lease rejection with an empty Git reason shows no reason", async () => {
+    const { double, dialog } = await confirm();
+    await click(button("Force push with lease", dialog));
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x205), state: "failed", code: "PUSH_REJECTED", result: { action: "force-push", push: { ...pushResult("rejected", true), reasonText: "" }, reason: "rejected" } });
+    await settle();
+    const footer = text(document.querySelector("footer")!);
+    expect(footer).toContain("Force push with lease did not complete: PUSH_REJECTED rejected");
+    expect(footer).not.toContain("PUSH_REJECTED rejected:");
+  });
+
   for (const [label, plan] of [
     ["no lease", { remotes: ["origin"], destination: DESTINATION }],
     ["no destination", { remotes: ["origin"], lease: LEASE }],

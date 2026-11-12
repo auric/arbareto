@@ -408,6 +408,7 @@ describe("run steps and outcomes (plan D6, D7, FR-008, FR-012, FR-013)", () => {
     ["a stale lease with an empty reason text gives X22 without a reason", ended("failed", { push: push("rejected", ""), reason: "stale-lease", remedy: X27 }, "PUSH_REJECTED"), "Git deleted nothing. origin/feature changed on origin since the last fetch. Fetch origin, then try again."],
     ["the gone recovery gives X23", ended("succeeded", { push: push("rejected", "stale info"), reason: "stale-lease", remoteGone: true }), "origin lists no branch feature. Arbareto deleted the remote-tracking branch origin/feature."],
     ["a [rejected] line with reason rejected gives the 003 push text, not E2", ended("failed", { push: push("rejected", "stale info"), reason: "rejected" }, "PUSH_REJECTED"), "Delete remote branch did not complete: PUSH_REJECTED rejected: stale info"],
+    ["a [rejected] line with reason rejected and an empty reason text gives E5 without a reason", ended("failed", { push: push("rejected", ""), reason: "rejected" }, "PUSH_REJECTED"), "Delete remote branch did not complete: PUSH_REJECTED rejected"],
     ["remote-rejected gives E2", ended("failed", { push: push("remote-rejected", "pre-receive hook declined"), reason: "remote-rejected" }, "PUSH_REJECTED"), "Rejected by the remote: pre-receive hook declined."],
     ["remote-rejected without a reason text gives E2 with its period", ended("failed", { push: push("remote-rejected"), reason: "remote-rejected" }, "PUSH_REJECTED"), "Rejected by the remote."],
     ["remote-rejected with an empty reason text gives E2 without a reason", ended("failed", { push: push("remote-rejected", ""), reason: "remote-rejected" }, "PUSH_REJECTED"), "Rejected by the remote."],
@@ -423,6 +424,11 @@ describe("run steps and outcomes (plan D6, D7, FR-008, FR-012, FR-013)", () => {
       expect(text(footer())).not.toContain("feature stays.");
     });
   }
+  test("remote only: E5 with an empty reason text has no reason tail", async () => {
+    const { run } = await confirmRemote();
+    await answer(run, ended("failed", { push: push("rejected", ""), reason: "rejected" }, "PUSH_REJECTED"));
+    expect(text(footer())).not.toContain("PUSH_REJECTED rejected:");
+  });
 
   const combined: [string, ReturnType<typeof ended>, string][] = [
     ["both deleted give X21", ended("succeeded", { push: push("deleted") }), "Deleted feature and the remote branch origin/feature."],

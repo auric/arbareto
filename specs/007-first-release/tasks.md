@@ -101,7 +101,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 
 **Goal**: A preview build shows "Preview" and the release links in About, refuses a dirty tree, carries Arbareto file properties in both executables, and names "Arbareto" in "Installed apps". Serves US1 and US4.
 
-**Independent Test**: `bun run package:preview:exes` and `bun run package:preview:bundle` on a clean tree give an installer. In Windows Sandbox, About shows `0.1.0`, `Preview`, and the commit; "Installed apps" shows "Arbareto".
+**Independent Test**: `bun run package:preview:exes` and `bun run package:preview:bundle` on a clean tree give an installer. In Windows Sandbox, About shows the version in `package.json`, `Preview`, and the commit; "Installed apps" shows "Arbareto".
 
 ### Tests (write first; they must fail)
 

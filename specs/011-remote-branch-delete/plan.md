@@ -232,7 +232,7 @@ Steps:
 | `deleted`; local writes done, or none | `intended-effects-confirmed`, or `differing-effects` when other refs or HEAD changed | `push.status` `deleted` | X20, or X21 when combined |
 | `deleted`; the fresh listing still holds the local ref after a failed local write or Cancel | `failed-with-effects` | `localNotDeleted: true` | X24 |
 | `deleted`; the local ref is gone, but the section removal failed, or Cancel stopped it | `failed-with-effects` | `push.status` `deleted`, no `localNotDeleted` | the 003 line "{name} did not complete and left effects: {code}" |
-| `rejected`; the D8 re-read shows a remote value other than `<expect>`, or a gone fact without `remoteGone` | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`; `remedy` X27 | X22, plus X25 when combined |
+| `rejected`; the D8 re-read shows a remote value other than `<expect>`, or a gone fact without `remoteGone` | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`, `reasonText` (display only); `remedy` X27 | X22, plus X25 when combined |
 | `rejected`; the D8 re-read equals `<expect>`, fails, or does not run (user decision 2026-11-11) | `no-effects`, failed, `PUSH_REJECTED` | `reason: rejected`, `reasonText` (display only), no `remedy` | E5, plus X25 when combined |
 | `rejected` and `remoteGone`; local writes done, or none | `intended-effects-confirmed` | `remoteGone: true` | X23, then X26 when combined |
 | `rejected` and `remoteGone`; the fresh listing still holds the local ref after a failed local write or Cancel | `failed-with-effects` | `remoteGone: true`, `localNotDeleted: true` | X23, then X25 |
@@ -359,7 +359,7 @@ New texts:
 | X19 | status bar step | Deleting the remote branch on {remote}… |
 | X20 | outcome | Deleted the remote branch {tracking}. |
 | X21 | outcome | Deleted {branch} and the remote branch {tracking}. |
-| X22 | outcome | {tracking} changed on {remote} since the last fetch, so Git deleted nothing. Fetch {remote}, then try again. |
+| X22 | outcome | Git deleted nothing: {reasonText}. {tracking} changed on {remote} since the last fetch. Fetch {remote}, then try again. (No `reasonText`: "Git deleted nothing.") |
 | X23 | outcome | {remote} lists no branch {name}. Arbareto deleted the remote-tracking branch {tracking}. |
 | X24 | outcome | Deleted the remote branch {tracking}. {branch} stays. |
 | X25 | outcome suffix | {branch} stays. |

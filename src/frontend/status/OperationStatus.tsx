@@ -406,7 +406,8 @@ function deleteOutcome(name: string, response: BridgeResponse, outcome: Outcome,
   if (push?.status === "deleted") return { lead: outcome.localNotDeleted || branch === null ? `Deleted the remote branch ${tracking}.${outcome.localNotDeleted ? stays : ""}` : `Deleted ${branch} and the remote branch ${tracking}.`, tail: "" };
   if (response.state === "unknown") return null;
   if (response.state === "canceled") return { lead: `${name} canceled. ${PUSH_CANCELED}${stays}`, tail: "" };
-  if (response.code === "PUSH_REJECTED" && push?.status === "rejected" && outcome.reason === "stale-lease") return { lead: `${tracking} changed on ${remote} since the last fetch, so Git deleted nothing. Fetch ${remote}, then try again.${stays}`, tail: "" };
+  // Send-pack sets `[rejected]` for a stale lease and for a remote without delete support, so X22 states no cause. `reasonText` is display only.
+  if (response.code === "PUSH_REJECTED" && push?.status === "rejected" && outcome.reason === "stale-lease") return { lead: `Git deleted nothing${push.reasonText === null ? "" : `: ${push.reasonText}`}. ${tracking} changed on ${remote} since the last fetch. Fetch ${remote}, then try again.${stays}`, tail: "" };
   // User decision 2026-11-11: a `[rejected]` delete without a stale fact takes the push text. E2 stays for the remote refusals.
   if (response.code === "PUSH_REJECTED" && push?.status === "rejected") {
     const line = pushRejected(name, outcome, push);

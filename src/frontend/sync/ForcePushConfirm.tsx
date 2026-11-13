@@ -14,7 +14,8 @@ import { shortId } from "../status/OperationStatus";
 // Feature 003 spec FR-024 and FR-025, plan.md D5, data-model §2 `binding.lease` and §3, and the approved "Push rejected" mockup.
 
 export type ForcePlan = {
-  destination: { remote: string; ref: string };
+  /** `url` is the redacted push URL (data-model §3). */
+  destination: { remote: string; ref: string; url: string };
   lease: { trackingRef: string; count: number; commits: { objectId: string; subject: string | null }[] };
 };
 
@@ -67,7 +68,8 @@ export function ForcePushConfirm({ plan, branch, onConfirm, onCancel, finalFocus
         <LeaseCommits lease={lease} />
         <p className="flex items-center gap-2">
           <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0 text-warning" />
-          {`Other people can lose work. The push stops if ${tracking} changed since the last fetch.`}
+          {/* Plan D5 "Warning text": Git runs no lease check over dumb HTTP (remote-curl.c `discover_refs`). */}
+          {`Other people can lose work. The push stops if ${tracking} changed since the last fetch.${destination.url.startsWith("http://") || destination.url.startsWith("https://") ? " Over a dumb HTTP server, Git cannot check this." : ""}`}
         </p>
         <div className="flex justify-end gap-2">
           <Button className="bg-removed text-surface hover:bg-removed/80" onClick={onConfirm}>

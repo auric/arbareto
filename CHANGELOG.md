@@ -19,6 +19,7 @@ A preview release for Windows 11 x64.
 - For an `http://` or `https://` push URL, the confirmations of a remote branch delete and of a force push add "Over a dumb HTTP server, Git cannot check this."
 - A `GIT_SMART_HTTP` value in your environment no longer reaches Git. An HTTP push thus keeps the lease check.
 - The History message filter shows its key in a tooltip: "Filter commit messages (Ctrl+F)".
+- In a repository with many submodules, the Commit view shows the local-edit marks of the first submodules sooner. Arbareto reads the submodules in groups of 16 and shows the marks of each group when it arrives. The marks of a submodule no longer wait for all other submodules.
 
 ## [0.1.1] - 2026-11-13
 

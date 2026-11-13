@@ -43,10 +43,10 @@ A developer right-clicks a remote-tracking branch in the References sidebar or a
 1. **Given** a remote-tracking row `origin/feature`. **When** I open its menu. **Then** group 2 shows X1 after "Add worktree for this branch…", in the danger style, with the key text "Del".
 2. **Given** a History remote label `origin/feature`. **When** I open its menu. **Then** the same menu with X1 opens.
 3. **Given** a focused remote-tracking row. **When** I press Del. **Then** the review starts, and the confirmation opens with Cancel focused.
-4. **Given** the confirmation for a branch with 3 commits that no other ref here holds. **When** it opens. **Then** it shows X2, X3, X4, the 3 commits, and X7.
+4. **Given** the confirmation for a branch with 3 commits that no other ref here holds. **When** it opens. **Then** it shows X2, X3, X4, the 3 commits, and X7 (X7h for an `http://` or `https://` push URL, FR-006).
 5. **Given** that confirmation. **When** I press Enter on Cancel or press Escape. **Then** the dialog closes, and nothing changes.
 6. **Given** that confirmation. **When** I select X8. **Then** Git deletes `refs/heads/feature` on the remote and `refs/remotes/origin/feature` here. The status bar states X20.
-7. **Given** another clone pushed a commit to `feature` after my last fetch. **When** I confirm. **Then** Git deletes nothing, the remote keeps every commit, and the status bar states X22.
+7. **Given** another clone pushed a commit to `feature` after my last fetch, and the remote is no dumb HTTP server (FR-007). **When** I confirm. **Then** Git deletes nothing, the remote keeps every commit, and the status bar states X22.
 8. **Given** `refs/remotes/origin/HEAD` names `origin/main`. **When** I select X1 on `origin/main`. **Then** the review refuses with X13, and no network process starts.
 9. **Given** no `refs/remotes/origin/HEAD`. **When** I select X1 on any `origin` branch. **Then** the review refuses with X14, and no network process starts.
 
@@ -65,7 +65,7 @@ A developer deletes a local branch from the 004 Delete dialog. The developer che
 1. **Given** a local branch `keep` with the upstream `origin/keep`. **When** I open Delete. **Then** the 004 dialog shows X9, unchecked, and Cancel has the first focus.
 2. **Given** a local branch with no upstream, or an upstream that is a local branch. **When** I open Delete. **Then** the dialog shows no check box.
 3. **Given** the dialog. **When** I check X9. **Then** X12 shows while the review runs, and Delete is unavailable.
-4. **Given** the review ends with a plan. **When** the plan shows. **Then** X10 or X11, the commit list, the reflog line, and X7 show.
+4. **Given** the review ends with a plan. **When** the plan shows. **Then** X10 or X11, the commit list, the reflog line, and X7 show (X7h for an `http://` or `https://` push URL, FR-006).
 5. **Given** the box is checked and the review refuses. **When** the refusal shows. **Then** its text shows under the box as an alert, and Delete stays unavailable.
 6. **Given** the box is checked. **When** I uncheck it. **Then** the 004 plan shows again, and Delete deletes only the local branch.
 7. **Given** the box is checked with a plan. **When** I select Delete. **Then** Git deletes the remote branch first, then the local branch and its `branch.<name>` section. The status bar states X21.
@@ -86,8 +86,8 @@ Another clone deleted the remote branch. Fetch does not prune by default, so the
 **Acceptance Scenarios**:
 
 1. **Given** `origin/gone1` here and no `refs/heads/gone1` on the remote. **When** I confirm X8. **Then** the lease delete refuses, the check finds no branch, Arbareto removes `refs/remotes/origin/gone1`, and the status bar states X23.
-2. **Given** the remote branch moved after the last fetch. **When** I confirm. **Then** the check finds the branch, nothing changes, and the status bar states X22.
-3. **Given** the remote has a `pushurl` that differs from its fetch URL. **When** the lease refuses. **Then** Arbareto does not check the remote. The status bar states "Delete remote branch did not complete: PUSH_REJECTED rejected: <reasonText>" without a remedy (user decision 2026-11-11). With no `reasonText` or an empty one, the text has no ": <reasonText>" tail (plan D13 E5). A combined delete appends the X25 text ". <branch> stays."
+2. **Given** the remote branch moved after the last fetch, and the remote is no dumb HTTP server (FR-007). **When** I confirm. **Then** the check finds the branch, nothing changes, and the status bar states X22.
+3. **Given** the remote has a `pushurl` that differs from its fetch URL. **When** the lease refuses. **Then** Arbareto does not check the remote. The status bar states "Delete remote branch did not complete: PUSH_REJECTED rejected: {reasonText}" without a remedy (user decision 2026-11-11). With no `reasonText` or an empty one, the text has no ": {reasonText}" tail (plan D13 E5). A combined delete appends the X25 text ". {branch} stays."
 4. **Given** the combined delete and a gone remote branch. **When** I confirm. **Then** Arbareto removes the stale ref and deletes the local branch. The status bar states X23, then X26.
 
 ---
@@ -140,7 +140,7 @@ The no-heuristics rule applies to every requirement. Every decision comes from o
 
 - Feature 001 provides the operation registry with Cancel and the outcome reconciliation (FR-023). It also provides the mutation block (FR-015, FR-016), the trust approval, the stall notice (FR-051), and the WSL rules.
 - Feature 003 provides the sync action frame, the push step, and the `sync` trust class. It also provides Pageant, the remedies, the connect target, and the force-push commit list.
-- Feature 004 provides the References sidebar and the branch menu on rows and History labels (FR-014). It also provides the local Delete dialog (FR-017 to FR-019).
+- Feature 004 provides the References sidebar and the branch menu on rows and History labels (FR-014). It also provides the local Delete dialog (004 FR-017 to FR-019).
 - Feature 006 provides the WSL route.
 - Feature 008 provides the alert dialog pattern of a destructive confirmation (FR-008, FR-047).
 - Feature 010 changes the same files. The 011 code starts on `main` after 010 merges (plan R7).
@@ -176,7 +176,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Confirmation and run
 
-- **FR-006**: The confirmation MUST be a modal alert dialog. It MUST name the remote branch. It MUST list the removed commits with their count and subjects, up to 100. It MUST state that other people can lose work, and that the delete stops on a remote change. Cancel MUST have the first focus. The dialog MUST NOT have a default button.
+- **FR-006**: The confirmation MUST be a modal alert dialog. It MUST name the remote branch. It MUST list the removed commits with their count and subjects, up to 100. It MUST state that other people can lose work, and that the delete stops on a remote change. For a push URL that starts with `http://` or `https://`, it MUST also state the dumb HTTP limit of FR-007. This is a user decision of 2026-11-13. Cancel MUST have the first focus. The dialog MUST NOT have a default button.
 - **FR-007**: The delete MUST bind to the shown remote-tracking object ID through the Git lease `--force-with-lease=<dst>:<expect>`. Git MUST refuse when the remote branch differs. The application MUST NOT offer a delete without a lease. Limit (user decision 2026-11-13): Git checks the lease over its own transports and smart HTTP. Over dumb HTTP, Git runs no lease check. Arbareto cannot detect a dumb HTTP server before the push (research R8). So an `http` or `https` delete can remove a moved remote branch. FR-017 refuses the other transports that can drop the lease.
 - **FR-008**: The outcome MUST come from the push porcelain line, the exit code, and the listings before and after. A stale lease line names its source `(delete):<dst>`, and the parse MUST accept it. This alias selects the line only and MUST NOT decide the reason (FR-012). Network, credential, and hook failures MUST share one outcome with the terminal remedy (003 FR-006, 001 FR-051).
 - **FR-009**: The remote-only delete MUST change no Git configuration. Local branches that track the deleted branch MUST keep their upstream setting.
@@ -196,7 +196,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-014**: Hooks and transport programs MUST follow 003 FR-009 and run only after trust approval of the `sync` class.
 - **FR-015**: WSL repositories MUST give the same results through the Git of the distro (feature 006).
 - **FR-016**: Every visible text MUST come from plan D13. Keyboard access and visible focus MUST hold for every new control. The controls MUST work in forced colors, both themes, both densities, and at 150% and 225% text scale.
-- **FR-017**: The review MUST refuse with `remote-helper` when the push runs through a remote helper (user decision 2026-11-13). The rule uses the one push URL of `remote get-url --push`, which has the `insteadOf` and `pushInsteadOf` rules applied (FR-002). It refuses a `<transport>::<address>` URL and a `<scheme>://` URL that Git gives to `git remote-<scheme>`. It also refuses an `ftp://` or `ftps://` URL and a `remote.<R>.vcs` entry of the remote R. A local path, an scp form, the `file`, `git`, and `ssh` URLs, and `http` and `https` URLs pass (research R8).
+- **FR-017**: The review MUST refuse with `remote-helper` when the push runs through a remote helper (user decision 2026-11-13). The rule uses the one push URL of `remote get-url --push`, which has the `insteadOf` and `pushInsteadOf` rules applied (FR-002). It refuses each URL for which `urlHelper` names a helper. One such URL is a `<transport>::<address>` URL. The other is a `<scheme>://` URL outside two lists. The first list holds Git's own transports `file://`, `git://`, `ssh://`, `git+ssh://`, and `ssh+git://`. The second list holds Git's own curl helpers `http`, `https`, `ftp`, and `ftps`. It also refuses an `ftp://` or `ftps://` URL and a `remote.<R>.vcs` entry of the remote R. A local path, an scp form, the `file`, `git`, and `ssh` URLs, and `http` and `https` URLs pass (research R8). Scheme case counts: an uppercase scheme such as `HTTPS://` is refused. The `urlHelper` source comment cites Git `starts_with` as case-sensitive. So Git also runs `git remote-HTTPS` for it. This batch did not read the Git source again. Either way, a refusal is the safe direction.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -211,7 +211,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 - **SC-001**: Each remote-only fixture matches the same Git lease delete on a copy. The check compares local refs, remote refs, HEAD, and config bytes.
 - **SC-002**: Some fixtures move the remote branch after the last fetch. In each of them, the remote keeps every commit, and no local ref changes.
-- **SC-003**: Each `default-branch` and `default-unknown` refusal starts no network process.
+- **SC-003**: Each `default-branch`, `default-unknown`, and `remote-helper` refusal starts no network process.
 - **SC-004**: Each combined fixture matches the same Git commands on a copy. Each partial-failure fixture reports the exact state.
 - **SC-005**: No credential shows in any display, diagnostic, log, or command (003 SC-005).
 - **SC-006**: The configuration files stay byte-identical. The only exception is the removed `branch.<name>` section of a combined delete.

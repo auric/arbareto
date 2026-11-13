@@ -133,9 +133,9 @@ Each step writes its tests first.
 ### D2 Remote confirmation
 
 - An alert dialog (Base UI `AlertDialog`, the 008 `RevertConfirm` pattern). Cancel has the first focus. No button is the default, so Enter alone never deletes.
-- Content: X2, X3, then X4 with the commit list and X5, or X6. Then X7 with the warning icon. Buttons: X8 (danger) and Cancel.
+- Content: X2, X3, then X4 with the commit list and X5, or X6. Then X7 or X7h (D13) with the warning icon. Buttons: X8 (danger) and Cancel.
 - The commit list shows up to `SYNC_LEASE_COMMITS` (100) commits, then X5. Its accessible name is X30.
-- The remote confirmation keeps this stronger look: the alert dialog, the warning icon, and X7. The local 004 dialog keeps its look (D3).
+- The remote confirmation keeps this stronger look: the alert dialog, the warning icon, and X7 or X7h. The local 004 dialog keeps its look (D3).
 - In forced colors, the danger red goes. X2 and X8 state the danger in text.
 - The list reuses the force-push list (`ForcePushConfirm.tsx:45-53`), exported as `LeaseCommits`: short ID and subject, `max-h-60` with its own scrollbar.
 - A name that does not fit keeps its full text in the tooltip and the accessible name (arbareto-ux rule).
@@ -145,7 +145,7 @@ Each step writes its tests first.
 - The dialog stays the 004 `Dialog` with Cancel first (004 FR-018).
 - Unchecked: the dialog shows the 004 plan (`T.onlyHere` or `T.noneLost`, and the reflog line). Delete runs the workbench token, as today.
 - Checking starts a sync review `{ action: "delete-remote-branch", ref: entry.upstream, local: entry.ref }`. While it runs, the dialog shows X12 under the check box, and Delete is unavailable.
-- Checked and reviewed: X10 or X11 shows. The list and X5 show when the count is above 0. The reflog line for the local tip follows (`T.reflogKeeps` or `T.noReflog` from `plan.local.reflogKeeps`). Then X7 shows. Delete runs the sync token.
+- Checked and reviewed: X10 or X11 shows. The list and X5 show when the count is above 0. The reflog line for the local tip follows (`T.reflogKeeps` or `T.noReflog` from `plan.local.reflogKeeps`). Then X7 or X7h shows (D13). Delete runs the sync token.
 - Checked and refused: the refusal text shows under the check box with `role="alert"`. Delete is unavailable while the box is checked.
 - Unavailable Delete: the button stays visible. It is disabled and stays focusable. The reason shows under the check box. The dialog never hides the button.
 - The commit list of the checked plan has the accessible name X30.
@@ -276,7 +276,7 @@ Order: remote first, then local.
 - Removal: `update-ref --no-deref -d <ref> <expect>` as one more write through `writeUpstream`. Exit 0 marks `remoteGone`. A nonzero exit keeps the stale outcome. The expect value makes Git refuse a ref that changed after the review.
 - No-delete fact: a remote without the delete-refs capability gives `[rejected] (remote does not support deleting refs)`, and this status can replace a stale lease. The re-read still runs. See research R3 and U2.
 - A different `pushurl` skips the check, because the fetch URL could name another repository than the push URL. The reason is then `rejected`, with E5 and no remedy.
-- Lease gap (user decision 2026-11-13, T027 option A, research R8): a remote helper can ignore the lease, and a dumb HTTP push drops it. Then Git can delete a moved remote branch, and no re-read runs, because the push status is not `rejected`. The review refuses a helper push before the confirmation: `SYNC_UNAVAILABLE` with reason `remote-helper`, text X31 (D4 read 8, spec FR-017). The rule refuses a `urlHelper` URL, an `ftp://` or `ftps://` URL, and a `remote.<R>.vcs` entry. `http` and `https` stay allowed. Git sends no fact before the push that shows a dumb HTTP server, so that case stays a gap (spec FR-007, R14).
+- Lease gap (user decision 2026-11-13, T027 option A, research R8): a remote helper can ignore the lease, and a dumb HTTP push drops it. Then Git can delete a moved remote branch, and no re-read runs, because the push status is not `rejected`. The review refuses a helper push before the confirmation: `SYNC_UNAVAILABLE` with reason `remote-helper`, text X31 (D4 read 8, spec FR-017). The rule refuses a `urlHelper` URL, an `ftp://` or `ftps://` URL, and a `remote.<R>.vcs` entry. `http` and `https` stay allowed. Git sends no fact before the push that shows a dumb HTTP server, so that case stays a gap (spec FR-007, R14). For an `http://` or `https://` push URL, the confirmation states this limit with X7h (spec FR-006, D13).
 
 ### D9 Sync action, trust, and shell
 
@@ -349,6 +349,7 @@ New texts:
 | X4 | dialog, count above 0 | {n} commits are on no other branch, tag, or remote-tracking branch here: (n = 1: "1 commit is on no other branch, tag, or remote-tracking branch here:") |
 | X6 | dialog, count 0 | Another branch, tag, or remote-tracking branch here holds every commit of {tracking}. |
 | X7 | dialog warning | Other people can lose work. The delete stops if {tracking} changed since the last fetch. |
+| X7h | dialog warning, `http://` or `https://` push URL (user decision 2026-11-13, spec FR-006) | Other people can lose work. The delete stops if {tracking} changed since the last fetch. Over a dumb HTTP server, Git cannot check this. |
 | X8 | danger button | Delete remote branch |
 | X9 | check box | Also delete the remote branch {tracking} |
 | X10 | local dialog, checked, count above 0 | {branch} and {tracking} have {n} commits that no other branch, tag, or remote-tracking branch has. The delete loses them. (n = 1: "commit") |
@@ -374,6 +375,7 @@ New texts:
 | X31 | refusal, `remote-helper` (user decision 2026-11-13) | The remote of {tracking} pushes through a remote helper. Git cannot show that a remote helper keeps the lease, so Arbareto does not delete this branch. |
 
 - X24 equals X20 followed by X25.
+- X7h replaces X7 in the remote confirmation (D2) and in the checked local dialog (D3). It shows when `plan.destination.url` starts with `http://` or `https://`. The review needs no new field. `url` is the redacted push URL of D4 read 8. `redactUrlUserInfo` changes only the text after `://`, so the scheme stays exact. The test uses the exact lowercase prefixes of remote-curl.c `discover_refs` (research R8). An uppercase scheme never reaches the confirmation, because `urlHelper` refuses it (spec FR-017).
 - A status-bar line that does not fit keeps its full text in a tooltip and in its accessible name (arbareto-ux rule).
 
 Existing texts that this feature reuses unchanged:
@@ -436,7 +438,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
   - An approved pre-push hook commits on the local branch during the run. The result has `localNotDeleted`, and the local ref keeps the new commit.
   - Cancel between the steps. The combined count of P14.
 - T012 (gone recovery): another clone deleted the remote branch (gone). The branch moved (no removal). A `pushurl` differs (no check). The remote holds `refs/heads/x/refs/heads/<name>` but not `refs/heads/<name>` (the exact parse gives gone). The combined form (X23 then X26).
-- T027 (v0.1.2, lease gap): the `remote-helper` refusal cases and pass cases of the task, with no network process. Rewrites through `insteadOf` and `pushInsteadOf` cover the URL that Git reports.
+- T027 (v0.1.2, lease gap): the `remote-helper` refusal cases and pass cases of the task, with no network process. Rewrites through `insteadOf` and `pushInsteadOf` cover the URL that Git reports. DOM cases show X7h for `http://` and `https://` push URLs and X7 for the others, in both dialogs.
 - T030 (v0.1.2, Cancel guard): the runner double holds the push exit reply. A Cancel before the release must start no `ls-remote`.
 - A test that asserts a refusal asserts its code and reason, never a message text (spec SC-011).
 - Every Git test uses an owned `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM=1`. Hook fixtures write one log line per event. A test asserts the event set after approval and an empty log before it.

@@ -176,7 +176,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 ## 16. Submodule work state (`readSubmoduleWork` result, 2026-10-31, pages T114)
 
-- Binding: `snapshotId` of the `readWorkspace` result that it extends, and the `page` of the request. A newer snapshot drops it.
+- Binding: `snapshotId` of the `readWorkspace` result that it extends, and the `page` of the request. A result that ends after a newer snapshot arrived still shows its entries, as older entries. They stay until a page of a newer cycle replaces them, or until the end of that cycle drops them. This is a user decision of 2026-11-13 (plan D19 "Rows across snapshots").
 - `entries`: at most 16 (`SUBMODULE_WORK_PAGE`), the positions of the page (contract Î”3 "Pages"). All pages of one snapshot hold at most 256 positions. First, one entry per gitlink of the index, in index order. Then one entry per unlisted moved gitlink. Each holds the literal path bytes, the display path, and one state:
   - `not-initialized`: plan D11 check 4 or 5 failed. No submodule process ran after it.
   - `not-located`: the same failure for a moved gitlink (plan D20 rule 2). An unlisted moved gitlink also gets this state. It has no stage-0 gitlink entry in the snapshot index (check 3). Check 3 maps to `not-located` on purpose (orchestrator decision 2026-11-04). Then the status and the index of one snapshot disagree. Such a snapshot refuses the same way, and the next refresh reads again.

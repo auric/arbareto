@@ -31,7 +31,7 @@
 
 ### Session 2026-11-13
 
-- Q: How does a text box show its keyboard shortcut? The 001 FR-005 rule names only buttons and menu items. → A: The user said: "do everything with your own recommendations". The reviewer default follows the house form of the Filter files box (004) and the Find a setting box: the house Tooltip on the box names the box and the key, as in "Filter commit messages (Ctrl+F)", and the box carries `aria-keyshortcuts`. FR-031 encodes this. T065 builds it in v0.1.2.
+- Q: How does a text box show its keyboard shortcut? The 001 FR-005 rule names only buttons and menu items. → A: User decision 2026-11-13: the user asked for the orchestrator's recommendations ("do everything with your own recommendations"). The decision follows the house form of the Filter files box (004) and the Find a setting box: the house Tooltip on the box names the box and the key, as in "Filter commit messages (Ctrl+F)", and the box carries `aria-keyshortcuts`. FR-031 encodes this. T065 builds it in v0.1.2.
 
 ## User Scenarios & Testing *(mandatory)*
 

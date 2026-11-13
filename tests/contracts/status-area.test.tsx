@@ -475,6 +475,22 @@ describe("live-node counts", () => {
     expect(text(second)).toBe(REFUSAL);
   });
 
+  test("T174: the status bar message span carries select-text while an operation runs and at its outcome", () => {
+    const op = running();
+    for (const markup of [html({ operation: op }), html({ operation: respond(op, "succeeded", { commitOid: OID, lingeringDescendants: 0 }) })]) {
+      const message = visible(markup).querySelector('[role="status"][tabindex="-1"]')!;
+      expect(text(message)).not.toBe("");
+      expect(message.getAttribute("class")?.split(/\s+/)).toContain("select-text");
+    }
+  });
+
+  test("T174: the refusal span carries select-text while it shows a refusal", () => {
+    const op = respond(running({ kind: "applyHunk", direction: "stage" }), "succeeded", { lingeringDescendants: 0 });
+    const refusal = [...visible(html({ operation: op, refusal: REFUSAL })).querySelectorAll('[role="status"]')].find((e) => !e.hasAttribute("tabindex"))!;
+    expect(text(refusal)).toBe(REFUSAL);
+    expect(refusal.getAttribute("class")?.split(/\s+/)).toContain("select-text");
+  });
+
   test("the hunk and file outcomes read Hunk staged, Hunk unstaged, File staged, and File unstaged", () => {
     for (const [kind, direction, expected] of [
       ["applyHunk", "stage", "Hunk staged"],

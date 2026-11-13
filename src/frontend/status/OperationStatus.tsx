@@ -758,14 +758,14 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
         )}
         {/* Feature 011 plan.md D13: a cut line keeps its full text in the tooltip and in its accessible name. */}
         <TextTooltip text={fullText} disabled={!truncated}>
-          <span ref={textRef} role="status" tabIndex={-1} aria-label={truncated ? fullText : undefined} className={cn("min-w-0 flex-1 truncate", refusal !== null && !running && "sr-only")}>
+          <span ref={textRef} role="status" tabIndex={-1} aria-label={truncated ? fullText : undefined} className={cn("min-w-0 flex-1 truncate select-text", refusal !== null && !running && "sr-only")}>
             {/* A line with a code is one added element, so the outcome stays one live-node change. */}
             <span>{line === null ? null : line.code === undefined ? plain(line) : <span>{lineNode(line)}</span>}</span>
             {stalled ? <span> {STALL_SENTENCE}</span> : null}
           </span>
         </TextTooltip>
         {percent === undefined ? null : <span className="shrink-0 tabular-nums">{percent}%</span>}
-        <span role="status" className="min-w-0 flex-1 truncate">
+        <span role="status" className="min-w-0 flex-1 truncate select-text">
           {refusal === null ? null : (
             <span className="inline-flex items-center gap-1">
               <WarningIcon />

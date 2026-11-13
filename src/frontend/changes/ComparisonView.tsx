@@ -76,7 +76,7 @@ export function ComparisonHeading({ path, scope, sides, controls }: { path: stri
       <h2
         ref={heading}
         aria-label={[path, scope, sides].filter(Boolean).join(", ")}
-        className="relative flex min-w-0 flex-1 basis-[120px] items-baseline gap-2 overflow-hidden whitespace-nowrap"
+        className="relative flex min-w-0 flex-1 basis-[120px] items-baseline gap-2 overflow-hidden whitespace-nowrap select-text"
         style={{ height: "var(--h-pane-heading)", lineHeight: "var(--h-pane-heading)" }}
       >
         <span className="flex min-w-0 font-semibold">
@@ -91,7 +91,7 @@ export function ComparisonHeading({ path, scope, sides, controls }: { path: stri
             {text[name]}
           </span>
         ))}
-        <span data-part="ellipsis" aria-hidden="true" className="invisible absolute">
+        <span data-part="ellipsis" aria-hidden="true" className="invisible absolute select-none">
           …
         </span>
       </h2>

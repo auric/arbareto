@@ -82,7 +82,7 @@ function RecoveryRow({ recovery }: { recovery: RecoveryStatement }) {
       <span className="flex items-center" style={{ minHeight: "1lh" }}>
         <WarningIcon />
       </span>
-      <div className="min-w-0">
+      <div className="min-w-0 select-text">
         <p>{recoverySentences(recovery).join(" ")}</p>
         {recovery.submoduleResults?.map((row) => (
           <p key={row.rowId}>{`${row.path}: ${SUBMODULE_STATE[row.state](row)}`}</p>
@@ -157,7 +157,7 @@ export function NoticeBand({ operationState, conflicted, submoduleRow, recovery,
       <h2 id={headingId} tabIndex={-1} className="shrink-0 font-semibold" style={{ lineHeight: "var(--h-band-row)" }}>
         Notices
       </h2>
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col select-text">
         {first === null ? null : (
           <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
             <WarningIcon />

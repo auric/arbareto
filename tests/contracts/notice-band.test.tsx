@@ -200,6 +200,19 @@ describe("recovery row", () => {
     expect(band({ operationState: "normal", conflicted: 0, recovery: { outcome: "none" } })).not.toContain("<button");
     expect(plain(band({ operationState: "normal", conflicted: 0, recovery: { outcome: "none" } }))).toContain("Notices");
   });
+
+  test("T174: the text column of the band and of the recovery row carry select-text, so every row text is inside", () => {
+    const host = document.createElement("div");
+    host.innerHTML = band({ operationState: "unknown", conflicted: 1, submoduleRow: SUBMODULE_ROW, recovery: { outcome: "none", foreign: ["a.lock"], foreignTotal: 2 } });
+    const section = host.querySelector("section")!;
+    const column = section.querySelector(":scope > div")!;
+    expect(column.classList.contains("select-text")).toBe(true);
+    const recoveryText = [...column.querySelectorAll("p")].find((p) => (p.textContent ?? "").includes(NONE))!.parentElement!;
+    expect(recoveryText.classList.contains("select-text")).toBe(true);
+    const texts = [...column.querySelectorAll("p, span, code")];
+    expect(texts.length).toBeGreaterThan(4);
+    for (const element of texts) expect(element.closest(".select-text")).not.toBeNull();
+  });
 });
 
 describe("recovery row lifetime in the workbench", () => {
@@ -333,6 +346,14 @@ describe("Resolve conflicts in the conflict row (004 FR-102)", () => {
     await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 30))));
     return document.querySelector('[data-slot="tooltip-content"]')?.textContent ?? null;
   };
+
+  test("T174: the action buttons of the conflict row carry select-none", async () => {
+    const view = await row({ operationState: "rebasing", conflicted: 1 });
+    const all = [...view.host.querySelectorAll("button")];
+    expect(all.length).toBe(3);
+    for (const b of all) expect(b.classList.contains("select-none")).toBe(true);
+    await view.unmount();
+  });
 
   for (const operationState of ["merging", "rebasing"] as const) {
     for (const conflicted of [1, 2]) {

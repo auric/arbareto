@@ -121,6 +121,13 @@ describe("heading and filter field (004 plan.md:528, Main board, T075)", () => {
     const loading = await sidebar({ refs: null });
     expect(loading.host.querySelector('[data-slot="references-count"]')).toBeNull();
   });
+
+  test("T174: a ref row is not selectable: no select-text on the row or on an ancestor", async () => {
+    const { host } = await sidebar();
+    const rows = items(host);
+    expect(rows.length).toBeGreaterThan(2);
+    for (const row of rows) expect(row.closest(".select-text")).toBeNull();
+  });
 });
 
 describe("groups and folders", () => {

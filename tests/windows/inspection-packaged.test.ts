@@ -779,6 +779,14 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
     await until<boolean>(c, "the focus on Open submodule", `document.activeElement === (${button})`, (v) => v);
   }
 
+  // T174, 004 plan.md D15 "Text selection": the computed `user-select` of the preview texts and of Open submodule.
+  const userSelects = (region: string) => `(() => {
+    const style = (e) => (e ? getComputedStyle(e).userSelect : null);
+    const r = ${region};
+    return { code: style(r.querySelector('dd code')), subject: style(r.querySelector('li .truncate')), button: style([...r.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Open submodule')) };
+  })()`;
+  const SELECTABLE = { code: "text", subject: "text", button: "none" };
+
   async function previewContrast(c: Cdp, region: string, extra: [string, string][]): Promise<void> {
     const value = (term: string) => `[...(${region}).querySelectorAll('dt')].find((dt) => dt.textContent === ${js(term)})`;
     for (const scheme of ["dark", "light", "forced"] as const) {
@@ -826,6 +834,7 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
           work: workText(f.marks.solo!),
           lists: [{ heading: "New commits", items: [{ id: short(f.two.solo), subject: "t111 solo two" }] }],
         });
+        expect(await s.c.evaluate(userSelects(region))).toEqual(SELECTABLE);
         // Plan D19 "Row accessible name". `find` fails unless a UIA element has that exact Name.
         const soloName = ["solo, submodule, modified", "new commits", ...f.marks.solo!].join(", ");
         const midName = ["mid, submodule, modified", ...f.marks.mid!].join(", ");
@@ -898,6 +907,7 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
           work: null,
           lists: [{ heading: "New commits", items: [{ id: short(f.one.solo), subject: "t111 solo one" }] }],
         });
+        expect(await s.c.evaluate(userSelects(region))).toEqual(SELECTABLE);
         for (const [name, type] of [[soloName, ControlType.TreeItem], [midName, ControlType.TreeItem], ["Submodule solo", undefined], ["Open submodule", ControlType.Button]] as const) {
           await uia(s.app.pid, name, type, () => {});
         }

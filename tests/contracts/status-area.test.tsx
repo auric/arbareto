@@ -120,6 +120,18 @@ async function mount(fields: Partial<Fields> = {}, stallRemedy?: unknown) {
 
 const text = (element: Element | null | undefined) => (element?.textContent ?? "").replace(/\s+/g, " ").trim();
 const buttons = (label: string) => [...document.querySelectorAll("button")].filter((b) => text(b) === label);
+/** 004 plan D15 "Text selection": each part sits in an element inside the select-text content block of the area. */
+function expectSelectableContent(parts: string[]) {
+  const content = area()!.querySelector<HTMLElement>('[tabindex="0"]')!;
+  expect(content.classList.contains("select-text")).toBe(true);
+  for (const part of parts) {
+    const holder = [...content.querySelectorAll("p, code, pre, span")].find((e) => (e.textContent ?? "").includes(part));
+    expect(holder).toBeDefined();
+    expect(holder!.closest(".select-none")).toBeNull();
+  }
+  expect(buttons("Copy command").length).toBeGreaterThan(0);
+  for (const b of [...area()!.querySelectorAll("button")]) expect(b.classList.contains("select-none")).toBe(true);
+}
 const button = (label: string) => {
   const found = buttons(label);
   expect(found).toHaveLength(1);
@@ -289,6 +301,11 @@ describe("stall notice", () => {
     expect(buttons("Copy command")).toHaveLength(1);
     expect(area()!.querySelector("svg")).not.toBeNull();
     expect(buttons("Cancel")).toHaveLength(1);
+  });
+
+  test("T174: the stall notice texts and the command are inside the select-text content block; Copy command is select-none", async () => {
+    await stalled();
+    expectSelectableContent([STALL_NOTICE, STALL_REMEDY.command, STALL_REMEDY.text]);
   });
 
   test("without a command, only the texts show", async () => {
@@ -573,6 +590,13 @@ describe("commit outcomes in the area", () => {
       expect(document.activeElement).toBe(double("history-row"));
     });
   }
+
+  test("T174: the outcome message, the output tail, the remedy text, and the remedy command are inside the select-text content block; Copy command is select-none", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: respond(op, "failed", { outputTail: TAIL, remedy: HOOK_REMEDY, lingeringDescendants: 0 }, "HOOK_FAILED") });
+    expectSelectableContent([TAIL.split("\n")[0]!, HOOK_REMEDY.text, HOOK_REMEDY.command, "HOOK_FAILED"]);
+  });
 
   test("a Git-reported lock failure shows each observed lock path with Copy path", async () => {
     const op = running();

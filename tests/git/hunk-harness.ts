@@ -8,6 +8,7 @@ import { expect } from "bun:test";
 import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Handshake } from "../../src/contracts/channel";
+import { ReadSubmoduleWorkResult } from "../../src/contracts/envelope";
 import { printOrigin } from "../origin";
 import type { CallMatch } from "./bun-runner";
 import { FIXTURE_ROOT, fixtureDir, ownedGit, type OwnedGitOptions } from "./fixture-root";
@@ -72,6 +73,20 @@ export async function readOk(service: Service, repositoryId: string): Promise<Wo
   const read = await service.readWorkspace(repositoryId);
   expect(outcome(read)).toEqual(SUCCEEDED);
   return read.result!;
+}
+
+// Feature 005 contract Δ3 "Pages": the `readSubmoduleWork` pages of `read` from page 0 by `next`. `work` joins them in page order (data-model §16 "Join").
+export async function workPages<W extends { entries: unknown[]; extraRows: unknown[]; next: number | null }>(service: Service, repositoryId: string, read: WorkspaceResult, timeoutMs?: number): Promise<{ pages: W[]; responses: ServiceResponse<W>[]; work: W }> {
+  const responses: ServiceResponse<W>[] = [];
+  for (let page: number | null = 0; page !== null; page = responses.at(-1)!.result!.next) {
+    const response = await service.response<W>(service.send("readSubmoduleWork", { snapshotId: read.snapshotId, page }, { repositoryId, repositoryGeneration: read.generation }), timeoutMs);
+    expect({ page, ...outcome(response), valid: ReadSubmoduleWorkResult.safeParse(response.result).success }).toEqual({ page, ...SUCCEEDED, valid: true });
+    const next = response.result!.next;
+    expect({ page, next, ok: next === null || next === page + 1 }).toEqual({ page, next, ok: true });
+    responses.push(response);
+  }
+  const pages = responses.map((r) => r.result!);
+  return { pages, responses, work: { ...pages.at(-1)!, entries: pages.flatMap((p) => p.entries), extraRows: pages.flatMap((p) => p.extraRows) } as W };
 }
 
 export function entryOf(read: WorkspaceResult, path: string, category: ChangeEntry["category"]): ChangeEntry {

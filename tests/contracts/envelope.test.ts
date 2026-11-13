@@ -132,7 +132,7 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
     renderer: () => ({ source: { kind: "workspace", snapshotId: id(), entryId: id() } }),
     service: () => ({ source: { kind: "commit", viewId: id(), oid: "a".repeat(40), parent: 0, record: 2 } }),
   },
-  readSubmoduleWork: { renderer: () => ({ snapshotId: id() }), service: () => ({ snapshotId: id() }) },
+  readSubmoduleWork: { renderer: () => ({ snapshotId: id(), page: 0 }), service: () => ({ snapshotId: id(), page: 15 }) },
   // Feature 006 contract Δ1 and Δ3.
   listDictionaries: { renderer: () => ({}), service: () => ({}) },
   readDictionary: { renderer: () => ({ language: "uk", file: "index.dic", offset: 0 }), service: () => ({ language: "uk", file: "index.dic", offset: 0 }) },

@@ -4576,10 +4576,16 @@
               "type": "string",
               "maxLength": 64,
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15
             }
           },
           "required": [
-            "snapshotId"
+            "snapshotId",
+            "page"
           ],
           "additionalProperties": false,
           "title": "ReadSubmoduleWorkPayload"

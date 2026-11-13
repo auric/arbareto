@@ -1,21 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T106 to T108: feature 005 contract Δ3 `readSubmoduleChange` and `readSubmoduleWork` through the in-process service (plan.md D19, data-model §15 and §16).
+// T106 to T108 and T114: feature 005 contract Δ3 `readSubmoduleChange` and `readSubmoduleWork` through the in-process service (plan.md D19, data-model §15 and §16).
 // Spec FR-069 to FR-076, SC-012. The oracle is Git's own `rev-list`, `log`, and `status` inside the submodule, and the parent status with `--ignore-submodules=none` on a copy.
 
 import { describe, expect } from "bun:test";
 import { cpSync, existsSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ReadSubmoduleChangeResult, ReadSubmoduleWorkResult } from "../../src/contracts/envelope";
-import { FILE_FACT_COMPONENT_UNITS, STATUS_LISTING_RECORDS, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
+import { ReadSubmoduleChangeResult } from "../../src/contracts/envelope";
+import { FILE_FACT_COMPONENT_UNITS, STATUS_LISTING_RECORDS, SUBMODULE_WORK_PAGE, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
 import { statusArgs } from "../../src/git-service/commands";
 import { submoduleHead } from "../../src/git-service/submodule-change";
 import { printOrigin } from "../origin";
+import type { CallMatch } from "./bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
-import { git, gitPath, gitText, readOk, withService } from "./hunk-harness";
+import { git, gitPath, gitText, outcome, readOk, SUCCEEDED, until, withService, workPages } from "./hunk-harness";
 import { load } from "./history-view-harness";
 import { caseTest, type Capability, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { gitLocation } from "./submodule-harness";
 import { canary } from "./workbench-fixtures";
 
 for (const module of ["submodule-change", "session", "commands"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -49,6 +51,7 @@ interface Work {
   entries: WorkEntry[];
   extraRows: { pathBytes: string; path: string }[];
   limited: number;
+  next: number | null;
 }
 
 let builds = 0;
@@ -328,7 +331,7 @@ describe("readSubmoduleChange (contract Δ3, plan.md D19)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest("T106", "a snapshot whose index listing reached STATUS_LISTING_RECORDS gives OUTPUT_LIMIT for both reads, before any submodule process", SHELL, () =>
+  caseTest("T106", "a snapshot whose index listing reached STATUS_LISTING_RECORDS gives OUTPUT_LIMIT for both reads, before any submodule process; work page 1 gives INVALID_REQUEST", SHELL, () =>
     withService({ name: "t106-index-cut" }, async (service) => {
       const w = world("index-cut");
       git(inLib(w), ["checkout", "-q", "--detach", w.c[1]!]);
@@ -340,8 +343,11 @@ describe("readSubmoduleChange (contract Δ3, plan.md D19)", () => {
       service.runner.inject.stdout = undefined;
       expect(read.result!.completeness).toMatchObject({ state: "limited", reason: "STATUS_LISTING_RECORDS" });
       const before = service.runner.calls.length;
-      const work = await service.request<Work>("readSubmoduleWork", { snapshotId: read.result!.snapshotId }, envelope(read.result!, repositoryId));
+      const work = await service.request<Work>("readSubmoduleWork", { snapshotId: read.result!.snapshotId, page: 0 }, envelope(read.result!, repositoryId));
       expect({ state: work.state, code: work.code }).toEqual({ state: "failed", code: "OUTPUT_LIMIT" });
+      // T114 (5): contract Δ3 "Pages": a cut index listing has one page.
+      const page1 = await service.request<Work>("readSubmoduleWork", { snapshotId: read.result!.snapshotId, page: 1 }, envelope(read.result!, repositoryId));
+      expect(outcome(page1)).toEqual({ state: "rejected", code: "INVALID_REQUEST" });
       const entry = read.result!.entries.find((e) => e.path === "lib" && e.category === "unstaged")!;
       const change = await service.request<Change>("readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.result!.snapshotId, entryId: entry.entryId } }, envelope(read.result!, repositoryId));
       expect({ state: change.state, code: change.code }).toEqual({ state: "failed", code: "OUTPUT_LIMIT" });
@@ -405,16 +411,20 @@ function workWorld(name: string): { root: string; sup: string; lib: string; c: s
   return w;
 }
 
-async function readWork(service: Service, sup: string): Promise<{ work: Work; read: WorkspaceResult; response: ServiceResponse<Work>; repositoryId: string; ms: number }> {
+// All pages of one snapshot, joined (contract Δ3 "Pages").
+async function readWork(service: Service, sup: string): Promise<{ work: Work; read: WorkspaceResult; responses: ServiceResponse<Work>[]; repositoryId: string; ms: number }> {
   const { repositoryId } = await service.register(sup);
   const read = await readOk(service, repositoryId);
   const started = performance.now();
-  const response = await service.request<Work>("readSubmoduleWork", { snapshotId: read.snapshotId }, envelope(read, repositoryId));
-  const ms = performance.now() - started;
-  expect({ state: response.state, code: response.code }).toEqual({ state: "succeeded", code: undefined });
-  expect(ReadSubmoduleWorkResult.safeParse(response.result).success).toBe(true);
-  return { work: response.result!, read, response, repositoryId, ms };
+  const { work, responses } = await workPages<Work>(service, repositoryId, read);
+  return { work, read, responses, repositoryId, ms: performance.now() - started };
 }
+// The submodule Git runs of the page operations of `responses`.
+async function pageRuns(service: Service, responses: ServiceResponse<Work>[], match: CallMatch) {
+  const operations = new Set(await Promise.all(responses.map((r) => service.operationId(r.requestId!))));
+  return service.runner.calls.filter((c) => operations.has(c.operationId) && c.arguments.includes("--git-dir=.git") && match(c));
+}
+const isStatus: CallMatch = (c) => c.arguments.includes("--git-dir=.git") && c.arguments.includes("status");
 
 // The `<m>` and `<u>` fields of Git's own parent status with `--ignore-submodules=none`, on a copy.
 function parentOracle(root: string, sup: string): Record<string, { modified: boolean; untracked: boolean }> {
@@ -525,12 +535,11 @@ describe("readSubmoduleWork (contract Δ3, plan.md D19)", () => {
         index.push(`160000 ${w.c[0]!}\t${path}`);
       }
       git(w.sup, ["update-index", "--index-info"], { input: Buffer.from(`${index.join("\n")}\n`) });
-      const { work, response } = await readWork(service, w.sup);
+      const { work, responses } = await readWork(service, w.sup);
       // Contract Δ3: the gitlinks after the 256th in index order give one count and no entry.
       expect({ limited: work.limited, entries: work.entries.length, last: work.entries.at(-1)!.path }).toEqual({ limited: 1, entries: SUBMODULE_WORK_TARGETS, last: `m/${SUBMODULE_WORK_TARGETS - 2}` });
-      const operationId = await service.operationId(response.requestId!);
-      // Tasks.md T107 (4): the status processes. Each target runs its location check and its `config list` side by side.
-      const runs = service.runner.calls.filter((c) => c.operationId === operationId && c.arguments.includes("--git-dir=.git") && c.arguments.includes("status"));
+      // Tasks.md T107 (4): the status processes. Each target runs its location check and its `config list` side by side. The pages run one after another.
+      const runs = await pageRuns(service, responses, isStatus);
       let peak = 0;
       for (const run of runs) peak = Math.max(peak, runs.filter((o) => o.at <= run.at && o.at + (o.durationMs ?? 0) > run.at).length);
       expect(peak).toBeLessThanOrEqual(SUBMODULE_WORK_PARALLEL);
@@ -545,10 +554,9 @@ describe("readSubmoduleWork (contract Δ3, plan.md D19)", () => {
       const sub = inLib(w);
       writeFileSync(join(sub, "f.txt"), "edit\n");
       for (let i = 0; i < 10_000; i++) writeFileSync(join(sub, `u${i}.txt`), "u\n");
-      const { work, response } = await readWork(service, w.sup);
+      const { work, responses } = await readWork(service, w.sup);
       expect(states(work).lib).toEqual({ modified: true, untracked: true });
-      const operationId = await service.operationId(response.requestId!);
-      const status = service.runner.calls.find((c) => c.operationId === operationId && c.arguments.includes("status"))!;
+      const status = (await pageRuns(service, responses, isStatus))[0]!;
       // Contract §6 `stop`: a limited collector stops the call, so it ends without an exit status.
       expect({ limited: status.stdoutLimited, exitCode: status.exit?.exitCode }).toEqual({ limited: true, exitCode: null });
     }),
@@ -567,7 +575,7 @@ describe("readSubmoduleWork (contract Δ3, plan.md D19)", () => {
       writeFileSync(join(w.sup, "later.txt"), "later\n");
       const second = await readOk(service, repositoryId);
       expect(second.snapshotId).not.toBe(first.snapshotId);
-      const r = await service.request<Work>("readSubmoduleWork", { snapshotId: first.snapshotId }, envelope(second, repositoryId));
+      const r = await service.request<Work>("readSubmoduleWork", { snapshotId: first.snapshotId, page: 0 }, envelope(second, repositoryId));
       expect({ failed: r.state !== "succeeded", code: r.code }).toEqual({ failed: true, code: "UNKNOWN_TARGET" });
     }),
     TIMEOUT_MS,
@@ -598,16 +606,15 @@ const indexListing = (sup: string, path: string, drop: boolean) =>
   );
 
 // Both reads of the unstaged `lib` row of one snapshot. `listing` replaces the snapshot index listing.
-async function bothReads(service: Service, sup: string, listing?: Buffer): Promise<{ change: Change; lib: WorkEntry | undefined; work: Work }> {
+async function bothReads(service: Service, sup: string, listing?: Buffer): Promise<{ change: Change; lib: WorkEntry | undefined; work: Work; responses: ServiceResponse<Work>[] }> {
   const { repositoryId } = await service.register(sup);
   if (listing !== undefined) service.runner.inject.stdout = (call) => (call.arguments.includes("ls-files") && call.arguments.includes("-v") ? listing : undefined);
   const read = await readOk(service, repositoryId).finally(() => (service.runner.inject.stdout = undefined));
   const entry = read.entries.find((e) => e.path === "lib" && e.category === "unstaged");
   expect({ listed: entry !== undefined }).toEqual({ listed: true });
   const change = changed(await service.request<Change>("readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.snapshotId, entryId: entry!.entryId } }, envelope(read, repositoryId)));
-  const work = await service.request<Work>("readSubmoduleWork", { snapshotId: read.snapshotId }, envelope(read, repositoryId));
-  expect({ state: work.state, code: work.code, parsed: ReadSubmoduleWorkResult.safeParse(work.result).success }).toEqual({ state: "succeeded", code: undefined, parsed: true });
-  return { change, lib: work.result!.entries.find((e) => e.path === "lib"), work: work.result! };
+  const { work, responses } = await workPages<Work>(service, repositoryId, read);
+  return { change, lib: work.entries.find((e) => e.path === "lib"), work, responses };
 }
 const NOT_LOCATED = { change: { state: "not-located" }, kind: "submodule", lib: "not-located" };
 const shape = (r: Pick<Awaited<ReturnType<typeof bothReads>>, "change" | "lib">): unknown => ({ change: r.change.state.state === "commits" ? { state: "commits" } : r.change.state, kind: r.change.kind, lib: r.lib?.state });
@@ -659,14 +666,15 @@ describe("a moved gitlink that the D11 checks do not locate (spec FR-078, contra
   );
 });
 
+// `<path>` as a copy of the library and a stage-0 gitlink at its first commit, without a `.gitmodules` entry.
+const addGitlinks = (w: { sup: string; lib: string; c: string[] }, paths: readonly string[]) => {
+  for (const path of paths) cpSync(w.lib, join(w.sup, ...path.split("/")), { recursive: true });
+  git(w.sup, ["update-index", "--add", "--index-info"], { input: Buffer.from(paths.map((p) => `160000 ${w.c[0]!}\t${p}\n`).join("")) });
+};
+const mPaths = (count: number) => Array.from({ length: count }, (_, i) => `m/${String(i).padStart(3, "0")}`);
+
 // T121 analyze finding T1: the place and the bound of the entries of unlisted moved gitlinks (contract Δ3, data-model §16).
 describe("readSubmoduleWork entries of unlisted moved gitlinks (contract Δ3 step 1, data-model §16)", () => {
-  // `<path>` as a copy of the library and a stage-0 gitlink at its first commit, without a `.gitmodules` entry.
-  const addGitlinks = (w: { sup: string; lib: string; c: string[] }, paths: readonly string[]) => {
-    for (const path of paths) cpSync(w.lib, join(w.sup, ...path.split("/")), { recursive: true });
-    git(w.sup, ["update-index", "--add", "--index-info"], { input: Buffer.from(paths.map((p) => `160000 ${w.c[0]!}\t${p}\n`).join("")) });
-  };
-
   caseTest("T121", "an unlisted moved gitlink comes after the index entries; with its index entry it keeps its index place", SHELL, () =>
     withService({ name: "t121-order" }, async (service) => {
       const w = world("order");
@@ -692,6 +700,152 @@ describe("readSubmoduleWork entries of unlisted moved gitlinks (contract Δ3 ste
       // Control: `lib` sorts before `m/`, so it is a target, and the last `m/` gitlink is past the bound.
       const kept = await bothReads(service, w.sup, indexListing(w.sup, "lib", false));
       expect({ entries: kept.work.entries.length, limited: kept.work.limited, lib: kept.lib?.state }).toEqual({ entries: SUBMODULE_WORK_TARGETS, limited: 1, lib: "checked" });
+    }),
+    TIMEOUT_MS,
+  );
+});
+
+// ---- T114: readSubmoduleWork in pages (contract Δ3 "Pages", data-model §16, plan.md D19 "Pages" and "Deadline per page") ----
+
+const pageOutcome = (r: ServiceResponse<Work>) => ({
+  ...outcome(r),
+  snapshotId: r.result?.snapshotId,
+  entries: r.result?.entries.map((e) => `${e.path} ${e.state === "unchecked" ? `${e.reason} ${e.code}` : e.state}`),
+  next: r.result?.next,
+});
+// `lib` and `m/000` to `m/014` in index order: page 0 of a world with more than SUBMODULE_WORK_PAGE gitlinks.
+const PAGE_0 = ["lib", ...mPaths(SUBMODULE_WORK_PAGE - 1)];
+// The test-injected read deadline of each page (`readDeadlineMs` seam).
+const PAGE_DEADLINE_MS = 3_000;
+
+describe("readSubmoduleWork pages (contract Δ3 \"Pages\", data-model §16)", () => {
+  caseTest("T114", "(1) 33 gitlinks give pages of 16, 16, and 1 with next 1, 2, and null and limited 0; the joined pages equal Git's index order and parent status; each page runs status only for its own paths", SHELL, () =>
+    withService({ name: "t114-pages" }, async (service) => {
+      const w = world("pages");
+      addGitlinks(w, mPaths(32));
+      git(w.sup, ["commit", "-q", "--no-verify", "-m", "many"]);
+      // One edit on each page: untracked, tracked, and both.
+      writeFileSync(join(w.sup, "m", "003", "new.txt"), "new\n");
+      writeFileSync(join(w.sup, "m", "020", "f.txt"), "edit\n");
+      writeFileSync(join(w.sup, "m", "031", "f.txt"), "edit\n");
+      writeFileSync(join(w.sup, "m", "031", "new.txt"), "new\n");
+      const { work, responses } = await readWork(service, w.sup);
+      const pages = responses.map((r) => r.result!);
+      expect(pages.map((p) => ({ entries: p.entries.length, next: p.next, limited: p.limited, extraRows: p.extraRows.map((r) => r.path) }))).toEqual([
+        { entries: 16, next: 1, limited: 0, extraRows: ["m/003"] },
+        { entries: 16, next: 2, limited: 0, extraRows: ["m/020"] },
+        { entries: 1, next: null, limited: 0, extraRows: ["m/031"] },
+      ]);
+      // Git's own facts: the stage-0 160000 records of `ls-files -z --stage` in index order, and the parent status with none on a copy.
+      const gitlinks = gitText(w.sup, ["ls-files", "-z", "--stage"]).split("\0").filter((r) => /^160000 \S+ 0\t/.test(r)).map((r) => r.slice(r.indexOf("\t") + 1));
+      expect(work.entries.map((e) => e.path)).toEqual(gitlinks);
+      const expected = parentOracle(w.root, w.sup);
+      for (const path of gitlinks) expected[path] ??= { modified: false, untracked: false };
+      expect(states(work)).toEqual(expected);
+      // git-status(1) porcelain v2 with dirty gives no record, so each edited gitlink is an extra row (spec FR-075).
+      expect(gitText(w.sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=dirty"])).toBe("");
+      expect(work.extraRows.map((r) => r.path)).toEqual(gitlinks.filter((p) => expected[p]!.modified || expected[p]!.untracked));
+      const top = gitText(w.sup, ["rev-parse", "--show-toplevel"]).trim();
+      for (const [page, r] of responses.entries()) {
+        const at = (await pageRuns(service, [r], isStatus)).map((c) => gitLocation(c.arguments)!).map((l) => (l.startsWith(`${top}/`) ? l.slice(top.length + 1) : l));
+        expect({ page, at: at.sort() }).toEqual({ page, at: r.result!.entries.map((e) => e.path).sort() });
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T114", "(2) an unlisted moved gitlink after 16 targets is the only entry of page 1, and page 1 starts no submodule process", SHELL, () =>
+    withService({ name: "t114-moved" }, async (service) => {
+      const w = world("page-moved");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      addGitlinks(w, mPaths(SUBMODULE_WORK_PAGE));
+      expect(parentRecord(w.sup, "lib")).toBe(MOVED_RECORD);
+      const { work, responses } = await bothReads(service, w.sup, indexListing(w.sup, "lib", true));
+      expect(responses.map(pageOutcome)).toEqual([
+        { ...SUCCEEDED, snapshotId: work.snapshotId, entries: mPaths(SUBMODULE_WORK_PAGE).map((p) => `${p} checked`), next: 1 },
+        { ...SUCCEEDED, snapshotId: work.snapshotId, entries: ["lib not-located"], next: null },
+      ]);
+      expect((await pageRuns(service, [responses[1]!], () => true)).map((c) => c.arguments)).toEqual([]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T114", "(3) a snapshot without gitlinks gives page 0 with no entries and next null; page 1 gives INVALID_REQUEST and starts no Git process", SHELL, () =>
+    withService({ name: "t114-none" }, async (service) => {
+      const repo = join(fixtureDir(`t114-none-${++builds}`), "repo");
+      mkdirSync(repo);
+      git(repo, ["init", "-q"]);
+      commitIn(repo, "one");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const { pages } = await workPages<Work>(service, repositoryId, read);
+      expect(pages).toEqual([{ snapshotId: read.snapshotId, entries: [], extraRows: [], limited: 0, next: null }]);
+      const before = service.runner.calls.length;
+      const r = await service.request<Work>("readSubmoduleWork", { snapshotId: read.snapshotId, page: 1 }, envelope(read, repositoryId));
+      expect(outcome(r)).toEqual({ state: "rejected", code: "INVALID_REQUEST" });
+      expect(service.runner.calls.slice(before).map((c) => c.arguments)).toEqual([]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T114", "(4) after a new snapshot, page 1 of the replaced snapshot gives UNKNOWN_TARGET and starts no Git process; page 1 of the new snapshot succeeds", SHELL, () =>
+    withService({ name: "t114-old" }, async (service) => {
+      const w = world("page-old");
+      addGitlinks(w, mPaths(SUBMODULE_WORK_PAGE));
+      const { repositoryId } = await service.register(w.sup);
+      const s1 = await readOk(service, repositoryId);
+      const page0 = await service.request<Work>("readSubmoduleWork", { snapshotId: s1.snapshotId, page: 0 }, envelope(s1, repositoryId));
+      expect(pageOutcome(page0)).toEqual({ ...SUCCEEDED, snapshotId: s1.snapshotId, entries: PAGE_0.map((p) => `${p} checked`), next: 1 });
+      writeFileSync(join(w.sup, "later.txt"), "later\n");
+      const s2 = await readOk(service, repositoryId);
+      expect(s2.snapshotId).not.toBe(s1.snapshotId);
+      const before = service.runner.calls.length;
+      const old = await service.request<Work>("readSubmoduleWork", { snapshotId: s1.snapshotId, page: 1 }, envelope(s2, repositoryId));
+      expect(outcome(old)).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
+      expect(service.runner.calls.slice(before).map((c) => c.arguments)).toEqual([]);
+      const current = await service.request<Work>("readSubmoduleWork", { snapshotId: s2.snapshotId, page: 1 }, envelope(s2, repositoryId));
+      expect(pageOutcome(current)).toEqual({ ...SUCCEEDED, snapshotId: s2.snapshotId, entries: ["m/015 checked"], next: null });
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T114", `(6) each page has its own read deadline: with a ${PAGE_DEADLINE_MS} ms deadline and a held status on page 0, only the page 0 targets give DEADLINE, and page 1 gives checked`, SHELL, () =>
+    withService({ name: "t114-deadline", readDeadlineMs: PAGE_DEADLINE_MS }, async (service) => {
+      const w = world("page-deadline");
+      addGitlinks(w, mPaths(SUBMODULE_WORK_PAGE));
+      const { repositoryId } = await service.register(w.sup);
+      const read = await readOk(service, repositoryId);
+      // A paused stdout holds each submodule status until the abort of the page deadline releases it.
+      const release = service.runner.pauseStdout(isStatus);
+      const page0 = await service.request<Work>("readSubmoduleWork", { snapshotId: read.snapshotId, page: 0 }, envelope(read, repositoryId)).finally(release);
+      const page1 = await service.request<Work>("readSubmoduleWork", { snapshotId: read.snapshotId, page: 1 }, envelope(read, repositoryId));
+      expect([page0, page1].map(pageOutcome)).toEqual([
+        { ...SUCCEEDED, snapshotId: read.snapshotId, entries: PAGE_0.map((p) => `${p} failed DEADLINE`), next: 1 },
+        { ...SUCCEEDED, snapshotId: read.snapshotId, entries: ["m/015 checked"], next: null },
+      ]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T114", "(7) a page accepted on the old snapshot ends succeeded with its entries and next after a new readWorkspace", SHELL, () =>
+    withService({ name: "t114-across" }, async (service) => {
+      const w = world("page-across");
+      addGitlinks(w, mPaths(SUBMODULE_WORK_PAGE));
+      const { repositoryId } = await service.register(w.sup);
+      const s1 = await readOk(service, repositoryId);
+      const release = service.runner.holdStart(isStatus);
+      const sent = service.send("readSubmoduleWork", { snapshotId: s1.snapshotId, page: 0 }, envelope(s1, repositoryId));
+      let s2: WorkspaceResult;
+      try {
+        const operationId = await service.operationId(sent);
+        await until(() => service.runner.calls.some((c) => c.operationId === operationId && isStatus(c)), "a held page 0 status", TIMEOUT_MS / 10);
+        writeFileSync(join(w.sup, "later.txt"), "later\n");
+        s2 = await readOk(service, repositoryId);
+      } finally {
+        release();
+      }
+      expect(s2.snapshotId).not.toBe(s1.snapshotId);
+      expect(pageOutcome(await service.response<Work>(sent))).toEqual({ ...SUCCEEDED, snapshotId: s1.snapshotId, entries: PAGE_0.map((p) => `${p} checked`), next: 1 });
     }),
     TIMEOUT_MS,
   );

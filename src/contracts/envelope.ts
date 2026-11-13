@@ -54,6 +54,7 @@ import {
   MULTI_FILE_ACTION_FILES,
   PREVIEW_GROUP_PATHS,
   SUBMODULE_CHANGE_COMMITS,
+  SUBMODULE_WORK_PAGE,
   SUBMODULE_WORK_TARGETS,
   PUBLIC_REQUEST_BYTES,
   REF_LISTING_RECORDS,
@@ -437,7 +438,9 @@ const SubmoduleChangeSource = z.discriminatedUnion("kind", [
     .meta({ title: "SubmoduleCommitSource" }),
 ]);
 const ReadSubmoduleChange = op("readSubmoduleChange", snapshot, z.strictObject({ source: SubmoduleChangeSource }));
-const ReadSubmoduleWork = op("readSubmoduleWork", snapshot, z.strictObject({ snapshotId: Identifier }));
+// Contract Δ3 "Pages", Δ5: SUBMODULE_WORK_TARGETS positions per snapshot give at most this many pages.
+const WORK_PAGES = SUBMODULE_WORK_TARGETS / SUBMODULE_WORK_PAGE;
+const ReadSubmoduleWork = op("readSubmoduleWork", snapshot, z.strictObject({ snapshotId: Identifier, page: z.int().min(0).max(WORK_PAGES - 1) }));
 
 // ---- Feature 006 operations (contract Δ1 to Δ3, data-model §5 to §8) ----
 
@@ -2384,7 +2387,7 @@ export type SubmoduleChange = z.infer<typeof SubmoduleChange>;
 
 // Data-model §16 `readSubmoduleWork`, contract Δ9 "Submodule work reasons". `failed` carries the error code.
 // Each of the first SUBMODULE_WORK_TARGETS gitlinks in index order has one entry. Each unlisted moved gitlink follows with one entry.
-// The list holds at most SUBMODULE_WORK_TARGETS entries. `limited` counts the rest, which have none.
+// Contract Δ3 "Pages": one page holds at most SUBMODULE_WORK_PAGE of these entries. `limited` counts the rest of the snapshot, which have none on any page.
 const SubmodulePathFields = { pathBytes: PathBytes, path: z.string() };
 const SubmoduleWorkEntry = z
   .union([
@@ -2398,9 +2401,10 @@ const SubmoduleWorkEntry = z
 export const ReadSubmoduleWorkResult = z
   .strictObject({
     snapshotId: Identifier,
-    entries: z.array(SubmoduleWorkEntry).max(SUBMODULE_WORK_TARGETS),
-    extraRows: z.array(z.strictObject(SubmodulePathFields).meta({ title: "SubmoduleExtraRow" })).max(SUBMODULE_WORK_TARGETS),
+    entries: z.array(SubmoduleWorkEntry).max(SUBMODULE_WORK_PAGE),
+    extraRows: z.array(z.strictObject(SubmodulePathFields).meta({ title: "SubmoduleExtraRow" })).max(SUBMODULE_WORK_PAGE),
     limited: Count,
+    next: z.int().min(1).max(WORK_PAGES - 1).nullable(),
   })
   .meta({ title: "ReadSubmoduleWorkResult" });
 export type SubmoduleWork = z.infer<typeof ReadSubmoduleWorkResult>;

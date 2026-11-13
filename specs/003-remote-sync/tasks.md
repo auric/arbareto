@@ -56,6 +56,7 @@ description: "Task list for the Remote Sync feature"
 | 4. Clone, terminal, frontend A | 5 | P7, P8 | T052–T066, T085, T086 | US1, US2, US3, US4, US5, US6, US7, US8 | `clone`, `connectInTerminal`, toolbar, Pull split button, counts, push panel, push-rejected notice, force confirmation, Commit and push, history labels (after 002). |
 | 5. Frontend B and C | 6 | P9, P10 | T067–T074 | US5, US6, US7 | Pull mode choice, conflict actions, Mark resolved, clone panel, SSH and clone settings. |
 | 6. WSL and packaged qualification | 7 | P11, P12 | T075–T083 | Cross-cutting | SC-003 timing, SC-004, SC-007, SC-008, SC-009, SC-010, SC-013. Blocked by open 001 T152, T154, T165, T240, T242. |
+| Convergence (no batch) | 8 | none | T087–T096 | Cross-cutting | Review and audit follow-ups: the batch 0 and 1 full-run record, native-first operations, D4 facts and rules, lease re-read, clone stall notice, force-push limits. |
 
 Work packages (plan.md "Work packages"): WP1 is T001 to T006. WP2 is T007, T009 to T012, and T084 (T008 is the O-5 record). WP3 is T014 to T018 and T020 to T023. WP4 is T019 and T024. WP5 is T026 and T029 in batch 1, then T027, T028, T030, and T031 in batch 2. WP6 is T032 to T042. WP7 is T044 to T046, T049, and T050. WP8 is T047 and T048. WP9 is T052 to T055. WP10 is T056 to T065, T085, and T086. WP11 is T067 to T069 and T072. WP12 is T070, T071, and T073. WP13 is T075. WP14 is T076 to T082.
 
@@ -366,7 +367,7 @@ Each FR and SC maps to at least one task. The table lists the test tasks. Each i
 | --- | --- |
 | FR-001 | T019, T026, T033, T045, T047, T056 |
 | FR-002 | T019, T033, T056 |
-| FR-003 | T019, T026, T033, T056, T077 |
+| FR-003 | T019, T026, T033, T056, T077, T094 |
 | FR-004 | T033, T044, T045, T047, T056 |
 | FR-005 | T005, T015, T033, T081 |
 | FR-006 | T034, T037 |
@@ -377,9 +378,9 @@ Each FR and SC maps to at least one task. The table lists the test tasks. Each i
 | FR-011 | T005, T014, T033 |
 | FR-012 | T015, T033 |
 | FR-013 | T057, T064 |
-| FR-014 | T005, T014, T016, T034, T059 |
+| FR-014 | T005, T014, T016, T034, T059, T089, T091 |
 | FR-015 | T005, T015, T034, T059 |
-| FR-016 | T016, T034, T059, T065 |
+| FR-016 | T016, T034, T059, T065, T091 |
 | FR-017 | T034, T056 |
 | FR-018 | T015, T034 |
 | FR-019 | T005, T015, T032, T057, T058 |
@@ -409,9 +410,9 @@ Each FR and SC maps to at least one task. The table lists the test tasks. Each i
 | FR-043 | T045, T068 |
 | FR-044 | T005, T045, T068 |
 | FR-045 | T045, T068 |
-| FR-046 | T028, T052, T070 |
+| FR-046 | T028, T052, T070, T088 |
 | FR-047 | T028, T052 |
-| FR-048 | T014, T052 |
+| FR-048 | T014, T052, T094 |
 | FR-049 | T028, T052, T070, T080 |
 | FR-050 | T028, T052, T070 |
 | FR-051 | T028, T052 |
@@ -419,12 +420,12 @@ Each FR and SC maps to at least one task. The table lists the test tasks. Each i
 | FR-053 | T005, T018, T047, T069 |
 | FR-054 | T017, T028, T070 |
 | FR-055 | T085 |
-| FR-056 | T027, T085 |
+| FR-056 | T027, T085, T088 |
 | FR-057 | T067, T085 |
 | SC-001 | T001, T033, T034, T044, T075 |
 | SC-002 | T001, T035, T046 |
 | SC-003 | T001, T032, T077 |
-| SC-004 | T033, T044, T052, T077 |
+| SC-004 | T033, T044, T052, T077, T094 |
 | SC-005 | T003, T037 |
 | SC-006 | T001, T012, T033, T034, T044, T052, T080 |
 | SC-007 | T007, T010, T012, T080 |

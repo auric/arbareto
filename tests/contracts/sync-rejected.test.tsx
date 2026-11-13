@@ -124,6 +124,27 @@ describe("force push with lease (FR-024, FR-025)", () => {
     expect(double.count("sync")).toBe(1);
   });
 
+  // Tasks.md T095, plan D5 "Warning text": the http(s) text for a push URL that starts with `http://` or `https://`.
+  const PLAIN = "Other people can lose work. The push stops if origin/main changed since the last fetch.";
+  const HTTP = `${PLAIN} Over a dumb HTTP server, Git cannot check this.`;
+  for (const [url, warning] of [
+    ["https://example.test/r.git", HTTP],
+    ["http://example.test/r.git", HTTP],
+    ["https://<redacted>@example.test/r.git", HTTP],
+    ["C:/repos/r.git", PLAIN],
+    ["ssh://<redacted>@example.test/r.git", PLAIN],
+    ["git@example.test:r.git", PLAIN],
+  ] as const) {
+    test(`the modal warning for the push URL ${url} is the ${warning === HTTP ? "http(s)" : "plain"} text`, async () => {
+      const { double } = await rejected();
+      await click(button("Force push with lease…", band()));
+      await answer(double.pending("reviewSync"), succeeded({ action: "force-push", plan: { remotes: ["origin"], destination: { ...DESTINATION, url }, lease: LEASE }, syncReviewToken: fixtureId(0x106) }));
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+      const shown = [...dialog.querySelectorAll("p")].map((p) => text(p)).filter((t) => t.startsWith("Other people can lose work."));
+      expect(shown).toEqual([warning]);
+    });
+  }
+
   test("the modal groups the digits of a large commit count", async () => {
     const { double } = await rejected();
     await click(button("Force push with lease…", band()));

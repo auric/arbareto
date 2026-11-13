@@ -232,7 +232,7 @@ Steps:
 | `deleted`; local writes done, or none | `intended-effects-confirmed`, or `differing-effects` when other refs or HEAD changed | `push.status` `deleted` | X20, or X21 when combined |
 | `deleted`; the fresh listing still holds the local ref after a failed local write or Cancel | `failed-with-effects` | `localNotDeleted: true` | X24 |
 | `deleted`; the local ref is gone, but the section removal failed, or Cancel stopped it | `failed-with-effects` | `push.status` `deleted`, no `localNotDeleted` | the 003 line "{name} did not complete and left effects: {code}" |
-| `rejected`; the D8 re-read shows a remote value other than `<expect>`, or a gone fact without `remoteGone` | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`; `remedy` X27 | X22, plus X25 when combined |
+| `rejected`; the D8 re-read shows a remote value other than `<expect>`, or a gone fact without `remoteGone` | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`, `reasonText` (display only); `remedy` X27 | X22, plus X25 when combined |
 | `rejected`; the D8 re-read equals `<expect>`, fails, or does not run (user decision 2026-11-11) | `no-effects`, failed, `PUSH_REJECTED` | `reason: rejected`, `reasonText` (display only), no `remedy` | E5, plus X25 when combined |
 | `rejected` and `remoteGone`; local writes done, or none | `intended-effects-confirmed` | `remoteGone: true` | X23, then X26 when combined |
 | `rejected` and `remoteGone`; the fresh listing still holds the local ref after a failed local write or Cancel | `failed-with-effects` | `remoteGone: true`, `localNotDeleted: true` | X23, then X25 |
@@ -273,6 +273,7 @@ Order: remote first, then local.
 - Gone fact: exit 2, or exit 0 with no exact `<dst>` line (`parseLsRemote`). An exact `<dst>` line with a value other than `<expect>` means the branch moved, so the stale outcome stays. An exact line equal to `<expect>`, another exit, a parse failure, or Cancel gives reason `rejected`.
 - Cancel: the re-read does not start after Cancel, as in the push (`sync.ts` `!signal.aborted`).
 - Removal: `update-ref --no-deref -d <ref> <expect>` as one more write through `writeUpstream`. Exit 0 marks `remoteGone`. A nonzero exit keeps the stale outcome. The expect value makes Git refuse a ref that changed after the review.
+- No-delete fact: a remote without the delete-refs capability gives `[rejected] (remote does not support deleting refs)`, and this status can replace a stale lease. The re-read still runs. See research R3 and U2.
 - A different `pushurl` skips the check, because the fetch URL could name another repository than the push URL. The reason is then `rejected`, with E5 and no remedy.
 
 ### D9 Sync action, trust, and shell
@@ -359,7 +360,7 @@ New texts:
 | X19 | status bar step | Deleting the remote branch on {remote}… |
 | X20 | outcome | Deleted the remote branch {tracking}. |
 | X21 | outcome | Deleted {branch} and the remote branch {tracking}. |
-| X22 | outcome | {tracking} changed on {remote} since the last fetch, so Git deleted nothing. Fetch {remote}, then try again. |
+| X22 | outcome | Git deleted nothing: {reasonText}. {tracking} changed on {remote} since the last fetch. Fetch {remote}, then try again. (No `reasonText` or an empty one: "Git deleted nothing.") Accepted display gap: a `reasonText` that ends in "." shows "..", because the text does not change Git's reason. |
 | X23 | outcome | {remote} lists no branch {name}. Arbareto deleted the remote-tracking branch {tracking}. |
 | X24 | outcome | Deleted the remote branch {tracking}. {branch} stays. |
 | X25 | outcome suffix | {branch} stays. |
@@ -379,10 +380,10 @@ Existing texts that this feature reuses unchanged:
 | X5 | dialog, list end | force-push list (`ForcePushConfirm.tsx:45-53`) | and 1 more commit / and {n} more commits |
 | X12 | local dialog, review runs | existing loading text | Loading… |
 | E1 | key text of X1 | `KEYS.delete` (`shortcuts.ts:182`) | Del |
-| E2 | outcome, `remote-rejected` or `remote-failure` | `OperationStatus.tsx` `REMOTE_REJECTED` | Rejected by the remote, then `: <reasonText>` |
+| E2 | outcome, `remote-rejected` or `remote-failure` | `OperationStatus.tsx` `REMOTE_REJECTED` | Rejected by the remote, then `: {reasonText}` (No `reasonText` or an empty one: no `: {reasonText}` tail.) |
 | E3 | outcome, failure | `OperationStatus.tsx`, `STEP_REMEDY_TEXT` and the command (`sync.ts:34`) | {name} did not complete: {code}. |
 | E4 | outcome, canceled | `OperationStatus.tsx:397` | {name} canceled. The remote can hold this push. Fetch to see the remote state. |
-| E5 | outcome, `rejected` without a stale fact (user decision 2026-11-11) | 003 plan D5 (T092), `OperationStatus.tsx` `pushRejected` | {name} did not complete: PUSH_REJECTED rejected: {reasonText} |
+| E5 | outcome, `rejected` without a stale fact (user decision 2026-11-11) | 003 plan D5 (T092), `OperationStatus.tsx` `pushRejected` | {name} did not complete: PUSH_REJECTED rejected: {reasonText} (No `reasonText` or an empty one: no `: {reasonText}` tail.) |
 
 The refusals `blockedReason`, `REASONS` (`texts.ts:91-106`), the trust flow, and the unknown-outcome text keep their existing texts. This feature adds no copy of them.
 

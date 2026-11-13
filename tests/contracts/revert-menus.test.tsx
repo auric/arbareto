@@ -3,13 +3,14 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import { Undo03Icon } from "@hugeicons/core-free-icons";
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { fixtureId } from "./bridge-contract";
 import { contextMenu, describedBy, entry, item, menuItem, menuItems, menuLabels, pressKey, statusBar } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { changesHeader, COMPARISON, DELETED, hunk, hunkRow, HUNKS, markRow, openFiles, PatchDouble, revertKey, rowKey, selectLines, shownDiff } from "./revert-fake";
-import { button, buttons, click, text, unmountAll } from "./sync-fake";
+import { alertDialog, changesHeader, COMPARISON, DELETED, hunk, hunkRow, HUNKS, markRow, openFiles, PatchDouble, revertAllUnstaged, revertKey, rowKey, selectLines, shownDiff, unstagedPlan, unstagedReviewed } from "./revert-fake";
+import { answer, button, buttons, click, settle, text, unmountAll } from "./sync-fake";
 
 // tasks.md T027, T031, and T036 (feature 008, WP5). Stories US1, US2, US3. Spec FR-012, FR-013, FR-018, FR-023, FR-038, FR-045. Plan D11 item labels and BLOCKED_BY, D12 "Diff", "Changes list row menu", "Staged list row menu" (boards Menu-hunk, Menu-changes-row, Menu-changes-row-unavailable, Menu-staged-row).
 
@@ -108,10 +109,38 @@ describe("hunk More actions menu (FR-012, FR-045, board Menu-hunk)", () => {
     expect(untracked.double.count("reviewWorkbench")).toBe(0);
     await unmountAll();
 
-    await shownDiff(workbench, { patch: DELETED, hunks: [hunk(0, 1, 2, 0, 0)] });
+    await shownDiff(workbench, { patch: DELETED, hunks: [hunk(0, 1, 2, 0, 0)], fileChange: "deleted" });
     await openMore(0);
     expect(describedBy(menuItem("Revert hunk…"))).toBe("Arbareto does not revert lines or hunks of a deleted file. Use Revert file.");
     expect(menuItems()).toHaveLength(1);
+  });
+
+  // tasks.md T063: the service field `fileChange` gives the deleted-file and new-file reasons. The patch text gives no reason.
+  test("fileChange gives the deleted-file and new-file reasons, a null fileChange refuses, and a patch header changes nothing", async () => {
+    await shownDiff(workbench, { fileChange: "deleted" });
+    await selectLines({ start: 2, side: "deletions", end: 2 });
+    await openMore(0);
+    expect(describedBy(menuItem("Revert hunk…"))).toBe("Arbareto does not revert lines or hunks of a deleted file. Use Revert file.");
+    expect(describedBy(menuItem("Revert 1 line…"))).toBe("Arbareto does not revert lines or hunks of a deleted file. Use Revert file.");
+    await unmountAll();
+
+    await shownDiff(workbench, { category: "staged", fileChange: "added" });
+    await openMore(0);
+    expect(describedBy(menuItem("Revert hunk…"))).toBe("Arbareto does not revert lines or hunks of a staged new file. Use Revert file.");
+    await unmountAll();
+
+    const unknown = await shownDiff(workbench, { fileChange: null });
+    await openMore(0);
+    expect(describedBy(menuItem("Revert hunk…"))).toBe("The comparison is incomplete.");
+    await click(menuItem("Revert hunk…"));
+    expect(unknown.double.count("reviewWorkbench")).toBe(0);
+    await unmountAll();
+
+    const header = await shownDiff(workbench, { patch: DELETED, hunks: [hunk(0, 1, 2, 0, 0)], fileChange: "modified" });
+    await openMore(0);
+    expect(menuItem("Revert hunk…").getAttribute("aria-disabled")).not.toBe("true");
+    await click(menuItem("Revert hunk…"));
+    expect(header.double.count("reviewWorkbench")).toBe(1);
   });
 });
 
@@ -315,5 +344,26 @@ describe("Revert file limit (FR-022)", () => {
     const many = Array.from({ length: 10_001 }, (_, i) => entry("unstaged", `f${i}.ts`));
     expect(unstagedReason(many)).toBe("Arbareto reverts at most 10,000 files at a time. Select fewer files, then use Revert file.");
     expect(unstagedReason(many.slice(0, 10_000))).toBeNull();
+  });
+});
+
+// tasks.md T071 (feature 008). Plan D11 REVERT_RECONCILING, data-model §8 phase `reconciling`, 001 contract §2 progress state.
+describe("Revert run reconciling text (T071)", () => {
+  test("a progress event with state reconciling shows Checking the result…, not State unknown", async () => {
+    const files = [entry("unstaged", "a.ts"), entry("unstaged", "b.ts")];
+    const { double } = await openFiles(workbench, files);
+    await revertAllUnstaged();
+    await answer(double.pending("reviewWorkbench"), unstagedReviewed(unstagedPlan(["a.ts", "b.ts"])));
+    await click(button("Revert unstaged changes", alertDialog()!));
+    const onProgress = double.pending("runWorkbench")!.args[2] as (event: unknown) => void;
+    const event = { requestId: fixtureId(0x7d2), operationId: fixtureId(0x7d3) };
+    await act(async () => onProgress({ ...event, state: "running", phase: "revert-files", counters: { fileIndex: 2, fileCount: 2 } }));
+    await settle();
+    expect(statusBar()).toContain("Reverting 2 of 2…");
+    await act(async () => onProgress({ ...event, state: "reconciling", phase: "reconciliation", counters: {} }));
+    await settle();
+    expect(statusBar()).toContain("Checking the result…");
+    expect(statusBar()).not.toContain("Reverting");
+    expect(statusBar()).not.toContain("State unknown");
   });
 });

@@ -79,6 +79,8 @@ const BASELINE_DELAY_MS = 10_000;
 const BASELINE_SAMPLES = 3;
 const BASELINE_GAP_MS = 1_000;
 const SAMPLE_MS = 250;
+// Plan.md D3: six sample intervals (user decision 2026-11-10).
+const MAX_GAP_MS = 6 * SAMPLE_MS;
 const LOAD_POLL_MS = 50;
 const AFTER_MS = 5_000;
 // The page waits for each timed step at most this long. A step past it fails the case.
@@ -534,6 +536,7 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
       expect(window.filter((x) => x.rootPid !== s.app.pid || x.webView2PrivateBytes <= 0)).toEqual([]);
       const peakBytes = Math.max(...window.map((x) => x.webView2PrivateBytes));
       const maxGapMs = Math.max(0, ...window.slice(1).map((x, i) => x.timeMs - window[i]!.timeMs));
+      if (maxGapMs > MAX_GAP_MS) throw new Error(`the ${entry.id} run ${run} sample gap is ${maxGapMs} ms, above the ${MAX_GAP_MS} ms bound`);
       return { run, webview2, baselineBytes, peakBytes, increaseBytes: peakBytes - baselineBytes, maxGapMs, loadMs, descriptions, expected: T.count(negatives.length) };
     } finally {
       await sampler.stop();

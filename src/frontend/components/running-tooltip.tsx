@@ -8,6 +8,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 /** The reason while an operation runs. It goes only into the tooltip and the accessible description. */
 export const RUNNING_REASON = "A Git operation is running. Its progress and Cancel are in the status bar.";
+/** Plan D12: the reason while the reconcile read after a mutation outcome runs. A review before its result names an old generation. */
+export const RECONCILING_REASON = "The status read after the last operation is still running.";
 
 /** Gives `children`, an unavailable control, the tooltip `reason`. The caller hides its own reason element. A null reason adds no tooltip. */
 export function RunningTooltip({ reason, children }: { reason: ReactNode; children: ReactElement }) {

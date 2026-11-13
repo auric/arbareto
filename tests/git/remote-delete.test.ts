@@ -136,7 +136,7 @@ describeGit("remote branch delete (011 T009)", () => {
     expect(stateOf(b).remote).toEqual(stateOf(a).remote);
   }, TIMEOUT_MS);
 
-  caseTest(TASK, "P9 and P16: an absent remote branch with a pushurl in other bytes than the URL gives stale-lease, runs no gone check, and changes nothing", SHELL, async () => {
+  caseTest(TASK, "P9 and P16: an absent remote branch with a pushurl in other bytes than the URL gives rejected, runs no re-read, and changes nothing", SHELL, async () => {
     const a = own();
     gitRun(a.h, a.origin, ["update-ref", "-d", "refs/heads/feature"]);
     gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.origin)]);
@@ -148,7 +148,7 @@ describeGit("remote branch delete (011 T009)", () => {
       const from = service.runner.calls.length;
       const response = await sync(service, r, review.syncReviewToken);
       expect(outcome(response)).toEqual({ state: "failed", code: "PUSH_REJECTED" });
-      expect(response.result!.reason).toBe("stale-lease");
+      expect(response.result!.reason).toBe("rejected");
       expect(callsFrom(service, from).filter(isLsRemote)).toEqual([]);
     });
     expect(stateOf(a)).toEqual(before);

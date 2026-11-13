@@ -188,6 +188,35 @@
                   }
                 ]
               },
+              "reducedParents": {
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    "skip": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "oid",
+                    "skip"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "reducedParentCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4000000
+              },
+              "reducedSkips": {
+                "type": "boolean"
+              },
               "labels": {
                 "maxItems": 10000,
                 "type": "array",

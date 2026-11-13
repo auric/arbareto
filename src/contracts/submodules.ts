@@ -167,13 +167,14 @@ export function parseSubmoduleProgress(stderr: string): number | null {
 }
 
 // Contract §7 "URL user information". Each `://` starts its own authority, so a match never hides a later URL.
+// Git `transport_anonymize_url` ends the authority at `/` only (research R5).
 export function redactUrlUserInfo(text: string): string {
   let out = "";
   let from = 0;
   for (let at = text.indexOf("://"); at >= 0; at = text.indexOf("://", at + 1)) {
     const start = at + 3;
     if (start < from) continue;
-    const end = text.slice(start).search(/[/?#]/);
+    const end = text.indexOf("/", start) - start;
     const authority = end < 0 ? text.slice(start) : text.slice(start, start + end);
     const userEnd = authority.lastIndexOf("@");
     if (userEnd < 0) continue;

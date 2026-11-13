@@ -70,7 +70,7 @@ Research date: 2026-10-24. Each fact cites a source URL or a repository file. A 
 ### tauri-apps/tauri-action against the own script
 
 - `tauri-apps/tauri-action` builds the app and can create or update a GitHub release and upload assets (https://raw.githubusercontent.com/tauri-apps/tauri-action/dev/README.md). By default it runs the project's CLI through `npm|pnpm|yarn|bun tauri`, or it installs a global `@tauri-apps/cli` when it finds none. `tauriScript` can point at a `tauri-cli` binary path without spaces.
-- Arbareto runs the cargo-installed native CLI (`cargo tauri`), and `build:notices` refuses any CLI output other than `tauri-cli 2.12.0` for a Windows Tauri build (001 tasks.md T375; `src/frontend/build/notices.ts`). The npm `@tauri-apps/cli` package runs on Node. Constitution II requires a Node development tool to be disclosed in the plan.
+- Arbareto runs the native CLI `cargo tauri` (`cargo-tauri.exe` from the pinned prebuilt release zip in CI, T040), and `build:notices` refuses any CLI output other than `tauri-cli 2.12.0` for a Windows Tauri build (001 tasks.md T375; `src/frontend/build/notices.ts`). The npm `@tauri-apps/cli` package runs on Node. Constitution II requires a Node development tool to be disclosed in the plan.
 - The action creates the release in the same job as the build. That job then needs `contents: write`, which conflicts with FR-019. The action also has no SignPath stage between the executable build and the bundle step.
 - Recommendation: do not use `tauri-action`. Use the repository's own commands (`bun run build`, `cargo tauri build`/`bundle`, and the `package` version prints), and create the release with the preinstalled `gh` CLI in a separate publish job. This keeps one build path for local and CI packages.
 
@@ -80,7 +80,7 @@ Research date: 2026-10-24. Each fact cites a source URL or a repository file. A 
 | --- | --- | --- | --- |
 | Bun | `1.4.4`, `bun-windows-x64.zip` SHA-256 `cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5` | `.claude/cloud-setup.sh` pins the Linux zip `bf8ccbfb…fccb395c`; that value equals the `bun-linux-x64.zip` line of the same file. The baseline Windows zip is `0f20ce66…c78d99`. | https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/SHASUMS256.txt |
 | Rust | Proposed `1.99.0` | The reference host runs `rustc 1.99.0 (b940084d7 2026-09-28)`. 001 plan.md states `1.98.0` as the minimum. `.claude/cloud-setup.sh` installs `1.98.0`. The runner image has `1.99.0` today but updates weekly. The repository has no `rust-toolchain.toml`. | local `rustc --version`; 001 plan.md:23; runner readme below |
-| Tauri CLI | `2.12.0` today, or `2.12.4` after the pending update | crates.io: `2.12.4` (2026-10-21) is the latest stable. tauri-cli 2.12.0 pins `tauri-bundler =2.10.0`, and 2.12.4 pins `=2.10.4`. `cargo install tauri-cli --version 2.12.x --locked` builds it from source. | https://crates.io/api/v1/crates/tauri-cli and `/2.12.4/dependencies` |
+| Tauri CLI | `2.12.0` today, or `2.12.4` after the pending update; `cargo-tauri-x86_64-pc-windows-msvc.zip` SHA-256 `78785c9b574bbe4bbfe6cc3008422df068a0f661931a9fa9d13d08407604b6a9` (GitHub asset digest, T040) | crates.io: `2.12.4` (2026-10-21) is the latest stable. tauri-cli 2.12.0 pins `tauri-bundler =2.10.0`, and 2.12.4 pins `=2.10.4`. Before T040: `cargo install tauri-cli --version 2.12.x --locked` builds it from source. | https://crates.io/api/v1/crates/tauri-cli and `/2.12.4/dependencies` |
 | NSIS | `3.11` with tauri-cli 2.12.0, `3.13` with tauri-cli 2.12.4 | tauri-bundler 2.10.0 downloads `nsis-3.11.zip` (SHA-1 `EF7FF767…00BB10D`). tauri-bundler 2.10.4 downloads `nsis-3.13.zip` (SHA-1 `DB14F8AF2EA346B786C6AE19343F61AAF5E09B8E`). Both use `nsis_tauri_utils` v0.5.3. The bundler checks the hash. | `src/bundle/windows/nsis/mod.rs:38-44` of both crates |
 | Runner | `windows-2025` | `windows-latest`, `windows-2025`, and `windows-2025-vs2026` select the same image: Windows Server 2025 with Visual Studio 2026. Image `20261007.264.1`, OS `10.0.26100`, Rust 1.99.0, Git `2.56.0.windows.2`, PowerShell 7.6.6, Windows SDK `10.1.26100.8249`. `-latest` moves to a new OS after an announcement. | https://raw.githubusercontent.com/actions/runner-images/main/README.md; https://raw.githubusercontent.com/actions/runner-images/main/images/windows/Windows2025-VS2026-Readme.md |
 
@@ -91,7 +91,9 @@ Research date: 2026-10-24. Each fact cites a source URL or a repository file. A 
 ### Caching
 
 - GitHub warns that privileged workflows share the cache of the default branch with other privileged triggers (https://docs.github.com/en/actions/reference/security/secure-use, "Mitigating the risks of untrusted code checkout").
-- Recommendation: no cache restore in the release workflow. `cargo install tauri-cli --locked` then takes a full source build on each release. Guess: about 5 to 10 minutes on a standard runner. This fits SC-006.
+- Recommendation (2026-10-24, replaced by the T040 decision below): no cache restore in the release workflow. The first runs built tauri-cli from source on each release.
+- Baseline for T040 (old `cargo install` step): `"Install Rust and the Tauri CLI" took 377 s, 532 s, and 605 s.` Source: release workflow runs 43065949221, 42771011191, and 43073623966 (`gh run view --json jobs`). The `cargo install tauri-cli` source build takes most of this time.
+- Decision (T040): the workflow stays cache-free. It downloads the prebuilt `cargo-tauri-x86_64-pc-windows-msvc.zip` of release tag `tauri-cli-v2.12.0` and compares its SHA-256 with a pin, as for Bun. tauri-apps publishes no checksum file. The pin is the GitHub asset digest `78785c9b574bbe4bbfe6cc3008422df068a0f661931a9fa9d13d08407604b6a9` (`gh api repos/tauri-apps/tauri/releases/tags/tauri-cli-v2.12.0`). A local download of 7,769,561 bytes gave the same SHA-256. The zip holds `cargo-tauri.exe` at its root.
 
 ### Action pinning
 
@@ -597,7 +599,7 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - 010 T018 SC-010d medians, budget in brackets: Hard 3460.6 ms (4000), Detached checkout 2139.8 (4000), Continue 810.9 (2000), Cherry-pick 748.8 (2000), Revert 693.7 (2000), Mixed 626.4 (2000), Create tag 632.2 (1000), Soft 549.8 (1000), Abort 461.1 (2000).
 - SC-011: every Windows series has at least 20 inputs, p95 at most 64 ms, and max at most 88 ms.
 - 010 T018 control: the probe interval becomes 25 ms instead of 10 ms. The case fails: Abort got 12 inputs, minimum 20. The hash after the restore is equal.
-- The 2026-11-10 Hard miss (4097 ms): an A/B run on 2026-11-11 gave 3258 ms and 3196.9 ms with the old probe, and 3147.1 ms with the release probe. The A/B rules out the probe. The cause stays unknown. The miss stays an open, unexplained miss. The v0.1.1 runs measure the Hard series again (user decision 2026-11-11).
+- The 2026-11-10 Hard miss (4097 ms): an A/B run on 2026-11-11 gave 3258 ms and 3196.9 ms with the old probe, and 3147.1 ms with the release probe. The A/B rules out the probe. The cause stays unknown. The miss stays an open, unexplained miss. The v0.1.1 runs measure the Hard series again (user decision 2026-11-11). The v0.1.1 full run on 2026-11-13 gave a Hard median of 3,287.3 ms (budget 4,000 ms).
 - Platform split:
   - Run 1 used OS build 26300 before KB5132061. KB5132061 was installed on 2026-11-11 at 01:41, during `test:windows`.
   - Run 1 used WebView2 157.0.4341.42. This value is probable and comes from the update log.
@@ -749,3 +751,72 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
 - Suspicion: the README attestation command does not pin the signer workflow. Planned in T038.
 - Suspicion: the SC-010d miss of 2026-11-10 passed only on later runs, and its cause is unknown. Recorded as an open miss in the T028 record.
 - `OBSERVATION T033: v0.1.99 outside main refused with RELEASE_CHECK not-on-main, exit 1, publish skipped, no release; tag deleted; FR-017 rerun unverified; one independent review recorded, no blocking finding`
+
+### v0.1.1 full run (2026-11-13)
+
+- Source: the driver logs in local scratch. The driver ran from 2026-11-12 19:42 to 2026-11-13 10:14 (UTC+2), alone, under the test gate and the full-run lock.
+- Code: `de82eccd` (de82eccdb06cc667a3db2f17060d28863d1baaa2) on branch `v0.1.1-rc2`. The preflight found an empty `git status --porcelain`.
+- Platform, read at the start and at the end with the same values: Windows NT 10.0.26300.0, UBR 9974, x64. WebView2 157.0.4341.46. Bun 1.4.4. Git 2.56.0.windows.2. `rustc 1.99.0 (b940084d7 2026-09-28)`. `cargo 1.99.0 (5f94df478 2026-08-27)`.
+- WSL: `Ubuntu-26.04`, Git 2.55.0 in the distro (the WSL probe line of `test:all`).
+- Environment of the driver: `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, `ARBARETO_PROFILE_ROOT`, `ARBARETO_PERF_SAMPLES_DIR`, `ARBARETO_PERF_CACHE`, and `ARBARETO_DICTIONARY_CACHE` (scratch folders). `ARBARETO_HISTORY_FIXTURES=H200K` for the `test:all` step only. The driver removed `ARBARETO_LIVE_INPUT` and `ARBARETO_WSL_ORDER_DISTROS`.
+- Built installer `Arbareto_0.1.1_x64-setup.exe` SHA-256 `c1ba28d0b2cf62f161197f7ab3c6edf80e6eccedc207495d9f9fce453e5ad8b9`.
+- Built `arbareto.exe` SHA-256: raw `30267102edadbb361026bf9966c1fdd942eeee5788d075890b28851af34689c6`, after the NSIS marker patch (1 marker) `80a95ab5017d1120e8529eef505d50f6f2255e9a1d81f61628efef38645849c5`.
+- The installed `arbareto.exe` SHA-256 equals the patched build (`80a95ab5…`). Every packaged step printed this hash on its `INSTALLED-APP` line.
+- `tests/windows` ran as 33 steps, one `bun test ./tests/windows/<file>` each. `package.json` `test:windows` is `bun test tests/windows`. The `tests/windows` folder has no subfolder and exactly 33 files that match the Bun default test name patterns. These are the 33 step files. The `test:windows` script itself did not run.
+
+| Step | Command | Exit | Pass | Fail | Skip | Minutes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| s0a | `bun install --frozen-lockfile` | 0 | - | - | - | 0.1 |
+| s0b | `bun run build` | 0 | - | - | - | 0.2 |
+| s0c | `bun run typecheck` | 0 | - | - | - | 0.1 |
+| s0d | `bun run export:schemas --check` | 0 | - | - | - | 0 |
+| s0e | `cargo test --locked --manifest-path src-tauri/Cargo.toml` | 0 | 667 | 0 | 16 ignored | 2 |
+| s4 | `bun run test:all` (parallel 9,206 pass, 45 skip; serial 1,006 pass, 11 skip; 306 files) | 0 | 10,212 | 0 | 56 | 304.1 |
+| s1 | `bun run package` | 0 | - | - | - | 2.8 |
+| s2 | installer `/S` | 0 | - | - | - | 0.1 |
+| s5 | `capture.test.ts` | 0 | 17 | 0 | 2 | 0 |
+| s5 | `cdp.test.ts` | 0 | 9 | 0 | 0 | 0 |
+| s5 | `commit-menu-packaged.test.ts` | 0 | 5 | 0 | 2 | 0.8 |
+| s5 | `commit-menu-perf.test.ts` | 0 | 8 | 0 | 0 | 50.2 |
+| s5 | `contrast.test.ts` | 0 | 16 | 0 | 0 | 0 |
+| s5 | `delete-facts.test.ts` | 0 | 3 | 0 | 0 | 0 |
+| s5 | `external-change.test.ts` | 0 | 10 | 0 | 0 | 0.5 |
+| s5 | `history-git-memory.test.ts` | 0 | 0 | 0 | 2 | 0 |
+| s5 | `inject.test.ts` | 0 | 8 | 0 | 1 | 0 |
+| s5 | `inspection-packaged.test.ts` | 0 | 11 | 0 | 1 | 2.8 |
+| s5 | `inspection-perf.test.ts` | 0 | 9 | 0 | 1 | 11.7 |
+| s5 | `installed-app.test.ts` | 0 | 14 | 0 | 0 | 0.2 |
+| s5 | `keys-cdp.test.ts` | 0 | 6 | 0 | 0 | 0.1 |
+| s5 | `native-facts.test.ts` | 0 | 4 | 0 | 0 | 0.3 |
+| s5 | `no-network.test.ts` | 0 | 0 | 0 | 1 | 0 |
+| s5 | `perf-fixtures.test.ts` | 0 | 10 | 0 | 0 | 4.2 |
+| s5 | `process-poller.test.ts` | 0 | 4 | 0 | 0 | 0 |
+| s5 | `ratio.test.ts` | 0 | 29 | 0 | 0 | 0 |
+| s5 | `remote-delete-packaged.test.ts` | 0 | 7 | 0 | 2 | 1.1 |
+| s5 | `remote-delete-perf.test.ts` | 0 | 7 | 0 | 0 | 13.4 |
+| s5 | `revert-facts.test.ts` | 0 | 12 | 0 | 0 | 0.2 |
+| s5 | `revert-packaged.test.ts` | 0 | 7 | 0 | 4 | 1.4 |
+| s5 | `revert-perf.test.ts` | 0 | 6 | 0 | 0 | 148 |
+| s5 | `service-hardening.test.ts` | 0 | 2 | 0 | 0 | 0 |
+| s5 | `spelling-packaged.test.ts` | 0 | 6 | 0 | 4 | 0.8 |
+| s5 | `spelling-perf.test.ts` | 0 | 89 | 0 | 1 | 114.7 |
+| s5 | `submodule-perf-fixture.test.ts` | 0 | 1 | 0 | 0 | 0.1 |
+| s5 | `submodule-tree-packaged.test.ts` | 0 | 15 | 0 | 1 | 64.6 |
+| s5 | `submodule-update-packaged.test.ts` | 0 | 5 | 0 | 0 | 105.6 |
+| s5 | `sync-packaged.test.ts` | 0 | 1 | 0 | 4 | 0 |
+| s5 | `sync-perf.test.ts` | 0 | 5 | 0 | 10 | 0 |
+| s5 | `uia.test.ts` | 0 | 12 | 0 | 0 | 0.4 |
+| s5 | `workbench-packaged.test.ts` | 0 | 8 | 0 | 6 | 1.3 |
+| s6 | `bun test ./tests/gate` | 0 | 175 | 0 | 0 | 3.3 |
+
+- The driver `STEP` line of s4 gives `pass=1006`, the serial part only. The s4 values above come from both Bun summaries.
+- `ORIGIN`: every test step printed `ORIGIN` lines, and 0 lines named a path outside the checkout under test (s4: 2,603 lines).
+- `H200K-MISSING count=0`: no `missing capability history-fixture-h200k` line.
+- The v0.1.0 full run at b9fbda78 skipped the 14 H200K cases: the cache did not hold the H200K fixture, and that run did not set `ARBARETO_HISTORY_FIXTURES`. This run set `ARBARETO_HISTORY_FIXTURES=H200K`, reused both cached H200K variants, and ran the 14 cases. All 14 passed.
+- At the end, `git status --porcelain` equalled the start (empty). The run left 0 fixture folders.
+- Skips: 98 unique skipped cases (s4 56, s5 42). By class: platform 45, machine 13, user input 25, fixable by the run setup 9, unknown 6. The unknown class holds 3 hard-coded harness capabilities (`restart-keeps-lingering`, `other-account-owner`, `disposable-volume`) and 3 unconditional skips (sync-packaged SC-008 clone, spelling-packaged Q26 US2 keyboard run, spelling-perf Q27 during a download).
+- 97 of the 98 skipped case names also skipped in the previous full run (code efc0b771, 2026-11-11, 97 skips). The new one is "T164 (10) at 225%" of `submodule-tree-packaged.test.ts`. In the previous run, the driver stopped that file at its 60-minute step limit, so the run gave no result for this case. A skip never counts as a pass.
+- 008 T048 revert (`revert-perf.test.ts`, the 1 MiB and 8 MiB binary case): pass. Binary median: confirmation 280.0 ms, refreshed diff 979.5 ms (budget 1,500 ms). In the previous full run, this case failed: "the restored binary file did not happen within 60000 ms". The cause of that fail is not confirmed.
+- The 010 values of this run are in 010 research.md "v0.1.1 full run (2026-11-13)".
+- Later merge cbdf7012 (on top of de82eccd) changed only the release workflow, CHANGELOG.md, `scripts/release/pins.ts`, the 007 docs, and two contract tests (`release-pins.test.ts`, `release-workflow.test.ts`). The post-merge check at cbdf7012 passed: typecheck and the schema check exit 0; `tests/contracts/groups.test.ts` 1 pass; `tests/contracts` 6,945 pass, 37 skip, 0 fail in 144 files; `hunspell-source.ts` build exit 0. Control: a mutation run of the release pins and workflow tests failed one release pins case (36 pass, 1 fail). The restore gave 37 pass, with `ORIGIN` at `scripts/release/pins.ts` of the checkout.
+- `OBSERVATION v0.1.1 full run: de82eccd, every step exit 0, test:all 10,212 pass 0 fail 56 skip, 33 tests/windows files 0 fail, gate 175 pass, installed exe equals the patched build, H200K cases ran, 98 skips classified, porcelain unchanged`

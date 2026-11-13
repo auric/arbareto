@@ -12,7 +12,7 @@ A tag `v0.1.0` on `main` starts one GitHub Actions workflow on `windows-2025`. T
 
 **Language/Version**: TypeScript `7.0.2` on Bun `1.4.4` (exact, constitution VIII exception) for the release scripts and tests. Rust `1.99.0` through a new `rust-toolchain.toml` (001 minimum `1.98.0` stays the minimum). GitHub Actions workflow YAML.
 
-**Primary Dependencies**: No new package. Build tools: tauri-cli `2.12.0` (`cargo install --locked`; it pins tauri-bundler `=2.10.0`, which downloads NSIS `3.11` by SHA-1, research R2). GitHub-hosted runner `windows-2025` (Windows Server 2025 with Visual Studio 2026, image `20261007.264.1` on 2026-10-24). Actions, each by full commit SHA: `actions/checkout`, `actions/upload-artifact`, `actions/download-artifact`, `actions/attest`, and, for the signing switch, `signpath/github-action-submit-signing-request`. The preinstalled `gh` CLI creates the release. The GitHub JavaScript actions run on the runner's own Node: a CI-only Node use (constitution II disclosure). Windows `C:\Windows\System32\tar.exe` packs the source archive.
+**Primary Dependencies**: No new package. Build tools: tauri-cli `2.12.0` (prebuilt release zip with a pinned SHA-256 in CI, T040; it pins tauri-bundler `=2.10.0`, which downloads NSIS `3.11` by SHA-1, research R2). GitHub-hosted runner `windows-2025` (Windows Server 2025 with Visual Studio 2026, image `20261007.264.1` on 2026-10-24). Actions, each by full commit SHA: `actions/checkout`, `actions/upload-artifact`, `actions/download-artifact`, `actions/attest`, and, for the signing switch, `signpath/github-action-submit-signing-request`. The preinstalled `gh` CLI creates the release. The GitHub JavaScript actions run on the runner's own Node: a CI-only Node use (constitution II disclosure). Windows `C:\Windows\System32\tar.exe` packs the source archive.
 
 **Storage**: None. Release files live as GitHub workflow artifacts and release assets.
 
@@ -117,13 +117,13 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 ### D2 Pins
 
-- `scripts/release/pins.ts` exports one record: Bun `1.4.4`, `bun-windows-x64.zip` SHA-256 `cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5`, Rust `1.99.0`, tauri-cli `2.12.0`, NSIS `v3.11`, runner `windows-2025`. A contract test compares it with `package.json` (`packageManager`, the `build:service` check), `rust-toolchain.toml`, `TAURI_CLI_VERSION` and `NSIS_VERSION` in `src/frontend/build/notices.ts`, and the workflow file.
+- `scripts/release/pins.ts` exports one record: Bun `1.4.4`, `bun-windows-x64.zip` SHA-256 `cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5`, Rust `1.99.0`, tauri-cli `2.12.0`, `cargo-tauri-x86_64-pc-windows-msvc.zip` SHA-256 `78785c9b574bbe4bbfe6cc3008422df068a0f661931a9fa9d13d08407604b6a9`, NSIS `v3.11`, runner `windows-2025`. A contract test compares it with `package.json` (`packageManager`, the `build:service` check), `rust-toolchain.toml`, `TAURI_CLI_VERSION` and `NSIS_VERSION` in `src/frontend/build/notices.ts`, and the workflow file.
 - `rust-toolchain.toml` at the repository root: `channel = "1.99.0"`, `profile = "minimal"`, `components = ["clippy", "rustfmt"]`, `targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]`. rustup reads it from the working folder and its parents. The cloud setup installs Rust from a tarball without rustup and is not affected; its `1.98.0` stays the minimum (001 plan.md:23).
 - Bun on the runner: download `https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64.zip` into `$env:RUNNER_TEMP`, compare `Get-FileHash -Algorithm SHA256` with the pin, extract there, and prepend the folder to `GITHUB_PATH`. No `setup-bun` action.
 - Rust on the runner: `rustup toolchain install` reads `rust-toolchain.toml`. Then `rustc --version` must print `rustc 1.99.0 `.
-- tauri-cli: `cargo install tauri-cli --version 2.12.0 --locked`. Then `cargo tauri --version` must print `tauri-cli 2.12.0`. The notices check (001 T375) also refuses any other value.
+- tauri-cli: download `https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.0/cargo-tauri-x86_64-pc-windows-msvc.zip` into `$env:RUNNER_TEMP`, compare `Get-FileHash -Algorithm SHA256` with the pin, extract there, and prepend the folder to `GITHUB_PATH`. The pin is the GitHub asset digest (research R2 "Caching", T040). No `cargo install tauri-cli`. Then `cargo tauri --version` must print `tauri-cli 2.12.0`. The notices check (001 T375) also refuses any other value.
 - Actions: each `uses:` names a 40-hex commit ID and the version tag in a trailing comment. The workflow contract test refuses any other form. The implementer reads each SHA from the action repository tag at implementation time and records it in research.md R7.
-- No `actions/cache` step (research R2).
+- No `actions/cache` step (research R2). The workflow builds no tool from source. The workflow downloads two zips, `bun-windows-x64.zip` and `cargo-tauri-x86_64-pc-windows-msvc.zip`, and each has a pinned SHA-256 (`BUN_ZIP_SHA256`, `TAURI_CLI_ZIP_SHA256`). Rust has a version pin only: `rustup toolchain install` reads `rust-toolchain.toml`, and the step checks the `rustc --version` line. tauri-bundler downloads NSIS and checks its SHA-1 pin (research R2); the repository holds no NSIS SHA-256.
 
 ### D3 Tag, version, and tree checks (`scripts/release/check.ts`)
 
@@ -134,7 +134,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - Release mode: `git rev-parse --verify HEAD^{commit}` must equal `git rev-parse --verify refs/tags/<tag>^{commit}`. Else exit 1 with `RELEASE_CHECK not-tag-commit` (spec FR-014). A non-zero `rev-parse` exit fails with `RELEASE_CHECK git-failed <code>`.
 - Both modes: `git --no-optional-locks status --porcelain --untracked-files=all` must print nothing, before and after the build (spec FR-014).
 - Release mode: `gh api repos/{owner}/{repo}/releases --paginate` JSON; a published release with the same `tag_name` fails with `RELEASE_CHECK exists`. A draft with that tag is reused (spec FR-015, FR-017). A draft asset name outside the release files of the run also fails with `RELEASE_CHECK exists`. This check runs in the publish job, because the build job has no `contents: write` token and drafts need it to be visible.
-- Release mode, publish job, before the release lookup: `gh api repos/{owner}/{repo}/commits/refs/tags/<tag> --jq .sha` must equal `GITHUB_SHA`. Else exit 1 with `RELEASE_CHECK not-tag-commit <tag> <commit>`. A failed `gh api` exits 1 (contracts/release.md §2).
+- Release mode, publish job, after the asset upload and before `gh release edit --draft=false`: `gh api repos/{owner}/{repo}/commits/refs/tags/<tag> --jq .sha` must equal `GITHUB_SHA`. Else exit 1 with `RELEASE_CHECK not-tag-commit <tag> <commit>`. A failed `gh api` exits 1 (contracts/release.md §2).
 - All downloads and outputs go below `$env:RUNNER_TEMP`, never into the checkout.
 
 ### D4 Build channel and clean identity
@@ -160,7 +160,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 - `scripts/release/notices-text.ts` reads `src/frontend/generated/notices.json` from the same build and writes the text file: the project licence and notice, then each licence group, each package with its version, and each licence text. The rendering is a pure function with a contract test: every package and every text of the JSON appears once, in JSON order.
 - `scripts/release/hunspell-source.ts`:
-  - For each pin (hunspell/hunspell `edb619100791110d3e34f09ec35392ad327c1135`, rotemdan/hunspell-wasm `8f755ef64e8b047b77b676f9698b3dfa5cb1887d`): `git init` in a temp folder, `git fetch --depth 1 https://github.com/<repo> <commit>`, then `git rev-parse FETCH_HEAD^{commit}` must equal the pin. Git verifies the object IDs on fetch.
+  - For each pin (hunspell/hunspell `edb619100791110d3e34f09ec35392ad327c1135`, rotemdan/hunspell-wasm `8f755ef64e8b047b77b676f9698b3dfa5cb1887d`): `git init` in a temp folder, `git fetch --depth 1 --end-of-options https://github.com/<repo> <commit>`, then `git rev-parse FETCH_HEAD^{commit}` must equal the pin. Git verifies the object IDs on fetch.
   - `git archive --format=tar --prefix=<repo-name>/ <commit>`, extracted into one staging folder.
   - `SOURCE.txt` in the staging root: both repository URLs, both commit IDs, the licence "LGPL-2.1 (Hunspell is also available under GPL-2.0 and MPL-1.1)", the statement that the 30 files of `hunspell-wasm/lib/hunspell/` equal `hunspell/src/hunspell/` (006 F16), and the statement that the Emscripten version of the shipped `hunspell.wasm` is not recorded upstream.
   - `C:\Windows\System32\tar.exe -czf` packs the staging folder. The shell path is literal.
@@ -181,20 +181,20 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 ### D8 Release installer name and service file properties
 
 - `src-tauri/tauri.preview.conf.json` sets `bundle.windows.nsis.installerHooks` to `./installer-hooks.preview.nsh`. tauri-cli 2.12.0 merges `--config` files as a JSON merge patch (`src/helpers/config.rs`), so the string replaces the local hook path.
-- `installer-hooks.preview.nsh` defines no `NSIS_HOOK_POSTINSTALL`. The bundler then writes `DisplayName` `${PRODUCTNAME}` (tauri-bundler 2.10.0 `installer.nsi:702`), so "Installed apps" shows "Arbareto" and version `0.1.0`.
+- `installer-hooks.preview.nsh` defines no `NSIS_HOOK_POSTINSTALL`. The bundler then writes `DisplayName` `${PRODUCTNAME}` (tauri-bundler 2.10.0 `installer.nsi:702`), so "Installed apps" shows "Arbareto" and the version in `package.json`.
 - Two new `package.json` scripts carry both inputs together, so they cannot disagree: `package:preview:exes` (`ARBARETO_RELEASE_CHANNEL=preview cargo tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.preview.conf.json -- --locked`) and `package:preview:bundle` (`ARBARETO_RELEASE_CHANNEL=preview cargo tauri bundle --bundles nsis --no-binary-patching --target x86_64-pc-windows-msvc --config src-tauri/tauri.preview.conf.json`; D11 states why), followed by the same version prints as `package`. `package:preview:exes` skips the NSIS print, because a `--no-bundle` build does not download `makensis.exe` (T029 dry run 1). Bun Shell runs the `NAME=value command` form on Windows. The workflow and the local rehearsal call only these scripts. README "Development" lists them after they run green.
-- `build:service` adds the Bun Windows file properties. The property that becomes the PE `ProductName` gets "Arbareto", because SignPath requires the project name as the product name of every signed file (research R1). The others: publisher "Ihor Lifanov", version `0.1.0`, description "Arbareto Git service", copyright "Copyright (c) 2026 Ihor Lifanov". The exact CLI flag names and the PE fields they set are fact F2. The pins test compares the version with `Cargo.toml`.
+- `build:service` adds the Bun Windows file properties. The property that becomes the PE `ProductName` gets "Arbareto", because SignPath requires the project name as the product name of every signed file (research R1). The others: publisher "Ihor Lifanov", version: the `version` in `Cargo.toml` (equal to `package.json`), description "Arbareto Git service", copyright "Copyright (c) 2026 Ihor Lifanov". The exact CLI flag names and the PE fields they set are fact F2. The pins test compares the version with `Cargo.toml`.
 
 ### D9 Release notes and changelog
 
 - `CHANGELOG.md`: one `## [<version>] - <date>` section per release, user-visible changes only (global changelog rule). The 0.1.0 section lists the feature set of README "Features" after 005, 006, 008, 010, 011, and the 004 Submodules tree.
 - `.github/release-notes/` holds the fixed blocks: `preview.md` (preview and qualification state, spec FR-003), `prerequisites.md` (spec FR-027), `unsigned.md` (SmartScreen prompt, Smart App Control block, checksum and attestation commands, spec FR-026), and `signed.md` (code signing policy, unsigned uninstaller and plugin DLL, spec FR-044, FR-046).
 - `scripts/release/notes.ts --version <v> --signing off|signpath` writes the notes: the CHANGELOG section, then the blocks. A missing section fails with `RELEASE_NOTES missing <version>`.
-- The publish job: `gh release create v<v> --draft --prerelease --verify-tag --title "Arbareto Preview v<v>" --notes-file <notes>` when no draft exists, `gh release upload --clobber` for the files of a draft after the asset name check (`RELEASE_CHECK exists` on a stale asset), then `gh release edit v<v> --draft=false --prerelease --latest=false`.
+- The publish job: `gh release create v<v> --draft --prerelease --verify-tag --title "Arbareto Preview v<v>" --notes-file <notes>` when no draft exists, `gh release upload --clobber` for the files of a draft after the asset name check (`RELEASE_CHECK exists` on a stale asset), then the tag commit check (D3), then `gh release edit v<v> --draft=false --prerelease --latest=false`.
 
 ### D10 README
 
-- A "Download" section: the Releases link, the prerequisites, the checksum command for PowerShell and for `sha256sum`, the `gh attestation verify <file> -R auric/arbareto` command, the SmartScreen prompt, and the sentence "Unsigned builds do not run when Smart App Control is on." (user, 2026-10-24).
+- A "Download" section: the Releases link, the prerequisites, the checksum command for PowerShell and for `sha256sum`, the `gh attestation verify <file> -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml` command, the SmartScreen prompt, and the sentence "Unsigned builds do not run when Smart App Control is on." (user, 2026-10-24).
 - The Status bullet "No installer release exists yet" changes to name the preview in the future tense. After the publish, the Status bullet and the "Download" section change to the present tense (tasks.md T032).
 - A "Code signing policy" section waits for the SignPath approval (signing switch-on tasks).
 
@@ -263,8 +263,8 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 ## Risks
 
-- The SignPath stages cannot run before the approval. Their YAML is checked only by the contract test. Mitigation: switch-on tasks with a test release `v0.1.1` (research R1 Q9).
+- The SignPath stages cannot run before the approval. Their YAML is checked only by the contract test. Mitigation: switch-on tasks with a signed test release (next signed version, user decides) (research R1 Q9).
 - `windows-2025` updates weekly. The pins hold the versions; the run record shows the image.
-- `cargo install tauri-cli` builds from source on each run. No measurement yet. T029 records the time.
+- The step "Install Rust and the Tauri CLI" took 377 s to 605 s. The `cargo install tauri-cli` source build took most of this time. T040 replaces it with the hash-pinned prebuilt zip (research R2 "Caching").
 - The dry run uses a standard GitHub-hosted runner in the public repository. These runners are free for public repositories (research R2).
 - The uninstaller and the NSIS plugin DLL stay unsigned under SignPath (user, Q3).

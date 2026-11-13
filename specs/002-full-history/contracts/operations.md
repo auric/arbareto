@@ -100,6 +100,10 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - with `text: "details"`: also `body`, `bodyCut`, `committer`, `committerDate`, and `children`. `body` and `bodyCut` follow 001 §3 "HistoryPage result" and the 001 §5 "History message body" bound of 16 KiB.
 - In filter mode, a row that is not settled yet has `cell: null`.
 - In filter mode, `parents` holds the Git parents of the row. The cell draws the reduced parents (data-model §7).
+- In filter mode, a row with a cell also has three fields. Other rows omit them.
+  - `reducedParents`: the first `HISTORY_PARENTS_PER_COMMIT` reduced parents as `{oid, skip}`, in rising match order. `skip` is true for an edge with `direct` false.
+  - `reducedParentCount`: the count of all reduced parents. `reducedParents` holds the smaller of this count and `HISTORY_PARENTS_PER_COMMIT`.
+  - `reducedSkips`: true when any reduced edge of the row skips commits, also an edge that `reducedParents` does not list.
 - Text comes from one `cat-file --batch-command -Z` with `contents` lines. Deadline 30 s. `text: "none"` starts no Git process.
 - A newer text read cancels an unfinished one of the same view, by the 001 superseded-read rule (001 §5 "Pending reads").
 - A text read runs no fingerprint check, because commit text cannot change with the topology.

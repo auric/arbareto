@@ -66,9 +66,11 @@ export function heldElsewhere(records: readonly WorktreeRecord[], ref: string, h
 
 // Data-model §4 `reflogKeeps`: the entries of the HEAD reflog. builtin/reflog.c `cmd_reflog_exists`: exit 0 when the reflog exists, 1 when it does not.
 async function headReflog(ctx: ObserveContext): Promise<Fact<string[]>> {
-  const exists = await stepOf(ctx, headReflogExistsArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }));
+  const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+  const exists = await stepOf(ctx, headReflogExistsArgs(), out);
   if (!("exit" in exists)) return exists;
-  if (exists.exit.exitCode === 1) return { value: [] };
+  // Only exit 1 with no output is the absent answer.
+  if (exists.exit.exitCode === 1) return out.bytes === 0 && exists.stderrBytes === 0 ? { value: [] } : { code: "GIT_FAILED" };
   if (exists.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   // `-n` caps the entries at REFLOG_SCAN_ENTRIES, so more bytes break the grammar.
   const read = await readOut(ctx, headReflogArgs(), REFLOG_SCAN_ENTRIES * 65);

@@ -24,6 +24,8 @@ env:
   BUN_ZIP_SHA256: "cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5"
   RUST_VERSION: "1.99.0"
   TAURI_CLI_VERSION: "2.12.0"
+  TAURI_CLI_ZIP_URL: "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.0/cargo-tauri-x86_64-pc-windows-msvc.zip"
+  TAURI_CLI_ZIP_SHA256: "78785c9b574bbe4bbfe6cc3008422df068a0f661931a9fa9d13d08407604b6a9"
 
 defaults:
   run:
@@ -60,14 +62,22 @@ jobs:
           Expand-Archive -Path $zip -DestinationPath $dir
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dir 'bun-windows-x64')
 
-      - name: Install Rust and the Tauri CLI
+      - name: Install the Tauri CLI
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'tauri-cli'
+          $zip = Join-Path $env:RUNNER_TEMP 'cargo-tauri-x86_64-pc-windows-msvc.zip'
+          Invoke-WebRequest -Uri $env:TAURI_CLI_ZIP_URL -OutFile $zip
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:TAURI_CLI_ZIP_SHA256) { [Console]::Error.WriteLine("RELEASE_CHECK pin cargo-tauri-x86_64-pc-windows-msvc.zip $hash"); exit 1 }
+          Expand-Archive -Path $zip -DestinationPath $dir
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+
+      - name: Install Rust and check the tools
         run: |
           rustup toolchain install
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $rustc = rustc --version
           if (-not $rustc.StartsWith("rustc $env:RUST_VERSION ")) { [Console]::Error.WriteLine("RELEASE_CHECK pin $rustc"); exit 1 }
-          cargo install tauri-cli --version $env:TAURI_CLI_VERSION --locked
-          if ($LASTEXITCODE -ne 0) { exit 1 }
           $cli = cargo tauri --version
           if ($cli -ne "tauri-cli $env:TAURI_CLI_VERSION") { [Console]::Error.WriteLine("RELEASE_CHECK pin $cli"); exit 1 }
           $bun = bun --version
@@ -214,7 +224,6 @@ jobs:
       id-token: write
       attestations: write
     env:
-      GH_TOKEN: ${{ github.token }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       SIGNING: ${{ vars.ARBARETO_SIGNING || 'off' }}
       TAG: ${{ github.ref_name }}
@@ -252,15 +261,13 @@ jobs:
           subject-path: ${{ runner.temp }}/release-files/*
 
       - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $files = Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'release-files') -File | ForEach-Object { $_.FullName }
           $version = $env:TAG.Substring(1)
           $notes = bun scripts/release/notes.ts --version $version --signing $env:SIGNING --out $env:RUNNER_TEMP
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          # The tag can move while publish waits for approval. GITHUB_SHA is the commit of the build.
-          $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/refs/tags/$env:TAG" --jq .sha
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          if ("$tagCommit" -cne $env:GITHUB_SHA) { [Console]::Error.WriteLine("RELEASE_CHECK not-tag-commit $env:TAG $tagCommit"); exit 1 }
           $drafts = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name == env.TAG) | .draft')
           if ($LASTEXITCODE -ne 0) { exit 1 }
           if ($drafts -contains 'false' -or $drafts.Count -gt 1) { [Console]::Error.WriteLine("RELEASE_CHECK exists $env:TAG"); exit 1 }
@@ -277,5 +284,9 @@ jobs:
             gh release upload $env:TAG @files --clobber
           }
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # The tag can move during the approval wait or the upload. GITHUB_SHA is the commit of the build. The draft is not public before the next edit.
+          $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/refs/tags/$env:TAG" --jq .sha
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ("$tagCommit" -cne $env:GITHUB_SHA) { [Console]::Error.WriteLine("RELEASE_CHECK not-tag-commit $env:TAG $tagCommit"); exit 1 }
           gh release edit $env:TAG --draft=false --prerelease --latest=false
           if ($LASTEXITCODE -ne 0) { exit 1 }

@@ -25,11 +25,26 @@ const { join } = NATIVE.path;
 const SAVED_FOLDER = mkdtempSync(join(tmpdir(), "arbareto-session-startup-"));
 afterAll(() => rmSync(SAVED_FOLDER, { recursive: true, force: true }));
 const SAVED_PATH = join(SAVED_FOLDER, NATIVE.gitName);
-writeFileSync(SAVED_PATH, "saved Git stub");
+// T413: the probe admits only an x64 image header: PE `Machine` 0x8664 on Windows, ELF `e_machine` 62 elsewhere. The tag keeps the digests apart.
+function x64Stub(tag: string): Uint8Array {
+  const head = new Uint8Array(0x88);
+  const view = new DataView(head.buffer);
+  if (isWindows) {
+    head.set([0x4d, 0x5a]);
+    view.setUint32(0x3c, 0x80, true);
+    head.set([0x50, 0x45, 0, 0], 0x80);
+    view.setUint16(0x84, 0x8664, true);
+  } else {
+    head.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+    view.setUint16(18, 62, true);
+  }
+  return Buffer.concat([head, new TextEncoder().encode(tag)]);
+}
+writeFileSync(SAVED_PATH, x64Stub("saved Git stub"));
 // A wrapper in a subfolder. The exec-path probe of `probeRun` names the saved folder, so the wrapper resolves to `SAVED_PATH`.
 const WRAPPER_PATH = join(SAVED_FOLDER, "cmd", NATIVE.gitName);
 mkdirSync(join(SAVED_FOLDER, "cmd"));
-writeFileSync(WRAPPER_PATH, "wrapper Git stub");
+writeFileSync(WRAPPER_PATH, x64Stub("wrapper Git stub"));
 // The handshake refuses a temporary folder that is not a native absolute path. A faked platform on another host gives such a folder.
 // A Windows host never skips.
 const startupTest = test.skipIf(process.platform !== "win32" && !isChannelPath(SAVED_PATH));
@@ -46,7 +61,7 @@ const SAVED_GIT = {
 
 // The shell answers the exec-path probe with the saved folder and the version probe with an admitted version.
 async function probeRun(call: GitCall): Promise<GitExit> {
-  const output = call.arguments[0] === "--exec-path" ? `${SAVED_FOLDER}\n` : `git version ${ADMITTED_VERSION}\ncpu: x86_64\n`;
+  const output = call.arguments[0] === "--exec-path" ? `${SAVED_FOLDER}\n` : `git version ${ADMITTED_VERSION}\n`;
   call.stdout.push(new TextEncoder().encode(output));
   return { exitCode: 0, activeDescendants: 0 };
 }

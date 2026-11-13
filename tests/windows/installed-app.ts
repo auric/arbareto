@@ -44,6 +44,9 @@ export const WAIT_MS = 10_000;
 // `VIEW_OPTIONS` of src/frontend/app/Workbench.tsx: the buttons of the Views control. The Commit view holds the file lists and the message editor (plan.md D15). The History view leaves the UIA tree while it is hidden.
 export const HISTORY_VIEW = "History";
 export const COMMIT_VIEW = "Commit";
+// A page expression. src/frontend/app/Workbench.tsx `statusText`: the first status cell of the footer shows these texts while a read runs or the state is blocked.
+// T411: a reconcile block shows counts there. The Remote sync group then holds its reason (SyncToolbar.tsx `quietText`).
+export const SETTLED = `!['Refreshing…', 'State unknown'].includes((document.querySelector('[data-slot=status-region] footer')?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim()) && !(document.querySelector('[role=group][aria-label="Remote sync"]')?.textContent ?? '').includes('The status read after the last operation is still running.')`;
 // The local branch row name of src/frontend/refs/ReferencesSidebar.tsx for a branch without an upstream.
 export const localRow = (name: string, current = false) => [name, "local branch", ...(current ? ["Current"] : []), "No upstream"].join(", ");
 

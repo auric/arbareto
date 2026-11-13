@@ -41,6 +41,9 @@ export interface ViewRow {
   oid: string;
   parents: string[];
   cell: Cell | null;
+  reducedParents?: { oid: string; skip: boolean }[];
+  reducedParentCount?: number;
+  reducedSkips?: boolean;
   labels: { kind: string; name: string; invalidUtf8: boolean }[];
   checkout: boolean;
   match?: boolean | null;

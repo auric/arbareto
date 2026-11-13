@@ -7,13 +7,14 @@ import { userInfo } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import type { FileFact, TrustAction } from "../../src/contracts/channel";
 import { foldAscii } from "../../src/contracts/fold-ascii";
+import { redactUrlUserInfo } from "../../src/contracts/submodules";
 import { NATIVE, PATH_RULES } from "../../src/contracts/native-path";
 import { RECONCILIATION_TARGET_MS, TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILES, TRUST_DIGEST_TOTAL_BYTES, TRUST_INPUT_BYTES, TRUST_LINK_HOPS, TRUST_REPORT_ENTRIES, TRUST_REPORT_HOOKS } from "../../src/contracts/limits";
 import { configListArgs, hooksPathArgs } from "../../src/git-service/commands";
 import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
 import { RunnerRefusal, type GitRunner } from "../../src/git-service/git-runner";
 import { createRegistrations, type Workspace } from "../../src/git-service/registration";
-import { createTrust, parseMaybeBool, readProgramFiles, redactUrlUserInfo, relativePathEntries, type ChangeFiles } from "../../src/git-service/trust";
+import { createTrust, parseMaybeBool, readProgramFiles, relativePathEntries, type ChangeFiles } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot, type OwnedGitOptions } from "./fixture-root";
 import { buildF02, buildF07, buildF08, buildF17, put, type Built } from "./fixtures";
@@ -274,8 +275,11 @@ describe("URL user information redaction (contract §7 \"URL user information\")
     ["the last @ of the authority", "https://a@b:c@host.example/x", "https://<redacted>@host.example/x"],
     ["an empty user part", "https://@host.example/", "https://<redacted>@host.example/"],
     ["an authority that runs to the end", "ssh://git@host.example", "ssh://<redacted>@host.example"],
-    ["an authority that ends at ?", "https://u@host.example?q=a@b", "https://<redacted>@host.example?q=a@b"],
-    ["an authority that ends at #", "https://u@host.example#f@g", "https://<redacted>@host.example#f@g"],
+    ["an authority that runs past ?", "https://u@host.example?q=a@b", "https://<redacted>@b"],
+    ["an authority that runs past #", "https://u@host.example#f@g", "https://<redacted>@g"],
+    ["a # in the password", "https://u:pa#ss@host/r", "https://<redacted>@host/r"],
+    ["a ? in the password", "https://u:pa?ss@host/r", "https://<redacted>@host/r"],
+    ["an @ after the first / only", "https://host/p?x=a@b", "https://host/p?x=a@b"],
     ["an @ after the authority only", "https://host.example/a@b?c@d#e@f", "https://host.example/a@b?c@d#e@f"],
     ["no user information", "https://host.example/repo.git", "https://host.example/repo.git"],
     ["text without ://", "git@host.example:repo.git", "git@host.example:repo.git"],

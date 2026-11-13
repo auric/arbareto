@@ -218,7 +218,7 @@ Steps:
 3. `pageant(R)` on a Windows repository (`sync.ts:249-255`).
 4. The push: `pushArgs(R, null, dst, expect, of)` through `networkStep(..., "sync-push", ...)`. Policy `remote`, `PROCESS_LIMITS.network`, and the stall notice. Remedy: `& {git} --no-lazy-fetch -C {root} push --force-with-lease={lease} -- {remote} {refspec}`. A URL with user information gets the remedy as text only (`sync.ts:173-174`).
 5. Parse: `parsePushPorcelain(stdout, ":<dst>", exit, "(delete):<dst>")`.
-6. Gone recovery (D8), only when the status is `rejected` and `sameUrl` holds.
+6. Lease re-read and gone recovery (D8), only when the push status is `rejected`, the review bound `sameUrl: true`, and no Cancel came.
 7. With `local`, after `deleted` or `remoteGone`: the local writes `deleteRefArgs(branch, oid)` and, when `section`, `removeBranchSectionArgs(branch)` (`workbench-commands.ts:275-282`), through `writeUpstream`. It stops at the first nonzero exit and at Cancel (`sync.ts:310`). Before the first local write, the service reports the phase `sync-delete-local`. The status bar shows X28 for that phase.
 8. Enter reconciling. Wait for the WSL process-end fact (`processEnded`). Read refs, HEAD, the operation state, and the trust listing.
 9. Outcome (table below).
@@ -232,11 +232,11 @@ Steps:
 | `deleted`; local writes done, or none | `intended-effects-confirmed`, or `differing-effects` when other refs or HEAD changed | `push.status` `deleted` | X20, or X21 when combined |
 | `deleted`; the fresh listing still holds the local ref after a failed local write or Cancel | `failed-with-effects` | `localNotDeleted: true` | X24 |
 | `deleted`; the local ref is gone, but the section removal failed, or Cancel stopped it | `failed-with-effects` | `push.status` `deleted`, no `localNotDeleted` | the 003 line "{name} did not complete and left effects: {code}" |
-| `rejected` with the lease (stale), no gone fact | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`; `remedy` X27 | X22, plus X25 when combined |
+| `rejected`; the D8 re-read shows a remote value other than `<expect>`, or a gone fact without `remoteGone` | `no-effects`, failed, `PUSH_REJECTED` | `reason: stale-lease`; `remedy` X27 | X22, plus X25 when combined |
+| `rejected`; the D8 re-read equals `<expect>`, fails, or does not run (user decision 2026-11-11) | `no-effects`, failed, `PUSH_REJECTED` | `reason: rejected`, `reasonText` (display only), no `remedy` | E5, plus X25 when combined |
 | `rejected` and `remoteGone`; local writes done, or none | `intended-effects-confirmed` | `remoteGone: true` | X23, then X26 when combined |
 | `rejected` and `remoteGone`; the fresh listing still holds the local ref after a failed local write or Cancel | `failed-with-effects` | `remoteGone: true`, `localNotDeleted: true` | X23, then X25 |
 | `rejected` and `remoteGone`; the local ref is gone, but the section removal failed, or Cancel stopped it | `failed-with-effects` | `remoteGone: true`, no `localNotDeleted` | the 003 line "{name} did not complete and left effects: {code}" |
-| `rejected` with another reason | `no-effects`, failed, `PUSH_REJECTED` | `reason`, `reasonText` (display only) | E2, plus X25 when combined |
 | `remote-rejected` or `remote-failure` | `no-effects`, failed, `PUSH_REJECTED` | `reason`, `reasonText` (display only) | E2, plus X25 when combined |
 | `none` with a nonzero exit, or a refused start | `no-effects`, failed, `GIT_FAILED` (or the runner code) | `remedy` with the command; the connect target | E3 with the remedy, plus X25 when combined |
 | Canceled, no ref changed | `no-effects`, canceled | `remedy` `CANCELED_PUSH_TEXT` (`sync.ts:36`) | E4, plus X25 when combined |
@@ -265,13 +265,15 @@ Order: remote first, then local.
 | gone, stale ref removed | deleted | intended | X23 then X26 |
 | gone, stale ref removed | failed, or not run after Cancel | failed-with-effects | X23, then X25 |
 
-### D8 Gone recovery (user decision 2026-11-06, design option Q1 a)
+### D8 Lease re-read and gone recovery (user decisions 2026-11-06, design option Q1 a, and 2026-11-11)
 
-- Trigger: the push status is `rejected`, the reason is `stale-lease`, and the review bound `sameUrl: true`.
+- Trigger: the push status is `rejected`, and the review bound `sameUrl: true`. The `(delete):<dst>` alias does not decide (user decision 2026-11-11).
+- Stale fact: the re-read shows a remote value other than `<expect>`, or no remote ref. A re-read that equals `<expect>`, fails, or does not run gives reason `rejected` (003 Δ9, T092).
 - Step: `ls-remote --exit-code -- R <dst>` through `networkStep`, with the same policy, Pageant, and remedies as the push.
-- Gone fact: exit 2, or exit 0 with no exact `<dst>` line (`parseLsRemote`). Exit 0 with an exact `<dst>` line means the branch exists, so the stale outcome stays. Another exit, a parse failure, or Cancel keeps the stale outcome.
+- Gone fact: exit 2, or exit 0 with no exact `<dst>` line (`parseLsRemote`). An exact `<dst>` line with a value other than `<expect>` means the branch moved, so the stale outcome stays. An exact line equal to `<expect>`, another exit, a parse failure, or Cancel gives reason `rejected`.
+- Cancel: the re-read does not start after Cancel, as in the push (`sync.ts` `!signal.aborted`).
 - Removal: `update-ref --no-deref -d <ref> <expect>` as one more write through `writeUpstream`. Exit 0 marks `remoteGone`. A nonzero exit keeps the stale outcome. The expect value makes Git refuse a ref that changed after the review.
-- A different `pushurl` skips the check, because the fetch URL could name another repository than the push URL.
+- A different `pushurl` skips the check, because the fetch URL could name another repository than the push URL. The reason is then `rejected`, with E5 and no remedy.
 
 ### D9 Sync action, trust, and shell
 
@@ -377,9 +379,10 @@ Existing texts that this feature reuses unchanged:
 | X5 | dialog, list end | force-push list (`ForcePushConfirm.tsx:45-53`) | and 1 more commit / and {n} more commits |
 | X12 | local dialog, review runs | existing loading text | Loading… |
 | E1 | key text of X1 | `KEYS.delete` (`shortcuts.ts:182`) | Del |
-| E2 | outcome, remote rejected | `OperationStatus.tsx:399` | Rejected by the remote, then `: <reasonText>` |
+| E2 | outcome, `remote-rejected` or `remote-failure` | `OperationStatus.tsx` `REMOTE_REJECTED` | Rejected by the remote, then `: <reasonText>` |
 | E3 | outcome, failure | `OperationStatus.tsx`, `STEP_REMEDY_TEXT` and the command (`sync.ts:34`) | {name} did not complete: {code}. |
 | E4 | outcome, canceled | `OperationStatus.tsx:397` | {name} canceled. The remote can hold this push. Fetch to see the remote state. |
+| E5 | outcome, `rejected` without a stale fact (user decision 2026-11-11) | 003 plan D5 (T092), `OperationStatus.tsx` `pushRejected` | {name} did not complete: PUSH_REJECTED rejected: {reasonText} |
 
 The refusals `blockedReason`, `REASONS` (`texts.ts:91-106`), the trust flow, and the unknown-outcome text keep their existing texts. This feature adds no copy of them.
 
@@ -413,7 +416,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
 - Oracle: the same Git commands on a copy (`git push --porcelain --force-with-lease=<dst>:<expect> -- <remote> :<dst>`, then `update-ref` and `config --remove-section`). Compare `for-each-ref` of the local repository and the bare remote, HEAD, and the config bytes by SHA-256.
 - T009 (remote only). Each fixture compares with the oracle or asserts its code and reason:
   - Success. A name with a slash (P19). A branch with 150 commits that only it holds (count 150, list 100).
-  - The remote moved after the fetch (stale; every remote commit stays). The remote branch is absent, and the `pushurl` differs (stale, P9, P16).
+  - The remote moved after the fetch (stale; every remote commit stays). The remote branch is absent, and the `pushurl` differs (reason `rejected`, no re-read, P9, P16).
   - `receive.denyDeletes` (P3). The HEAD branch of a bare remote behind a stale local `origin/HEAD` (P4, remote rejected).
   - A non-bare remote with the branch checked out (P5). A remote pre-receive hook (P6). A local pre-push hook that declines (P7, after approval).
   - The default branch (refused, no network process). `origin/HEAD` absent, and non-symbolic (`default-unknown`). `followRemoteHEAD=never`.
@@ -465,7 +468,7 @@ WP8 (T023) amends the earlier specs in the style "Note (2026-11-06, user decisio
 - R10 PuTTY remotes. The delete reuses the push Pageant step. T009 checks the Pageant frame on Windows (D16).
 - R11 A remote that hides refs (`uploadpack.hideRefs`). The gone check then removes the stale ref, but the remote keeps its branch. The confirmation listed the commits of that ref, so no unconfirmed data goes.
 - R12 Cancel after a remote success and before the local delete. `writeUpstream` checks the signal before each write (`sync.ts:310`). The result is `failed-with-effects`. It states `localNotDeleted` only when the fresh ref listing still holds the local ref. A Cancel between the ref delete and the section removal gives no `localNotDeleted`.
-- R13 Known limit: a gone remote branch with a differing `pushurl` gives X22 on every retry. Fetch does not prune by default, so the stale ref stays (D8). Mitigation: the details area shows the terminal remedy X27, `git fetch --prune <remote>` in the D6 step 4 remedy form.
+- R13 Known limit: with a differing `pushurl`, no re-read runs, so each `[rejected]` delete gives E5 with no remedy (user decision 2026-11-11). A gone remote branch then keeps its stale ref on every retry. X27 does not apply: `fetch --prune` prunes from the fetch URL, not from the push URL of the delete. Mitigation: none in the application. After a check of the push URL, the user can run `git branch -d -r <remote>/<branch>` in a terminal.
 
 ## Open items and reviewer defaults
 

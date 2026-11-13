@@ -103,15 +103,16 @@ describe("native runner run requests", () => {
       call({ arguments: ["status"] }),
       call({ arguments: ["rev-parse", "--no-lazy-fetch"] }),
       call({ context: discovery, environmentPolicy: "probe", arguments: ["rev-parse", "--show-toplevel"] }),
-      call({ context: probe, environmentPolicy: "probe", arguments: ["version"] }),
-      call({ context: probe, environmentPolicy: "probe", arguments: ["--no-lazy-fetch", "version", "--build-options"] }),
-      call({ context: probe, environmentPolicy: "probe", arguments: ["version", "--build-options", "-v"] }),
-      call({ context: registered(), environmentPolicy: "read", arguments: ["version", "--build-options"] }),
+      // T413: the version probe is `version` alone.
+      call({ context: probe, environmentPolicy: "probe", arguments: ["version", "--build-options"] }),
+      call({ context: probe, environmentPolicy: "probe", arguments: ["--no-lazy-fetch", "version"] }),
+      call({ context: probe, environmentPolicy: "probe", arguments: ["version", "-v"] }),
+      call({ context: registered(), environmentPolicy: "read", arguments: ["version"] }),
     ];
     for (const c of refused) await expect(channel.runner.run(c)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     expect(channel.sent).toEqual([]);
-    void channel.runner.run(call({ context: probe, environmentPolicy: "probe", arguments: ["version", "--build-options"] }));
-    expect(channel.last("run").arguments).toEqual(["version", "--build-options"]);
+    void channel.runner.run(call({ context: probe, environmentPolicy: "probe", arguments: ["version"] }));
+    expect(channel.last("run").arguments).toEqual(["version"]);
   });
 
   test("the call resolves at the exit reply, never at the end of output", async () => {
@@ -145,7 +146,7 @@ describe("native runner run requests", () => {
   test("deadline caps follow the context, and stallMs exists only for a registered operation", async () => {
     const channel = createChannelDouble();
     const probe: ProcessContext = { contextKind: "gitProbe", bootstrapId: id() };
-    const version = ["version", "--build-options"];
+    const version = ["version"];
     const refused = [
       call({ context: probe, environmentPolicy: "probe", arguments: version, limits: { deadlineMs: 30_001 } }),
       call({ context: probe, environmentPolicy: "probe", arguments: version, limits: { deadlineMs: 120_000 } }),
@@ -313,7 +314,7 @@ describe("native runner run requests", () => {
     const forms: [GitCall["environmentPolicy"], Partial<GitCall>][] = [
       ["read", {}],
       ["search", {}],
-      ["probe", { context: probe, arguments: ["version", "--build-options"], limits: { deadlineMs: 30_000 } }],
+      ["probe", { context: probe, arguments: ["version"], limits: { deadlineMs: 30_000 } }],
       ["mutation", {}],
       ["network", { limits: PROCESS_LIMITS.network }],
       ["remote", { limits: PROCESS_LIMITS.network }],
@@ -649,7 +650,7 @@ describe("native runner identity, lingering count, and registration", () => {
     expect(channel.sent.length).toBe(sent);
   });
 
-  test("a gitProbe run permits only --exec-path and version --build-options", async () => {
+  test("a gitProbe run permits only --exec-path and version", async () => {
     const channel = createChannelDouble();
     const probe: ProcessContext = { contextKind: "gitProbe", bootstrapId: id() };
     for (const args of [["--exec-path", "version"], ["--exec-path=C:\\x"], ["--no-lazy-fetch", "--exec-path"]]) {

@@ -32,7 +32,7 @@ type Plan = {
 } & ConflictPlan;
 type Reviewed = { action: SyncAction; plan: Plan; syncReviewToken?: unknown };
 /** Data-model §5 and §7: the result fields that decide the notice. */
-type Result = { push?: { status: string; lease: boolean }; integration?: { state: string } };
+type Result = { push?: { status: string; lease: boolean }; reason?: string; integration?: { state: string } };
 
 /** Feature 011 plan.md D13: the names of the status texts of a remote branch delete. */
 function namesOf(action: SyncAction, plan: Plan): { names?: SyncNames } {
@@ -111,8 +111,8 @@ export function useSync({ bridge, target, repositoryId, headTarget, headOid, onO
     const status = result.push?.status;
     const current = head.current;
     if (PUSHING.includes(action) && response.state === "succeeded") setNotice(null);
-    // Data-model §5: a `rejected` status with a lease means that the remote branch changed (FR-025).
-    else if (PUSHING.includes(action) && response.code === "PUSH_REJECTED" && status === "rejected" && plan.destination !== undefined && typeof current === "string") {
+    // Data-model §5: only reason `stale-lease` means that the remote branch changed (FR-025). Another lease rejection keeps the band as it is.
+    else if (PUSHING.includes(action) && response.code === "PUSH_REJECTED" && status === "rejected" && (!result.push!.lease || result.reason === "stale-lease") && plan.destination !== undefined && typeof current === "string") {
       const d = plan.destination;
       setNotice({ kind: result.push!.lease ? "stale" : "rejected", tracking: d.trackingRef === null ? `${shortRef(d.ref)} on ${d.remote}` : shortRef(d.trackingRef), branch: branchName(current), target: current, remote: d.remote });
     }

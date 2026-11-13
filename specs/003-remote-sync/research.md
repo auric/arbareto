@@ -424,7 +424,7 @@ Ticks: T089, T090, and T091 cite this run. T027 and T030 stay open: cargo captur
 Review of 2026-10-21 at c36f81e. Read only. Scope: the Coverage rows of FR-005 and SC-010, the outcome assertions of `tests/git/sync-fetch.test.ts`, `sync-push.test.ts`, `sync-rejected.test.ts`, `sync-trust.test.ts`, `sync-pull.test.ts`, `tracking.test.ts`, and `clone.test.ts`, and the code that decides each outcome in `src/git-service/sync.ts`, `sync-review.ts`, `sync-parsers.ts`, `sync-integrate.ts`, `tracking.ts`, `clone.ts`, and `resolve.ts`.
 
 - Exit codes: `GIT_FAILED`, the fetch state of each remote, a clone, and Continue come from exit status 0 or not 0. `no-skip-commit` and the theirs side of a conflict come from exit 2 of `git show-ref --exists` (git-show-ref(1)).
-- Machine-readable output: push states, `PUSH_REJECTED` reasons `rejected` and `remote-rejected`, and created, updated, and deleted refs come from the `--porcelain` flag and summary fields (sync-parsers.ts `PUSHED`, `REFUSED`, the fetch flags). `stale-lease` is a `[rejected]` status of a push with a lease (contract Δ3, Δ9). The D4 destination comes from `for-each-ref` `%(push)` and `config -z` entries. `MALFORMED_GIT_OUTPUT` is any record outside the contract Δ3 grammar.
+- Machine-readable output: push states, `PUSH_REJECTED` reasons `rejected` and `remote-rejected`, and created, updated, and deleted refs come from the `--porcelain` flag and summary fields (sync-parsers.ts `PUSHED`, `REFUSED`, the fetch flags). `stale-lease` needs a `[rejected]` status of a push or a 011 delete with a lease (contract Δ3, Δ9). A lease re-read must also show no remote ref or a value other than `<expect>` (T092; 011 user decision 2026-11-11). The D4 destination comes from `for-each-ref` `%(push)` and `config -z` entries. `MALFORMED_GIT_OUTPUT` is any record outside the contract Δ3 grammar.
 - Repository reads: `completed-with-effects`, the observed list, `STALE_REVIEW`, and the pull decision come from ref listings, `rev-list --left-right --count`, HEAD, and the operation state read after each process.
 - OS facts: `canceled` needs a process without an exit status, and `destinationFacts` and the PuTTY version come from OS reads.
 - Tests: every `toContain` on `outputTail` checks shown text or redaction beside an asserted code. No test outcome comes from a text match.
@@ -433,6 +433,14 @@ Review of 2026-10-21 at c36f81e. Read only. Scope: the Coverage rows of FR-005 a
 - No outcome comes from a message text, a remote text, or a timing measurement.
 
 T081 stays open: it depends on T074, which waits for the manual check (R20).
+
+## R24 v0.1.1 full run (2026-11-13)
+
+Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62f161197f7ab3c6edf80e6eccedc207495d9f9fce453e5ad8b9`. OS: Windows NT 10.0.26300.0, UBR 9974, x64. Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4. `bun run test:all` exited 0. Every `ORIGIN` line named the checkout under test.
+
+- T093: `tests/git/sync-rejected.test.ts` 16 pass, 0 skip, 0 fail. `tests/git/sync-credentials.test.ts` 3 pass, 0 skip, 0 fail.
+- Skips in these files: none.
+- The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
 
 ## Batch reviews
 

@@ -14,7 +14,7 @@ const count = (n: number) => n.toLocaleString("en-US");
 export const LICENCE_TEXTS = {
   bytes: (n: number) => (n === 1 ? "1 byte" : `${count(n)} bytes`),
   close: "Close the licence text (Esc)",
-  region: (language: string) => `Licence text of ${language}`,
+  region: (language: string, of?: { i: number; n: number }) => (of === undefined ? `Licence text of ${language}` : `Licence text of ${language}, ${of.i} of ${of.n}`),
   readmeRegion: (language: string) => `Readme text of ${language}`,
   readme: "This dictionary has no licence file. Its readme names the licence.",
   failed: "Arbareto could not read the licence text: ",
@@ -63,7 +63,7 @@ export type LicencePanelProps = {
   name: string;
   /** The catalog `license` value as given (spec FR-015). */
   licence: string;
-  /** Null while the documents load. */
+  /** Null while the documents load. Otherwise every document of the catalog `licences` array, in that order. */
   documents: readonly LicenceDocument[] | null;
   failure: ReactNode;
   onClose(): void;
@@ -117,7 +117,7 @@ export function LicencePanel({ name, licence, documents, failure, onClose }: Lic
               ref={i === 0 ? first : undefined}
               role="document"
               tabIndex={0}
-              aria-label={doc.file === "readme.md" ? LICENCE_TEXTS.readmeRegion(name) : LICENCE_TEXTS.region(name)}
+              aria-label={doc.file === "readme.md" ? LICENCE_TEXTS.readmeRegion(name) : LICENCE_TEXTS.region(name, single === null ? { i: i + 1, n: documents.length } : undefined)}
               className="min-h-0 flex-1 overflow-y-auto py-2 pr-6 pl-3 font-mono whitespace-pre-wrap select-text [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-accent-role"
             >
               {doc.text}

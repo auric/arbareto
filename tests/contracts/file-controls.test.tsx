@@ -63,6 +63,7 @@ function comparison(fileAction: string, remedy: typeof ADD_REMEDY | null = null)
     support: "supported",
     fileAction,
     remedy,
+    fileChange: "modified" as const,
   };
 }
 

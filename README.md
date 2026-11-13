@@ -82,7 +82,7 @@ sha256sum --ignore-missing --check SHA256SUMS.txt
 To check that the release workflow of this repository built the file, use the GitHub CLI:
 
 ```sh
-gh attestation verify <file> -R auric/arbareto
+gh attestation verify <file> -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml
 ```
 
 ## Requirements

@@ -54,7 +54,7 @@ const rejected = (code: string, result?: unknown) => ({ requestId: fixtureId(0x9
 // A submodule comparison: the service gives the support reason `submodule` (001 plan "Limitation text").
 const submoduleComparison = (args: unknown[]) => {
   const payload = args[1] as { snapshotId: string; entryId: string };
-  return succeeded({ comparisonId: fixtureId(0x7ff), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(""), hunks: [], support: "submodule", fileAction: "stage", remedy: null });
+  return succeeded({ comparisonId: fixtureId(0x7ff), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(""), hunks: [], support: "submodule", fileAction: "stage", remedy: null, fileChange: "modified" });
 };
 const recent = () => succeeded({ entries: [{ entryId: fixtureId(0x9e0), path: "C:\\repo", location: { kind: "native" }, openedAt: "2026-10-23T10:00:00Z", current: true }] });
 

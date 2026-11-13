@@ -9,7 +9,7 @@
 // - FR-049 "saves no key file" is checked as: no result, event, log entry, or frame holds the key path.
 // - FR-050 "opens no file" is checked as: the result equals the OS facts of the destination.
 // - It maps the `errno` name to the `destinationFacts` error code. The shell maps the Win32 error.
-// - It has no WSL clone route. T075 runs the WSL clone in the distro.
+// - This file has no WSL clone case. `tests/wsl/sync-wsl.test.ts` (T075) runs the WSL clone route of the double in the distro.
 
 import { expect } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";

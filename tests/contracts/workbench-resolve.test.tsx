@@ -73,7 +73,7 @@ function ran(action: "choose-side" | "mergetool", staged: boolean, state = "succ
   const result = RunWorkbenchResult.parse({ action, staged, operationState: staged ? "merging" : "merging", ...fields });
   return { requestId: fixtureId(22), operationId: fixtureId(23), state, repositoryGeneration: 1, result, ...(state === "succeeded" ? {} : { code: "GIT_FAILED" }) };
 }
-const COMPARISON = { comparisonId: fixtureId(50), snapshotId: SNAPSHOT, entryId: fixtureId(30), scope: "index-to-worktree", completeness: { state: "complete" }, patch: Buffer.from("diff --cc src/app.ts\n").toString("base64"), hunks: [], support: "state", fileAction: "resolve", remedy: null };
+const COMPARISON = { comparisonId: fixtureId(50), snapshotId: SNAPSHOT, entryId: fixtureId(30), scope: "index-to-worktree", completeness: { state: "complete" }, patch: Buffer.from("diff --cc src/app.ts\n").toString("base64"), hunks: [], support: "state", fileAction: "resolve", remedy: null, fileChange: null };
 
 function createDouble() {
   const calls: Call[] = [];

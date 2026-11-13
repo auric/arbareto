@@ -1551,4 +1551,25 @@ describe("keys in the tree", () => {
     expect(outer()!.closest('[data-slot="submodules-group"]')).not.toBeNull();
     expect(document.activeElement).toBe(tabStopRow());
   });
+
+  // tasks.md T168, plan D20 "Keyboard": the tree and the panel unmount inside one profile, so the focus goes to the group heading button.
+  for (const [name, target] of [
+    ["the Tab-stop row", () => tabStopRow()],
+    ['the "Keys in the tree" button', () => hintsButton()],
+  ] as const) {
+    test(`T168: a list without rows while ${name} has focus moves the focus to the group heading button`, async () => {
+      const view = await shown();
+      const element = target();
+      await act(async () => element.focus());
+      expect(document.activeElement).toBe(element);
+      await act(async () => view.handle.update!.refreshed());
+      await view.read(fixtureId(5));
+      await answer(view.double.pending("reviewSubmodules"), reviewed({ rows: [] }));
+      expect(text(group())).toContain("No submodules found.");
+      expect(group().querySelector('[role="tree"]')).toBeNull();
+      expect(outer()).toBeNull();
+      expect(document.activeElement === document.body).toBe(false);
+      expect(document.activeElement).toBe(group().querySelector<HTMLElement>('[data-slot="group-header"] h3 button'));
+    });
+  }
 });

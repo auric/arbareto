@@ -5893,7 +5893,7 @@ pub(crate) mod tests {
                 .expect("context");
             json!({
                 "type": "run", "callId": call, "operationId": uuid(), "contextKind": "gitProbe", "bootstrapId": bootstrap,
-                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+                "arguments": ["version"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
             })
         };
         let cases: Vec<(&str, Edit)> = vec![(
@@ -6026,7 +6026,7 @@ pub(crate) mod tests {
                     .expect("context");
                 json!({
                     "type": "run", "callId": call, "operationId": uuid(), "contextKind": "gitProbe", "bootstrapId": bootstrap,
-                    "arguments": ["version", "--build-options"], "environmentPolicy": policy, "limits": network_limits(1000, 1000),
+                    "arguments": ["version"], "environmentPolicy": policy, "limits": network_limits(1000, 1000),
                 })
             };
             let cases: Vec<(&str, Edit)> = vec![("a bootstrap run", remove("transactionId"))];
@@ -6281,7 +6281,7 @@ pub(crate) mod tests {
         let probe = |call: &str, operation: &str, bootstrap: &str| {
             json!({
                 "type": "run", "callId": call, "operationId": operation, "contextKind": "gitProbe", "bootstrapId": bootstrap,
-                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+                "arguments": ["version"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
             })
         };
         let new_probe = || {
@@ -6310,10 +6310,7 @@ pub(crate) mod tests {
         let probe_cases: Vec<(&str, Edit)> = vec![
             (
                 "probe with --no-lazy-fetch",
-                set(
-                    "arguments",
-                    json!(["--no-lazy-fetch", "version", "--build-options"]),
-                ),
+                set("arguments", json!(["--no-lazy-fetch", "version"])),
             ),
             (
                 "probe with other arguments",
@@ -6401,7 +6398,7 @@ pub(crate) mod tests {
         let probe = |call: &str, operation: &str, bootstrap: &str, kind: &str| {
             json!({
                 "type": "run", "callId": call, "operationId": operation, "contextKind": kind, "bootstrapId": bootstrap,
-                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+                "arguments": ["version"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
             })
         };
         let mut calls = Vec::new();
@@ -6768,7 +6765,7 @@ pub(crate) mod tests {
         let probe = |call: &str, operation: &str, bootstrap: &str| {
             json!({
                 "type": "run", "callId": call, "operationId": operation, "contextKind": "gitProbe", "bootstrapId": bootstrap,
-                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+                "arguments": ["version"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
             })
         };
         let other = uuid();
@@ -8155,21 +8152,21 @@ pub(crate) mod tests {
     fn wsl_probe_output(change: &[(&str, &str)]) -> String {
         let mut lines: Vec<(String, String)> = [
             ("path git", "/usr/bin/git"),
-            ("magic git", "-"),
+            ("magic git", "ELF"),
             ("path systemd-run", "/usr/bin/systemd-run"),
-            ("magic systemd-run", "-"),
+            ("magic systemd-run", "ELF"),
             ("path systemctl", "/usr/bin/systemctl"),
-            ("magic systemctl", "-"),
+            ("magic systemctl", "ELF"),
             ("path setsid", "/usr/bin/setsid"),
-            ("magic setsid", "-"),
+            ("magic setsid", "ELF"),
             ("path stat", "/usr/bin/stat"),
-            ("magic stat", "-"),
+            ("magic stat", "ELF"),
             ("path env", "/usr/bin/env"),
-            ("magic env", "-"),
+            ("magic env", "ELF"),
             ("path perl", "/usr/bin/perl"),
-            ("magic perl", "-"),
+            ("magic perl", "ELF"),
             ("path sha256sum", "/usr/bin/sha256sum"),
-            ("magic sha256sum", "-"),
+            ("magic sha256sum", "ELF"),
             ("pathenv", "/usr/bin"),
             ("version", "git version 2.55.0"),
             ("gitfs", "ef53:fedc9aa3bd65bc57"),
@@ -14505,7 +14502,8 @@ pub(crate) mod tests {
         let (old, new) = ("b".repeat(40), "a".repeat(40));
         let at = ["--no-optional-locks", "-C", "lib/core", "--git-dir=.git"];
         let range = format!("{old}...{new}");
-        let (commit, include, exclude) = (format!("{new}^{{commit}}"), new.clone(), format!("^{old}"));
+        let (commit, include, exclude) =
+            (format!("{new}^{{commit}}"), new.clone(), format!("^{old}"));
         let tails: Vec<Vec<&str>> = vec![
             vec!["rev-parse", "--show-toplevel"],
             vec!["rev-parse", "--verify", "-q", "HEAD"],
@@ -14545,11 +14543,22 @@ pub(crate) mod tests {
         for tail in &tails {
             let array: Vec<&str> = at.iter().copied().chain(tail.iter().copied()).collect();
             let call = uuid();
-            let admitted = outcome(run_body(&call, &uuid(), &workspace, &array, "read", limits.clone()));
+            let admitted = outcome(run_body(
+                &call,
+                &uuid(),
+                &workspace,
+                &array,
+                "read",
+                limits.clone(),
+            ));
             assert_eq!(admitted["type"], "exit", "{array:?}: {admitted}");
         }
         let call = uuid();
-        let bound: Vec<&str> = at.iter().copied().chain(["worktree", "add", "--", "x", "main"]).collect();
+        let bound: Vec<&str> = at
+            .iter()
+            .copied()
+            .chain(["worktree", "add", "--", "x", "main"])
+            .collect();
         assert_eq!(
             outcome(run_body(&call, &uuid(), &workspace, &bound, "read", limits)),
             refused(&call, "INVALID_REQUEST")

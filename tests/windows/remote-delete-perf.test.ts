@@ -23,7 +23,7 @@ import { printOrigin } from "../origin";
 import { distroGitHost, sh } from "../wsl/fixtures";
 import { missingCapability, uncPath, useWslFolder, wslExec, wslHost, type WslHost } from "../wsl/wsl-host";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
-import { appEnv, descendants, findInstalledApp, HISTORY_VIEW, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
+import { appEnv, descendants, findInstalledApp, HISTORY_VIEW, powershellJson, PROBE_TIMEOUT_MS, processRecords, SETTLED, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { ensurePerfFixture, PERF_CACHE_ROOT, PERF_M, type CachedPerfFixture } from "./perf-fixtures";
 import { copyRd, ensureRd, RD_BRANCHES, RD_COMBINED_RUNS, RD_NAMES, RD_ONLY_COMMITS, RD_REMOTE, RD_REMOTE_RUNS, RD_RUNS, type CachedRd } from "./remote-delete-fixture";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, showContextMenu, UiaError, type Element } from "./uia";
@@ -133,8 +133,6 @@ const js = (value: unknown) => JSON.stringify(value);
 const footer = `document.querySelector('[data-slot=status-region] footer')`;
 // The `role=status` cells of the footer. `changed` needs a new render of the cell after `arm`.
 const outcomeShown = (text: string) => `[...((${footer})?.querySelectorAll('[role=status]') ?? [])].some((e) => e.textContent.trim() === ${js(text)} && window.__t020.changed.has(e))`;
-// src/frontend/app/Workbench.tsx `statusText`: the first status cell shows these texts while a read runs or the state is blocked.
-const settled = `!['Refreshing…', 'State unknown'].includes(((${footer})?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim())`;
 const list = `document.querySelector('[data-history-list]')`;
 const open = (selector: string) => `[...document.querySelectorAll(${js(selector)})].filter((e) => !e.hasAttribute('data-closed') && !e.hasAttribute('data-ending-style'))`;
 const menuOpen = (branch: string) => `${open("[role=menu]")}.some((m) => m.getAttribute('aria-label') === ${js(MENU_NAME(branch))})`;
@@ -550,7 +548,7 @@ describe.skipIf(process.platform !== "win32")("T020 packaged remote branch delet
   const IDLE = ["read_workspace", "read_entries", "open_history", "read_history_rows", "read_refs", "read_tracking", "read_branches", "read_worktrees", "read_comparison", "read_commit_changes", "review_workbench", "run_workbench", "review_sync", "sync"] as const;
   async function idle(s: Session): Promise<void> {
     const end = Date.now() + STEP_LIMIT_MS;
-    while (IDLE.some((command) => s.ipc.pending(command).length > 0) || !(await s.c.evaluate<boolean>(settled))) {
+    while (IDLE.some((command) => s.ipc.pending(command).length > 0) || !(await s.c.evaluate<boolean>(SETTLED))) {
       if (Date.now() >= end) throw new Error(`the app is not idle after ${STEP_LIMIT_MS} ms: ${IDLE.map((command) => `${command}=${s.ipc.pending(command).length}`).join(", ")} ${js(await s.c.evaluate<unknown>(FACTS))}`);
       await Bun.sleep(IDLE_POLL_MS);
     }
@@ -560,7 +558,7 @@ describe.skipIf(process.platform !== "win32")("T020 packaged remote branch delet
     await focusOn(s.c, list, "the History list");
     await press(s.c, "F5");
     await idle(s);
-    await until<boolean>(s.c, "the refreshed state", `(${extra}) && ${settled}`, (v) => v);
+    await until<boolean>(s.c, "the refreshed state", `(${extra}) && ${SETTLED}`, (v) => v);
     await idle(s);
   }
   // ReferencesSidebar.tsx `defaultExpansion`: Remotes and its folders start closed. A narrow window hides the sidebar behind "Show references".

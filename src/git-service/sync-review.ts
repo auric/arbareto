@@ -21,7 +21,7 @@ import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, 
 import { isMissing } from "./read-steps";
 import { deletePayloadValid, observeRemoteDelete } from "./remote-delete";
 import type { Head, OperationState } from "./snapshot";
-import { gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
+import { fetchUrlArgs, gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, lsRemoteUrlArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
 import { autoSetupRemote, decidePull, defaultRemote, decidePushDestination, holdsExec, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRebaseHead, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
 import type { WorkspaceReader } from "./status";
 import { parseMaybeBool, type ConfigEntry, type ListingOutcome } from "./trust";
@@ -82,6 +82,8 @@ export interface SyncBinding {
   local?: { ref: string; oid: string; onlyHere: number; reflogKeeps: boolean; section: boolean; worktrees: string };
   // Feature 011 plan.md D8: `remote get-url --all` equals `remote get-url --push --all` byte for byte.
   sameUrl?: boolean;
+  // Plan.md D5, force push with `sameUrl` false: the lease re-read may name the push URL. See `pushUrlReread`.
+  urlReread?: boolean;
 }
 
 export interface NeedsDestination {
@@ -102,7 +104,7 @@ export type Observation =
   | Stop
   | Failure;
 
-export type Bound = Pick<SyncBinding, "remotes" | "destination" | "lease" | "upstream" | "index" | "skippedCommit" | "todo" | "modeConfig" | "local" | "sameUrl">;
+export type Bound = Pick<SyncBinding, "remotes" | "destination" | "lease" | "upstream" | "index" | "skippedCommit" | "todo" | "modeConfig" | "local" | "sameUrl" | "urlReread">;
 
 const HEADS = "refs/heads/";
 const LF = 0x0a;
@@ -548,8 +550,30 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
     const read = await leaseOf(ctx, destination.trackingRef, head.oid);
     if (!("value" in read)) return read;
     lease = read.value;
+    // Contract Δ9: the lease re-read names the remote when its fetch URL names the push URL byte for byte. Otherwise `pushUrlReread` decides.
+    const fetchOut = await readOut(ctx, fetchUrlArgs(destination.remote), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+    if ("limited" in fetchOut) return { code: "OUTPUT_LIMIT" };
+    if (!("value" in fetchOut)) return fetchOut;
+    const sameUrl = Buffer.from(fetchOut.value).equals(Buffer.from(urlOut.value));
+    if (sameUrl) return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease, sameUrl });
+    const urlReread = await pushUrlReread(ctx, entries, destination.remote, urls.url, urlOut.value);
+    if (typeof urlReread !== "boolean") return urlReread;
+    return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease, sameUrl, urlReread });
   }
   return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease });
+}
+
+// Plan.md D5 and contract Δ3 "Lease re-read": true when `ls-remote <push URL>` reads the URL that the push used.
+// `remote.<name>.vcs` selects a remote helper that a bare URL does not select. `ls-remote` applies the `insteadOf` rules to a URL argument again.
+// `pushUrls` is the `remote get-url --push --all` output of the one URL `url`.
+// A URL with user information never goes into process arguments: other processes and diagnostics can read them.
+// remote.c `remotes_remote_get_1`: a configured remote named as the URL gives `ls-remote <url>` its `remote.<url>.*` settings.
+async function pushUrlReread(ctx: ObserveContext, entries: readonly ConfigEntry[], remote: string, url: string, pushUrls: Uint8Array): Promise<boolean | Observation> {
+  if (redactUrlUserInfo(url) !== url || entries.some((e) => e.key === `remote.${remote}.vcs` || e.key.startsWith(`remote.${url}.`))) return false;
+  const out = await readOut(ctx, lsRemoteUrlArgs(url), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  if ("limited" in out) return { code: "OUTPUT_LIMIT" };
+  if (!("value" in out)) return out;
+  return Buffer.from(out.value).equals(Buffer.from(pushUrls));
 }
 
 // Contract Δ3 `reviewSync` result: the data-model §2 fields for display. The URL shows without user information.

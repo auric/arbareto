@@ -575,6 +575,46 @@ describe("block reasons of a status read that is not ready", () => {
     expect(statusBar()).toContain("Refreshing…");
     expect(statusBar()).not.toContain("Select Refresh (F5) first");
   });
+
+  // tasks.md T411 (feature 001). plan.md "State unknown": a `reconciling` read is not State unknown.
+  const RECONCILING = "The status read after the last operation is still running.";
+  /** F5 while a revert run is pending reads `recoveryState`. The run then ends, and its reconcile read gives the same value. */
+  async function readDuringRun(recoveryState: "reconciling" | "unknown") {
+    const files = [entry("unstaged", "a.ts"), entry("unstaged", "b.ts")];
+    const { double, world } = await openFiles(workbench, files);
+    await rowKey(item("Changes", "a.ts"));
+    await answer(double.pending("reviewWorkbench"), filesReviewed(filesPlan(["a.ts"])));
+    await click(button("Revert file", alertDialog()!));
+    const runCall = double.pending("runWorkbench")!;
+    expect(runCall).toBeDefined();
+    world.answers.readWorkspace = () => succeeded({ ...snapshot(world), recoveryState });
+    await refresh();
+    const during = statusBar();
+    await answer(runCall, succeeded({ action: "revert-files", files: [{ entryId: files[0]!.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" }));
+    await settle();
+    const sent = double.count("reviewWorkbench");
+    await rowKey(item("Changes", "b.ts"));
+    expect(double.count("reviewWorkbench")).toBe(sent);
+    return { during, after: statusBar() };
+  }
+
+  test("T411: a reconciling read during and after a revert run is not State unknown, and changes wait with the reconcile reason", async () => {
+    const { during, after } = await readDuringRun("reconciling");
+    expect(during).not.toContain("State unknown");
+    expect(after).not.toContain("State unknown");
+    expect(after).toContain(RECONCILING);
+    // 003 plan D12: the sync controls keep the reconcile reason in the accessible description only.
+    const group = document.querySelector<HTMLElement>('[role="group"][aria-label="Remote sync"]')!;
+    expect(text(document.getElementById(button("Fetch", group).getAttribute("aria-describedby")!)!)).toBe(RECONCILING);
+    expect([...group.querySelectorAll("span")].filter((s) => !s.closest(".sr-only") && text(s).includes(RECONCILING))).toEqual([]);
+  });
+
+  test("T411: a read with recoveryState unknown still shows State unknown", async () => {
+    const { during, after } = await readDuringRun("unknown");
+    expect(during).toContain("State unknown");
+    expect(after).toContain("State unknown. Select Refresh (F5) first.");
+    expect(after).not.toContain(RECONCILING);
+  });
 });
 
 // Feature 008 spec US4 scenario 4: a staged revert that published the index changed the patch itself.

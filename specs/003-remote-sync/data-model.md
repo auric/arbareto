@@ -34,6 +34,7 @@ Label rule (renderer):
 | `binding.upstream` | `{ref, objectId}` for `pull` and `integrate`. |
 | `binding.destination` | §3 result for `push` and `force-push`. |
 | `binding.lease` | `{trackingRef, expect, count, commits[≤100]}` for `force-push`. Each commit is `{objectId, subject}`. A commit object above `HISTORY_COMMIT_OBJECT_BYTES` gives `subject` null. |
+| `binding.sameUrl`, `binding.urlReread` | For `force-push`: the target of the lease re-read. `sameUrl` names the remote, `urlReread` names the push URL, and both false give no re-read (contract Δ3 "Lease re-read", plan.md D5). |
 | `binding.index` | Index fingerprint and unmerged count for `continue`: the SHA-256 of `ls-files --stage -z` and the number of paths with a stage above 0 (contract Δ3 read 7). |
 | `binding.mode` | For `pull` and `integrate`: the payload mode or null. |
 | `binding.modeConfig` | For `pull` and `integrate`: the last value of each of `pull.ff`, `pull.rebase`, `branch.<branch>.rebase`, and `merge.ff`. A key without an entry is absent, and a key without `=` has null. A changed value gives `STALE_REVIEW` (contract Δ3). |
@@ -70,7 +71,7 @@ Label rule (renderer):
 | `status` | `pushed`, `forced`, `created`, `up-to-date`, `rejected`, `remote-rejected`, `remote-failure`, or `none` (no line). |
 | `oldObjectId`, `newObjectId` | From the observed tracking ref, before and after. |
 | `reasonText` | The parenthesized reason as plain text. Display only. |
-| `lease` | True when the push sent a lease. A `rejected` status with a lease means the remote changed. |
+| `lease` | True when the push sent a lease. Only the result reason `stale-lease` means that the remote changed. The lease re-read decides it (contract Δ3, Δ9). |
 | `upstreamWritten` | True when `branch.<name>.remote`, `.merge`, or `.rebase` changed. |
 | `upstreamNotSet` | True when a selected Set upstream ran after a successful push and a write did not exit 0, or a Cancel came first (contract Δ3). The push outcome stays. The result holds the Set upstream remedy. |
 | `outputTail` | Bounded, redacted stderr of the push, also on success. |

@@ -28,25 +28,7 @@ import type { ReadInstallation } from "./snapshot";
 import { createCollector, RunnerRefusal, type FileFactsRequest, type GitRunner, type WalkStop, type WslIndexResult, type WslRunner } from "./git-runner";
 import { sameIdentity, type PhysicalIdentity } from "./identity";
 import type { Workspace } from "./registration";
-
-// ---- URL user information (contract §7) ----
-
-// Contract §7 "URL user information": for each `://`, the authority runs to the next `/`, `?`, `#`, or the end.
-// When it holds `@`, the text before its last `@` becomes `<redacted>`. Git `transport_anonymize_url` does the same for one URL (research R5).
-export function redactUrlUserInfo(text: string): string {
-  let out = "";
-  let at = 0;
-  for (let scheme = text.indexOf("://"); scheme >= 0; scheme = text.indexOf("://", scheme + 3)) {
-    const start = scheme + 3;
-    let end = start;
-    while (end < text.length && text[end] !== "/" && text[end] !== "?" && text[end] !== "#") end++;
-    const user = text.lastIndexOf("@", end - 1);
-    if (user < start) continue;
-    out += text.slice(at, start) + "<redacted>";
-    at = user;
-  }
-  return out + text.slice(at);
-}
+import { redactUrlUserInfo } from "../contracts/submodules";
 
 // ---- Environment seam ----
 

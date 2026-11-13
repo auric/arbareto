@@ -44,7 +44,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - Steps (plan D6): the 003 frame, `listRefs` before, `pageant(R)` on Windows, then the push.
 - Push: `[L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", "--force-with-lease=<dst>:<expect>", "--", R, ":<dst>"]`. A delete without the lease item is a contract violation.
 - Parse: one porcelain line whose second field equals `:<dst>` or `(delete):<dst>`. The flag and summary map through `PUSHED`, which gains `["-", "deleted"]`. Two matching lines, or exit 0 with no matching line, give `MALFORMED_GIT_OUTPUT`. Empty stdout with a nonzero exit gives `none`.
-- Gone recovery (plan D8): when the status is `rejected`, the reason is `stale-lease`, and `sameUrl` holds, run `[L, "ls-remote", "--exit-code", "--", R, dst]` through the network step. Exit 2, or exit 0 with no exact `<dst>` line, means gone. Then run `[L, "update-ref", "--no-deref", "-d", ref, expect]`. Exit 0 sets `remoteGone`. Any other result keeps the stale outcome.
+- Lease re-read and gone recovery (plan D8, user decision 2026-11-11): the re-read needs status `rejected`, `sameUrl`, and no Cancel. It runs `[L, "ls-remote", "--exit-code", "--", R, dst]` through the network step. The `(delete):<dst>` alias does not decide the reason. Exit 2, or exit 0 with no exact `<dst>` line, means gone. Then run `[L, "update-ref", "--no-deref", "-d", ref, expect]`. Exit 0 sets `remoteGone`. Any other result after a gone fact keeps the stale outcome.
 - Local writes (combined, after `deleted` or `remoteGone`): `deleteRefArgs(branch, oid)`, then `removeBranchSectionArgs(branch)` when `section` holds. They stop at the first nonzero exit and at Cancel.
 - Results: `PushResult.status` gains `"deleted"` (`envelope.ts:1359`). `SyncResult` (`envelope.ts:1389`): `PUSHING` (`:1384`) gains the action. New fields `remoteGone: z.literal(true).optional()` and `localNotDeleted: z.literal(true).optional()`, only for this action.
 - The push `SUCCESS` set (`sync.ts:42`) stays unchanged.
@@ -83,6 +83,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - `SyncRefused` carries the four workbench reasons and `worktree` for the combined review.
 - `SyncRefused` carries `remote` with `default-branch` and `default-unknown` only.
 - Reused codes: `UNKNOWN_TARGET`, `OPERATION_IN_PROGRESS`, `STALE_REVIEW`, `APPROVAL_EXPIRED`, `PUSH_REJECTED`, `GIT_FAILED`, `MALFORMED_GIT_OUTPUT`, and `INVALID_REQUEST`.
+- `PUSH_REJECTED` reason of a `[rejected]` delete (003 Δ9, user decision 2026-11-11): `stale-lease` needs a lease re-read. The re-read must show no remote ref or a value other than `<expect>`. A re-read that equals `<expect>`, fails, or does not run gives `rejected`. A remote helper can set any status (transport-helper.c `push_update_ref_status`). So the `(delete):<dst>` alias is not a cause.
 
 ## Δ10 Required contract checks (001 §10)
 
@@ -97,4 +98,5 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 ## Contract gaps
 
-- None known. The gone fact needs a network read, so it stays in the run (plan D8). A probe finding of T001 changes this file first.
+- The gone fact and the stale-lease fact need a network read, so they stay in the run (plan D8). A probe finding of T001 changes this file first.
+- With `sameUrl` false, no re-read runs, so a stale lease gives `rejected` with no remedy (user decision 2026-11-11). The delete has no `urlReread` (003 plan D5).

@@ -183,6 +183,14 @@ describe("result, progress, and response schemas", () => {
     expect(Comparison.shape.support.unwrap().options).toEqual(["supported", ...SUPPORT_REASONS]);
   });
 
+  test("a readComparison value carries fileChange: added, deleted, modified, or null (feature 008 T063)", () => {
+    expect(Comparison.shape.fileChange.unwrap().options).toEqual(["added", "deleted", "modified"]);
+    const value = { comparisonId: id(), snapshotId: id(), entryId: id(), scope: "index-to-worktree", completeness: { state: "complete" }, patch: "YQ==", hunks: [], support: "supported", fileAction: "stage", remedy: null };
+    for (const fileChange of ["added", "deleted", "modified", null]) expect(Comparison.safeParse({ ...value, fileChange }).success).toBe(true);
+    expect(Comparison.safeParse(value).success).toBe(false);
+    expect(Comparison.safeParse({ ...value, fileChange: "renamed" }).success).toBe(false);
+  });
+
   test("a response is terminal and carries a contract §9 code", () => {
     expect(Response.safeParse({ requestId: null, state: "rejected", code: "FRAME_LIMIT" }).success).toBe(true);
     expect(Response.safeParse({ requestId: id(), state: "running" }).success).toBe(false);

@@ -226,6 +226,22 @@ Packaged build of `5d27b52f` plus one test commit with four test fixes: the Top 
 - Result: every budget passes. SC-010a, SC-010c, and SC-010d on M-R passed on `22cdcac9`. SC-010b and SC-010d on M pass on this rerun with the same app code.
 - Text size (user decision 2026-11-06): the skip of the SC-009 150% and 225% cases is accepted for v0.1.0. The cases run after v0.1.0 (tasks.md T024).
 
+#### v0.1.1 full run (2026-11-13)
+
+Packaged NSIS build of `de82eccd`, warm, alone, under the test gate. Git 2.56.0.windows.2, WebView2 157.0.4341.46. `commit-menu-perf.test.ts` gave 8 pass, 0 fail.
+
+- Windows SC-010b medians on M (budget 300 ms): Reset 247.5 ms, Check out 215.3 ms, Create tag 20.9 ms, Cherry-pick 232.5 ms, Revert 229.5 ms.
+- Windows SC-010c Hard review median: 716.4 ms (budget 1 s).
+- Windows SC-010d medians, budget in brackets: Soft 534.3 ms (1 s), Mixed 609.9 ms (2 s), Create tag 627.4 ms (1 s), Hard (M-R) 3,287.3 ms (4 s).
+- Windows SC-010d medians, continued: Cherry-pick 704.3 ms (2 s), Revert 675.1 ms (2 s), Abort 448.5 ms (2 s), Continue 789 ms (2 s), Detached checkout (M-R) 2,149.7 ms (4 s).
+- Windows SC-011: input p95 at most 56 ms, max at most 72 ms.
+- WSL SC-010b medians (Ubuntu-26.04): Reset 1,473.8 ms, Check out 1,327.5 ms, Create tag 22.8 ms, Cherry-pick 1,404.3 ms, Revert 1,374.3 ms.
+- WSL SC-010d medians: Soft 2,841.7 ms, Mixed 3,098.8 ms, Create tag 3,954.8 ms, Hard (M-R) 8,908.7 ms, Cherry-pick 3,288.1 ms.
+- WSL SC-010d medians, continued: Revert 3,307.6 ms, Abort 2,140.1 ms, Continue 3,827.5 ms, Detached checkout 3,146 ms.
+- WSL SC-011, highest run p95: Cherry-pick 144 ms, Revert 192 ms, Abort 152 ms, Continue 112 ms. The other WSL series stay at 40 ms or less.
+- The spec records the WSL times of SC-010b and SC-010d with no budget. The WSL SC-011 case is a record case too (see "WSL record" above). These WSL values are records, not failures.
+- The WSL SC-011 p95 of Cherry-pick, Revert, Abort, and Continue is above the earlier record of at most 40 ms. The cause is not known.
+
 ### Requirement-to-test map (T022)
 
 Review 2026-11-06 by the reviewer on `9c8dfe0e`. The map below adds the later fixes and tests up to `22cdcac9`. Test files are in `tests/git/`, `tests/contracts/`, `tests/wsl/`, and `tests/windows/`.

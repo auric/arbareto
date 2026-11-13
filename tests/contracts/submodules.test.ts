@@ -386,11 +386,14 @@ describe("URL redaction (contract §7 'URL user information')", () => {
     expect(redactUrlUserInfo("https://u:TOKEN@host.example/x.git")).toBe("https://<redacted>@host.example/x.git");
     expect(redactUrlUserInfo("ssh://git@a@host.example:22/x")).toBe("ssh://<redacted>@host.example:22/x");
     expect(redactUrlUserInfo("a https://t@h/x and http://u:p@g?q#f")).toBe("a https://<redacted>@h/x and http://<redacted>@g?q#f");
+    expect(redactUrlUserInfo("https://u:pa#ss@host/r")).toBe("https://<redacted>@host/r");
+    expect(redactUrlUserInfo("https://u:pa?ss@host/r")).toBe("https://<redacted>@host/r");
+    expect(redactUrlUserInfo("https://host.example?u=a@b")).toBe("https://<redacted>@b");
   });
 
-  test("an @ after the authority stays", () => {
+  test("an @ after the first / stays", () => {
     expect(redactUrlUserInfo("https://host.example/a@b")).toBe("https://host.example/a@b");
-    expect(redactUrlUserInfo("https://host.example?u=a@b")).toBe("https://host.example?u=a@b");
+    expect(redactUrlUserInfo("https://host/p?x=a@b")).toBe("https://host/p?x=a@b");
     expect(redactUrlUserInfo("git@host.example:x.git")).toBe("git@host.example:x.git");
   });
 });

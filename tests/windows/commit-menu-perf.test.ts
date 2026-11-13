@@ -24,7 +24,7 @@ import { distroGitHost, sh } from "../wsl/fixtures";
 import { missingCapability, uncPath, useWslFolder, wslExec, wslHost, type WslHost } from "../wsl/wsl-host";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { copyMr, ensureMr, MR_CHANGED_PATHS, MR_FILES_PER_COMMIT, type MrFacts } from "./commit-menu-fixture";
-import { appEnv, descendants, findInstalledApp, HISTORY_VIEW, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
+import { appEnv, descendants, findInstalledApp, HISTORY_VIEW, powershellJson, PROBE_TIMEOUT_MS, processRecords, SETTLED, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { copyPerfFixture, ensurePerfFixture, PERF_CACHE_ROOT, PERF_L, PERF_M, type CachedPerfFixture } from "./perf-fixtures";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, showContextMenu, UiaError, type Element } from "./uia";
 
@@ -149,8 +149,6 @@ const js = (value: unknown) => JSON.stringify(value);
 const footer = `document.querySelector('[data-slot=status-region] footer')`;
 // The workbench notice cell (the 004 switch outcome) and the operation line (every other outcome) are `role=status` cells of the footer.
 const outcomeShown = (text: string, changed = false) => `[...((${footer})?.querySelectorAll('[role=status]') ?? [])].some((e) => e.textContent.trim() === ${js(text)}${changed ? " && window.__t018.changed.has(e)" : ""})`;
-// src/frontend/app/Workbench.tsx `statusText`: the first status cell shows these texts while a read runs or the state is blocked.
-const settled = `!['Refreshing…', 'State unknown'].includes(((${footer})?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim())`;
 const list = `document.querySelector('[data-history-list]')`;
 const selectedRow = `(document.querySelector('[data-history-list] [role=option][aria-selected=true]')?.dataset.rowId ?? null)`;
 // HistoryList.tsx: the checkout row holds the HEAD badge.
@@ -592,7 +590,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
   const IDLE = ["read_workspace", "read_entries", "open_history", "read_history_rows", "read_refs", "read_tracking", "read_branches", "read_worktrees", "read_comparison", "read_commit_changes", "review_workbench", "run_workbench", "review_sync", "sync"] as const;
   async function idle(s: Session): Promise<void> {
     const end = Date.now() + STEP_LIMIT_MS;
-    while (IDLE.some((command) => s.ipc.pending(command).length > 0) || !(await s.c.evaluate<boolean>(settled))) {
+    while (IDLE.some((command) => s.ipc.pending(command).length > 0) || !(await s.c.evaluate<boolean>(SETTLED))) {
       if (Date.now() >= end) throw new Error(`the app is not idle after ${STEP_LIMIT_MS} ms: ${IDLE.map((command) => `${command}=${s.ipc.pending(command).length}`).join(", ")} ${js(await s.c.evaluate<unknown>(FACTS))}`);
       await Bun.sleep(IDLE_POLL_MS);
     }
@@ -603,7 +601,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     await press(s.c, "F5");
     await idle(s);
     // The list renders only the rows near its scroll position. Each poll scrolls it to the top, where the HEAD row of each fixture lies. A later read can scroll it back to the selection.
-    await until<boolean>(s.c, `the HEAD row ${short(head)}`, `((${list}).scrollTop = 0, ${headRow} === ${js(head)} && (${extra}) && ${settled})`, (v) => v);
+    await until<boolean>(s.c, `the HEAD row ${short(head)}`, `((${list}).scrollTop = 0, ${headRow} === ${js(head)} && (${extra}) && ${SETTLED})`, (v) => v);
     await idle(s);
   }
   // Selects the row `oid` by keyboard: Home, then Down until it is the selected row.

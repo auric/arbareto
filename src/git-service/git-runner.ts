@@ -444,7 +444,7 @@ export function checkCall(call: GitCall): void {
   if (call.script !== undefined) {
     checkProbeScript(call);
   } else if (context.contextKind === "gitProbe") {
-    const probe = args.length === 1 ? args[0] === "--exec-path" : args.length === 2 && args[0] === "version" && args[1] === "--build-options";
+    const probe = args.length === 1 && (args[0] === "--exec-path" || args[0] === "version");
     // Contract §6 `gitProbe`: the shell also admits the two exact `git var` arrays of §7 "Configuration file paths".
     const paths = [configSystemPathArgs(), configGlobalPathArgs()].some((known) => known.length === args.length && known.every((arg, i) => arg === args[i]));
     if (!probe && !paths) refuse("gitProbe permits only the exec-path, version, and configuration path probes");

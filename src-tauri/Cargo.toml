@@ -1,6 +1,6 @@
 [package]
 name = "arbareto"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fast, free and open-source Git GUI client."
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/auric/arbareto"

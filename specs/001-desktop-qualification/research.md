@@ -2433,6 +2433,19 @@ Fixes: T389.
 
 **T394 review, 2026-10-24.** One independent read-only reviewer checked 00e775b (main merge 38e6943). Verdict: merge as is. No caller is wrong after T394. `blob()` in `hunk-candidate.ts:183` runs under `mutation`, so an over-bound blob now gives `MALFORMED_GIT_OUTPUT` in place of `git-failed`. That path is likely unreachable, because `comparison.ts:415` checks the blob sizes first. The sync fetch outcome is unchanged. Findings: (1) low: a `probe` run that keeps writing past its bound runs to its deadline and gives `DEADLINE`, not `OUTPUT_LIMIT`; (2) low: the stop policy pair is written twice, in `native-runner.ts` and in the shell double; (3) low, accepted: the `stop` of the shell double can miss an exit that Bun has not seen yet. This changes test results only, because the shell keeps the exit code when `TerminateProcess` fails on an ended process; (4) low, before T394: `cancelRun` and `expire` of the shell double leave the descendants of calls that exited by themselves. T395 fixes findings 1, 2, and 4.
 
+**v0.1.1 full run, 2026-11-13.** Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62f161197f7ab3c6edf80e6eccedc207495d9f9fce453e5ad8b9`. The installed `arbareto.exe` equals the built exe after the NSIS marker patch. OS: Windows NT 10.0.26300.0, UBR 9974, x64. Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4, rustc and cargo 1.99.0, WSL `Ubuntu-26.04` with Git 2.55.0. Every `ORIGIN` line named the checkout under test. Results of the test files that the ticked tasks T381, T390, T399 to T402, T406, T408, T411, T413, and T414 name (pass, skip, fail):
+- T381: `tests/contracts/commit-and-push.test.tsx` 19, 0, 0. `tests/windows/uia.test.ts` 12, 0, 0.
+- T390: `cargo test --locked` 667 passed, 0 failed, 16 ignored. This includes the `env_sanitize` tests. `bun run build` exit 0, with the `build:service` Bun version check.
+- T399: `tests/git/git-runner.test.ts` 7, 0, 0. In `tests/git`: `blame` 16, `commit-changes` 16, `commit-races` 23, `comparison` 37, `history-stale` 23, `history-view` 17, `multi-stage` 14, `read-branches` 7, `refs` 20, `status` 45, `switch` 31, `sync-conflicts` 23, `sync-fetch` 19, `sync-pull` 16, `sync-push` 14, `tracking` 5. Each has 0 skip and 0 fail.
+- T400 to T402, T408, T414: `tests/git/status.test.ts` 45, 0, 0. `tests/contracts/renderer-freshness.test.ts` 41, 0, 0. `tests/git/delete.test.ts` 27, 0, 0. `tests/git/ignore-preview.test.ts` 27, 0, 0. `tests/windows/revert-perf.test.ts` 6, 0, 0.
+- T406: `tests/git/git-settings.test.ts` 15, 0, 0.
+- T411: `tests/contracts/commit-menu.test.tsx` 31, 0, 0. `tests/contracts/revert-keys.test.tsx` 40, 0, 0. `tests/contracts/workbench-worktrees.test.tsx` 74, 0, 0. `tests/windows/commit-menu-perf.test.ts` 8, 0, 0. `tests/windows/remote-delete-perf.test.ts` 7, 0, 0. Its other files are listed above.
+- T413: `tests/contracts/admission.test.ts` 39, 0, 0. `tests/git/git-installation.test.ts` 21, 0, 0.
+- Skips in these files: none.
+- T403 (open): `tests/contracts/vectors.test.ts` gave 1,103 pass, 37 skip, 0 fail. The 37 skips are the platform class: each vector with `"platform": "posix"`, or a read-workspace vector of the other platform, skips on Windows (`tests/contracts/vectors.test.ts` `rows(false)`).
+- `unverified` (T403): the valid `retained` vector `tests/vectors/valid/read-workspace-read-kind-retained.json` skipped on Windows in this run. It is the only valid `retained` vector, and it carries `"platform": "posix"`. So a Windows run always skips it. The invalid vector `read-workspace-retained-with-entries.json`, the T403 case of `status.test.ts`, and the two T403 cases of `renderer-freshness.test.ts` passed. T403 closes after a valid `retained` vector for the Windows platform exists and a green full run passes it. T415 owns that vector. A Linux run does not close T403, because a Linux run qualifies nothing (tasks.md "Test harness rules").
+- The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
+
 ### Dependency reviews
 
 After T003 and T006, each dependency change gets one record here (plan.md, Tool and runtime boundaries). A record names the task and each added, removed, or changed package. It gives the old and new resolved versions, the licence, the reason, the reviewer, and the findings. It also lists the qualification checks that ran again.
@@ -2974,7 +2987,7 @@ The probes ran on 2026-09-30 on the host above. They used only session scratch f
 - The `PATH` of an `--exec` process held 81 entries under `/mnt/`, because `appendWindowsPath` defaults to true ([wsl.conf](https://learn.microsoft.com/windows/wsl/wsl-config#wslconf)).
 - `command -v git` gave `/usr/bin/git`, an ELF file (first bytes `\177E`), version `2.43.0`. `command -v git.exe` gave `/mnt/c/Git/mingw64/bin/git.exe`. It ran Git `2.55.0.windows.3` through interop, and its first bytes were `MZ`. The `WSLInterop` binary-format entry existed.
 - `systemd-run` and `systemctl` resolved to `/usr/bin`. An empty `systemd-run --user --scope` call exited 0.
-- Rule: resolve once per distro with `command -v` and `readlink -f`. Refuse a path under `/mnt/`, a file that starts with `MZ`, and a version with `.windows.`.
+- Rule: resolve once per distro with `command -v` and `readlink -f`. Refuse a path under `/mnt/`, a file that starts with `MZ`, and a version with `.windows.`. T412 (2026-11-10) replaces this rule: only a file with the ELF magic passes, and `MZ` keeps reason `windows-git`.
 
 **P3. Command line, working directory, and distro names.**
 

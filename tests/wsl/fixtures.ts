@@ -314,7 +314,7 @@ export function seamProbe(host: WslHost, change: ProbeChange = {}): string {
   for (const name of ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"]) {
     const path = name === "git" ? (change.git ?? facts.paths.git) : facts.paths[name];
     if (change.absent?.includes(name) || !path) out.push(`absent ${name}`);
-    else out.push(`path ${name} ${path}`, `magic ${name} ${facts.magic[name] ?? "-"}`);
+    else out.push(`path ${name} ${path}`, `magic ${name} ${facts.magic[name] ?? "ELF"}`);
   }
   out.push(`pathenv ${facts.pathEnv ?? ""}`);
   if (!change.absent?.includes("git")) {

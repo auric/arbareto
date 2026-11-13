@@ -475,6 +475,8 @@ describe("licence link and licence text (FR-015, plan.md D12)", () => {
     await answer(r.double.pending("readDictionary"), chunk("x"));
     const regions = [...page().querySelectorAll('[data-slot="licence-panel"] [role="document"]')];
     expect(regions.map((r) => r.textContent)).toEqual(["first", "x"]);
+    // 006 T066: plan.md D17, each region name holds its place in the catalog `licences` order.
+    expect(regions.map((r) => r.getAttribute("aria-label"))).toEqual(["Licence text of Occitan, 1 of 2", "Licence text of Occitan, 2 of 2"]);
     const metas = [...page().querySelectorAll('[data-slot="licence-panel"] [role="document"]')].map((d) => parts(d.previousElementSibling!));
     expect(metas).toEqual([["license", "5 bytes"], ["licence", "1 byte"]]);
   });

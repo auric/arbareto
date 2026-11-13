@@ -6,14 +6,15 @@ import { printOrigin } from "../origin";
 import { ERROR_CODES, WSL_UNAVAILABLE_REASONS as ERROR_REASONS } from "../../src/contracts/errors";
 import {
   buildWslRemedy,
-  checkWslGit,
-  isWindowsProgram,
+  checkWslVersion,
+  foreignGitReason,
   routeWslPath,
   WSL_MINIMUM_GIT_VERSION,
   WSL_UNAVAILABLE_REASONS,
   wslIdentityPath,
   wslUnitName,
   type WslDistroFacts,
+  type WslMagic,
 } from "../../src/contracts/wsl-route";
 
 import { routeRegistration } from "../../src/git-service/wsl";
@@ -257,7 +258,7 @@ describe("WSL Git PPA remedy (T212, contract §11 Git per distro)", () => {
 });
 
 describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
-  const git = (versionText: string, path = "/usr/bin/git", mz = false) => checkWslGit({ path, mz, versionText });
+  const git = checkWslVersion;
 
   test("the floor is 2.55.0", () => {
     expect(WSL_MINIMUM_GIT_VERSION).toBe("2.55.0");
@@ -297,18 +298,13 @@ describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
     expect(git("git version 2.18446744073709551615.0")).toEqual({ ok: true, version: "2.18446744073709551615.0" });
   });
 
-  test("a .windows. version, a path under /mnt/, and a file that starts with MZ give reason windows-git", () => {
-    expect(git("git version 2.55.0.windows.3")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "windows-git" });
-    expect(git("git version 2.56.0", "/mnt/c/Git/mingw64/bin/git.exe")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "windows-git" });
-    expect(git("git version 2.56.0", "/usr/bin/git", true)).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "windows-git" });
-  });
-
-  test("the same rule marks a helper program as a Windows program", () => {
-    expect(isWindowsProgram("/mnt/c/Windows/system32/systemctl.exe", false)).toBe(true);
-    expect(isWindowsProgram("/usr/bin/systemctl", true)).toBe(true);
-    expect(isWindowsProgram("/usr/bin/systemctl", false)).toBe(false);
-    expect(isWindowsProgram("/mnt", false)).toBe(false);
-    expect(isWindowsProgram("/mntx/bin/setsid", false)).toBe(false);
+  // T412: the probe magic decides the program kind. The version text decides only the floor.
+  test("an MZ file gives reason windows-git, a file without the ELF magic gives reason not-elf, and a .windows. version text of an ELF Git is a version", () => {
+    const magics: WslMagic[] = ["ELF", "MZ", "-", "?"];
+    // `?`: `head` failed, so the probe read no bytes.
+    expect(magics.map(foreignGitReason)).toEqual([null, "windows-git", "not-elf", "unreadable"]);
+    expect(git("git version 2.55.0.windows.3")).toEqual({ ok: true, version: "2.55.0.windows.3" });
+    expect(git("git version 2.54.0.windows.1")).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "version", detectedVersion: "2.54.0.windows.1", minimumVersion: "2.55.0" });
   });
 });
 

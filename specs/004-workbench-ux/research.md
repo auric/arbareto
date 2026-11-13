@@ -1183,3 +1183,36 @@ WSL record (T151, T155, T162), worktree l9 at 54ccc1cd (merge of the T165 fix 7c
 - Driver defect: the driver counted pass and fail on stdout. Bun writes its summary to stderr. So the driver fields `valid`, `green`, and `red` read False. The counts above come from the stderr log of each step. The fields did not change the run order.
 
 Ticks: none from this record. T151, T155, and T162 wait for the green final full run that includes the WSL group (tasks.md:42).
+
+**v0.1.1 full run (2026-11-13)**
+
+- Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62f161197f7ab3c6edf80e6eccedc207495d9f9fce453e5ad8b9`. The installed `arbareto.exe` SHA-256 `80a95ab5017d1120e8529eef505d50f6f2255e9a1d81f61628efef38645849c5` equals the built exe after the NSIS marker patch. Installed version 0.1.1.
+- OS: Windows NT 10.0.26300.0, UBR 9974, x64. Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4, WSL `Ubuntu-26.04` with Git 2.55.0. Every `ORIGIN` line named the checkout under test.
+- Each `tests/windows` file ran in its own step (`bun test ./tests/windows/<file>`), exit 0.
+- Results of the test files that the ticked tasks T130 to T163, T165, and T166 name (pass, skip, fail):
+
+| File | Pass | Skip | Fail |
+| --- | ---: | ---: | ---: |
+| `tests/contracts/notice-band.test.tsx` | 40 | 0 | 0 |
+| `tests/contracts/workbench-commit.test.tsx` | 108 | 0 | 0 |
+| `tests/contracts/workbench-resolve.test.tsx` | 30 | 0 | 0 |
+| `tests/contracts/commit-tray.test.tsx` | 31 | 0 | 0 |
+| `tests/contracts/git-commands.test.ts` | 146 | 0 | 0 |
+| `tests/contracts/submodules.test.ts` | 62 | 0 | 0 |
+| `tests/contracts/workbench-submodules.test.tsx` | 89 | 0 | 0 |
+| `tests/contracts/preferences.test.ts` | 15 | 0 | 0 |
+| `tests/contracts/workbench-mount.test.tsx` | 95 | 0 | 0 |
+| `tests/git/submodule-review.test.ts` | 128 | 0 | 0 |
+| `tests/git/submodule-outcome.test.ts` | 36 | 0 | 0 |
+| `tests/git/submodule-reconcile.test.ts` | 18 | 0 | 0 |
+| `tests/git/submodule-scope.test.ts` | 24 | 0 | 0 |
+| `tests/git/submodule-update.test.ts` | 96 | 0 | 0 |
+| `tests/wsl/submodules.test.ts` | 16 | 0 | 0 |
+| `tests/windows/workbench-packaged.test.ts` | 8 | 6 | 0 |
+| `tests/windows/submodule-tree-packaged.test.ts` | 15 | 1 | 0 |
+| `tests/windows/submodule-update-packaged.test.ts` | 5 | 0 | 0 |
+
+- Skips, class user input: the 6 T082 live-input cases of `workbench-packaged.test.ts` (N1; N2; N3, N4, N6; SC-003 and SC-014 US1 and US2; SC-014 US3; SC-014 US4 and US11). They need `ARBARETO_LIVE_INPUT=1`. They stay unverified.
+- Skip, class machine: "T164 (10) at 225%" of `submodule-tree-packaged.test.ts` ("missing capability text-scale-225"). The Windows text size was 100%. T164 stays open.
+- The T144 file printed `SKIP T144 screenshots: ARBARETO_TREE_SHOTS_DIR is not set`. This is a log line, not a skipped case. The run wrote no T144 screenshot.
+- The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".

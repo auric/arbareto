@@ -294,9 +294,7 @@ fn dictionary(entry: &Value, prefix: &str, commit: &str, bundled: bool) -> Optio
             .as_str()
             .is_some_and(|license| (1..=128).contains(&license.len()))
         && entry["commit"] == commit
-        && LICENCE_FORMS
-            .iter()
-            .any(|form| *form == licences.as_slice())
+        && LICENCE_FORMS.contains(&licences.as_slice())
         && names == order
         && total <= DICTIONARY_LANGUAGE_BYTES;
     fits.then(|| Dictionary {

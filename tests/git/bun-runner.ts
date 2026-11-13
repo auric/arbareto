@@ -74,7 +74,6 @@ import {
 } from "../../src/git-service/git-runner";
 import type { FILE_FACT_ERRORS } from "../../src/contracts/channel";
 import { printOrigin } from "../origin";
-import { isWindowsProgram } from "../../src/contracts/wsl-route";
 import {
   FACTS_TEXT,
   factsInput,
@@ -137,7 +136,7 @@ export interface BunRunnerOptions {
   // Fixture isolation for WSL processes only: the Linux path `<home>/.gitconfig` of the owned global configuration.
   // The double forwards it, `GIT_CONFIG_NOSYSTEM=1`, and `XDG_CONFIG_HOME=<home>/.config` through `WSLENV`. The product shell forwards nothing (T205).
   // `wsl.exe` sets `HOME` from the distro user and ignores a `HOME` in `WSLENV`, so `XDG_CONFIG_HOME` replaces the default `core.excludesFile` and `core.attributesFile` (git-config(1)).
-  // Without it, the WSL `globalConfig`, `worktreeAdd`, and `destinationFacts` routes refuse before any process (feature 006 contract Δ11).
+  // Without it, the WSL `globalConfig`, `worktreeAdd`, `clone`, and `destinationFacts` routes refuse before any process (feature 006 contract Δ11).
   wslGlobalConfig?: string;
   // Test only: the Linux `LOCPATH` of WSL processes, forwarded through `WSLENV` as `wslGlobalConfig` is. The product shell forwards nothing.
   wslLocalePath?: string;
@@ -170,7 +169,8 @@ export interface WslInstallation {
 export type WslSavedGit = WslSavedGitFrame;
 
 // The facts that the shell parsed from one successful probe of a `repositoryDiscovery` context, with the context identity (gaps.md W1).
-type WslBound = WslInstallation & { version: string; gitIdentity: string; identity: WslIdentityReply };
+// Feature 003 contract Δ6: a clone destination binds its Git facts with a null identity before the clone, and its identity after exit 0.
+type WslBound = WslInstallation & { version: string; gitIdentity: string; identity: WslIdentityReply | null };
 
 // A WSL identity reply (contract §11 "Paths and file access"). It holds no device number.
 export type WslIdentityReply = Exclude<IdentityReplyFrame, { volumeSerial: string }>;
@@ -347,7 +347,7 @@ const ROOT_ORDER = ["worktreeRoot", "gitDirectory", "commonDirectory"] as const;
 type Roots = Record<(typeof ROOT_ORDER)[number], string>;
 
 // Mirrors `src-tauri/src/wsl.rs` `bind_probe`: strict UTF-8 lines, each line kind at most once, and every §11 rule. Output that fails a rule binds nothing.
-function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
+function bindProbe(distro: string, bytes: Uint8Array, withIdentity: boolean): WslBound | null {
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -372,14 +372,14 @@ function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
   if (WSL_PROBED.some((name) => facts.has(`absent ${name}`) && (facts.has(`path ${name}`) || facts.has(`magic ${name}`)))) return null;
   const program = (name: string) => {
     const path = facts.get(`path ${name}`);
-    return path?.startsWith("/") && facts.get(`magic ${name}`) === "-" && !isWindowsProgram(path, false) ? path : undefined;
+    return path?.startsWith("/") && facts.get(`magic ${name}`) === "ELF" ? path : undefined;
   };
   const [git, systemdRun, systemctl, setsid, stat, env, perl, sha256sum] = WSL_PROBED.map(program);
-  // Contract §11 "Git per distro": the floor, and no `.windows.` version.
+  // Contract §11 "Git per distro": the floor.
   const version = /^git version ((\d+)\.(\d+)\.(\d+)\S*)$/.exec(facts.get("version") ?? "");
   const parts = version?.slice(2, 5).map(BigInt) ?? [];
   const differs = WSL_FLOOR.findIndex((min, i) => parts[i] !== min);
-  const floor = version !== null && !version[1]!.includes(".windows.") && (differs < 0 || parts[differs]! > WSL_FLOOR[differs]!);
+  const floor = version !== null && (differs < 0 || parts[differs]! > WSL_FLOOR[differs]!);
   const fileSystem = /^ef53:([0-9a-f]+)$/.exec(facts.get("gitfs") ?? "")?.[1];
   const gitfile = facts.get("gitfile") ?? "";
   const guid = registryKeys().find((k) => k.name === distro && k.version === 2)?.guid;
@@ -389,8 +389,8 @@ function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
   if (!git || !systemdRun || !systemctl || !setsid || !stat || !env || !perl || !sha256sum || facts.get("scope") !== "0" || !floor || !guid) return null;
   if (!fileSystem || /^0+$/.test(fileSystem) || !/^\d+:\d+:\d+$/.test(gitfile)) return null;
   // gaps.md W1: the context identity binds with the Git facts, or nothing binds.
-  const identity = facts.get("selstat") === "ok" ? classifyIdentity(guid, facts.get("selino") ?? "", facts.get("selfs") ?? "") : null;
-  if (identity === null || "code" in identity) return null;
+  const identity = !withIdentity ? null : facts.get("selstat") === "ok" ? classifyIdentity(guid, facts.get("selino") ?? "", facts.get("selfs") ?? "") : null;
+  if (withIdentity && (identity === null || "code" in identity)) return null;
   return { distro, guid, git, systemdRun, systemctl, setsid, sha256sum, noexpand: status === "0", version: version[1]!, gitIdentity: `${fileSystem}:${gitfile}`, identity };
 }
 
@@ -687,6 +687,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Bytes replace the process of a call and go to stderr in 64 KiB chunks. They count toward the operation stderr bound, which closes the Job (contract §5, §6).
     stderr: undefined as ((call: { operationId: string; arguments: readonly string[] }) => Uint8Array | undefined) | undefined,
     // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
+    // With an injected `stderr` of the same call, the stderr bytes go out first, and then the call ends with this code.
     // Null is the exit of a call that a Job close ended, without `deadline` (contract §6 `exit`).
     exit: undefined as ((call: { arguments: readonly string[] }) => number | null | undefined) | undefined,
     // A code refuses a call as the shell refuses it. No process starts (T377).
@@ -1152,11 +1153,14 @@ export function createBunRunner(options: BunRunnerOptions) {
       const program = gits.get(context.gitInstallationId);
       if (bound?.kind !== "clone" || program === undefined) throw unknownTarget();
       own(context.cloneId, operationId);
-      // The double has no WSL clone route. T075 covers it in the distro.
-      if (wslGits.has(context.gitInstallationId) || wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL clone");
-      const fixed = [...CLONE_ARGUMENTS, bound.url!, bound.path];
+      // process_requests.rs `target` Kind::Clone: a Windows Git refuses a WSL path. A WSL Git takes the Linux path of its own distro and runs at `/`.
+      const wsl = wslGits.get(context.gitInstallationId);
+      const destination = gitForm(bound.path, wsl);
+      if (destination === null) throw new RunnerRefusal("INVALID_REQUEST", "WSL clone");
+      if (wsl !== undefined && options.wslGlobalConfig === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL clone without wslGlobalConfig");
+      const fixed = [...CLONE_ARGUMENTS, bound.url!, destination];
       if (args === undefined || args.length !== fixed.length || args.some((arg, i) => arg !== fixed[i])) throw new RunnerRefusal("INVALID_REQUEST", "clone arguments");
-      return { program, cwd: launchDirectory };
+      return wsl === undefined ? { program, cwd: launchDirectory } : { program, cwd: `\\\\wsl.localhost\\${wsl.distro}\\`, wsl };
     }
     // Feature 004 contract Δ6, as `src-tauri/src/process_requests.rs` resolves it: the admitted Git in the launch folder.
     // Feature 006 contract Δ11: a WSL Git runs at `/` of its distro, so `cwd` is the UNC root of `/`. Without the owned global file, the route
@@ -1586,9 +1590,9 @@ export function createBunRunner(options: BunRunnerOptions) {
       const refused = inject.refuse?.(call);
       if (refused !== undefined) throw new RunnerRefusal(refused, "injected");
       const exitCode = inject.exit?.({ arguments: call.arguments });
-      if (exitCode !== undefined) return { exitCode, activeDescendants: 0 };
-      const injected = inject.stdout?.({ operationId: call.operationId, arguments: call.arguments, input: call.input });
       const injectedErr = inject.stderr?.({ operationId: call.operationId, arguments: call.arguments });
+      if (exitCode !== undefined && injectedErr === undefined) return { exitCode, activeDescendants: 0 };
+      const injected = inject.stdout?.({ operationId: call.operationId, arguments: call.arguments, input: call.input });
       if (injected === undefined && injectedErr === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout, wrapped);
       leave = joinJob(call.operationId, halt);
       for (let at = 0; injectedErr !== undefined && at < injectedErr.length && !halted; at += NATIVE_CHUNK_BYTES) {
@@ -1609,7 +1613,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         await new Promise((resolve) => setImmediate(resolve));
       }
       // src/git-service/native-runner.ts: each exit after the operation stderr bound carries `diagnosticLimit`.
-      return { exitCode: halted ? null : 0, activeDescendants: 0, ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}) };
+      return { exitCode: halted ? null : exitCode === undefined ? 0 : exitCode, activeDescendants: 0, ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}) };
     } finally {
       leave();
       call.signal.removeEventListener("abort", halt);
@@ -1907,10 +1911,14 @@ export function createBunRunner(options: BunRunnerOptions) {
         const peer = call.context.contextKind === "clone" ? contexts.get(call.context.cloneId)?.peer : undefined;
         const discovery = peer === undefined ? undefined : contexts.get(peer);
         if (discovery?.pending && recorded.exit.exitCode === 0 && recorded.exit.deadline === undefined) {
-          const identity = readIdentity(discovery.path);
-          if (!("code" in identity)) {
-            discovery.identity = identity;
-            delete discovery.pending;
+          // bootstrap.rs `bind_clone`: a WSL destination binds no identity here. Its next `wslProbe` binds it.
+          if (wslParts(discovery.path) !== null) delete discovery.pending;
+          else {
+            const identity = readIdentity(discovery.path);
+            if (!("code" in identity)) {
+              discovery.identity = identity;
+              delete discovery.pending;
+            }
           }
         }
         return recorded.exit;
@@ -2149,9 +2157,14 @@ export function createBunRunner(options: BunRunnerOptions) {
       const bound = contexts.get(request.cloneId);
       if (inactive.has(request.operationId) || bound?.kind !== "clone") throw unknownTarget();
       own(request.cloneId, request.operationId);
-      // The double has no WSL `destination` mode. T075 covers it in the distro.
-      if (wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
-      return destinationOf(bound.path);
+      if (wslParts(bound.path) === null) return destinationOf(bound.path);
+      // process_requests.rs `destination_facts`: the Perl text runs only with an approved WSL Git equal to the Git facts of the clone probe.
+      const facts = bound.peer === undefined ? undefined : wslBound.get(bound.peer);
+      const wsl = facts === undefined ? undefined : [...wslGits.values()].find((known) => sameInstallation(known, facts));
+      const path = gitForm(bound.path, wsl);
+      if (wsl === undefined || path === null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
+      if (options.wslGlobalConfig === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination without wslGlobalConfig");
+      return wslDestinationReply(await wslRun(request.operationId, wslFilesCommand(wsl, request.operationId, "destination", ["/", "/", "/"], [path]), null, walkBoundMs()));
     },
 
     // Feature 004 contract Δ3 `revealPath`, as `src-tauri/src/process_requests.rs` `reveal` checks it: the path lies below the worktree root by text,
@@ -2468,7 +2481,11 @@ export function createBunRunner(options: BunRunnerOptions) {
     }
     // gaps.md W1: a context binds once, because a rebind would defeat the revalidation at `register`.
     // The shell reserves the bind when the probe arrives, so a second probe in flight cannot bind again.
-    if (wslBound.has(call.bootstrapId) || wslProbing.has(call.bootstrapId)) throw new RunnerRefusal("INVALID_REQUEST", "bound WSL context");
+    // Feature 003 contract Δ6, as process_requests.rs `wsl_probe` checks it: a pending clone destination binds its Git facts without an identity.
+    // After the clone exits 0, one more probe binds the identity beside those facts.
+    const earlier = wslBound.get(call.bootstrapId);
+    const withIdentity = !bound.pending;
+    if ((earlier !== undefined && (bound.pending || bound.peer === undefined || earlier.identity !== null)) || wslProbing.has(call.bootstrapId)) throw new RunnerRefusal("INVALID_REQUEST", "bound WSL context");
     bound.owner = call.operationId;
     wslProbing.add(call.bootstrapId);
     try {
@@ -2507,8 +2524,10 @@ export function createBunRunner(options: BunRunnerOptions) {
         if (seam.stderr) call.stderr.push(new TextEncoder().encode(seam.stderr));
         exit = seam.deadline ? { exitCode: null, activeDescendants: 0, deadline: "deadline" } : { exitCode: seam.exitCode ?? 0, activeDescendants: 0 };
       }
-      const facts = exit.exitCode === 0 && !exit.deadline ? bindProbe(call.distro, Buffer.concat(seen)) : null;
-      if (facts) wslBound.set(call.bootstrapId, facts);
+      const facts = exit.exitCode === 0 && !exit.deadline ? bindProbe(call.distro, Buffer.concat(seen), withIdentity) : null;
+      // The destination identity binds only beside the same Git facts of the first probe.
+      if (facts && earlier === undefined) wslBound.set(call.bootstrapId, facts);
+      else if (facts && earlier!.identity === null && sameInstallation(earlier!, facts) && earlier!.version === facts.version && earlier!.gitIdentity === facts.gitIdentity) earlier!.identity = facts.identity;
       return exit;
     } finally {
       wslProbing.delete(call.bootstrapId);

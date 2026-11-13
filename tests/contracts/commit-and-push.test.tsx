@@ -163,7 +163,7 @@ describe("Commit and push (FR-038)", () => {
       const { snapshotId, entryId } = args[1] as { snapshotId: string; entryId: string };
       const patch = Buffer.from("diff --git a/a.ts b/a.ts\nindex 1..2 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n a\n+n\n b\n").toString("base64");
       const hunks = [{ hunkId: fixtureId(0x401), ordinal: 0, oldStart: 1, oldCount: 2, newStart: 1, newCount: 3, digest: "1".repeat(64) }];
-      return { ...succeeded({ comparisonId: fixtureId(0x402), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks, support: "supported", fileAction: "stage", remedy: null }), entryId };
+      return { ...succeeded({ comparisonId: fixtureId(0x402), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks, support: "supported", fileAction: "stage", remedy: null, fileChange: "modified" }), entryId };
     };
     const double = await mountWorkbench(workbench, world);
     // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
@@ -230,7 +230,7 @@ describe("Commit and push (FR-038)", () => {
     world.answers.readComparison = (args) => {
       const { snapshotId, entryId } = args[1] as { snapshotId: string; entryId: string };
       const patch = Buffer.from("diff --cc a.txt\n").toString("base64");
-      return { ...succeeded({ comparisonId: fixtureId(0x504), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks: [], support: "state", fileAction: "resolve", remedy: null }), entryId };
+      return { ...succeeded({ comparisonId: fixtureId(0x504), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks: [], support: "state", fileAction: "resolve", remedy: null, fileChange: null }), entryId };
     };
     world.answers.applyFile = undefined;
     const double = await mountWorkbench(workbench, world);
@@ -313,6 +313,29 @@ describe("Commit and push (FR-038)", () => {
     expect(shownWith(openMenu(), RUNNING).length).toBe(0);
     // The own reason of the current branch keeps its visible line.
     expect(shownWith(openMenu(), "main is the current branch.").length).toBe(1);
+  });
+
+  // 003 plan D12: the reconcile reason shows only in the tooltip and the accessible description of the sync controls and the menus.
+  test("tasks.md T411: a read with recoveryState reconciling keeps Fetch and the branch menu items without a visible reason line; the description holds it", async () => {
+    const world = createWorld();
+    world.answers.readBranches = () =>
+      succeeded({ entries: [{ ref: "refs/heads/main", kind: "local", name: "main", invalidUtf8: false, oid: oid(1), upstream: "refs/remotes/origin/main", tracking: null, heldBy: null, current: true, localName: null }] });
+    await mountWorkbench(workbench, world);
+    world.answers.readWorkspace = () => succeeded({ ...snapshot(world), recoveryState: "reconciling" });
+    await press(document.body, "F5");
+    await settle();
+    const group = document.querySelector<HTMLElement>('[role="group"][aria-label="Remote sync"]')!;
+    expect(description(button("Fetch", group))).toBe(RECONCILING);
+    expect(shownWith(group, RECONCILING).length).toBe(0);
+    const toggle = document.querySelector<HTMLElement>('button[aria-label="Show references"]');
+    if (toggle !== null && toggle.getAttribute("aria-expanded") !== "true") await click(toggle);
+    const main = [...document.querySelectorAll<HTMLElement>('[data-section="references"] [role="treeitem"]')].find((i) => (i.getAttribute("aria-label") ?? "").startsWith("main,"))!;
+    await act(async () => void main.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await settle();
+    const items = [...openMenu().querySelectorAll<HTMLElement>('[role="menuitem"]')].filter((i) => ["Create branch here…", "Rename…", "Push"].includes(itemLabel(i)));
+    expect(items.map(itemLabel)).toEqual(["Create branch here…", "Rename…", "Push"]);
+    for (const item of items) expect(description(item)).toBe(RECONCILING);
+    expect(shownWith(openMenu(), RECONCILING).length).toBe(0);
   });
 
   test("tasks.md T114: a state-unknown read during the reconcile read keeps the visible unknown-state line in the toolbar", async () => {

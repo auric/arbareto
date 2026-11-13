@@ -9,5 +9,5 @@ Check each download before you install it:
 
 ```sh
 sha256sum --check SHA256SUMS.txt
-gh attestation verify <file> -R auric/arbareto
+gh attestation verify <file> -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml
 ```

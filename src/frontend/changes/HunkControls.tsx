@@ -8,7 +8,7 @@ import type { ChangeEntry, Comparison, WorkspaceSnapshot } from "../../contracts
 import { WarningIcon } from "../app/NoticeBand";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
-import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
+import { RECONCILING_REASON, RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
@@ -29,7 +29,7 @@ export type Eligibility = WorkspaceSnapshot["hunkEligibility"];
  * A workspace state that blocks hunk and file actions. `busy` is a running file action, `running` any other mutation.
  * `operation` is a merge, a rebase, a cherry-pick, or a revert in progress, which the notice band conflict row finishes (feature 003 FR-030, feature 010 FR-060). `conflicted` is every other state that is not `normal`.
  */
-export type Blocked = "conflicted" | "operation" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "refreshing" | "unknown" | null;
+export type Blocked = "conflicted" | "operation" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "refreshing" | "reconciling" | "unknown" | null;
 
 export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   conflicted: "Arbareto blocks changes until the Git operation ends outside Arbareto. Then select Refresh (F5).",
@@ -43,6 +43,8 @@ export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   running: "A Git operation is running. Wait for its result, or select Cancel.",
   // plan.md 001 "Loading": the Refreshing marker.
   refreshing: "Refreshing…",
+  // plan.md 001 "State unknown": a read with `recoveryState` `reconciling` is not State unknown.
+  reconciling: RECONCILING_REASON,
   unknown: "State unknown. Select Refresh (F5) first.",
 };
 /** Plan D15 running rule and feature 004 spec FR-105: these blocks show their reason only in the tooltip and the accessible description. */
@@ -222,12 +224,12 @@ function revertBlock(props: HunkControlsProps): string | null {
 function revertState(props: HunkControlsProps) {
   const rows = props.lines?.patch ?? null;
   const range = props.lines?.range ?? null;
-  const header = rows?.header ?? [];
-  // The `git diff` extended header lines (git-diff(1) "Generating patch text with -p").
-  const fileReason = header.some((l) => l.startsWith("deleted file mode ")) ? LINE_REVERT_TEXT["deleted-file"] : header.some((l) => l.startsWith("new file mode ")) ? LINE_REVERT_TEXT["new-file"] : null;
+  const change = props.comparison.fileChange;
+  // Feature 008 data-model §7: the service field, not the patch text. Null: the service has no status fact, so the revert refuses.
+  const fileReason = change === "deleted" ? LINE_REVERT_TEXT["deleted-file"] : change === "added" ? LINE_REVERT_TEXT["new-file"] : change === null ? COMPARISON_INCOMPLETE : null;
   const hunkReason = revertBlock(props) ?? fileReason;
   if (range === null || rows === null) return { hunkReason, lines: null };
-  const pick = pickLines(rows, range, "unstage");
+  const pick = pickLines(rows, range, "unstage", change);
   const reason = hunkReason ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_REVERT_TEXT[pick.reason as keyof typeof LINE_REVERT_TEXT]);
   const label = revertLinesLabel(changeRows(rows, range)?.length ?? 0);
   return { hunkReason, lines: { label, reason, pick: pick?.ok === true ? pick : null, hunks: selectedHunks(rows, range) } };
@@ -360,9 +362,9 @@ export function HunkControls(props: HunkControlsProps) {
   const range = props.lines?.range ?? null;
   const rows = props.lines?.patch ?? null;
   // Undefined: no line selection. Null: a point of the selection names no row of the canonical patch (contract §4).
-  const pick = range === null || rows === null ? undefined : pickLines(rows, range, unstage ? "unstage" : "stage");
+  const pick = range === null || rows === null ? undefined : pickLines(rows, range, unstage ? "unstage" : "stage", comparison.fileChange);
   const picked = pick?.ok === true ? pick : null;
-  const lineReason = pick === undefined ? null : (blockReason ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_TEXT[pick.reason as keyof typeof LINE_TEXT]));
+  const lineReason = pick === undefined ? null : (blockReason ?? (comparison.fileChange === null ? COMPARISON_INCOMPLETE : null) ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_TEXT[pick.reason as keyof typeof LINE_TEXT]));
   const quiet = quietBlock(props.blocked);
   const lineHunk = picked === null ? undefined : comparison.hunks[picked.hunk];
   const runLines = (direction: "stage" | "unstage") => {

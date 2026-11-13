@@ -102,7 +102,7 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | 001 support reasons (`rename`, `mode`, `type`, `symlink`, `submodule`, `LFS`, `filter`, `state`, `index-flag`, `path`) | all | `decideSupport` and the status record; also `type` for a `directory` fact of the target (spec Edge Cases "The working file is a folder now"), and `path` for a Windows `file` fact with `exactName: false` (plan D8) |
 | `binary`, `encoding`, `size`, `line-endings` | lines | `decideSupport`, `revert-bytes.ts` proof |
 | `ident` | lines | `check-attr` `ident` = `set` |
-| `context-only`, `several-hunks`, `deleted-file`, `new-file`, `eof-newline` | lines | `subHunk`, the renderer mapping |
+| `context-only`, `several-hunks`, `deleted-file`, `new-file`, `eof-newline` | lines | `subHunk`, the renderer mapping; in the renderer, `deleted-file` and `new-file` come from the comparison field `fileChange` (contract Δ3 `readComparison`); a type change `T` gives `null`, and the renderer refuses |
 | `unstaged-changes` | staged lines | the status worktree letter |
 | `untracked` | files, lines | the status record `?` |
 | `in-the-way` | files | the file fact: no index entry in the shown read and a present working file (any fact but `absent` or `error`), also for an ignored file; or a file that is not a folder at a folder name of that path. A file that appears between the review and the run ends `STALE_REVIEW` `revert-changed`. |

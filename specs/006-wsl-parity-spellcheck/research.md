@@ -684,7 +684,7 @@ Independent batch 3 review, reviewer agent, read-only. Verdict: passes after fix
 - The packaged gate makes one case per catalog entry. An entry with a missing cache file skips with `not-cached <id>/<name>`, and the qualification run counts the skip as unverified (spec SC-002).
 - A gate run fails when a sample of its window has no WebView2 private bytes or another root PID. A run without a load skips the menu step, records its values, and fails step 3.
 - The N4 Persian line is its own case. Without `fa`, that case skips with its reason.
-- Open point: each gate run records `maxGapMs`, the largest gap between two samples. Plan.md D3 fixes 250 ms samples but no bound for the gap. A bound needs a plan decision.
+- Open point: each gate run records `maxGapMs`, the largest gap between two samples. Plan.md D3 fixes 250 ms samples. Closed: plan.md D3 bounds the gap at 1,500 ms (user decision 2026-11-10, T064).
 
 ### T041 first packaged run, 2026-10-26, Windows 11 10.0.26300, build 73a9eb7b, WebView2 Edg/155
 
@@ -764,3 +764,108 @@ Independent batch 3 review, reviewer agent, read-only. Verdict: passes after fix
 - `/speckit-converge` read spec.md, plan.md, tasks.md, and the constitution against the code at f34e3c35. It found no constitution violation and no unrequested code.
 - It appended Phase 10 with six tasks: T062 (FR-028 during a download, manual or Sandbox check), T063 (N4 at 150% and 225%, and N5 with an IME), T064 (a bound for the sample gap of plan.md D3), T065 (the import failure states against data-model §4, user decision), T066 (distinct names for the two Occitan licence regions), and T067 (the D17 texts of a Changed language that fails to load, and the chip preview).
 - T046 stays open until T045 passes, and converge then runs again.
+
+### v0.1.1 full run, 2026-11-13, Windows 11 10.0.26300, build de82eccd, WebView2 Edg/157.0.4341.46
+
+- Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62f161197f7ab3c6edf80e6eccedc207495d9f9fce453e5ad8b9`. Each gate line gave the build `0.1.1 de82eccdb06cc667a3db2f17060d28863d1baaa2`. The installed `arbareto.exe` equals the built exe after the NSIS marker patch.
+- OS: Windows NT 10.0.26300.0, UBR 9974, x64, the 004 reference PC (AMD Ryzen 7 4800H, 16 logical processors). Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4, rustc and cargo 1.99.0, WSL `Ubuntu-26.04` with Git 2.55.0, `ARBARETO_DICTIONARY_CACHE` set to the local cache.
+- Commands, each exit 0: `bun install --frozen-lockfile`, `bun run build` (with `build:service`), `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked` (667 passed, 0 failed, 16 ignored), `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04` (10,212 pass, 56 skip, 0 fail), `bun run package`, `bun test ./tests/gate` with the cache (175 pass, 0 fail). Every `ORIGIN` line named the checkout under test.
+- `tests/windows` ran one file per step (`bun test ./tests/windows/<file>`), each exit 0. The 33 files are exactly the files of `bun run test:windows`. `cargo check --locked` did not run, and no control mutation ran.
+- The WSL files ran inside `test:all`, not alone: `workbench-wsl-facts` 27 pass, `workbench-wsl-branches` 12 pass, `workbench-wsl-staging` 12 pass, `workbench-wsl-settings` 14 pass, 0 skip, 0 fail.
+- Contract and Git files (pass, skip, fail): `tests/contracts/spelling-editor.test.tsx` 64, 0, 0. `tests/git/dictionaries.test.ts` 28, 0, 0. `tests/contracts/spell-words.test.ts` 70, 0, 0. `tests/contracts/spelling-page.test.tsx` 62, 0, 0. `tests/contracts/bridge.test.ts` 17, 0, 0. `tests/contracts/dictionary-catalog.test.ts` 20, 0, 0.
+- `tests/windows/spelling-packaged.test.ts`: 6 pass, 4 skip, 0 fail. Pass: F14, N1, Q24; N2, N3, Q8, FR-005 by keyboard; N4, Q13 at the current text scale; N4, Q13, SC-009 Persian line; N8; Q26, SC-007, FR-026.
+- `tests/windows/spelling-perf.test.ts`: 89 pass, 1 skip, 0 fail. Pass: the two Q12 SC-004 cases, the two Q27 FR-028 cases, and the 85 packaged gate cases.
+- SC-004 (page clock): first open to English marks, 5 app starts, median 145.9 ms, max 158.3 ms (budget 1,000 ms). A typed character in 65,535 bytes with 9,362 marks, 10 runs: median 21.8 ms, max 27.9 ms (budget 100 ms), no long task. Whole-text paste limit case: median 1,831.2 ms, max 1,878.5 ms (no budget).
+- FR-028: a 64 KiB round max 48 ms; a suggestion list p95 32 ms, max 104 ms (22 inputs); a Ukrainian load max 16 ms. Budget: 95% within 100 ms, each within 500 ms.
+- Skips that stay unverified, with their class: N2, N3 live (user input, `ARBARETO_LIVE_INPUT=1`); N5 (machine, `japanese-ime`); N6 (machine, `windows-sandbox`); Q26 US2 keyboard run in the package (unknown, unconditional skip `owned-distro-global`); Q27, FR-028 during a download (unknown, unconditional skip `network-download`). N4 ran only at the current Windows text size, 100%.
+- Gate (plan.md D3, unchanged method): 85 of 85 catalog languages pass, 3 runs each, 2026-11-13 03:17 to 05:10 UTC. Each run had the build `0.1.1 de82eccdb06cc667a3db2f17060d28863d1baaa2` and WebView2 `Edg/157.0.4341.46`. The highest increase is 226.5 MiB (fy). The longest load is 1,930 ms (eu). The largest gap between two samples is 333 ms (hu). No language enters `scripts/dictionary-gate.json`. The values come from the `OBSERVATION T042: gate` lines by a script.
+
+| ID | Baseline (MiB) | Peak (MiB) | Increase (MiB) | Load (ms) | Count |
+|---|---|---|---|---|---|
+| hy | 215.6, 215.1, 214.8 | 356.9, 366.4, 357.7 | 141.3, 151.3, 142.8 | 227, 272, 273 | 10, 10, 10 |
+| en-AU | 213.3, 212.0, 216.2 | 340.1, 342.6, 344.2 | 126.8, 130.6, 128.0 | 169, 164, 188 | 10, 10, 10 |
+| de-AT | 212.8, 215.3, 213.9 | 349.0, 346.8, 343.2 | 136.3, 131.5, 129.3 | 171, 220, 216 | 10, 10, 10 |
+| eu | 214.6, 212.2, 213.6 | 391.8, 393.6, 399.0 | 177.2, 181.4, 185.4 | 1828, 1671, 1930 | 10, 10, 10 |
+| br | 215.3, 213.5, 215.0 | 377.3, 371.7, 380.0 | 162.0, 158.2, 165.0 | 327, 325, 321 | 10, 10, 10 |
+| en-GB | 215.0, 211.9, 211.6 | 340.3, 342.5, 342.6 | 125.3, 130.6, 131.0 | 171, 171, 168 | 10, 10, 10 |
+| bg | 213.1, 213.0, 214.7 | 350.3, 347.4, 349.2 | 137.1, 134.4, 134.4 | 220, 217, 180 | 10, 10, 10 |
+| en-CA | 214.7, 213.1, 212.2 | 340.6, 340.7, 342.4 | 125.9, 127.6, 130.2 | 168, 169, 164 | 10, 10, 10 |
+| ca | 213.9, 212.8, 211.2 | 366.4, 362.9, 377.3 | 152.5, 150.2, 166.0 | 273, 268, 268 | 10, 10, 10 |
+| ca-valencia | 212.5, 214.4, 216.3 | 378.0, 372.1, 366.1 | 165.5, 157.8, 149.8 | 275, 279, 276 | 10, 10, 10 |
+| hr | 213.5, 216.6, 211.8 | 346.6, 350.3, 343.7 | 133.1, 133.7, 131.9 | 175, 169, 170 | 10, 10, 10 |
+| cs | 213.8, 211.6, 214.6 | 374.3, 379.6, 372.4 | 160.6, 168.1, 157.9 | 326, 325, 330 | 10, 10, 10 |
+| da | 214.2, 212.8, 212.1 | 381.0, 373.0, 374.8 | 166.8, 160.1, 162.7 | 331, 329, 330 | 10, 10, 10 |
+| nl | 214.0, 217.1, 215.2 | 366.0, 366.6, 362.8 | 152.0, 149.5, 147.6 | 229, 235, 274 | 10, 10, 10 |
+| en-ZA | 212.0, 216.8, 213.3 | 350.9, 359.0, 344.2 | 138.9, 142.3, 130.9 | 166, 163, 163 | 10, 10, 10 |
+| eo | 213.9, 212.8, 214.7 | 347.8, 340.2, 345.4 | 133.9, 127.3, 130.7 | 165, 169, 167 | 10, 10, 10 |
+| et | 217.1, 212.7, 212.1 | 397.9, 378.3, 378.7 | 180.8, 165.6, 166.6 | 377, 374, 374 | 10, 10, 10 |
+| pt-PT | 216.1, 212.1, 214.6 | 351.2, 354.7, 352.8 | 135.1, 142.6, 138.2 | 220, 228, 216 | 10, 10, 10 |
+| fo | 212.6, 211.1, 214.0 | 349.4, 347.1, 353.0 | 136.9, 136.0, 138.9 | 271, 269, 267 | 10, 10, 10 |
+| fr | 217.0, 213.3, 212.8 | 356.9, 350.4, 350.2 | 139.9, 137.2, 137.4 | 223, 222, 217 | 10, 10, 10 |
+| fur | 213.5, 212.3, 212.6 | 336.4, 348.4, 339.8 | 122.9, 136.2, 127.2 | 164, 170, 172 | 10, 10, 10 |
+| gl | 216.6, 216.1, 214.7 | 416.1, 413.2, 417.3 | 199.5, 197.1, 202.6 | 643, 634, 597 | 10, 10, 10 |
+| ka | 216.9, 212.2, 215.4 | 371.9, 367.5, 368.2 | 154.9, 155.3, 152.8 | 322, 322, 274 | 10, 10, 10 |
+| de | 212.8, 213.2, 216.4 | 344.7, 349.9, 346.1 | 131.9, 136.7, 129.7 | 172, 181, 217 | 10, 10, 10 |
+| he | 215.3, 214.1, 213.7 | 405.4, 403.2, 403.4 | 190.2, 189.1, 189.7 | 476, 425, 482 | 10, 10, 10 |
+| hu | 216.8, 218.6, 214.2 | 377.2, 376.0, 379.4 | 160.4, 157.5, 165.2 | 369, 331, 341 | 10, 10, 10 |
+| is | 214.9, 213.7, 212.9 | 355.8, 351.2, 356.7 | 140.9, 137.5, 143.8 | 319, 334, 325 | 10, 10, 10 |
+| ia | 212.2, 214.0, 213.7 | 346.3, 348.0, 344.9 | 134.1, 134.0, 131.2 | 170, 170, 172 | 10, 10, 10 |
+| ie | 212.9, 216.9, 217.1 | 343.7, 345.8, 345.1 | 130.8, 128.9, 128.1 | 121, 169, 174 | 10, 10, 10 |
+| ga | 216.8, 215.2, 212.8 | 355.2, 357.2, 349.9 | 138.4, 142.0, 137.1 | 224, 224, 218 | 10, 10, 10 |
+| it | 214.8, 211.3, 215.1 | 347.4, 343.0, 350.8 | 132.6, 131.7, 135.7 | 219, 213, 223 | 10, 10, 10 |
+| tlh-Latn | 216.4, 213.0, 215.1 | 339.8, 338.3, 343.7 | 123.3, 125.3, 128.5 | 163, 161, 168 | 10, 10, 10 |
+| ltg | 212.7, 213.5, 214.1 | 344.2, 347.1, 349.0 | 131.5, 133.6, 134.9 | 163, 166, 170 | 10, 10, 10 |
+| la | 213.7, 214.7, 214.1 | 358.7, 363.3, 362.0 | 145.0, 148.5, 147.8 | 278, 276, 280 | 10, 10, 10 |
+| lv | 211.9, 212.9, 215.3 | 354.0, 351.4, 351.7 | 142.1, 138.6, 136.4 | 220, 223, 217 | 10, 10, 10 |
+| lt | 212.0, 213.9, 214.8 | 347.1, 347.0, 347.7 | 135.1, 133.0, 132.9 | 220, 187, 223 | 10, 10, 10 |
+| nds | 215.0, 212.8, 214.2 | 343.7, 342.3, 345.1 | 128.7, 129.5, 131.0 | 174, 166, 165 | 10, 10, 10 |
+| lb | 212.5, 212.0, 215.0 | 372.6, 367.0, 369.3 | 160.1, 155.0, 154.2 | 274, 286, 320 | 10, 10, 10 |
+| mk | 214.1, 213.9, 213.6 | 362.3, 363.6, 361.1 | 148.2, 149.7, 147.5 | 226, 223, 219 | 10, 10, 10 |
+| es-MX | 218.0, 214.7, 213.8 | 344.9, 344.1, 342.6 | 126.9, 129.5, 128.8 | 167, 165, 172 | 10, 10, 10 |
+| ne | 213.0, 214.6, 212.9 | 345.9, 343.8, 344.6 | 132.8, 129.2, 131.6 | 173, 171, 182 | 10, 10, 10 |
+| nb | 212.9, 212.5, 214.3 | 385.3, 382.3, 388.3 | 172.4, 169.7, 174.0 | 429, 426, 428 | 10, 10, 10 |
+| nn | 213.8, 215.8, 216.1 | 362.4, 366.3, 362.1 | 148.6, 150.5, 146.0 | 323, 280, 328 | 10, 10, 10 |
+| oc | 213.1, 213.2, 215.3 | 383.4, 365.9, 381.2 | 170.4, 152.8, 165.9 | 267, 224, 274 | 10, 10, 10 |
+| fa | 216.2, 214.3, 214.1 | 367.9, 370.7, 366.5 | 151.8, 156.5, 152.4 | 274, 273, 226 | 10, 10, 10 |
+| pl | 216.9, 213.5, 211.6 | 396.8, 395.1, 391.1 | 179.9, 181.6, 179.5 | 433, 428, 426 | 10, 10, 10 |
+| pt | 212.1, 213.5, 213.8 | 398.1, 399.5, 400.7 | 185.9, 185.9, 186.8 | 534, 535, 534 | 10, 10, 10 |
+| ro | 214.0, 216.1, 212.4 | 359.8, 359.2, 369.3 | 145.9, 143.1, 156.9 | 265, 271, 286 | 10, 10, 10 |
+| ru | 214.3, 213.7, 214.9 | 372.9, 365.3, 365.8 | 158.6, 151.6, 150.9 | 323, 325, 281 | 10, 10, 10 |
+| gd | 213.9, 213.9, 215.0 | 363.9, 370.7, 360.6 | 150.1, 156.8, 145.5 | 275, 270, 273 | 10, 10, 10 |
+| sr | 212.0, 212.8, 213.4 | 373.6, 374.6, 376.4 | 161.6, 161.8, 163.0 | 321, 322, 330 | 10, 10, 10 |
+| sr-Latn | 211.1, 214.1, 212.0 | 369.5, 372.5, 365.0 | 158.4, 158.4, 153.1 | 274, 273, 273 | 10, 10, 10 |
+| sk | 213.3, 214.0, 214.6 | 371.5, 369.5, 373.5 | 158.2, 155.5, 158.9 | 326, 323, 322 | 10, 10, 10 |
+| sl | 215.3, 213.8, 211.4 | 370.1, 370.3, 373.4 | 154.8, 156.5, 162.0 | 323, 275, 276 | 10, 10, 10 |
+| es | 212.6, 213.6, 214.1 | 344.6, 347.6, 347.7 | 131.9, 134.0, 133.6 | 176, 166, 176 | 10, 10, 10 |
+| es-AR | 215.6, 213.9, 213.3 | 347.7, 349.3, 349.6 | 132.2, 135.5, 136.3 | 165, 219, 163 | 10, 10, 10 |
+| es-BO | 212.5, 215.3, 216.0 | 353.6, 349.6, 339.4 | 141.1, 134.3, 123.4 | 169, 170, 178 | 10, 10, 10 |
+| es-CL | 212.9, 214.4, 211.2 | 342.8, 345.7, 342.3 | 130.0, 131.3, 131.1 | 163, 171, 225 | 10, 10, 10 |
+| es-CO | 215.8, 212.1, 213.1 | 347.9, 344.3, 344.5 | 132.1, 132.2, 131.4 | 177, 169, 175 | 10, 10, 10 |
+| es-CR | 214.5, 214.0, 214.2 | 346.5, 345.5, 344.0 | 132.0, 131.5, 129.8 | 167, 170, 166 | 10, 10, 10 |
+| es-CU | 212.7, 212.6, 213.9 | 344.0, 341.3, 344.7 | 131.3, 128.8, 130.8 | 169, 220, 175 | 10, 10, 10 |
+| es-DO | 212.3, 215.0, 217.6 | 346.3, 347.7, 350.4 | 134.0, 132.7, 132.9 | 172, 222, 172 | 10, 10, 10 |
+| es-EC | 212.4, 211.9, 213.0 | 345.3, 343.9, 341.6 | 132.9, 132.0, 128.6 | 171, 216, 163 | 10, 10, 10 |
+| es-SV | 213.1, 214.0, 213.9 | 345.9, 347.1, 348.0 | 132.8, 133.0, 134.2 | 165, 170, 167 | 10, 10, 10 |
+| es-GT | 212.4, 212.4, 212.2 | 341.0, 341.9, 345.5 | 128.5, 129.4, 133.4 | 168, 169, 216 | 10, 10, 10 |
+| es-HN | 216.7, 213.1, 214.1 | 350.8, 343.3, 347.8 | 134.0, 130.1, 133.7 | 169, 168, 169 | 10, 10, 10 |
+| es-NI | 211.9, 214.4, 214.1 | 342.9, 345.4, 348.6 | 130.9, 131.0, 134.5 | 168, 170, 172 | 10, 10, 10 |
+| es-PA | 212.7, 212.0, 213.2 | 343.9, 346.5, 346.2 | 131.2, 134.5, 133.0 | 172, 216, 178 | 10, 10, 10 |
+| es-PY | 214.7, 212.9, 213.2 | 345.0, 343.3, 346.0 | 130.3, 130.4, 132.8 | 169, 171, 170 | 10, 10, 10 |
+| es-PE | 214.3, 213.8, 214.0 | 347.4, 343.5, 343.0 | 133.1, 129.7, 129.0 | 170, 169, 170 | 10, 10, 10 |
+| es-PH | 213.7, 217.2, 216.4 | 347.1, 348.3, 348.3 | 133.4, 131.0, 131.9 | 219, 169, 171 | 10, 10, 10 |
+| es-PR | 213.4, 212.7, 212.3 | 346.3, 346.4, 344.7 | 132.9, 133.7, 132.3 | 167, 166, 231 | 10, 10, 10 |
+| es-US | 212.9, 213.6, 216.0 | 344.5, 349.9, 350.0 | 131.6, 136.2, 134.0 | 168, 170, 168 | 10, 10, 10 |
+| es-UY | 217.3, 211.3, 212.5 | 344.7, 341.2, 341.3 | 127.4, 129.9, 128.8 | 171, 181, 172 | 10, 10, 10 |
+| es-VE | 213.6, 213.4, 216.8 | 346.4, 347.4, 342.8 | 132.9, 134.0, 126.0 | 167, 174, 171 | 10, 10, 10 |
+| sv | 215.0, 213.8, 214.0 | 364.0, 361.5, 365.3 | 148.9, 147.8, 151.3 | 273, 222, 269 | 10, 10, 10 |
+| sv-FI | 213.8, 212.0, 216.1 | 370.3, 358.2, 367.9 | 156.5, 146.3, 151.9 | 275, 267, 270 | 10, 10, 10 |
+| de-CH | 217.2, 214.3, 213.1 | 351.2, 343.1, 349.5 | 134.0, 128.8, 136.4 | 172, 225, 221 | 10, 10, 10 |
+| tr | 214.5, 210.0, 217.7 | 407.9, 399.5, 409.7 | 193.4, 189.5, 192.0 | 637, 633, 639 | 10, 10, 10 |
+| tk | 212.1, 213.4, 215.2 | 353.3, 347.1, 352.0 | 141.2, 133.7, 136.8 | 225, 166, 173 | 10, 10, 10 |
+| uk | 213.6, 213.4, 217.7 | 404.7, 407.9, 398.8 | 191.1, 194.5, 181.1 | 642, 635, 636 | 10, 10, 10 |
+| vi | 215.3, 213.0, 212.3 | 336.3, 337.6, 333.6 | 121.0, 124.7, 121.3 | 167, 125, 169 | 10, 10, 10 |
+| cy | 212.2, 218.0, 214.7 | 349.5, 350.1, 348.3 | 137.3, 132.1, 133.6 | 170, 172, 169 | 10, 10, 10 |
+| hyw | 214.8, 214.4, 217.2 | 360.0, 361.4, 362.6 | 145.2, 147.0, 145.4 | 275, 230, 272 | 10, 10, 10 |
+| fy | 213.8, 213.0, 213.7 | 430.0, 439.5, 435.1 | 216.2, 226.5, 221.4 | 788, 743, 798 | 10, 10, 10 |
+
+- The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".

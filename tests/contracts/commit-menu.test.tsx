@@ -203,6 +203,22 @@ describe("availability (FR-014, plan D1)", () => {
     });
   }
 
+  // 001 tasks.md T411 and 003 plan D12: the reconcile reason follows the running reason rule.
+  test("T411: a reconciling read blocks all but Copy with the quiet reconcile reason", async () => {
+    const world = menuWorld();
+    world.answers.readWorkspace = () => succeeded({ ...snapshot(world), recoveryState: "reconciling" });
+    await mountWorkbench(workbench, world);
+    await keyMenu(B);
+    for (const label of ACTIONS) {
+      const item = menuItem(label);
+      expect(item.getAttribute("aria-disabled")).toBe("true");
+      expect(describedBy(item)).toBe("The status read after the last operation is still running.");
+      expect(document.getElementById(item.getAttribute("aria-describedby")!)!.hidden).toBe(true);
+    }
+    expect(menuItem("Copy commit ID").getAttribute("aria-disabled")).not.toBe("true");
+    expect(describedBy(menuItem("Copy commit ID"))).toBe("");
+  });
+
   for (const operationState of ["merging", "rebasing", "cherry-picking", "reverting"] as const) {
     test(`${operationState} blocks all but Copy with the operation reason`, async () => {
       await mountWorkbench(workbench, menuWorld({ operationState, ...(operationState === "rebasing" ? { head: { state: "detached", oid: A } } : {}) }));

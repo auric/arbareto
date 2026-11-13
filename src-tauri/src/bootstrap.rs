@@ -503,7 +503,7 @@ impl Contexts {
         let permitted = match self.get(bootstrap_id, now)?.kind {
             ContextKind::GitProbe => {
                 arguments == ["--exec-path"]
-                    || arguments == ["version", "--build-options"]
+                    || arguments == ["version"]
                     || CONFIGURATION_PATH_READS
                         .iter()
                         .any(|read| arguments == read)
@@ -1041,18 +1041,15 @@ pub(crate) mod tests {
         let id = contexts
             .create(ContextKind::GitProbe, &git, now)
             .expect("create");
-        assert_eq!(
-            contexts.permits(&id, &strings(&["version", "--build-options"]), now),
-            Ok(())
-        );
+        assert_eq!(contexts.permits(&id, &strings(&["version"]), now), Ok(()));
         assert_eq!(
             contexts.permits(&id, &strings(&["--exec-path"]), now),
             Ok(())
         );
         for refused in [
-            &["version"][..],
-            &["version", "--build-options", "--verbose"],
-            &["--no-lazy-fetch", "version", "--build-options"],
+            &["version", "--build-options"][..],
+            &["version", "--verbose"],
+            &["--no-lazy-fetch", "version"],
             &["--build-options", "version"],
             &["--exec-path=C:\\other"],
             &["--exec-path", "version"],
@@ -1246,7 +1243,7 @@ pub(crate) mod tests {
         }
         for refused in [
             &["rev-parse", "--show-toplevel"][..],
-            &["version", "--build-options"],
+            &["version"],
             &["--no-lazy-fetch", "status", "--porcelain=v2"],
             &["--no-lazy-fetch", "config", "list", "--show-scope"],
             &[

@@ -48,7 +48,7 @@ Git source, tag `v2.55.0`:
 - Source `transport.c:620-640` `print_ref_status`: porcelain prints `<flag>\t<from>:<to>\t<summary>[ (<msg>)]`, or `<flag>\t:<to>\t...` without a source ref.
 - Source `transport.c:664-690` `print_ok_ref_status`: a deletion prints `-` and `[deleted]` with no source ref. The flag `-` prints only when `ref->deletion` is set.
 - Source `transport.c:743`: `[rejected] (remote does not support deleting refs)` prints no source ref.
-- Source `transport.c:773`: `[rejected] (stale info)` prints `ref->peer_ref`. `remote.c:1105-1110` `alloc_delete_ref` names that ref `(delete)`. So a stale lease line reads `(delete):<dst>` (P8, P9).
+- Source `transport.c:773`: `[rejected] (stale info)` prints `ref->peer_ref`. `remote.c:1105-1110` `alloc_delete_ref` names that ref `(delete)`. So a stale lease line reads `(delete):<dst>` (P8, P9). A remote helper can set any status on that line (transport-helper.c `push_update_ref_status`). So the alias does not prove a stale lease (user decision 2026-11-11).
 - Source `transport.c:788-796`: `[remote rejected]` and `[remote failure]` print no source ref for a deletion.
 - Source `transport.c:574-616` `update_one_tracking_ref`: after a successful deletion, Git deletes the tracking ref of the fetch refspec mapping, with no old-value check.
 - Source `builtin/receive-pack.c` `update`: `deny_deletes` refuses `refs/heads/` deletes with "deletion prohibited". The current branch or a worktree branch takes `deny_delete_current`.
@@ -68,12 +68,12 @@ Git documentation:
 
 - Decision: the delete is a 003 sync action, `delete-remote-branch`. Only the syncer has Pageant, the push remedies, the connect target, the `remote` policy, and the stall handling (plan D9).
 - Decision: every delete passes `--force-with-lease=<dst>:<expect>`. Without it, Git deletes moved and absent branches (P2, P11). `pushArgs` throws for a delete without a lease.
-- Decision: the parse matches the argv refspec `:<dst>` or the alias `(delete):<dst>` (R3 `transport.c:773`, `remote.c:1105-1110`). No other form decides.
+- Decision: the parse matches the argv refspec `:<dst>` or the alias `(delete):<dst>` (R3 `transport.c:773`, `remote.c:1105-1110`). No other form decides. The alias selects the line only. The lease re-read decides `stale-lease` (plan D8, user decision 2026-11-11).
 - Decision: the default branch comes from the local `symbolic-ref -q`, not from `ls-remote --symref`. A review must not use the network (003 FR-041, SC-013).
 - Decision: exit 1 of `symbolic-ref -q` refuses with `default-unknown` (user decision 2026-11-06, design Q5). No other fact names the default branch.
 - Decision: the removed-commit count runs one `rev-list` over both tips in the combined form (P14).
 - Decision: the remote delete runs before the local delete (plan D7).
-- Decision (user, 2026-11-06, design Q1 option a): after a stale lease, the run checks the remote with `ls-remote --exit-code` only when the fetch URL equals the push URL (P16). Exit 2, or exit 0 with no exact `<dst>` line, means gone (P15). The removal binds the expect value (P18, R3 git-update-ref(1)).
+- Decision (user, 2026-11-06, design Q1 option a; 2026-11-11): after a `[rejected]` delete, the run checks the remote with `ls-remote --exit-code`. It checks only when the fetch URL equals the push URL (P16). Exit 2, or exit 0 with no exact `<dst>` line, means gone (P15). The removal binds the expect value (P18, R3 git-update-ref(1)).
 - Decision: network, credential, and pre-push hook failures share one outcome. Git reports the three only through message text.
 - Decision: the trust ask names the action `push`. The `sync` gate covers the local writes, because `approvalRequired.workbench` implies `approvalRequired.sync` (`trust.ts:1475-1476`).
 
@@ -241,3 +241,11 @@ Review findings and outcomes:
 - L2: the dialogs printed counts above 999 without digit groups. Fixed by `b2006241` for the remote confirmation, and by the feature close fix for the force-push count "It removes {n} commits".
 - L3: accepted. A cut commit subject keeps its full text in the DOM and in the accessible name. A focusable row would add Tab stops to the list.
 - Evidence: the T021 run 2 results above (build `f15e91fc`) and the T018 WSL run at `e609153c` (6 pass, 0 fail, control red).
+
+### v0.1.1 full run (2026-11-13)
+
+Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62f161197f7ab3c6edf80e6eccedc207495d9f9fce453e5ad8b9`. OS: Windows NT 10.0.26300.0, UBR 9974, x64. Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4. `bun run test:all` exited 0. Every `ORIGIN` line named the checkout under test.
+
+- T028: `tests/git/remote-delete.test.ts` 14 pass, `tests/git/remote-delete-gone.test.ts` 9 pass, `tests/contracts/sync-parsers.test.ts` 134 pass, `tests/contracts/remote-delete.test.tsx` 61 pass. Each has 0 skip and 0 fail.
+- Skips in these files: none.
+- The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".

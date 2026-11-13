@@ -8,8 +8,9 @@ import { expect } from "bun:test";
 import { HISTORY_COMMIT_OBJECT_BYTES, SYNC_LEASE_COMMITS } from "../../src/contracts/limits";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
+import { fileUrl } from "./remote-delete-harness";
 import { buildPush, fc, gitOut, gitRun, importStream, refMap, revParse, type GitHost, type PushFixture } from "./remote-fixtures";
-import { caseTest } from "./service-harness";
+import { caseTest, type Service } from "./service-harness";
 import { ANY_EXIT, copyWithRemotes, hostFor, INTEGRATE_ENV, pullFlags, refreshIndex, register, remoteCalls, repoShape, reviewed, reviewSync, run, subcommandOf, sync, TIMEOUT_MS, withSync, refusalOf } from "./sync-harness";
 
 useFixtureRoot();
@@ -23,6 +24,9 @@ const REMOTE_COMMITS = SYNC_LEASE_COMMITS + 5;
 
 // Every object that the remote can reach from a ref. A force push that loses a commit drops it from this set.
 const reachable = (h: GitHost, repo: string) => gitOut(h, repo, ["rev-list", "--all", "--objects"]).split("\n").filter((l) => l !== "").sort();
+// T092: the `ls-remote` re-reads after call `from`. T093: the review read `ls-remote --get-url` has no remote policy.
+const lsRemoteRereads = (service: Service, from: number) => remoteCalls(service, from).filter((c) => subcommandOf(c.arguments) === "ls-remote");
+const lsRemoteExits = (service: Service, from: number) => lsRemoteRereads(service, from).map((c) => c.exit?.exitCode);
 
 describeGit("rejected push and force push with lease (T035)", () => {
   let fixture: { h: GitHost; f: PushFixture } | null = null;
@@ -130,11 +134,128 @@ describeGit("rejected push and force push with lease (T035)", () => {
       importStream(a.h, a.remotes.origin!, [Buffer.from(`reset refs/heads/topic\nfrom ${review.plan.lease!.expect}\n\n`), fc({ mark: 1, ref: "refs/heads/topic", message: "after the fetch\n", files: { "late.txt": "late\n" } })]);
       const refsBefore = refMap(a.h, a.remotes.origin!);
       const objectsBefore = reachable(a.h, a.remotes.origin!);
+      const from = service.runner.calls.length;
       const response = await sync(service, r, review.syncReviewToken);
       expect({ ...outcome(response), reason: response.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "stale-lease" });
       expect(response.result!.push).toMatchObject({ status: "rejected", lease: true });
+      // T092, contract Δ9: the stale claim comes from the remote re-read.
+      expect(lsRemoteExits(service, from)).toEqual([0]);
       expect(refMap(a.h, a.remotes.origin!)).toEqual(refsBefore);
       expect(reachable(a.h, a.remotes.origin!)).toEqual(objectsBefore);
+    });
+  }, TIMEOUT_MS);
+
+  // T092, contract Δ9. Git sets the lease status before it runs the pre-push hook (transport.c `transport_push`), and it runs the hook also when
+  // the lease refuses every ref (011 research.md R5 U8). So the hook can change the remote between Git's lease check and the re-read.
+  // The remote moves after the fetch, so Git's lease check refuses. Then the pre-push hook runs `hook` with the remote path and the lease value.
+  // `pushurl`: the push URL in other bytes than the fetch URL, so the review binds `sameUrl` false (011 remote-delete-gone.test.ts P16).
+  // `setup` writes more configuration before the registration, so the trust approval covers it.
+  const leaseHookCase = async (name: string, hook: (origin: string, expectOid: string) => string, { reason = "rejected", pushurl = false, setup = (_a: ReturnType<typeof diverged>) => {} } = {}) => {
+    const a = diverged(true);
+    const expectOid = revParse(a.h, a.repo, "refs/remotes/origin/topic");
+    importStream(a.h, a.remotes.origin!, [Buffer.from(`reset refs/heads/topic\nfrom ${expectOid}\n\n`), fc({ mark: 1, ref: "refs/heads/topic", message: "after the fetch\n", files: { "late.txt": "late\n" } })]);
+    a.h.write(`${a.repo}/.git/hooks/pre-push`, `#!/bin/sh\ncat > /dev/null\n${hook(a.remotes.origin!, expectOid)}\n`);
+    if (pushurl) gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.remotes.origin!)]);
+    setup(a);
+    let exits: (number | null | undefined)[] = [];
+    let args: string[][] = [];
+    await withSync(name, async (service) => {
+      const r = await register(service, a.repo);
+      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.sync).toBe(true);
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+      const review = await reviewed(service, r, { action: "force-push" });
+      expect(review.plan.lease!.expect).toBe(expectOid);
+      const from = service.runner.calls.length;
+      const response = await sync(service, r, review.syncReviewToken);
+      expect({ ...outcome(response), reason: response.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason });
+      expect(response.result!.push).toMatchObject({ status: "rejected", lease: true, reasonText: "stale info" });
+      exits = lsRemoteExits(service, from);
+      args = lsRemoteRereads(service, from).map((c) => [...c.arguments]);
+    });
+    return { a, exits, args, expectOid };
+  };
+
+  caseTest("T092", "contract Δ9: a [rejected] lease push whose remote re-read equals the lease value gives reason rejected with Git's reasonText", SHELL, async () => {
+    const seen = await leaseHookCase("t092-equal", (origin, expectOid) => `git --git-dir='${origin}' update-ref refs/heads/topic ${expectOid}`);
+    expect(seen.exits).toEqual([0]);
+    expect(revParse(seen.a.h, seen.a.remotes.origin!, "refs/heads/topic")).toBe(seen.expectOid);
+  }, TIMEOUT_MS);
+
+  // git-ls-remote(1) runs `git-upload-pack` in the remote. setup.c `check_repository_format_gently` refuses a format version above 1.
+  caseTest("T092", "contract Δ9: a [rejected] lease push whose remote re-read fails gives reason rejected and no stale claim", SHELL, async () => {
+    const seen = await leaseHookCase("t092-read-fails", (origin) => `git --git-dir='${origin}' config core.repositoryformatversion 99`);
+    expect(seen.exits).toHaveLength(1);
+    expect([0, 2]).not.toContain(seen.exits[0]);
+  }, TIMEOUT_MS);
+
+  caseTest("T092", "contract Δ9: a [rejected] lease push whose remote branch is gone at the re-read (ls-remote exit 2) gives reason stale-lease", SHELL, async () => {
+    const seen = await leaseHookCase("t092-gone", (origin) => `git --git-dir='${origin}' update-ref -d refs/heads/topic`, { reason: "stale-lease" });
+    expect(seen.exits).toEqual([2]);
+  }, TIMEOUT_MS);
+
+  // T093, plan.md D5: with `sameUrl` false the re-read names the bound push URL. The `file://` push URL names the moved remote.
+  caseTest("T093", "contract Δ9: with a pushurl in other bytes than the URL, a [rejected] lease push re-reads the push URL, and the moved remote gives reason stale-lease", SHELL, async () => {
+    const seen = await leaseHookCase("t093-pushurl-moved", () => "exit 0", { pushurl: true, reason: "stale-lease" });
+    expect(seen.exits).toEqual([0]);
+    expect(seen.args).toEqual([["--no-lazy-fetch", "ls-remote", "--exit-code", "--", fileUrl(seen.a.remotes.origin!), "refs/heads/topic"]]);
+  }, TIMEOUT_MS);
+
+  caseTest("T093", "contract Δ9: with a pushurl in other bytes than the URL, a failed re-read of the push URL gives reason rejected and no stale claim", SHELL, async () => {
+    const seen = await leaseHookCase("t093-pushurl-fails", (origin) => `git --git-dir='${origin}' config core.repositoryformatversion 99`, { pushurl: true });
+    expect(seen.args.map((a) => a[4])).toEqual([fileUrl(seen.a.remotes.origin!)]);
+    expect([0, 2]).not.toContain(seen.exits[0]);
+  }, TIMEOUT_MS);
+
+  // remote.c `alias_all_urls`: `pushInsteadOf` makes the push URL from `url`, and `insteadOf` does not rewrite that push URL.
+  // `ls-remote <push URL>` applies `insteadOf` to it, so it would read the `second` remote. Its `topic` is not the lease value.
+  caseTest("T093", "plan.md D5: when ls-remote --get-url rewrites the push URL to another remote, a [rejected] lease push runs no re-read and gives reason rejected", SHELL, async () => {
+    const seen = await leaseHookCase("t093-insteadof", () => "exit 0", {
+      setup: (a) => {
+        const url = gitOut(a.h, a.repo, ["config", "remote.origin.url"]).trim();
+        gitRun(a.h, a.repo, ["config", `url.${fileUrl(a.remotes.origin!)}.pushInsteadOf`, url]);
+        gitRun(a.h, a.repo, ["config", `url.${fileUrl(a.remotes.second!)}.insteadOf`, fileUrl(a.remotes.origin!)]);
+        expect(gitOut(a.h, a.repo, ["remote", "get-url", "--push", "origin"]).trim()).toBe(fileUrl(a.remotes.origin!));
+        expect(gitOut(a.h, a.repo, ["ls-remote", "--get-url", "--", fileUrl(a.remotes.origin!)]).trim()).toBe(fileUrl(a.remotes.second!));
+      },
+    });
+    expect(seen.args).toEqual([]);
+  }, TIMEOUT_MS);
+
+  // A `remote.origin.vcs` push runs a remote helper and never gives a `[rejected]` line here. So only the review read is checked.
+  // remote.c `remotes_remote_get_1`: a remote named as the push URL gives `ls-remote <url>` its settings.
+  caseTest("T093", "plan.md D5: with a pushurl in other bytes than the URL, a remote.origin.vcs entry or a remote named as the push URL gives no ls-remote --get-url read in the force-push review", SHELL, async () => {
+    const cases: [string, string, (a: ReturnType<typeof diverged>) => [string, string]][] = [
+      ["vcs", "t093-review-vcs", () => ["remote.origin.vcs", "arbareto-none"]],
+      ["remote named as the push URL", "t093-review-named", (a) => [`remote.${fileUrl(a.remotes.origin!)}.uploadpack`, "git-upload-pack"]],
+    ];
+    for (const [name, tag, entry] of cases) {
+      const a = diverged(true);
+      gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.remotes.origin!)]);
+      gitRun(a.h, a.repo, ["config", ...entry(a)]);
+      await withSync(tag, async (service) => {
+        const r = await register(service, a.repo);
+        expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+        const from = service.runner.calls.length;
+        await reviewed(service, r, { action: "force-push" });
+        const getUrl = service.runner.calls.slice(from).filter((c) => c.arguments.includes("--get-url"));
+        expect({ name, getUrl: getUrl.length }).toEqual({ name, getUrl: 0 });
+      });
+    }
+  }, TIMEOUT_MS);
+
+  // User decision 2026-11-11 (contract "Contract gaps"): an scp form has no password field, so its user name may go into process arguments.
+  // The test sends no token: a push to the `.invalid` host would start ssh. So only the review read is checked.
+  caseTest("T093", "contract gaps: with an scp pushurl user@host:path, the force-push review runs ls-remote --get-url on the push URL", SHELL, async () => {
+    const a = diverged(true);
+    const scp = "git@arbareto.invalid:org/repo.git";
+    gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", scp]);
+    expect(gitOut(a.h, a.repo, ["ls-remote", "--get-url", "--", scp]).trim()).toBe(scp);
+    await withSync("t093-review-scp", async (service) => {
+      const r = await register(service, a.repo);
+      const from = service.runner.calls.length;
+      await reviewed(service, r, { action: "force-push" });
+      const getUrl = service.runner.calls.slice(from).filter((c) => c.arguments.includes("--get-url"));
+      expect(getUrl.map((c) => c.arguments.at(-1))).toEqual([scp]);
     });
   }, TIMEOUT_MS);
 

@@ -15,7 +15,7 @@ import { FileControls, FileFailure, gitlinkReason, runFileAction } from "../chan
 import { changeOf, EXTRA_ID, extraEntries, indexGitlink, SubmodulePreview, useSubmoduleChangeRead, useSubmoduleWork, workOf, type ChangeRead, type SubmoduleReader, type WorkRead } from "../changes/SubmodulePreview";
 import { BLOCKED_TEXT, HunkButton, HunkControls, IN_APP_STATES, operationBlock, ReasonLine, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
 import { RevertConfirm } from "../changes/RevertConfirm";
-import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, revertUnstagedRefusal, reviewRefusal, type RevertLinesPlan, type RevertUnstagedPlan } from "../changes/revert-text";
+import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_RECONCILING, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, revertUnstagedRefusal, reviewRefusal, type RevertLinesPlan, type RevertUnstagedPlan } from "../changes/revert-text";
 import { CommitTray } from "../commit/CommitTray";
 import { WorkingSummary } from "../commit/WorkingSummary";
 import { IconButton } from "../components/icon-button";
@@ -93,10 +93,11 @@ import { PushPanel } from "../sync/PushPanel";
 import { CloneDialog } from "../clone/CloneDialog";
 import { ConnectNoticeRow } from "../settings/ConnectTerminal";
 import type { KeyProposal } from "../settings/SettingsDialog";
-import { actionReason, quietReason, RECONCILING_REASON, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
+import { actionReason, quietReason, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
 import { DockRegion } from "../components/docked-panel";
+import { RECONCILING_REASON } from "../components/running-tooltip";
 import { IntegratePanel, type IntegrateRequest } from "../integrate/IntegratePanel";
 import { ResolveView } from "../resolve/ResolveView";
 import { Segmented } from "../components/segmented";
@@ -418,11 +419,11 @@ function trackRevertReview(staging: Staging, label: string, files: number, send:
   };
   return trackOperation("runWorkbench", undefined, send, (op) => staging.onOperation({ ...op, texts, ...(op.response === null ? { running: REVERT_CHECKING(files) } : ended(op.response)) }));
 }
-/** Feature 008 plan.md D12: a revert run with REVERT_PROGRESS. `outcome` gives the result line and the lines of the status area. */
+/** Feature 008 plan.md D12: a revert run with REVERT_PROGRESS and REVERT_RECONCILING. `outcome` gives the result line and the lines of the status area. */
 async function trackRevertRun(staging: Staging, ended: (operation: "runWorkbench", response: BridgeResponse) => void, repositoryId: string, token: string, label: string, outcome: (response: BridgeResponse) => { text: string; lines: string[] } | undefined) {
   const report = (op: StatusOperation) => {
     const counters = op.progress?.phase === "revert-files" ? op.progress.counters : {};
-    const running = counters.fileIndex === undefined || counters.fileCount === undefined ? {} : { running: REVERT_PROGRESS(counters.fileIndex, counters.fileCount) };
+    const running = op.progress?.state === "reconciling" ? { running: REVERT_RECONCILING } : counters.fileIndex === undefined || counters.fileCount === undefined ? {} : { running: REVERT_PROGRESS(counters.fileIndex, counters.fileCount) };
     const result = op.response === null ? undefined : outcome(op.response);
     staging.onOperation({ ...op, texts: [label, "Reverting", label], ...running, ...(result === undefined ? {} : { outcome: result.text, ...(result.lines.length === 0 ? {} : { lines: result.lines, opens: true }) }) });
   };
@@ -1170,11 +1171,15 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [referencesShown, setReferencesShown] = useState(false);
   // Feature 004 plan D20 "Place": the slot of the "Keys in the tree" panel, outside the constrained profile only.
   const [hintsSlot, setHintsSlot] = useState<HTMLElement | null>(null);
-  // Plan D20 "Keyboard": a profile switch removes the tree while the "Keys in the tree" button can have focus.
-  const hintsFocusLost = useRef(false);
-  const [bindHintsButton] = useState(() => (element: HTMLButtonElement) => () => {
-    if (document.activeElement === element) hintsFocusLost.current = true;
-  });
+  // Plan D20 "Keyboard": a switch across the constrained boundary removes content that can hold the focus. The value names the focus target.
+  const focusLost = useRef<"toggle" | "references" | "details" | "history" | null>(null);
+  // The profile of the last React commit. Only a change across the constrained boundary remounts the commit details content.
+  const renderedProfile = useRef(profile);
+  const commitDetailsBox = useRef<HTMLDivElement>(null);
+  const wideReferences = useRef<HTMLDivElement>(null);
+  const wideSplitter = useRef<HTMLDivElement>(null);
+  const dockSplitter = useRef<HTMLDivElement>(null);
+  const historySection = useRef<HTMLElement>(null);
   const referencesToggle = useRef<HTMLButtonElement>(null);
   // The opener of the submodule update. The Submodules group keeps the focused control.
   const reviewOpener = useRef<"notice" | "menu" | "group">("notice");
@@ -1461,14 +1466,27 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (heading) heading.focus();
     else moveSection("next", "noticeHeading");
   });
-  // Plan D20 "Keyboard": in the constrained profile, focus moves to the Show references toggle.
+  // Plan D20 "Keyboard": React keeps the section element and removes its content before it detaches a ref.
+  // So this check reads the old DOM during render.
+  const focused = document.activeElement;
+  if (profile === "constrained" && (wideReferences.current?.contains(focused) || wideSplitter.current?.contains(focused))) focusLost.current = "toggle";
+  else if (profile === "constrained" && dockSplitter.current?.contains(focused)) focusLost.current = "history";
+  else if (profile !== "constrained" && referencesSection.current?.contains(focused)) focusLost.current = "references";
+  else if ((profile === "constrained") !== (renderedProfile.current === "constrained") && commitDetailsBox.current?.contains(focused)) focusLost.current = "details";
+  // Plan D20 "Keyboard": focus moves to the Show references toggle, the references section box, the commit details box, or the History section.
   useLayoutEffect(() => {
-    if (!hintsFocusLost.current) return;
-    hintsFocusLost.current = false;
+    renderedProfile.current = profile;
+    const target = focusLost.current;
+    if (target === null) return;
+    focusLost.current = null;
     // The flag can outlive its render, so a live focus stays where it is.
     const active = document.activeElement;
     const lost = active === null || active === document.body || !active.isConnected;
-    if (profile === "constrained" && lost) referencesToggle.current?.focus();
+    if (!lost) return;
+    if (target === "details") commitDetailsBox.current?.focus();
+    else if (target === "history") historySection.current?.focus();
+    else if (target === "references") wideReferences.current?.focus();
+    else if (profile === "constrained") referencesToggle.current?.focus();
   });
   const onSectionFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -1762,8 +1780,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const loading = workspace === null || state.entries.length < workspace.entryCount;
   // Spec FR-103 and SC-017: the dock names the conflicted count only in the states of the conflict row, and only from a complete read. Feature 010 plan.md D6 adds a cherry-pick and a revert.
   const conflictCount = loading || !IN_APP_STATES.includes(workspace.operationState) ? 0 : conflicted;
-  // Data-model 001 §2: `refreshing` means a refresh read runs, so the block ends without a user action.
-  const stateBlocked: Blocked = state.blocked ? (workspace?.recoveryState === "refreshing" ? "refreshing" : "unknown") : workspace !== null ? operationBlock(workspace.operationState) : null;
+  // Data-model 001 §2: `refreshing` and `reconciling` end without a user action, so they are not State unknown (plan.md "State unknown").
+  // A restarted service session stays State unknown until Refresh (plan.md "State unknown").
+  const recoveryState = workspace?.recoveryState;
+  const stateBlocked: Blocked = state.blocked ? (!state.sessionBlocked && (recoveryState === "refreshing" || recoveryState === "reconciling") ? recoveryState : "unknown") : workspace !== null ? operationBlock(workspace.operationState) : null;
   const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;
   const blockedReason = blocked === null ? null : BLOCKED_TEXT[blocked];
   const stagingBlocked: Blocked = blocked ?? (loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null);
@@ -1778,10 +1798,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const currentLabel = currentEntry === null ? null : (labels.get(currentEntry.name) ?? null);
   // The reason that blocks every sync action: a running mutation, an unknown state, or the reconcile read after a mutation.
   // The sync controls show the running and the reconcile reason only in the tooltip (plan.md D12).
-  const stateSyncBlock = running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null;
+  const stateReconciling = stateBlocked === "reconciling";
+  const stateSyncBlock = running ? BLOCKED_TEXT.running : stateReconciling ? RECONCILING_REASON : state.blocked ? BLOCKED_TEXT.unknown : null;
   const syncBlock = stateSyncBlock ?? (state.reconciling ? RECONCILING_REASON : null);
   // A running mutation or a state-unknown read comes first, so the reconcile reason then is no quiet reason.
-  const reconciling = state.reconciling && stateSyncBlock === null;
+  const reconciling = !running && (stateReconciling || (state.reconciling && stateSyncBlock === null));
   const quietSync = quietReason(running, reconciling);
   const upstreamState = currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set";
   const reasons = syncReasons(currentHead, workspace?.operationState ?? null, upstreamState, syncBlock);
@@ -1797,6 +1818,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   };
   // Plan D15 running rule: a running mutation blocks the 004 actions with the 003 running reason.
   const mutationReason = running ? RUNNING_REASON : blockedReason;
+  // 003 plan D12: the menus show the running and the reconcile reason only in the tooltip.
+  const quietMutation = running || stateBlocked === "reconciling";
   const branches = useBranchActions({
     bridge,
     askTrust,
@@ -1807,7 +1830,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     workbench: store,
     head: currentHead,
     blockedReason: mutationReason,
-    blockedRunning: running,
+    blockedRunning: quietMutation,
     onNotice: setNotice,
     onRefusal: setPaneStatus,
     onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
@@ -1826,7 +1849,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     repositoryId,
     head: currentHead,
     blockedReason: mutationReason,
-    blockedRunning: running,
+    blockedRunning: quietMutation,
     onOperation: setOperation,
     onNotice: setNotice,
     workbench: store,
@@ -1843,6 +1866,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     worktreeRoot: path,
     start: panel === "details" && kept !== null ? kept : currentHead === null || currentHead.state === "unborn" ? null : currentHead.oid,
     blockedReason: mutationReason,
+    blockedRunning: quietMutation,
     running,
     onOperation: setOperation,
     onNotice: setNotice,
@@ -1954,7 +1978,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const cut = workspace?.cut === "untracked";
   // One pass over the entries per snapshot. A progress event re-renders the workbench with the same entries.
   const counts = useMemo(() => (showCounts ? countsText(state.entries, cut) : null), [showCounts, state.entries, cut]);
-  const statusText = starting !== null ? wslStartingText(starting.distro) : state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : (notice ?? (state.repository === null && !restoring ? NO_REPOSITORY : counts));
+  const statusText = starting !== null ? wslStartingText(starting.distro) : state.refreshing ? "Refreshing…" : state.blocked && stateBlocked !== "reconciling" ? "State unknown" : (notice ?? (state.repository === null && !restoring ? NO_REPOSITORY : counts));
   const gitVersion = wslGit?.version ?? environment?.detectedVersion ?? null;
 
   const pushBranch = currentHead !== null && currentHead.state !== "detached" ? branchName(currentHead.target) : null;
@@ -2093,7 +2117,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </div>
         )
       ) : panel === "details" && kept !== null && pushPanel === null ? (
-        <div data-section="commitDetails" tabIndex={-1} className="h-full min-h-0">
+        <div ref={commitDetailsBox} data-section="commitDetails" tabIndex={-1} className="h-full min-h-0">
           <ViewCommitDetails
             view={historyView}
             oid={kept}
@@ -2144,7 +2168,6 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           hintsOpen={preferences.keyHintsOpen}
           onHintsOpen={(open) => savePreferences({ ...preferences, keyHintsOpen: open })}
           hintsMin={m.reducedPaneMin}
-          hintsButtonRef={bindHintsButton}
         />
       </div>
     );
@@ -2205,23 +2228,29 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           {/* A block wrapper of content height. The sidebar height then resolves to its content, not to the section height. */}
           <div>{sidebar}</div>
         </div>
-        <section aria-label="History" data-section="historyList" tabIndex={-1} className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
-          <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)} onBack={blameBack}>
-            <HistoryView {...pane} />
-          </HistoryListSlot>
-        </section>
-        <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={{ flex: "0 0 auto", minHeight: m.reducedPaneMin, maxHeight: docked ? dockedMax : undefined }}>
-          {dock}
-        </section>
+        {/* Plan D20 "Keyboard": each null holds the slot of a wide splitter. So React keeps the History and Dock sections across the switch. */}
+        {null}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <section ref={historySection} aria-label="History" data-section="historyList" tabIndex={-1} className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
+            <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)} onBack={blameBack}>
+              <HistoryView {...pane} />
+            </HistoryListSlot>
+          </section>
+          {null}
+          <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={{ flex: "0 0 auto", minHeight: m.reducedPaneMin, maxHeight: docked ? dockedMax : undefined }}>
+            {dock}
+          </section>
+        </div>
       </div>
     ) : (
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: `${sideWidth}px ${m.splitter}px minmax(0, 1fr)` }}>
-        <div data-section="references" tabIndex={-1} className="min-h-0 border-r border-divider">
+        <div ref={wideReferences} data-section="references" tabIndex={-1} className="min-h-0 border-r border-divider">
           {sidebar}
         </div>
-        <Splitter label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
+        <Splitter ref={wideSplitter} label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
         <div className="flex min-h-0 flex-col">
           <section
+            ref={historySection}
             aria-label="History"
             data-section="historyList"
             tabIndex={-1}
@@ -2236,6 +2265,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </section>
           {/* The dock splitter sets the height of the dock content. A docked panel takes its own height, so the splitter hides. */}
           <Splitter
+            ref={dockSplitter}
             label="Resize dock"
             orientation="horizontal"
             value={dockHeight}

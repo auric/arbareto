@@ -102,6 +102,7 @@ The row form of `readHistoryRows` (contract Δ3).
 | Field | Presence |
 |---|---|
 | `index`, `oid`, `parents`, `cell`, `labels`, `checkout` | Always. `cell` is null for a filter row that is not settled yet. In filter mode, `parents` holds the Git parents, and `cell` draws the reduced parents (§7). |
+| `reducedParents`, `reducedParentCount`, `reducedSkips` | Filter mode only, when `cell` is not null (§7). |
 | `match` | With `searchId`: true, false, or null. |
 | `subject`, `author`, `date`, `encoding`, `invalidUtf8` | `text: "rows"` or `"details"`. `textLimit` replaces them for an object above 256 KiB. |
 | `body`, `bodyCut`, `committer`, `committerDate`, `children` | `text: "details"` only (spec FR-017, FR-018). |
@@ -153,7 +154,14 @@ Rows are processed in stream order, when their match state is known.
 
 The reduced parents of a match are in rising match order.
 
-Plan D4 gives the algorithm and its proof. A match without a matching ancestor shows "No earlier matching commit", unless it is a true root or a shallow boundary.
+A settled filter row carries these fields over the full set of its reduced parents:
+- `reducedParents`: the first `HISTORY_PARENTS_PER_COMMIT` (64) reduced parents as `{oid, skip}`. `skip` is true when `direct` is false.
+- `reducedParentCount`: the count of all reduced parents.
+- `reducedSkips`: true when any reduced edge skips commits.
+
+A row with more than 64 reduced parents still fits one `HISTORY_PAGE_BYTES` page. A limited row draws no edge, so its text reads these facts from the row (spec FR-016).
+
+Plan D4 gives the algorithm and its proof. A match without a matching ancestor shows "No earlier matching commit", unless it is a true root or a shallow boundary. So the row has Git parents and `reducedParentCount` 0.
 
 ## 8. Renderer cache
 

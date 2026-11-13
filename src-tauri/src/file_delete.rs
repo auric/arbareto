@@ -916,6 +916,10 @@ mod tests {
         );
         assert!(file.exists(), "the read-only file stays");
         let mut perms = std::fs::metadata(&file).expect("metadata").permissions();
+        #[allow(
+            clippy::permissions_set_readonly_false,
+            reason = "the fixture cleanup removes the file"
+        )]
         perms.set_readonly(false);
         std::fs::set_permissions(&file, perms).ok();
     }

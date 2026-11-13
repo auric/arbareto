@@ -128,6 +128,8 @@ describe("contract Δ9 codes", () => {
       "default-unknown",
       "no-remote-branch",
       "not-upstream",
+      // Feature 011 contract Δ9, T027.
+      "remote-helper",
     ]);
     expect([...E.PUSH_REJECTED_REASONS]).toEqual(["rejected", "stale-lease", "remote-rejected", "remote-failure"]);
     expect([...E.PUTTY_UNAVAILABLE_REASONS]).toEqual(["missing", "unreadable", "version", "exit", "not-ready"]);

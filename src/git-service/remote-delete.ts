@@ -13,7 +13,7 @@ import { deleteFacts, heldElsewhere, readWorktrees, refTarget, unavailable as lo
 import type { Head, OperationState } from "./snapshot";
 import { fetchUrlArgs, onlyTipsCountArgs, onlyTipsListArgs, pushRecordArgs, pushUrlArgs, remoteHeadArgs } from "./sync-commands";
 import { parsePushRecord, parsePushUrls, parseSymref, trackingOf } from "./sync-parsers";
-import { commitsOf, mirrored, readOut, readWave, refKey, type Bound, type Observation, type ReviewPayload, type SyncContext } from "./sync-review";
+import { commitsOf, mirrored, pushesThroughHelper, readOut, readWave, refKey, type Bound, type Observation, type ReviewPayload, type SyncContext } from "./sync-review";
 import type { TrustListing } from "./trust";
 import { localNameOf, trackingRemotes } from "./workbench-parsers";
 
@@ -105,6 +105,7 @@ export async function observeRemoteDelete(ctx: SyncContext, payload: DeletePaylo
   const urls = parsePushUrls(pushOut.value);
   if (urls === null) return { code: "MALFORMED_GIT_OUTPUT" };
   if ("reason" in urls) return unavailable(urls.reason);
+  if (pushesThroughHelper(entries, remote, urls.url)) return unavailable("remote-helper");
 
   // Read 9: plan.md D8 checks the fetch URL only when it names the push URL byte for byte (research.md R2 P16).
   if ("limited" in fetchOut) return { code: "OUTPUT_LIMIT" };

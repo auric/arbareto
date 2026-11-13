@@ -42,8 +42,8 @@ const ORIGIN_FEATURE = remote("origin/feature", { localName: "feature", oid: oid
 const ORIGIN_MAIN = remote("origin/main", { localName: "main" });
 const ENTRIES = [FEATURE, MAIN, ORIGIN_FEATURE, ORIGIN_MAIN];
 
-// Contract Δ3 `SyncPlan` of a remote branch delete. `count` above the list length gives the X5 line.
-const DESTINATION = { remote: "origin", ref: "refs/heads/feature", trackingRef: "refs/remotes/origin/feature", url: "https://example.test/r.git", setUpstream: false, upstreamRebase: false, source: "tracking-ref" };
+// Contract Δ3 `SyncPlan` of a remote branch delete. `count` above the list length gives the X5 line. The `ssh://` URL gives X7, not X7h (plan D13).
+const DESTINATION = { remote: "origin", ref: "refs/heads/feature", trackingRef: "refs/remotes/origin/feature", url: "ssh://example.test/r.git", setUpstream: false, upstreamRebase: false, source: "tracking-ref" };
 const commits = (n: number) => Array.from({ length: n }, (_, i) => ({ objectId: oid(0x100 + i), subject: i === 1 ? null : `Sample change ${i + 1}` }));
 const plan = (count: number, listed = Math.min(count, 100), withLocal = false) => ({
   remotes: ["origin"],
@@ -60,6 +60,8 @@ const reviewed = (p: ReturnType<typeof plan>) => succeeded(checked(ReviewSyncRes
 const refused = (code: string, result: Record<string, unknown> = {}) => ({ requestId: fixtureId(0x5ff), state: "rejected", code, result: checked(ReviewSyncResult, result) });
 const push = (status: string, reasonText: string | null = null) => ({ status, oldObjectId: oid(2), newObjectId: status === "deleted" ? null : oid(2), reasonText, lease: true, upstreamWritten: false, upstreamNotSet: false, outputTail: "" });
 const ended = (state: string, result: Record<string, unknown>, code?: string) => ({ requestId: fixtureId(0x5fe), operationId: fixtureId(0x511), state, ...(code === undefined ? {} : { code }), result: checked(SyncResult, { action: "delete-remote-branch", ...result }) });
+// Plan D13 X31 (feature 011 T027).
+const X31 = "The remote of origin/feature pushes through a remote helper. Git cannot show that a remote helper keeps the lease, so Arbareto does not delete this branch.";
 const X27 = { text: "This command fetches origin and removes the remote-tracking branches whose remote branch is gone.", command: "& git --no-lazy-fetch -C C:\\repo fetch --prune -- origin" };
 
 function deleteWorld(fields: Partial<World> = {}): World {
@@ -320,6 +322,34 @@ describe("local dialog marks (plan D3, boards Local-checked and Local-refused)",
     const icon = dialog.querySelector('[role="alert"] svg')!.getAttribute("class")!.split(" ");
     expect(icon).toEqual(expect.arrayContaining(["text-removed", "size-(--icon-size)", "mt-px"]));
   });
+
+  test("T027: the remote-helper refusal under the check box states X31", async () => {
+    const dialog = await checkedLocal(refused("SYNC_UNAVAILABLE", { reason: "remote-helper" }));
+    expect(text(dialog.querySelector('[role="alert"]')!)).toBe(X31);
+  });
+});
+
+// Feature 011 T027, spec FR-006, plan D13: X7h for an `http://` or `https://` push URL, else X7. The plan URL is the redacted push URL.
+const X7 = "Other people can lose work. The delete stops if origin/feature changed since the last fetch.";
+const X7H = `${X7} Over a dumb HTTP server, Git cannot check this.`;
+const WARNING_CASES: [string, string, string][] = [
+  ["an https:// URL", "https://example.test/r.git", X7H],
+  ["an http:// URL", "http://example.test/r.git", X7H],
+  ["an https:// URL with redacted user information", "https://<redacted>@example.test/r.git", X7H],
+  ["a file path URL", "C:\\repos\\r.git", X7],
+  ["an ssh:// URL", "ssh://example.test/r.git", X7],
+  ["an scp URL", "git@example.test:r.git", X7],
+];
+const warningsOf = (scope: Element) => [...scope.querySelectorAll("p")].map(text).filter((t) => t.startsWith("Other people can lose work."));
+const withUrl = (p: ReturnType<typeof plan>, url: string) => ({ ...p, destination: { ...p.destination, url } });
+
+describe("T027 remote confirmation warning (spec FR-006, plan D13 X7 and X7h)", () => {
+  for (const [label, url, expected] of WARNING_CASES) {
+    test(`${label} shows ${expected === X7H ? "X7h" : "X7"}`, async () => {
+      const { dialog } = await remoteDialog(withUrl(plan(3), url));
+      expect(warningsOf(dialog)).toEqual([expected]);
+    });
+  }
 });
 
 describe("refusals (plan D4, FR-004, SC-011)", () => {
@@ -334,6 +364,7 @@ describe("refusals (plan D4, FR-004, SC-011)", () => {
     ["X14 with the remote of the refusal", "SYNC_UNAVAILABLE", { reason: "default-unknown", remote: "fork" }, "Arbareto cannot tell the default branch of fork. Fetch fork, or run git remote set-head fork --auto, then try again."],
     ["X15 no-remote-branch", "SYNC_UNAVAILABLE", { reason: "no-remote-branch" }, "No fetch refspec of exactly one remote maps origin/feature to a remote branch, so Arbareto cannot name it."],
     ["X16 not-upstream", "SYNC_UNAVAILABLE", { reason: "not-upstream" }, "origin/feature is no longer the upstream of feature. Close this dialog, then try again."],
+    ["X31 remote-helper", "SYNC_UNAVAILABLE", { reason: "remote-helper" }, X31],
     ["X17 UNKNOWN_TARGET", "UNKNOWN_TARGET", {}, "origin/feature no longer exists here."],
     ["the REASONS text of current-branch", "WORKBENCH_UNAVAILABLE", { reason: "current-branch" }, "You cannot delete the current branch. Switch to another branch first."],
     ["the REASONS text of other-worktree", "WORKBENCH_UNAVAILABLE", { reason: "other-worktree", worktree: "C:\\wt\\x" }, "The worktree C:\\wt\\x holds this branch. Open that worktree, or remove it first."],
@@ -374,6 +405,17 @@ describe("refusals (plan D4, FR-004, SC-011)", () => {
     const holding = statusSlots().filter((s) => text(s).includes(X13));
     expect(holding).toHaveLength(1);
     expect(holding[0]!.querySelector("svg")).not.toBeNull();
+  });
+
+  test("T027: Del with the refusal remote-helper shows X31 in the refusal slot with its icon and opens no dialog", async () => {
+    const double = await mountWorkbench(workbench, deleteWorld());
+    await del("origin/feature");
+    await answer(double.pending("reviewSync"), refused("SYNC_UNAVAILABLE", { reason: "remote-helper" }));
+    const holding = statusSlots().filter((s) => text(s).includes(X31));
+    expect(holding).toHaveLength(1);
+    expect(holding[0]!.querySelector("svg")).not.toBeNull();
+    expect(alertDialog()).toBeNull();
+    expect(double.count("sync")).toBe(0);
   });
 
   test("a later delete clears the old refusal, so its outcome line shows in full", async () => {

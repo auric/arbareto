@@ -388,6 +388,80 @@ describeGit("remote branch delete (011 T009)", () => {
     expect(stateOf(a)).toEqual(before);
   }, TIMEOUT_MS);
 
+  // Feature 011 T027, spec FR-017, plan.md D8 "Lease gap". `required` is the `sync` trust class: each `url.*` and `vcs` entry and each helper URL counts (`selectsHelper`).
+  // git-remote(1) `get-url`: the review reads the URL with the `insteadOf` and `pushInsteadOf` rules applied, so each rewrite case checks that URL first.
+  type HelperCase = [name: string, setup: (c: Copy) => void, required: boolean];
+  const setUrl = (c: Copy, url: string) => void gitRun(c.h, c.repo, ["remote", "set-url", "origin", url]);
+  const pushUrlIs = (c: Copy, url: string) => expect(gitOut(c.h, c.repo, ["remote", "get-url", "--push", "--all", "--", "origin"])).toBe(`${url}\n`);
+  async function helperReviews(tag: string, cases: HelperCase[]) {
+    const seen: unknown[] = [];
+    await withSync(tag, async (service) => {
+      for (const [name, setup, required] of cases) {
+        const a = own();
+        setup(a);
+        const r = await register(service, a.repo);
+        expect({ name, required: (await service.readTrust(r.repositoryId)).result!.approvalRequired.sync }).toEqual({ name, required });
+        if (required) expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+        const from = service.runner.calls.length;
+        const response = await reviewSync(service, r, payloadOf(FEATURE));
+        const result = response.result as { plan?: { destination: { url: string } } } | undefined;
+        seen.push({ name, code: response.code, result: response.state === "succeeded" ? { url: result!.plan!.destination.url } : response.result, calls: remoteCalls(service, from) });
+      }
+    });
+    return seen;
+  }
+
+  caseTest("T027", "FR-017, SC-003: a foo:: URL, a foo:// URL, an ftp and an ftps URL, an HTTPS:// URL, a remote.origin.vcs entry, and insteadOf and pushInsteadOf rewrites to helper URLs give remote-helper; no network process starts", SHELL, async () => {
+    const cases: HelperCase[] = [
+      ["foo:: URL", (c) => setUrl(c, `foo::${c.origin}`), true],
+      ["foo:// URL", (c) => setUrl(c, "foo://arbareto.invalid/repo"), true],
+      ["ftp URL", (c) => setUrl(c, "ftp://arbareto.invalid/repo"), false],
+      ["ftps URL", (c) => setUrl(c, "ftps://arbareto.invalid/repo"), false],
+      ["uppercase HTTPS URL", (c) => setUrl(c, "HTTPS://arbareto.invalid/repo"), true],
+      ["remote.origin.vcs", (c) => void gitRun(c.h, c.repo, ["config", "remote.origin.vcs", "arbareto-none"]), true],
+      [
+        "insteadOf to a foo:: URL",
+        (c) => {
+          gitRun(c.h, c.repo, ["config", `url.foo::${c.origin}.insteadOf`, "arbareto-rewrite:repo"]);
+          setUrl(c, "arbareto-rewrite:repo");
+          pushUrlIs(c, `foo::${c.origin}`);
+        },
+        true,
+      ],
+      [
+        "pushInsteadOf to an ftp URL",
+        (c) => {
+          gitRun(c.h, c.repo, ["config", "url.ftp://arbareto.invalid/repo.pushInsteadOf", c.origin]);
+          pushUrlIs(c, "ftp://arbareto.invalid/repo");
+        },
+        true,
+      ],
+    ];
+    const refused = { code: "SYNC_UNAVAILABLE", result: { reason: "remote-helper" }, calls: [] };
+    expect(await helperReviews("t027-refused", cases)).toEqual(cases.map(([name]) => ({ name, ...refused })));
+  }, TIMEOUT_MS);
+
+  caseTest("T027", "FR-017: the local bare remote, a file:// URL, an https:// URL, and an insteadOf that rewrites a foo:: URL to the local bare remote give a plan; no network process starts", SHELL, async () => {
+    const urls: string[] = [];
+    const cases: HelperCase[] = [
+      ["local bare remote", (c) => void urls.push(c.origin), false],
+      ["file:// URL", (c) => (setUrl(c, fileUrl(c.origin)), void urls.push(fileUrl(c.origin))), false],
+      ["https:// URL", (c) => (setUrl(c, "https://arbareto.invalid/repo.git"), void urls.push("https://arbareto.invalid/repo.git")), false],
+      [
+        "insteadOf from a foo:: URL",
+        (c) => {
+          gitRun(c.h, c.repo, ["config", `url.${c.origin}.insteadOf`, "foo::arbareto-rewrite"]);
+          setUrl(c, "foo::arbareto-rewrite");
+          pushUrlIs(c, c.origin);
+          urls.push(c.origin);
+        },
+        true,
+      ],
+    ];
+    const seen = await helperReviews("t027-plan", cases);
+    expect(seen).toEqual(cases.map(([name], i) => ({ name, code: undefined, result: { url: urls[i] }, calls: [] })));
+  }, TIMEOUT_MS);
+
   describe("Windows", () => {
     caseTest(TASK, "R10: the run sends the pageant frame for the remote before the push starts", WINDOWS, async () => {
       const a = own();

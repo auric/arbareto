@@ -339,6 +339,7 @@
             "default-unknown",
             "no-remote-branch",
             "not-upstream",
+            "remote-helper",
             "SYNC_REMOTES",
             "current-branch",
             "other-worktree",

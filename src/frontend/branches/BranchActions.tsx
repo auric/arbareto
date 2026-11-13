@@ -704,7 +704,7 @@ function DeleteConfirm({ overlay: o, onCancel, onCheck, onConfirm }: { overlay: 
             <p>{combined.local.reflogKeeps ? T.reflogKeeps(combined.local.oid) : T.noReflog(combined.local.oid)}</p>
             <p className="flex items-start gap-2 rounded-sm bg-warning-fill p-2 [overflow-wrap:anywhere]">
               <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-warning" />
-              <span>{RD.warning(tracking)}</span>
+              <span>{RD.warning(tracking, combined.destination.url)}</span>
             </p>
           </>
         )}

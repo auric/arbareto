@@ -24,7 +24,7 @@ import type { Head, OperationState } from "./snapshot";
 import { fetchUrlArgs, gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, lsRemoteUrlArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
 import { autoSetupRemote, decidePull, defaultRemote, decidePushDestination, holdsExec, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRebaseHead, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
 import type { WorkspaceReader } from "./status";
-import { parseMaybeBool, type ConfigEntry, type ListingOutcome } from "./trust";
+import { parseMaybeBool, urlHelper, type ConfigEntry, type ListingOutcome } from "./trust";
 import { indexMatchArgs } from "./workbench-commands";
 
 // Feature 010 plan.md D6: the sync reads also take the marker facts of the reader, for the `sequence` refusal.
@@ -130,6 +130,11 @@ export const mirrored = (entries: readonly ConfigEntry[], remote: string) => {
   const value = lastValue(entries, `remote.${remote}.mirror`);
   return value !== undefined && parseMaybeBool(value) === 1;
 };
+
+// Feature 011 plan.md D8 "Lease gap" (research.md R8): transport-helper.c ignores an unsupported `option cas`, and remote-curl.c pushes
+// `ftp://` and `ftps://` through dumb HTTP without the lease. `url` is the `remote get-url --push` output, so the URL rewrites apply.
+export const pushesThroughHelper = (entries: readonly ConfigEntry[], remote: string, url: string): boolean =>
+  urlHelper(url) !== null || url.startsWith("ftp://") || url.startsWith("ftps://") || entries.some((e) => e.key === `remote.${remote}.vcs`);
 
 // `for-each-ref --format=%(refname)%00%(objectname)`: keys are byte strings (`latin1`), so equal keys mean equal bytes.
 export function parseRefListing(bytes: Uint8Array, objectFormat: ObjectFormat): Map<string, string> | null {

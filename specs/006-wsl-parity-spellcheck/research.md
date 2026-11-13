@@ -869,3 +869,10 @@ Independent batch 3 review, reviewer agent, read-only. Verdict: passes after fix
 | fy | 213.8, 213.0, 213.7 | 430.0, 439.5, 435.1 | 216.2, 226.5, 221.4 | 788, 743, 798 | 10, 10, 10 |
 
 - The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
+
+### T043 catalog run, 2026-11-13, code daafd403, Bun 1.4.4
+
+- `bun scripts/dictionary-catalog.ts --offline` ran with `ARBARETO_DICTIONARY_CACHE` set to the local dictionary cache. It exited 0 and wrote 85 entries, with the catalog commit `8cfea406b505e4d7df52d5a19bce525df98c54ab`. It made no network request (offline path).
+- The content of `src/contracts/dictionaries.json` stayed equal. The script writes LF line endings, and a content compare gave equal.
+- `bun test tests/contracts/dictionary-catalog.test.ts` gave 20 pass, 0 fail. Each `ORIGIN` line named the checkout under test.
+- With the gate runs of "v0.1.1 full run" above, this record completes T043.

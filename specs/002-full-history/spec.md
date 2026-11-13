@@ -29,6 +29,10 @@
 
 - Q: How does the references sidebar mark the current branch, and where do the copy buttons of the commit details sit? → A: The user asked for the current branch in bold. The user also asked for each copy button next to the value that it copies. T067 and T068 built both requests. FR-056 and FR-057 encode this.
 
+### Session 2026-11-13
+
+- Q: How does a text box show its keyboard shortcut? The 001 FR-005 rule names only buttons and menu items. → A: The user said: "do everything with your own recommendations". The reviewer default follows the house form of the Filter files box (004) and the Find a setting box: the house Tooltip on the box names the box and the key, as in "Filter commit messages (Ctrl+F)", and the box carries `aria-keyshortcuts`. FR-031 encodes this. T065 builds it in v0.1.2.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows one history page of at most 100 commits. This feature replaces that limit with the full history of a captured ref set. The default set covers all branches. The order of the journeys follows the reading flow: scroll, filter, then highlight.
@@ -180,7 +184,7 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 - **FR-028**: Filter text with a line break, a NUL character, or a backslash followed by "E" MUST get a typed refusal. No search MUST start. The refusal MUST name the found character. A line break is U+000A or U+000D.
 - **FR-029**: The search MUST start only at Enter. A pause in typing MUST NOT start a search.
 - **FR-030**: A changed text, a cleared text, Escape, and closing the repository MUST stop the running search. A stopped search MUST NOT show a count as final.
-- **FR-031**: The filter MUST have an accessible name and a keyboard shortcut. The shortcut MUST show as the 001 rules require.
+- **FR-031**: The filter MUST have an accessible name and a keyboard shortcut. The box MUST carry the shortcut in `aria-keyshortcuts`. The house Tooltip of the box MUST name the box and the shortcut, as an icon button does under the 001 FR-005 rule (Clarifications, Session 2026-11-13).
 
 #### Filter mode
 

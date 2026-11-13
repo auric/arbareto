@@ -48,7 +48,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 | 2. Release files, workflow, 001 | 4, 5, 6 | P3, P4, P5 | T018–T028 | US2, US3, US4 | WP5 and WP6 (implementer, disjoint files), then WP7 (implementer) |
 | 3. Dry run and release | 7 | P6, P7 | T029–T033 | US1, US2, US3 | WP8 (scout runs, orchestrator GitHub steps) |
 | Later. Signing switch-on | 8 | — | T034–T037 | US5 | User, orchestrator, implementer |
-| Later. v0.1.1 follow-ups | 9 | — | T038–T039 | — | Implementer, scout, orchestrator |
+| Later. v0.1.1 follow-ups | 9 | — | T038–T040 | — | Implementer, scout, orchestrator |
 
 ---
 

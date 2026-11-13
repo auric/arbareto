@@ -92,7 +92,7 @@ Research date: 2026-10-24. Each fact cites a source URL or a repository file. A 
 
 - GitHub warns that privileged workflows share the cache of the default branch with other privileged triggers (https://docs.github.com/en/actions/reference/security/secure-use, "Mitigating the risks of untrusted code checkout").
 - Recommendation (2026-10-24, replaced by the T040 decision below): no cache restore in the release workflow. The first runs built tauri-cli from source on each release.
-- `OBSERVATION T040: "Install Rust and the Tauri CLI" took 377 s, 532 s, and 605 s.` Source: release workflow runs 43065949221, 42771011191, and 43073623966 (`gh run view --json jobs`). The `cargo install tauri-cli` source build takes most of this time.
+- Baseline for T040 (old `cargo install` step): `"Install Rust and the Tauri CLI" took 377 s, 532 s, and 605 s.` Source: release workflow runs 43065949221, 42771011191, and 43073623966 (`gh run view --json jobs`). The `cargo install tauri-cli` source build takes most of this time.
 - Decision (T040): the workflow stays cache-free. It downloads the prebuilt `cargo-tauri-x86_64-pc-windows-msvc.zip` of release tag `tauri-cli-v2.12.0` and compares its SHA-256 with a pin, as for Bun. tauri-apps publishes no checksum file. The pin is the GitHub asset digest `78785c9b574bbe4bbfe6cc3008422df068a0f661931a9fa9d13d08407604b6a9` (`gh api repos/tauri-apps/tauri/releases/tags/tauri-cli-v2.12.0`). A local download of 7,769,561 bytes gave the same SHA-256. The zip holds `cargo-tauri.exe` at its root.
 
 ### Action pinning

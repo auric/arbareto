@@ -346,6 +346,69 @@ describe("keys (spec FR-056, US7-3, US7-10)", () => {
     expect(text(view(m.host).querySelector("h2")!)).toBe(`Blame: src/login.ts at ${P.slice(0, 12)}`);
   });
 
+  test("T174: only the code text span of a line is select-text; no row ancestor is; the buttons are select-none", async () => {
+    const m = await answered();
+    const row = line(m.host, 1);
+    const spans = [...row.children];
+    expect(spans).toHaveLength(5);
+    const [age, gutter, mark, number, code] = spans as [Element, Element, Element, Element, Element];
+    expect(age.getAttribute("data-slot")).toBe("age-bar");
+    expect(text(gutter)).toContain(C1.slice(0, 12));
+    expect(text(number)).toBe("1");
+    expect(text(code)).toBe("line 1");
+    expect(code.classList.contains("select-text")).toBe(true);
+    for (const other of [age, gutter, mark, number]) expect(other.querySelector(".select-text") ?? (other.classList.contains("select-text") ? other : null)).toBeNull();
+    expect(row.closest(".select-text")).toBeNull();
+    const all = [...view(m.host).querySelectorAll("button")];
+    expect(all.map((b) => b.getAttribute("aria-label") ?? text(b))).toEqual(expect.arrayContaining(["Back", "Ignore whitespace", "Detect moved lines", "Detect lines from other files"]));
+    for (const b of all) expect(b.classList.contains("select-none")).toBe(true);
+  });
+
+  test("T174: a click with a text selection inside that line keeps the line and the History selection, and returns the focus to the selected line", async () => {
+    const m = await answered();
+    const selection = window.getSelection()!;
+    const code = line(m.host, 3).lastElementChild!.firstChild!;
+    await act(async () => selection.setBaseAndExtent(code, 0, code, 4));
+    expect(selection.isCollapsed).toBe(false);
+    await act(async () => line(m.host, 3).focus());
+    await click(line(m.host, 3));
+    expect(line(m.host, 1).getAttribute("aria-selected")).toBe("true");
+    expect(line(m.host, 3).getAttribute("aria-selected")).toBe("false");
+    expect(m.inspection.getState().blame!.line).toBe(1);
+    expect(m.selected).toEqual([]);
+    expect(document.activeElement).toBe(line(m.host, 1));
+    selection.removeAllRanges();
+  });
+
+  test("T174: a click with a collapsed selection, or a selection in another region or across lines, selects the line and its commit", async () => {
+    const m = await answered();
+    const selection = window.getSelection()!;
+    const code = (n: number) => line(m.host, n).lastElementChild!.firstChild!;
+    await act(async () => selection.collapse(code(3), 2));
+    expect(selection.isCollapsed).toBe(true);
+    await click(line(m.host, 3));
+    expect(line(m.host, 3).getAttribute("aria-selected")).toBe("true");
+    expect(m.selected).toEqual([C2]);
+    const heading = view(m.host).querySelector("h2")!.firstChild!;
+    await act(async () => selection.setBaseAndExtent(heading, 0, heading, 3));
+    expect(selection.isCollapsed).toBe(false);
+    await click(line(m.host, 1));
+    expect(line(m.host, 1).getAttribute("aria-selected")).toBe("true");
+    expect(m.selected).toEqual([C2, C1]);
+    await act(async () => selection.setBaseAndExtent(code(5), 0, code(6), 2));
+    await click(line(m.host, 6));
+    expect(line(m.host, 6).getAttribute("aria-selected")).toBe("true");
+    expect(m.selected).toEqual([C2, C1, C1]);
+    selection.removeAllRanges();
+  });
+
+  test("T174: Ctrl+C on the focused list calls no preventDefault", async () => {
+    const m = await answered();
+    await act(async () => line(m.host, 1).focus());
+    const event = await key(line(m.host, 1), "c", { ctrlKey: true });
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   test("a line without previous makes Blame before this commit unavailable with its reason", async () => {
     const m = await answered();
     await act(async () => line(m.host, 3).focus());

@@ -126,7 +126,23 @@ describe("Commit view preview layout (T109 case 1, FR-069 to FR-071, FR-074)", (
     expect(await hoverTooltip(subject)).toEqual(["Subject 256"]);
     expect(preview()!.querySelector("[title]")).toBeNull();
   });
+
+  test("T174: the preview root is the select-text region of all its texts, and Open submodule is select-none", async () => {
+    await setup({ entries: [LIB()], change: () => succeeded(change("lib", commitState(1, 1))), work: work({ entries: [checked("lib", true, false)] }) });
+    await click(item("Changes", "lib"));
+    expectSelectablePreview(preview()!);
+  });
 });
+
+/** 004 plan D15 "Text selection": the `[data-slot="submodule-preview"]` root opts in, so each text of the preview is inside it. */
+function expectSelectablePreview(region: HTMLElement) {
+  expect(region.getAttribute("data-slot")).toBe("submodule-preview");
+  expect(region.classList.contains("select-text")).toBe(true);
+  const texts = [region.querySelector("h2")!, ...region.querySelectorAll("dt, dd, dd code, h3, li code, li span")];
+  expect(texts.length).toBeGreaterThan(8);
+  for (const element of texts) expect(element.closest(".select-text")).toBe(region);
+  expect(button("Open submodule", region).classList.contains("select-none")).toBe(true);
+}
 
 describe("Commit view preview states (T109 case 2, FR-072 to FR-074)", () => {
   type Case = [string, Partial<Setup>, (region: HTMLElement) => void];
@@ -332,6 +348,13 @@ describe("History preview (T110, FR-010, FR-069 to FR-073)", () => {
     expect(double.count("readCommitFile")).toBe(0);
     const call = double.calls.findLast((c) => c.operation === "readSubmoduleChange")!;
     expect((call.args[1] as { source: unknown }).source).toMatchObject({ kind: "commit", oid: world.oids[0], parent: 0, record: 0 });
+  });
+
+  test("T174: the History preview root is the select-text region of all its texts, and Open submodule is select-none", async () => {
+    const world = createWorld();
+    history(world, [P1]);
+    await selectCommit(world);
+    expectSelectablePreview(preview()!);
   });
 
   test("a merge commit with another parent sends the new parent", async () => {

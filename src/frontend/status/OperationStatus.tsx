@@ -667,7 +667,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
           <h2 ref={headingRef} id={headingId} tabIndex={-1} className="flex items-center font-heading text-sm" style={{ gridArea: "heading", minHeight: "var(--h-area-heading)" }}>
             {heading}
           </h2>
-          <div tabIndex={0} aria-labelledby={headingId} className="min-h-0 overflow-auto" style={{ gridArea: "content" }}>
+          <div tabIndex={0} aria-labelledby={headingId} className="min-h-0 overflow-auto select-text" style={{ gridArea: "content" }}>
             {line === null || liveText === "" ? null : <p>{lineNode(line)}</p>}
             {notice === null ? null : (
               <div ref={noticeRef} data-slot="stall-notice" className="flex gap-2">

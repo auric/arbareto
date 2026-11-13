@@ -198,7 +198,7 @@ export function SubmodulePreview({ path, pathBytes, change, work, reader, reason
     : null;
   const commits = result?.state.state === "commits" ? result.state : null;
   return (
-    <section aria-label={`Submodule ${path}`} data-slot="submodule-preview" className="flex h-full min-h-0 flex-col overflow-y-auto">
+    <section aria-label={`Submodule ${path}`} data-slot="submodule-preview" className="flex h-full min-h-0 flex-col overflow-y-auto select-text">
       <div className="flex shrink-0 items-center gap-2 border-b border-divider px-2" style={{ minHeight: 32 }}>
         <TextTooltip text={path}>
           <h2 className="min-w-0 truncate font-mono font-semibold">{path}</h2>

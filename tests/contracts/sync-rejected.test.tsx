@@ -187,6 +187,19 @@ describe("force push with lease (FR-024, FR-025)", () => {
     });
   }
 
+  // Tasks.md T096, plan D5 "Helper refusal": the refusal text replaces the coded line.
+  test("a force-push review refused with remote-helper shows the D5 refusal text and opens no confirmation", async () => {
+    const { double } = await rejected();
+    await click(button("Force push with lease…", band()));
+    await answer(double.pending("reviewSync"), { requestId: "r", state: "failed", code: "SYNC_UNAVAILABLE", result: { reason: "remote-helper" } });
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(double.count("sync")).toBe(1);
+    const footer = text(document.querySelector("footer")!);
+    expect(footer).toContain("This branch pushes through a remote helper. Git cannot show that a remote helper keeps the lease, so Arbareto does not force push this branch.");
+    expect(footer).not.toContain("SYNC_UNAVAILABLE");
+  });
+
   test("a review without a sync token shows a refusal and starts nothing", async () => {
     const double = await mountWorkbench(workbench, createWorld());
     await click(button("Push"));

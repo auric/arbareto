@@ -550,6 +550,7 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
 
   let lease: Lease | null = null;
   if (payload.action === "force-push") {
+    if (pushesThroughHelper(entries, destination.remote, urls.url)) return unavailable("remote-helper");
     // Plan.md D5: a destination without a tracking ref, such as a triangular one, has no lease.
     if (destination.trackingRef === null) return unavailable("no-lease");
     const read = await leaseOf(ctx, destination.trackingRef, head.oid);

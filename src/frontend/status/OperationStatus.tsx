@@ -165,6 +165,8 @@ const REMOTE_STATES: Record<string, string> = { succeeded: "Fetched", failed: "F
 const PUSH_CANCELED = "The remote can hold this push. Fetch to see the remote state.";
 // Feature 003 spec FR-015.
 const REMOTE_REJECTED = "Rejected by the remote";
+// Feature 003 plan.md D5 "Helper refusal". A refused review has no plan, so the text names no ref.
+const HELPER_FORCE_PUSH = "This branch pushes through a remote helper. Git cannot show that a remote helper keeps the lease, so Arbareto does not force push this branch.";
 // Data-model `effects`: the field order of the sentences.
 const EFFECT_FIELDS = ["head", "index", "workingFiles", "operationState"] as const;
 type EffectField = (typeof EFFECT_FIELDS)[number];
@@ -434,6 +436,7 @@ function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome, h
   if (response.state === "succeeded" && outcome.integration === "mode-required") return { lead: MODE_REQUIRED_TEXT, tail: "" };
   const source = response.state === "succeeded" && typeof outcome.modeSource === "string" ? MODE_SOURCE[outcome.modeSource]?.(head) : null;
   if (source) return { lead: `${name} completed. ${source} selected the mode.`, tail: "" };
+  if (response.code === "SYNC_UNAVAILABLE" && outcome.reason === "remote-helper" && name === SYNC_NAMES["force-push"]) return { lead: HELPER_FORCE_PUSH, tail: "" };
   if (response.state === "canceled" && (name === SYNC_NAMES.push || name === SYNC_NAMES["force-push"])) return { lead: `${name} canceled. ${PUSH_CANCELED}`, tail: "" };
   const push = outcome.push;
   if (response.code === "PUSH_REJECTED" && push?.status === "remote-rejected") return { lead: REMOTE_REJECTED, tail: push.reasonText === null ? "" : `: ${push.reasonText}` };

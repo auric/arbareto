@@ -102,6 +102,82 @@ describeGit("rejected push and force push with lease (T035)", () => {
     });
   }, TIMEOUT_MS);
 
+  // T096, spec FR-025, plan.md D5 "Helper refusal". `required` is the `sync` trust class: each `url.*` and `vcs` entry and each helper URL counts (`selectsHelper`).
+  // git-remote(1) `get-url`: the review reads the URL with the `insteadOf` and `pushInsteadOf` rules applied, so each rewrite case checks that URL first.
+  type Diverged = ReturnType<typeof diverged>;
+  type HelperCase = [name: string, setup: (c: Diverged) => void, required: boolean];
+  const setUrl = (c: Diverged, url: string) => void gitRun(c.h, c.repo, ["remote", "set-url", "origin", url]);
+  const pushUrlIs = (c: Diverged, url: string) => expect(gitOut(c.h, c.repo, ["remote", "get-url", "--push", "--all", "--", "origin"])).toBe(`${url}\n`);
+  async function helperReviews(tag: string, cases: HelperCase[]) {
+    const seen: unknown[] = [];
+    await withSync(tag, async (service) => {
+      for (const [name, setup, required] of cases) {
+        const a = diverged(true);
+        setup(a);
+        const r = await register(service, a.repo);
+        expect({ name, required: (await service.readTrust(r.repositoryId)).result!.approvalRequired.sync }).toEqual({ name, required });
+        if (required) expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+        const from = service.runner.calls.length;
+        const response = await reviewSync(service, r, { action: "force-push" });
+        const result = response.result as { plan?: { destination: { url: string }; lease: unknown } } | undefined;
+        const plan = response.state === "succeeded" ? { url: result!.plan!.destination.url, lease: result!.plan!.lease !== null } : response.result;
+        seen.push({ name, code: response.code, result: plan, calls: remoteCalls(service, from) });
+      }
+    });
+    return seen;
+  }
+
+  caseTest("T096", "FR-025: a foo:: URL, a foo:// URL, an ftp and an ftps URL, an HTTPS:// URL, a remote.origin.vcs entry, and insteadOf and pushInsteadOf rewrites to helper URLs refuse the force push with remote-helper; no network process starts", SHELL, async () => {
+    const cases: HelperCase[] = [
+      ["foo:: URL", (c) => setUrl(c, `foo::${c.remotes.origin!}`), true],
+      ["foo:// URL", (c) => setUrl(c, "foo://arbareto.invalid/repo"), true],
+      ["ftp URL", (c) => setUrl(c, "ftp://arbareto.invalid/repo"), false],
+      ["ftps URL", (c) => setUrl(c, "ftps://arbareto.invalid/repo"), false],
+      ["uppercase HTTPS URL", (c) => setUrl(c, "HTTPS://arbareto.invalid/repo"), true],
+      ["remote.origin.vcs", (c) => void gitRun(c.h, c.repo, ["config", "remote.origin.vcs", "arbareto-none"]), true],
+      [
+        "insteadOf to a foo:: URL",
+        (c) => {
+          gitRun(c.h, c.repo, ["config", `url.foo::${c.remotes.origin!}.insteadOf`, "arbareto-rewrite:repo"]);
+          setUrl(c, "arbareto-rewrite:repo");
+          pushUrlIs(c, `foo::${c.remotes.origin!}`);
+        },
+        true,
+      ],
+      [
+        "pushInsteadOf to an ftp URL",
+        (c) => {
+          gitRun(c.h, c.repo, ["config", "url.ftp://arbareto.invalid/repo.pushInsteadOf", c.remotes.origin!]);
+          pushUrlIs(c, "ftp://arbareto.invalid/repo");
+        },
+        true,
+      ],
+    ];
+    const refused = { code: "SYNC_UNAVAILABLE", result: { reason: "remote-helper" }, calls: [] };
+    expect(await helperReviews("t096-refused", cases)).toEqual(cases.map(([name]) => ({ name, ...refused })));
+  }, TIMEOUT_MS);
+
+  caseTest("T096", "FR-025: the local bare remote, a file:// URL, an https:// URL, and an insteadOf that rewrites a foo:: URL to the local bare remote give a force-push plan with a lease; no network process starts", SHELL, async () => {
+    const urls: string[] = [];
+    const cases: HelperCase[] = [
+      ["local bare remote", (c) => void urls.push(c.remotes.origin!), false],
+      ["file:// URL", (c) => (setUrl(c, fileUrl(c.remotes.origin!)), void urls.push(fileUrl(c.remotes.origin!))), false],
+      ["https:// URL", (c) => (setUrl(c, "https://arbareto.invalid/repo.git"), void urls.push("https://arbareto.invalid/repo.git")), false],
+      [
+        "insteadOf from a foo:: URL",
+        (c) => {
+          gitRun(c.h, c.repo, ["config", `url.${c.remotes.origin!}.insteadOf`, "foo::arbareto-rewrite"]);
+          setUrl(c, "foo::arbareto-rewrite");
+          pushUrlIs(c, c.remotes.origin!);
+          urls.push(c.remotes.origin!);
+        },
+        true,
+      ],
+    ];
+    const seen = await helperReviews("t096-plan", cases);
+    expect(seen).toEqual(cases.map(([name], i) => ({ name, code: undefined, result: { url: urls[i], lease: true }, calls: [] })));
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "D5: without a tracking ref the reason is no-lease", SHELL, async () => {
     const a = diverged(true);
     gitRun(a.h, a.repo, ["update-ref", "-d", "refs/remotes/origin/topic"]);
@@ -221,14 +297,14 @@ describeGit("rejected push and force push with lease (T035)", () => {
     expect(seen.args).toEqual([]);
   }, TIMEOUT_MS);
 
-  // A `remote.origin.vcs` push runs a remote helper and never gives a `[rejected]` line here. So only the review read is checked.
+  // A `remote.origin.vcs` push runs a remote helper, so T096 refuses its review with `remote-helper`. So only the review read is checked.
   // remote.c `remotes_remote_get_1`: a remote named as the push URL gives `ls-remote <url>` its settings.
   caseTest("T093", "plan.md D5: with a pushurl in other bytes than the URL, a remote.origin.vcs entry or a remote named as the push URL gives no ls-remote --get-url read in the force-push review", SHELL, async () => {
-    const cases: [string, string, (a: ReturnType<typeof diverged>) => [string, string]][] = [
-      ["vcs", "t093-review-vcs", () => ["remote.origin.vcs", "arbareto-none"]],
-      ["remote named as the push URL", "t093-review-named", (a) => [`remote.${fileUrl(a.remotes.origin!)}.uploadpack`, "git-upload-pack"]],
+    const cases: [string, string, (a: ReturnType<typeof diverged>) => [string, string], string | undefined][] = [
+      ["vcs", "t093-review-vcs", () => ["remote.origin.vcs", "arbareto-none"], "SYNC_UNAVAILABLE"],
+      ["remote named as the push URL", "t093-review-named", (a) => [`remote.${fileUrl(a.remotes.origin!)}.uploadpack`, "git-upload-pack"], undefined],
     ];
-    for (const [name, tag, entry] of cases) {
+    for (const [name, tag, entry, code] of cases) {
       const a = diverged(true);
       gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.remotes.origin!)]);
       gitRun(a.h, a.repo, ["config", ...entry(a)]);
@@ -236,9 +312,9 @@ describeGit("rejected push and force push with lease (T035)", () => {
         const r = await register(service, a.repo);
         expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
         const from = service.runner.calls.length;
-        await reviewed(service, r, { action: "force-push" });
+        const response = await reviewSync(service, r, { action: "force-push" });
         const getUrl = service.runner.calls.slice(from).filter((c) => c.arguments.includes("--get-url"));
-        expect({ name, getUrl: getUrl.length }).toEqual({ name, getUrl: 0 });
+        expect({ name, code: response.code, getUrl: getUrl.length }).toEqual({ name, code, getUrl: 0 });
       });
     }
   }, TIMEOUT_MS);

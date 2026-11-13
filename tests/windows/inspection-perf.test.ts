@@ -36,6 +36,8 @@ const STEP_MS = MAX_WAIT_MS + MAX_CALL_MS;
 const caseTimeout = (steps: number, extraMs = 0) => steps * STEP_MS + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS + extraMs;
 // "Warm package, median of 10": one warm-up run, then the counted runs.
 const RUNS = 10;
+// Control for the T124 settle rule: each run waits for one more `read_workspace` reply before `idle`.
+const WAIT_POLL = process.env.T124_WAIT_POLL === "1";
 // The page waits for each step at most this long. A step past it fails the case.
 const STEP_LIMIT_MS = 60_000;
 const OPEN_WAIT_MS = 120_000;
@@ -814,7 +816,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
   // A reply of the same snapshot during a page starts no cycle (SubmodulePreview.tsx `useSubmoduleWork`), so it counts when it arrived before the last page reply.
   // That exception compares CDP reply times with the order of the renderer callbacks (unverified).
   async function idle(ipc: IpcLog, pages: number): Promise<void> {
-    type Reply = { state?: string; result?: { snapshotId?: string; next?: number | null } };
+    type Reply = { state?: string; result?: { snapshotId?: string; next?: number | null; readKind?: "full" | "retained"; recoveryState?: string } };
     const quiet = () => ipc.pending("read_workspace").length + ipc.pending("read_submodule_work").length === 0;
     for (const end = performance.now() + STEP_LIMIT_MS; ; await Bun.sleep(50)) {
       if (quiet()) {
@@ -827,9 +829,16 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         const firstSent = ipc.calls().find((t) => t.requestId === last[0]?.requestId)?.sent;
         const lastEnd = ipc.calls().find((t) => t.requestId === last.at(-1)?.requestId)?.end;
         let settled = cycle && firstSent !== undefined && lastEnd !== undefined && lastEnd !== null;
-        for (const t of [...ipc.calls()]) {
-          if (!settled || t.command !== "read_workspace" || (t.end !== null && t.end <= firstSent!)) continue;
-          settled = t.end !== null && t.end <= lastEnd! && (await ipc.body<Reply>(t)).result?.snapshotId === snapshot;
+        // Arrival order is the order of the renderer callbacks, so the reply before a reply gives the shown `recoveryState`.
+        const ws = ipc.finished("read_workspace").map((call) => ipc.calls().find((t) => t.requestId === call.requestId)!);
+        const from = ws.findIndex((t) => t.end! > firstSent!);
+        let shown = settled && from > 0 ? (await ipc.body<Reply>(ws[from - 1]!)).result?.recoveryState : undefined;
+        for (const t of from < 0 ? [] : ws.slice(from)) {
+          if (!settled) break;
+          const r = (await ipc.body<Reply>(t)).result;
+          // requests.ts `onWorkspace`: a `retained` reply of the shown snapshot with the shown `recoveryState` keeps the state object, so it starts no cycle.
+          settled = r?.snapshotId === snapshot && (t.end! <= lastEnd! || (r?.readKind === "retained" && r.recoveryState !== undefined && r.recoveryState === shown));
+          shown = r?.recoveryState;
         }
         if (cycle && settled && quiet() && ipc.finished("read_submodule_work").length === done.length) return;
       }
@@ -878,6 +887,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
             writeFileSync(join(repo, PARENT_FILE), PARENT_TEXT);
             await press(s.c, "F5");
             await until<boolean>(s.c, "the start state", `!(${listed}) && !(${first}) && !(${marked})`, (v) => v);
+            if (WAIT_POLL) await s.ipc.wait("read_workspace", s.ipc.finished("read_workspace").length + 1, STEP_LIMIT_MS);
             await idle(s.ipc, pages);
             const reads = s.ipc.finished("read_submodule_work").length;
             // The submodule files come first, so every snapshot with the parent record has the untracked files below FIRST and MARKED.

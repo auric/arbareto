@@ -987,5 +987,5 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
 - SC-007: `https://github.com/auric/arbareto/releases/download/v0.1.1/arbareto-0.1.1-hunspell-source.tar.gz` HTTP 200.
 - The About buttons open these URLs. See "v0.1.1 Sandbox runs (2026-11-13, reference host)".
 - The Sandbox install of the downloaded installer passes as T030. See the same section.
-- README.md Status and Download still name v0.1.0. Their update waits for the user's OK.
+- The user approved the README update on 2026-11-13. README.md Status and Download now name v0.1.1.
 - `OBSERVATION v0.1.1 release: v0.1.1 at a90e7ef9 (tag object 5749a197), prerelease, immutable, not latest, four files; build 9 min 18 s, approval to publish 24 s; downloads equal API digests; sums verify exit 0, 3 OK lines; attestation exit 0 for each file with the release.yml signer, exit 1 for a changed byte and for other.yml; notices file carries two attestations; GH_TOKEN only in "Publish the release"; both About URLs HTTP 200 signed out; upload refusal not run`

@@ -22,7 +22,7 @@ Arbareto is a desktop Git client inspired by Git Extensions. It covers the full 
 - Windows 11 x64 is the first platform that the project qualifies.
 - Linux comes next. macOS comes later, because no Mac test hardware is available yet.
 - WSL repositories work from the Windows app.
-- The first installer release is [Arbareto Preview v0.1.0](https://github.com/auric/arbareto/releases/tag/v0.1.0). A preview is not a qualified release. See [Download](#download).
+- The current installer release is [Arbareto Preview v0.1.1](https://github.com/auric/arbareto/releases/tag/v0.1.1). A preview is not a qualified release. See [Download](#download).
 
 ## Features
 
@@ -55,7 +55,7 @@ These features work on the `main` branch today.
 
 ## Download
 
-The installer is on the [Arbareto Preview v0.1.0](https://github.com/auric/arbareto/releases/tag/v0.1.0) release page. All releases are on the [Releases](https://github.com/auric/arbareto/releases) page. The installer installs Arbareto for the current user and needs no administrator rights. Prerequisites (details in [Requirements](#requirements)):
+The installer is on the [Arbareto Preview v0.1.1](https://github.com/auric/arbareto/releases/tag/v0.1.1) release page. All releases are on the [Releases](https://github.com/auric/arbareto/releases) page. The installer installs Arbareto for the current user and needs no administrator rights. Prerequisites (details in [Requirements](#requirements)):
 
 - Windows 11 x64. Windows 10 x64 runs, but Arbareto shows it as an unqualified platform.
 - Git for Windows `2.55.0.windows.3` or later.

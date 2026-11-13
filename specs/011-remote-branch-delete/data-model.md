@@ -76,6 +76,7 @@ The review binds the facts in `SyncBinding`. The run observes all of them again,
 | `SYNC_UNAVAILABLE` | `default-unknown` (new) | `symbolic-ref -q` exits 1. `remote` names R. |
 | `SYNC_UNAVAILABLE` | `no-remote-branch` (new) | The refspec mapping fails (plan D4 read 3). |
 | `SYNC_UNAVAILABLE` | `not-upstream` (new) | `%(upstream)` of `local` differs from `ref` (plan D4 read 7). |
+| `SYNC_UNAVAILABLE` | `remote-helper` (new, v0.1.2, T027) | The push URL or a `remote.<R>.vcs` entry selects a remote helper (plan D4 read 8, D8 "Lease gap"). No `remote` field. |
 | `SYNC_UNAVAILABLE` | `push-urls`, `mirror`, `invalid-config`, `remote-missing`, `unknown-operation` (existing) | As in 003. |
 | `WORKBENCH_UNAVAILABLE` | `current-branch`, `other-worktree`, `head-unresolved`, `config-in-include` (existing) | The local facts of plan D4 read 7. `SyncRefused` carries them, with `worktree` for `other-worktree`. |
 | `UNKNOWN_TARGET` | none | `ref` is absent here (plan D4 read 5). |

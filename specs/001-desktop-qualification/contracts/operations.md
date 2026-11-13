@@ -998,6 +998,8 @@ Construct Git child environments separately. Remove the repository-location vari
 
 Every policy also removes each variable whose name starts with `GIT_TEST_`. Git's test suite defines these variables as test knobs (Git `t/README`). `GIT_TEST_SPLIT_INDEX=1` split a private candidate in research R3 probe 9.
 
+Every policy also removes `GIT_SMART_HTTP` (user decision 2026-11-13, T416). Git `v2.55.0` remote-curl.c `discover_refs` asks for smart HTTP only while this variable is true. Without smart HTTP, `push` runs `push_dav`, and Git then runs no lease check (feature 011 research R8). So a user value of `0` would remove the lease check of every HTTP force push and remote branch delete. Without the variable, Git uses its default value, true.
+
 These policies build the environment of Git for Windows. A `wsl.exe` process gets an empty `WSLENV`, so no Windows variable reaches Linux Git (§11 "Trust and environment").
 
 Every policy (`probe`, `read`, `mutation`, and `network`) preserves `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, and `GIT_CONFIG_NOSYSTEM` unchanged from the service environment. These variables select which global and system files Git reads (Git `Documentation/git.adoc`). Removing them would change the user's effective configuration (FR-003).

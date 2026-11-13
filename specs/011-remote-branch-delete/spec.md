@@ -177,7 +177,7 @@ This feature changes these requirements for builds that include it. The earlier 
 #### Confirmation and run
 
 - **FR-006**: The confirmation MUST be a modal alert dialog. It MUST name the remote branch. It MUST list the removed commits with their count and subjects, up to 100. It MUST state that other people can lose work, and that the delete stops on a remote change. Cancel MUST have the first focus. The dialog MUST NOT have a default button.
-- **FR-007**: The delete MUST bind to the shown remote-tracking object ID through the Git lease `--force-with-lease=<dst>:<expect>`. Git MUST refuse when the remote branch differs, so no remote commit is lost. The application MUST NOT offer a delete without a lease.
+- **FR-007**: The delete MUST bind to the shown remote-tracking object ID through the Git lease `--force-with-lease=<dst>:<expect>`. Git MUST refuse when the remote branch differs. The application MUST NOT offer a delete without a lease. Limit (user decision 2026-11-13): Git checks the lease over its own transports and smart HTTP. Over dumb HTTP, Git runs no lease check. Arbareto cannot detect a dumb HTTP server before the push (research R8). So an `http` or `https` delete can remove a moved remote branch. FR-017 refuses the other transports that can drop the lease.
 - **FR-008**: The outcome MUST come from the push porcelain line, the exit code, and the listings before and after. A stale lease line names its source `(delete):<dst>`, and the parse MUST accept it. This alias selects the line only and MUST NOT decide the reason (FR-012). Network, credential, and hook failures MUST share one outcome with the terminal remedy (003 FR-006, 001 FR-051).
 - **FR-009**: The remote-only delete MUST change no Git configuration. Local branches that track the deleted branch MUST keep their upstream setting.
 
@@ -196,6 +196,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-014**: Hooks and transport programs MUST follow 003 FR-009 and run only after trust approval of the `sync` class.
 - **FR-015**: WSL repositories MUST give the same results through the Git of the distro (feature 006).
 - **FR-016**: Every visible text MUST come from plan D13. Keyboard access and visible focus MUST hold for every new control. The controls MUST work in forced colors, both themes, both densities, and at 150% and 225% text scale.
+- **FR-017**: The review MUST refuse with `remote-helper` when the push runs through a remote helper (user decision 2026-11-13). The rule uses the one push URL of `remote get-url --push`, which has the `insteadOf` and `pushInsteadOf` rules applied (FR-002). It refuses a `<transport>::<address>` URL and a `<scheme>://` URL that Git gives to `git remote-<scheme>`. It also refuses an `ftp://` or `ftps://` URL and a `remote.<R>.vcs` entry of the remote R. A local path, an scp form, the `file`, `git`, and `ssh` URLs, and `http` and `https` URLs pass (research R8).
 
 ### Key Entities *(include if feature involves data)*
 

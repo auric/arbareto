@@ -250,3 +250,17 @@ Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62
 - T028: `tests/git/remote-delete.test.ts` 14 pass, `tests/git/remote-delete-gone.test.ts` 9 pass, `tests/contracts/sync-parsers.test.ts` 134 pass, `tests/contracts/remote-delete.test.tsx` 61 pass. Each has 0 skip and 0 fail.
 - Skips in these files: none.
 - The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
+
+## R8 Lease gap of remote helpers and dumb HTTP (T027, user decision 2026-11-13)
+
+Git source, tag `v2.55.0`. This batch read remote-curl.c on 2026-11-13. The transport-helper.c and transport.c lines come from the T027 finding of 2026-11-10 and from 003 contract Δ7.
+
+- Source transport-helper.c `push_refs_with_push`: Git sends the lease as `option cas` and ignores an `unsupported` reply. So a remote helper can push without the lease.
+- Source `remote-curl.c:484-486` `discover_refs`: Git asks for smart HTTP only when the URL starts with `http://` or `https://` and `GIT_SMART_HTTP` is true. The default is true.
+- Source `remote-curl.c:1419-1430` `push`: Git runs `push_git` for a smart server and `push_dav` (http-push, dumb HTTP) otherwise. `push_git` passes each `cas` option to send-pack. `push_dav` passes none.
+- Source, from the two lines above: an `ftp://` or `ftps://` push is always dumb and has no lease. An `http` or `https` push is dumb when the server sends no smart reply. Git reports neither case before the push.
+- Code `src-tauri/src/git_env.rs:61-90` and `src/contracts/git-environment.json`: every policy is a remove list, and no policy removes `GIT_SMART_HTTP`. So a `GIT_SMART_HTTP=0` of the user reaches Git for Windows, and every HTTP push is then dumb. A WSL process gets an empty `WSLENV`, so WSL Git never gets the value. 001 T416 removes it.
+- Source transport.c `transport_get`, through 003 contract Δ7: Git runs `git remote-<name>` for three forms. These are a `<transport>::<address>` URL, a `remote.<name>.vcs` entry, and each other `<scheme>://` URL outside its own transports.
+- Code `src/git-service/trust.ts:321-335` `urlHelper`: holds that URL rule. It returns null for `http`, `https`, `ftp`, and `ftps`, because Git's own curl helper serves them. So the delete rule adds the `ftp` and `ftps` schemes and the `vcs` entry itself.
+- Doc git-remote(1) `get-url`: the output has the `insteadOf` and `pushInsteadOf` rules applied. Code: the review already reads `remote get-url --push --all` (`pushUrlArgs`, `src/git-service/sync-commands.ts:58-60`; plan D4 read 8).
+- Decision (user, 2026-11-13, T027 option A): the review refuses a helper URL, an `ftp://` or `ftps://` URL, and a `remote.<name>.vcs` entry with `remote-helper` (spec FR-017). It allows `http` and `https`. A dumb HTTP server, or a helper that ignores the lease, stays a recorded gap (spec FR-007, contract gaps).

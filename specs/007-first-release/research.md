@@ -599,7 +599,7 @@ Security scrutiny of the workflow permissions and the SignPath token, from `test
 - 010 T018 SC-010d medians, budget in brackets: Hard 3460.6 ms (4000), Detached checkout 2139.8 (4000), Continue 810.9 (2000), Cherry-pick 748.8 (2000), Revert 693.7 (2000), Mixed 626.4 (2000), Create tag 632.2 (1000), Soft 549.8 (1000), Abort 461.1 (2000).
 - SC-011: every Windows series has at least 20 inputs, p95 at most 64 ms, and max at most 88 ms.
 - 010 T018 control: the probe interval becomes 25 ms instead of 10 ms. The case fails: Abort got 12 inputs, minimum 20. The hash after the restore is equal.
-- The 2026-11-10 Hard miss (4097 ms): an A/B run on 2026-11-11 gave 3258 ms and 3196.9 ms with the old probe, and 3147.1 ms with the release probe. The A/B rules out the probe. The cause stays unknown. The miss stays an open, unexplained miss. The v0.1.1 runs measure the Hard series again (user decision 2026-11-11).
+- The 2026-11-10 Hard miss (4097 ms): an A/B run on 2026-11-11 gave 3258 ms and 3196.9 ms with the old probe, and 3147.1 ms with the release probe. The A/B rules out the probe. The cause stays unknown. The miss stays an open, unexplained miss. The v0.1.1 runs measure the Hard series again (user decision 2026-11-11). The v0.1.1 full run on 2026-11-13 gave a Hard median of 3,287.3 ms (budget 4,000 ms).
 - Platform split:
   - Run 1 used OS build 26300 before KB5132061. KB5132061 was installed on 2026-11-11 at 01:41, during `test:windows`.
   - Run 1 used WebView2 157.0.4341.42. This value is probable and comes from the update log.

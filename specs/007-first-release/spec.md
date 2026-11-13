@@ -47,14 +47,14 @@ A Windows 11 user finds Arbareto on GitHub. The Releases page shows "preview v0.
 
 **Why this priority**: A downloadable, installable package is the purpose of the feature. Without it, nothing else has value.
 
-**Independent Test**: In a clean Windows 11 x64 Sandbox with only the documented prerequisites, download the release installer from the public release page, verify its SHA-256 value, install it, and start the application. About must show `0.1.0`, the preview marker, and the full commit ID of the tag.
+**Independent Test**: In a clean Windows 11 x64 Sandbox with only the documented prerequisites, download the release installer from the public release page, verify its SHA-256 value, install it, and start the application. About must show the release version (the `version` in `package.json`), the preview marker, and the full commit ID of the tag.
 
 **Acceptance Scenarios**:
 
 1. **Given** the published preview release, **When** a user opens the Releases page, **Then** the release is marked as a pre-release, its title and notes say "preview", and the notes list the prerequisites, the signing state, and the known Windows warnings.
 2. **Given** the downloaded installer and the checksum file, **When** the user computes the SHA-256 value of the installer, **Then** the value equals the line for that file in the checksum file.
 3. **Given** a clean Windows 11 x64 machine with Git for Windows and the WebView2 Runtime, **When** the user runs the installer as a standard user, **Then** the installation needs no administrator rights, and Arbareto starts without a globally installed Node or Bun.
-4. **Given** the installed preview, **When** the user opens About, **Then** it shows version `0.1.0`, the preview marker, and a build identity that equals the full commit ID of the tag, without `-dirty`.
+4. **Given** the installed preview, **When** the user opens About, **Then** it shows the release version (the `version` in `package.json`), the preview marker, and a build identity that equals the full commit ID of the tag, without `-dirty`.
 5. **Given** the installed preview, **When** the user removes it from Windows "Installed apps", **Then** the uninstaller removes the application.
 
 ---
@@ -69,7 +69,7 @@ The maintainer pushes a `v*` tag on a commit of `main`. A release workflow on a 
 
 **Acceptance Scenarios**:
 
-1. **Given** a tag `v0.1.0` on a commit of `main` and an application version `0.1.0`, **When** the tag is pushed, **Then** the workflow builds the installer and produces the full release file set.
+1. **Given** a tag `v<version>` on a commit of `main` and an application version `<version>`, **When** the tag is pushed, **Then** the workflow builds the installer and produces the full release file set.
 2. **Given** a tag whose version differs from the application version, **When** the tag is pushed, **Then** the workflow fails before the build, with a message that names both values.
 3. **Given** a tag on a commit that is not on `main`, **When** the tag is pushed, **Then** the workflow fails, and no release appears.
 4. **Given** a completed build, **When** the maintainer has not approved the publish step, **Then** no release is visible to the public.
@@ -162,7 +162,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 #### Build
 
 - **FR-010**: A pushed tag that matches `v*` MUST start the release workflow. The workflow MUST build the current-user NSIS installer on a GitHub-hosted Windows x64 runner. Other events MUST NOT start the publish step.
-- **FR-011**: Every build tool MUST be pinned: Bun at `1.4.4` with the published SHA-256 value of its Windows archive, the Rust toolchain, the Tauri CLI, and the NSIS version that the pinned Tauri CLI downloads and checks. Every third-party action MUST be pinned by a full commit ID. A pin mismatch MUST fail the run.
+- **FR-011**: Every build tool MUST be pinned: Bun at `1.4.4` with the published SHA-256 value of its Windows archive, the Rust toolchain, the Tauri CLI at `2.12.0` with the SHA-256 value of its Windows release archive (the GitHub asset digest), and the NSIS version that the pinned Tauri CLI downloads and checks. Every third-party action MUST be pinned by a full commit ID. A pin mismatch MUST fail the run.
 - **FR-012**: The workflow MUST compare the tag version with the application version that the build embeds. A difference MUST fail the run before the build.
 - **FR-013**: The workflow MUST fail when `main` does not contain the tag commit.
 - **FR-014**: The build identity MUST be the full commit ID of the tag commit without `-dirty`. A dirty identity MUST fail the run.
@@ -218,7 +218,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - **SC-001**: A clean Windows 11 x64 Sandbox with only the documented prerequisites installs and starts the preview from the public release page. The install needs no administrator rights.
 - **SC-002**: The SHA-256 value of every downloaded release file equals its line in the checksum file: 4 of 4 files.
 - **SC-003**: The documented attestation check passes for every release file, and it fails for a copy with one changed byte.
-- **SC-004**: About in the installed preview shows `0.1.0`, the preview marker, and the full tag commit ID without `-dirty`.
+- **SC-004**: About in the installed preview shows the release version, the preview marker, and the full tag commit ID without `-dirty`.
 - **SC-005**: A tag with a wrong version, a tag outside `main`, a dirty identity, and a pin mismatch each fail the run, and none of them creates a public release: 4 of 4.
 - **SC-006**: From the approval to the published release takes at most 15 minutes. The build before the approval takes at most 90 minutes on a GitHub-hosted runner. These are starting budgets, not measurements.
 - **SC-007**: Both About links (Hunspell source archive and tag source) reach their targets without a sign-in.
@@ -228,7 +228,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 
 - The repository is public since 2026-10-25 (research.md R7 T031). The main ruleset and security features follow the public switch (user decisions, 2026-10-24).
 - SignPath Foundation approves only released projects (research.md R1). So v0.1.0 ships unsigned, and the application follows the release.
-- The version stays `0.1.0` in `src-tauri/Cargo.toml`, and Tauri takes the application version from there (research.md R4).
+- The version in `src-tauri/Cargo.toml` equals the `version` in `package.json`. Tauri takes the application version from `Cargo.toml` (research.md R4).
 - A GitHub-hosted runner for a public repository is free (research.md R2).
 - The installer stays current-user NSIS and does not install the WebView2 Runtime, as `bun run package` builds it today.
 - English is the only bundled dictionary. Downloaded dictionaries do not ship with the release (006 plan.md D18).

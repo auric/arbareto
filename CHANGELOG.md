@@ -12,11 +12,13 @@ A preview release for Windows 11 x64.
 - Arbareto reports a stale lease only when a new read of the remote branch shows that it changed.
 - For a force push, this read uses the push URL when it differs from the fetch URL. This includes the form `user@host:path`.
 - In WSL, Arbareto runs the git command of a distro only when it is an ELF program file. A script or an unreadable file gets a message with the fix.
+- In WSL, you can clone into a folder that does not exist yet.
 - In a filtered History, a row that needs more than 24 graph lanes draws no lines. It now names its matching ancestors.
 - The README and the release notes give the attestation command with `--signer-workflow`. The command then accepts only files from the Arbareto release workflow.
 - When Git stalls during a clone, the Clone dialog shows "Git may be waiting for input." and the stall notice. The notice offers Cancel and "Copy command".
 - A revert shows "Checking the result…" while Arbareto reads the status again.
 - While the status read after an operation runs, the status no longer shows "State unknown". The actions stay blocked until the read ends.
+- After Refresh or a restart of the Git service, the footer no longer stays at "State unknown" or "Refreshing". The actions become available again.
 - In the worktree, branch, and commit menus, the reason "The status read after the last operation is still running." shows only in the tooltip.
 - Screen readers get distinct names for the two Occitan licence texts: "Licence text of Occitan, 1 of 2" and "Licence text of Occitan, 2 of 2".
 - Keyboard focus stays in place when the window switches to the narrow layout.

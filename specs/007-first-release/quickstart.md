@@ -18,12 +18,12 @@ Run the local checks first. The GitHub runs need the orchestrator, and the user'
 - `bun scripts/release/check.ts --mode dry-run --signing off`
 - `bun run build`, then `bun run package:preview:exes`, then `bun run package:preview:bundle`.
 - `bun scripts/release/notices-text.ts --out <scratch>`; `bun scripts/release/hunspell-source.ts --out <scratch>` (Local: network); copy the installer into `<scratch>`; `bun scripts/release/sums.ts write <scratch>`; `bun scripts/release/sums.ts verify <scratch>`.
-- `bun scripts/release/notes.ts --version 0.1.0 --signing off --out <scratch>`.
+- `bun scripts/release/notes.ts --version <version> --signing off --out <scratch>`. `<version>` is the `version` in `package.json`.
 - Expected: four release files in `<scratch>`, `verify` exit 0, and `git status` still empty.
 
 ## Q3. Control mutations
 
-- Change `package.json` `version` to `0.1.1` in a scratch copy: `check.ts` exits 1 with `RELEASE_CHECK version-mismatch`.
+- In a scratch copy, change `package.json` `version` to a value different from `src-tauri/Cargo.toml`: `check.ts` exits 1 with `RELEASE_CHECK version-mismatch`.
 - Add one untracked file: `check.ts` exits 1 with `RELEASE_CHECK dirty`, and a `preview` build fails in `build.rs`.
 - Change one byte of the installer copy: `sums.ts verify` exits 1 with `RELEASE_SUMS mismatch`.
 - Replace one action SHA with `@v4` in a scratch copy of the workflow: the workflow test fails.
@@ -31,7 +31,7 @@ Run the local checks first. The GitHub runs need the orchestrator, and the user'
 ## Q4. Sandbox install
 
 - Copy the installer into the `scripts/windows/clean-install.wsb` share. Install as the Sandbox user. Set `ARBARETO_PROFILE_ROOT` to a scratch folder for app runs on the host.
-- Expected: no administrator prompt; Arbareto starts; About shows `0.1.0`, `Preview`, and the commit; "Installed apps" shows "Arbareto"; the uninstall key `Publisher` and the `arbareto.exe` and `arbareto-git.exe` CompanyName are `Ihor Lifanov`, and their LegalCopyright is `Copyright (c) 2026 Ihor Lifanov`; the start page shows "This preview is not a qualified release. The qualification of Windows 11 x64 continues."; uninstall removes it.
+- Expected: no administrator prompt; Arbareto starts; About shows the version in `package.json`, `Preview`, and the commit; "Installed apps" shows "Arbareto"; the uninstall key `Publisher` and the `arbareto.exe` and `arbareto-git.exe` CompanyName are `Ihor Lifanov`, and their LegalCopyright is `Copyright (c) 2026 Ihor Lifanov`; the start page shows "This preview is not a qualified release. The qualification of Windows 11 x64 continues."; uninstall removes it.
 
 ## Q5. Dry run on GitHub (orchestrator, after the user's OK)
 
@@ -43,5 +43,5 @@ Run the local checks first. The GitHub runs need the orchestrator, and the user'
 ## Q6. Release (after the public switch, 005, 006, 008, 010, 011, and the 004 Submodules tree on `main`)
 
 - Settings (orchestrator): environment `release` with the user as required reviewer and the tag rule `v*`; immutable releases on.
-- Tag `v0.1.0` on `main`, push it, approve the `publish` job.
-- Expected: a pre-release "Arbareto Preview v0.1.0" with four files, not latest, immutable; `gh attestation verify Arbareto_0.1.0_x64-setup.exe -R auric/arbareto` passes; the About links open without sign-in.
+- Tag `v<version>` on `main`, push it, approve the `publish` job. `<version>` is the `version` in `package.json`.
+- Expected: a pre-release "Arbareto Preview v<version>" with four files, not latest, immutable; `gh attestation verify Arbareto_<version>_x64-setup.exe -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml` passes; the About links open without sign-in.

@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
-import { BUN_WINDOWS_ZIP_URL, PINS } from "../../scripts/release/pins";
+import { BUN_WINDOWS_ZIP_URL, PINS, TAURI_CLI_WINDOWS_ZIP_URL } from "../../scripts/release/pins";
 import { NSIS_VERSION, TAURI_CLI_VERSION } from "../../src/frontend/build/notices";
 
 // T006, T014, T024: every pin of scripts/release/pins.ts equals the value in each file that uses it (data-model §5, plan.md D2).
@@ -43,7 +43,11 @@ describe("release pins", () => {
     expect(BUN_WINDOWS_ZIP_URL).toBe("https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64.zip");
   });
 
-  test("the release workflow names the pinned runner, Bun archive, hash, Rust, and Tauri CLI", async () => {
+  test("the Tauri CLI Windows archive URL names the pinned release tag", () => {
+    expect(TAURI_CLI_WINDOWS_ZIP_URL).toBe("https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.0/cargo-tauri-x86_64-pc-windows-msvc.zip");
+  });
+
+  test("the release workflow names the pinned runner, Bun archive, hash, Rust, Tauri CLI, and Tauri CLI archive and hash", async () => {
     const workflow = Bun.YAML.parse(await Bun.file(WORKFLOW).text()) as Workflow;
     expect(workflow.jobs?.build?.["runs-on"]).toBe(PINS.runner);
     expect(workflow.env).toMatchObject({
@@ -52,6 +56,8 @@ describe("release pins", () => {
       BUN_ZIP_SHA256: PINS.bunWindowsZipSha256,
       RUST_VERSION: PINS.rust,
       TAURI_CLI_VERSION: PINS.tauriCli,
+      TAURI_CLI_ZIP_URL: TAURI_CLI_WINDOWS_ZIP_URL,
+      TAURI_CLI_ZIP_SHA256: PINS.tauriCliWindowsZipSha256,
     });
   });
 });

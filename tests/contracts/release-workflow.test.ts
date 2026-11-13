@@ -170,6 +170,16 @@ describe("release workflow", () => {
     }
   });
 
+  test("Install the Tauri CLI compares the zip hash with TAURI_CLI_ZIP_SHA256, and no step runs cargo install tauri-cli", () => {
+    const pin = 'if ($hash -ne $env:TAURI_CLI_ZIP_SHA256) { [Console]::Error.WriteLine("RELEASE_CHECK pin cargo-tauri-x86_64-pc-windows-msvc.zip $hash"); exit 1 }';
+    const install = steps("build").filter((s) => s.name === "Install the Tauri CLI");
+    expect(install.length).toBe(1);
+    expect((install[0]!.run ?? "").split("\n").map((line) => line.trim())).toContain(pin);
+    const tauriAt = steps("build").findIndex((s) => s.name === "Install the Tauri CLI");
+    expect(steps("build").findIndex((s) => s.name === "Install Rust and check the tools")).toBeGreaterThan(tauriAt);
+    expect(allSteps.filter((s) => /cargo\s+install\s+tauri-cli/.test(s.run ?? ""))).toEqual([]);
+  });
+
   // bun-windows-x64.zip holds only bun.exe, so Install Bun gives no bunx (T029 dry run 1). tauri-cli 2.12.0 build.rs:132 and 203: build runs
   // beforeBuildCommand, and only a build without --no-bundle runs the bundler. Only the bundler gets makensis.exe (tauri-bundler 2.10.0 nsis/mod.rs:80-96).
   test("every package script that a build step runs starts only a tool that an earlier step installs", async () => {
@@ -181,7 +191,7 @@ describe("release workflow", () => {
     const NSIS = '"$LOCALAPPDATA/tauri/NSIS/makensis.exe"';
     const build = steps("build");
     const bunAt = build.findIndex((s) => s.name === "Install Bun");
-    const rustAt = build.findIndex((s) => s.name === "Install Rust and the Tauri CLI");
+    const rustAt = build.findIndex((s) => s.name === "Install Rust and check the tools");
     expect(bunAt).toBeGreaterThanOrEqual(0);
     expect(rustAt).toBeGreaterThan(bunAt);
     const bad: string[] = [];

@@ -11,7 +11,7 @@ description: "Task list for the Remote Sync feature"
 
 **Tests**: The spec (SC-001 to SC-014) and plan.md "Steps" require tests. Each step writes its tests first (plan.md "Steps (riskiest proof first)"). A failing-test task comes before each implementation task, or the task names its failing case first. No test passes by default.
 
-**Organization**: Phases follow the seven batches of plan.md "Phases": (0) fixtures and the Git and PuTTY facts P0.1 to P0.3, (1) pure logic and contracts P1, P2, and the P3 policies, allowlist, and bridge calls, (2) shell and service core with the P3 rest and P4, (3) pull, conflict actions, and Mark resolved P5 and P6, (4) clone, terminal, and frontend A P7 and P8, (5) frontend B and C P9 and P10, (6) WSL and packaged qualification P11 and P12. Story phases carry `[USn]` labels. Batch 0, batch 1, and the cross-cutting qualification tasks carry no label.
+**Organization**: Phases 1 to 7 follow the seven batches of plan.md "Phases": (0) fixtures and the Git and PuTTY facts P0.1 to P0.3, (1) pure logic and contracts P1, P2, and the P3 policies, allowlist, and bridge calls, (2) shell and service core with the P3 rest and P4, (3) pull, conflict actions, and Mark resolved P5 and P6, (4) clone, terminal, and frontend A P7 and P8, (5) frontend B and C P9 and P10, (6) WSL and packaged qualification P11 and P12. Story phases carry `[USn]` labels. Batch 0, batch 1, and the cross-cutting qualification tasks carry no label. Phase 8 holds convergence tasks outside the seven batches. Its tasks carry no label.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -56,7 +56,7 @@ description: "Task list for the Remote Sync feature"
 | 4. Clone, terminal, frontend A | 5 | P7, P8 | T052–T066, T085, T086 | US1, US2, US3, US4, US5, US6, US7, US8 | `clone`, `connectInTerminal`, toolbar, Pull split button, counts, push panel, push-rejected notice, force confirmation, Commit and push, history labels (after 002). |
 | 5. Frontend B and C | 6 | P9, P10 | T067–T074 | US5, US6, US7 | Pull mode choice, conflict actions, Mark resolved, clone panel, SSH and clone settings. |
 | 6. WSL and packaged qualification | 7 | P11, P12 | T075–T083 | Cross-cutting | SC-003 timing, SC-004, SC-007, SC-008, SC-009, SC-010, SC-013. Blocked by open 001 T152, T154, T165, T240, T242. |
-| Convergence (no batch) | 8 | none | T087–T096 | Cross-cutting | Review and audit follow-ups: the batch 0 and 1 full-run record, native-first operations, D4 facts and rules, lease re-read, clone stall notice, force-push limits. |
+| Convergence (no batch) | 8 | none (the tasks cite plan D3, D4, D5, and D12) | T087–T096 | US1 (T090), US3 (T089 to T091), US4 (T092, T093, T095, T096), US5 and US7 (T088), US7 (T094), cross-cutting (T087) | Review and audit follow-ups: the batch 0 and 1 full-run record, native-first operations, D4 facts and rules, lease re-read, clone stall notice, force-push limits. |
 
 Work packages (plan.md "Work packages"): WP1 is T001 to T006. WP2 is T007, T009 to T012, and T084 (T008 is the O-5 record). WP3 is T014 to T018 and T020 to T023. WP4 is T019 and T024. WP5 is T026 and T029 in batch 1, then T027, T028, T030, and T031 in batch 2. WP6 is T032 to T042. WP7 is T044 to T046, T049, and T050. WP8 is T047 and T048. WP9 is T052 to T055. WP10 is T056 to T065, T085, and T086. WP11 is T067 to T069 and T072. WP12 is T070, T071, and T073. WP13 is T075. WP14 is T076 to T082.
 

@@ -10,6 +10,7 @@ import { SearchHistoryResult } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { createFake, oid, operationIdOf, stubLayout, TARGET, viewIdOf, type FakeOptions } from "./history-fake";
+import { keyboardFocus, tooltipText } from "./sync-fake";
 
 printOrigin("../../src/frontend/history/HistoryFilter.tsx", import.meta.dir);
 registerDom();
@@ -68,6 +69,9 @@ describe("spec FR-027 to FR-031: the filter text", () => {
   test("the filter has its accessible name and the Ctrl+F shortcut; only Enter starts a search, and a pause starts none", async () => {
     const { fake, input } = await mount({ total: 100, loaded: 100, matches: (i) => i % 10 === 0 });
     expect(input.getAttribute("aria-keyshortcuts")).toBe("Control+F");
+    // T065, plan.md D6 "Shortcuts": the house Tooltip names the box and the key.
+    await keyboardFocus(input);
+    expect(tooltipText()).toBe("Filter commit messages (Ctrl+F)");
     await type(input, "Commit");
     await new Promise((resolve) => setTimeout(resolve, 600));
     await settle();

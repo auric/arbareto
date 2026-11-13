@@ -101,7 +101,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 
 **Goal**: A preview build shows "Preview" and the release links in About, refuses a dirty tree, carries Arbareto file properties in both executables, and names "Arbareto" in "Installed apps". Serves US1 and US4.
 
-**Independent Test**: `bun run package:preview:exes` and `bun run package:preview:bundle` on a clean tree give an installer. In Windows Sandbox, About shows the version in `package.json`, `Preview`, and the commit; "Installed apps" shows "Arbareto".
+**Independent Test**: `bun run package:preview:exes` and `bun run package:preview:bundle` on a clean tree give an installer. In Windows Sandbox, About shows the application version (`src-tauri/Cargo.toml`, equal to `package.json`, spec.md Assumptions), `Preview`, and the commit; "Installed apps" shows "Arbareto".
 
 ### Tests (write first; they must fail)
 
@@ -210,11 +210,11 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 
 ## Phase 9: v0.1.1 follow-ups
 
-**Agent**: implementer (T038, T040), scout and orchestrator (T039). This phase does not gate v0.1.0.
+**Agent**: implementer (T038, the T040 code), orchestrator (the T040 dry run), scout and orchestrator (T039). This phase does not gate v0.1.0.
 
 - [x] T038 Harden the release workflow and the verify text (`.github/workflows/release.yml`, `scripts/release/hunspell-source.ts`, README.md, `.github/release-notes/unsigned.md`). Move the publish tag check (`RELEASE_CHECK not-tag-commit` and the tag-moved refusal) to just before `gh release edit --draft=false`. Give `GH_TOKEN` only to the step that needs it. Add `--end-of-options` before the fetch URL in `hunspell-source.ts`. Add a test fixture with a tree `.gitattributes` `text eol=crlf ident` and an `$Id$` file. The blob-equality assert then covers those attributes. Add `--signer-workflow auric/arbareto/.github/workflows/release.yml` to the attestation command. Source: research.md R7 "Review of 6bb2235d and 5f31d07a" and "T033 Batch 3 verification". Spec: FR-017, FR-019, FR-023, FR-024, FR-028, FR-029. Depends on T033. Note (2026-11-11): code and tests on branch `v011-release-hardening`; the tick waits for the v0.1.1 full run. Ticked after the green v0.1.1 full run on 2026-11-13 (code de82eccd).
 - [ ] T039 Close the batch 3 verification gaps in the v0.1.1 release check. Files: `specs/007-first-release/spec.md` (SC-002 wording) and the v0.1.1 release record in research.md R7. Start the app as a standard Sandbox user and read About. Press both About buttons with network on and check the opened URL. Reword SC-002 to "3 of 3 lines of `SHA256SUMS.txt`, and the checksum file matches its attestation". Source: research.md R7 "T033 Batch 3 verification". Spec: SC-001, SC-002, SC-007. Depends on T033.
-- [ ] T040 Install the Tauri CLI from the prebuilt release zip in the release workflow. Files: `.github/workflows/release.yml`, `scripts/release/pins.ts`, `tests/contracts/release-workflow.test.ts`, `tests/contracts/release-pins.test.ts`. The new step "Install the Tauri CLI" downloads `cargo-tauri-x86_64-pc-windows-msvc.zip` of tag `tauri-cli-v2.12.0`. It compares the zip SHA-256 with `TAURI_CLI_ZIP_SHA256`. It prepends the extract folder to `GITHUB_PATH`. Remove `cargo install tauri-cli`. Keep the workflow cache-free. The workflow test checks the hash line and the absence of `cargo install tauri-cli`. The pins test checks the URL and hash pins. Source: research.md R2 "Caching". Spec: FR-011, SC-005 (pin mismatch, static), SC-006. Depends on T038 (same file `release.yml`; T038 is already in this branch base). Pass condition: a `release-dry-run` run where "Install the Tauri CLI" and "Install Rust and check the tools" pass and `cargo tauri --version` prints `tauri-cli 2.12.0`. Record both step times in research.md R7 as an `OBSERVATION`. The tick waits for that run.
+- [ ] T040 Install the Tauri CLI from the prebuilt release zip in the release workflow. Files: `.github/workflows/release.yml`, `scripts/release/pins.ts`, `tests/contracts/release-workflow.test.ts`, `tests/contracts/release-pins.test.ts`. The new step "Install the Tauri CLI" downloads `cargo-tauri-x86_64-pc-windows-msvc.zip` of tag `tauri-cli-v2.12.0`. It compares the zip SHA-256 with `TAURI_CLI_ZIP_SHA256`. It prepends the extract folder to `GITHUB_PATH`. Remove `cargo install tauri-cli`. Keep the workflow cache-free. The workflow test checks the hash line and the absence of `cargo install tauri-cli`. The pins test checks the URL and hash pins. Source: research.md R2 "Caching". Spec: FR-011, SC-005 (pin mismatch, static), SC-006. Depends on T038 (same file `release.yml`; T038 is already in this branch base). `GitHub`. The orchestrator pushes the branch head to `release-dry-run` in the public repository, after the user's OK. Pass condition: a `release-dry-run` run where "Install the Tauri CLI" and "Install Rust and check the tools" pass and `cargo tauri --version` prints `tauri-cli 2.12.0`. Record both step times in research.md R7 as an `OBSERVATION`. The tick waits for that run.
 
 ---
 
@@ -225,7 +225,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 - Batch 2: WP5 (T018 to T023) and WP6 (T024 to T026) in disjoint files; T025 needs T019 to T022; T027 any time in batch 2; T028 last.
 - Batch 3: T029, T030, T032, and T033 in order. T031 runs any time after the public switch and before T032. T031 needs the user's public switch. T032 needs 005, 006, 008 (`008-discard-changes`), 010 (`010-commit-menu`), 011 (`011-remote-branch-delete`), and the 004 Submodules tree (004 User Story 12) on `main` and this feature merged. The `v0.1.0` tag waits for 008, 010, 011, and the 004 Submodules tree (user decisions 2026-10-27, 2026-11-04, 2026-11-06, 2026-11-03, and 2026-11-07).
 - Phase 8 after T032 and the SignPath approval.
-- Phase 9 after T033, with the v0.1.1 release.
+- Phase 9 after T033, with the v0.1.1 release. The `v0.1.1` tag waits for the T040 release dry run (plan.md "Steps (riskiest proof first)": P6 dry run before the P7 tag; quickstart.md Q5 before Q6).
 
 ### Parallel examples
 

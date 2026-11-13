@@ -47,14 +47,14 @@ A Windows 11 user finds Arbareto on GitHub. The Releases page shows "preview v0.
 
 **Why this priority**: A downloadable, installable package is the purpose of the feature. Without it, nothing else has value.
 
-**Independent Test**: In a clean Windows 11 x64 Sandbox with only the documented prerequisites, download the release installer from the public release page, verify its SHA-256 value, install it, and start the application. About must show the release version (the `version` in `package.json`), the preview marker, and the full commit ID of the tag.
+**Independent Test**: In a clean Windows 11 x64 Sandbox with only the documented prerequisites, download the release installer from the public release page, verify its SHA-256 value, install it, and start the application. About must show the release version (the application version, see Assumptions), the preview marker, and the full commit ID of the tag.
 
 **Acceptance Scenarios**:
 
 1. **Given** the published preview release, **When** a user opens the Releases page, **Then** the release is marked as a pre-release, its title and notes say "preview", and the notes list the prerequisites, the signing state, and the known Windows warnings.
 2. **Given** the downloaded installer and the checksum file, **When** the user computes the SHA-256 value of the installer, **Then** the value equals the line for that file in the checksum file.
 3. **Given** a clean Windows 11 x64 machine with Git for Windows and the WebView2 Runtime, **When** the user runs the installer as a standard user, **Then** the installation needs no administrator rights, and Arbareto starts without a globally installed Node or Bun.
-4. **Given** the installed preview, **When** the user opens About, **Then** it shows the release version (the `version` in `package.json`), the preview marker, and a build identity that equals the full commit ID of the tag, without `-dirty`.
+4. **Given** the installed preview, **When** the user opens About, **Then** it shows the release version (the application version, see Assumptions), the preview marker, and a build identity that equals the full commit ID of the tag, without `-dirty`.
 5. **Given** the installed preview, **When** the user removes it from Windows "Installed apps", **Then** the uninstaller removes the application.
 
 ---
@@ -228,7 +228,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 
 - The repository is public since 2026-10-25 (research.md R7 T031). The main ruleset and security features follow the public switch (user decisions, 2026-10-24).
 - SignPath Foundation approves only released projects (research.md R1). So v0.1.0 ships unsigned, and the application follows the release.
-- The version in `src-tauri/Cargo.toml` equals the `version` in `package.json`. Tauri takes the application version from `Cargo.toml` (research.md R4).
+- The application version is the `version` in `src-tauri/Cargo.toml`. Tauri takes it from `Cargo.toml` (research.md R4), because no Tauri config file sets `version`. About reads it as `CARGO_PKG_VERSION` (`src-tauri/src/service.rs`, `buildIdentity`). `scripts/release/check.ts` refuses a `package.json` `version` that differs from it (`RELEASE_CHECK version-mismatch`) and a `version` key in a Tauri config file (`RELEASE_CHECK config-version`). So the application version always equals the `version` in `package.json`.
 - A GitHub-hosted runner for a public repository is free (research.md R2).
 - The installer stays current-user NSIS and does not install the WebView2 Runtime, as `bun run package` builds it today.
 - English is the only bundled dictionary. Downloaded dictionaries do not ship with the release (006 plan.md D18).

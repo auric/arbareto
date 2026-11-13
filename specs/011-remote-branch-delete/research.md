@@ -241,3 +241,11 @@ Review findings and outcomes:
 - L2: the dialogs printed counts above 999 without digit groups. Fixed by `b2006241` for the remote confirmation, and by the feature close fix for the force-push count "It removes {n} commits".
 - L3: accepted. A cut commit subject keeps its full text in the DOM and in the accessible name. A focusable row would add Tab stops to the list.
 - Evidence: the T021 run 2 results above (build `f15e91fc`) and the T018 WSL run at `e609153c` (6 pass, 0 fail, control red).
+
+### v0.1.1 full run (2026-11-13)
+
+Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62f161197f7ab3c6edf80e6eccedc207495d9f9fce453e5ad8b9`. OS: Windows NT 10.0.26300.0, UBR 9974, x64. Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4. `bun run test:all` exited 0. Every `ORIGIN` line named the checkout under test.
+
+- T028: `tests/git/remote-delete.test.ts` 14 pass, `tests/git/remote-delete-gone.test.ts` 9 pass, `tests/contracts/sync-parsers.test.ts` 134 pass, `tests/contracts/remote-delete.test.tsx` 61 pass. Each has 0 skip and 0 fail.
+- Skips in these files: none.
+- The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".

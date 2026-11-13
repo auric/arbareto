@@ -123,7 +123,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - Rust on the runner: `rustup toolchain install` reads `rust-toolchain.toml`. Then `rustc --version` must print `rustc 1.99.0 `.
 - tauri-cli: download `https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.0/cargo-tauri-x86_64-pc-windows-msvc.zip` into `$env:RUNNER_TEMP`, compare `Get-FileHash -Algorithm SHA256` with the pin, extract there, and prepend the folder to `GITHUB_PATH`. The pin is the GitHub asset digest (research R2 "Caching", T040). No `cargo install tauri-cli`. Then `cargo tauri --version` must print `tauri-cli 2.12.0`. The notices check (001 T375) also refuses any other value.
 - Actions: each `uses:` names a 40-hex commit ID and the version tag in a trailing comment. The workflow contract test refuses any other form. The implementer reads each SHA from the action repository tag at implementation time and records it in research.md R7.
-- No `actions/cache` step (research R2). Each downloaded tool has a pinned SHA-256, and the workflow builds no tool from source.
+- No `actions/cache` step (research R2). The workflow builds no tool from source. The workflow downloads two zips, `bun-windows-x64.zip` and `cargo-tauri-x86_64-pc-windows-msvc.zip`, and each has a pinned SHA-256 (`BUN_ZIP_SHA256`, `TAURI_CLI_ZIP_SHA256`). Rust has a version pin only: `rustup toolchain install` reads `rust-toolchain.toml`, and the step checks the `rustc --version` line. tauri-bundler downloads NSIS and checks its SHA-1 pin (research R2); the repository holds no NSIS SHA-256.
 
 ### D3 Tag, version, and tree checks (`scripts/release/check.ts`)
 

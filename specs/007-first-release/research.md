@@ -751,3 +751,72 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
 - Suspicion: the README attestation command does not pin the signer workflow. Planned in T038.
 - Suspicion: the SC-010d miss of 2026-11-10 passed only on later runs, and its cause is unknown. Recorded as an open miss in the T028 record.
 - `OBSERVATION T033: v0.1.99 outside main refused with RELEASE_CHECK not-on-main, exit 1, publish skipped, no release; tag deleted; FR-017 rerun unverified; one independent review recorded, no blocking finding`
+
+### v0.1.1 full run (2026-11-13)
+
+- Source: the driver logs in local scratch. The driver ran from 2026-11-12 19:42 to 2026-11-13 10:14 (UTC+2), alone, under the test gate and the full-run lock.
+- Code: `de82eccd` (de82eccdb06cc667a3db2f17060d28863d1baaa2) on branch `v0.1.1-rc2`. The preflight found an empty `git status --porcelain`.
+- Platform, read at the start and at the end with the same values: Windows NT 10.0.26300.0, UBR 9974, x64. WebView2 157.0.4341.46. Bun 1.4.4. Git 2.56.0.windows.2. `rustc 1.99.0 (b940084d7 2026-09-28)`. `cargo 1.99.0 (5f94df478 2026-08-27)`.
+- WSL: `Ubuntu-26.04`, Git 2.55.0 in the distro (the WSL probe line of `test:all`).
+- Environment of the driver: `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, `ARBARETO_PROFILE_ROOT`, `ARBARETO_PERF_SAMPLES_DIR`, `ARBARETO_PERF_CACHE`, and `ARBARETO_DICTIONARY_CACHE` (scratch folders). `ARBARETO_HISTORY_FIXTURES=H200K` for the `test:all` step only. The driver removed `ARBARETO_LIVE_INPUT` and `ARBARETO_WSL_ORDER_DISTROS`.
+- Built installer `Arbareto_0.1.1_x64-setup.exe` SHA-256 `c1ba28d0b2cf62f161197f7ab3c6edf80e6eccedc207495d9f9fce453e5ad8b9`.
+- Built `arbareto.exe` SHA-256: raw `30267102edadbb361026bf9966c1fdd942eeee5788d075890b28851af34689c6`, after the NSIS marker patch (1 marker) `80a95ab5017d1120e8529eef505d50f6f2255e9a1d81f61628efef38645849c5`.
+- The installed `arbareto.exe` SHA-256 equals the patched build (`80a95ab5…`). Every packaged step printed this hash on its `INSTALLED-APP` line.
+- `tests/windows` ran as 33 steps, one `bun test ./tests/windows/<file>` each. `package.json` `test:windows` is `bun test tests/windows`. The `tests/windows` folder has no subfolder and exactly 33 files that match the Bun default test name patterns. These are the 33 step files. The `test:windows` script itself did not run.
+
+| Step | Command | Exit | Pass | Fail | Skip | Minutes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| s0a | `bun install --frozen-lockfile` | 0 | - | - | - | 0.1 |
+| s0b | `bun run build` | 0 | - | - | - | 0.2 |
+| s0c | `bun run typecheck` | 0 | - | - | - | 0.1 |
+| s0d | `bun run export:schemas --check` | 0 | - | - | - | 0 |
+| s0e | `cargo test --locked --manifest-path src-tauri/Cargo.toml` | 0 | 667 | 0 | 16 ignored | 2 |
+| s4 | `bun run test:all` (parallel 9,206 pass, 45 skip; serial 1,006 pass, 11 skip; 306 files) | 0 | 10,212 | 0 | 56 | 304.1 |
+| s1 | `bun run package` | 0 | - | - | - | 2.8 |
+| s2 | installer `/S` | 0 | - | - | - | 0.1 |
+| s5 | `capture.test.ts` | 0 | 17 | 0 | 2 | 0 |
+| s5 | `cdp.test.ts` | 0 | 9 | 0 | 0 | 0 |
+| s5 | `commit-menu-packaged.test.ts` | 0 | 5 | 0 | 2 | 0.8 |
+| s5 | `commit-menu-perf.test.ts` | 0 | 8 | 0 | 0 | 50.2 |
+| s5 | `contrast.test.ts` | 0 | 16 | 0 | 0 | 0 |
+| s5 | `delete-facts.test.ts` | 0 | 3 | 0 | 0 | 0 |
+| s5 | `external-change.test.ts` | 0 | 10 | 0 | 0 | 0.5 |
+| s5 | `history-git-memory.test.ts` | 0 | 0 | 0 | 2 | 0 |
+| s5 | `inject.test.ts` | 0 | 8 | 0 | 1 | 0 |
+| s5 | `inspection-packaged.test.ts` | 0 | 11 | 0 | 1 | 2.8 |
+| s5 | `inspection-perf.test.ts` | 0 | 9 | 0 | 1 | 11.7 |
+| s5 | `installed-app.test.ts` | 0 | 14 | 0 | 0 | 0.2 |
+| s5 | `keys-cdp.test.ts` | 0 | 6 | 0 | 0 | 0.1 |
+| s5 | `native-facts.test.ts` | 0 | 4 | 0 | 0 | 0.3 |
+| s5 | `no-network.test.ts` | 0 | 0 | 0 | 1 | 0 |
+| s5 | `perf-fixtures.test.ts` | 0 | 10 | 0 | 0 | 4.2 |
+| s5 | `process-poller.test.ts` | 0 | 4 | 0 | 0 | 0 |
+| s5 | `ratio.test.ts` | 0 | 29 | 0 | 0 | 0 |
+| s5 | `remote-delete-packaged.test.ts` | 0 | 7 | 0 | 2 | 1.1 |
+| s5 | `remote-delete-perf.test.ts` | 0 | 7 | 0 | 0 | 13.4 |
+| s5 | `revert-facts.test.ts` | 0 | 12 | 0 | 0 | 0.2 |
+| s5 | `revert-packaged.test.ts` | 0 | 7 | 0 | 4 | 1.4 |
+| s5 | `revert-perf.test.ts` | 0 | 6 | 0 | 0 | 148 |
+| s5 | `service-hardening.test.ts` | 0 | 2 | 0 | 0 | 0 |
+| s5 | `spelling-packaged.test.ts` | 0 | 6 | 0 | 4 | 0.8 |
+| s5 | `spelling-perf.test.ts` | 0 | 89 | 0 | 1 | 114.7 |
+| s5 | `submodule-perf-fixture.test.ts` | 0 | 1 | 0 | 0 | 0.1 |
+| s5 | `submodule-tree-packaged.test.ts` | 0 | 15 | 0 | 1 | 64.6 |
+| s5 | `submodule-update-packaged.test.ts` | 0 | 5 | 0 | 0 | 105.6 |
+| s5 | `sync-packaged.test.ts` | 0 | 1 | 0 | 4 | 0 |
+| s5 | `sync-perf.test.ts` | 0 | 5 | 0 | 10 | 0 |
+| s5 | `uia.test.ts` | 0 | 12 | 0 | 0 | 0.4 |
+| s5 | `workbench-packaged.test.ts` | 0 | 8 | 0 | 6 | 1.3 |
+| s6 | `bun test ./tests/gate` | 0 | 175 | 0 | 0 | 3.3 |
+
+- The driver `STEP` line of s4 gives `pass=1006`, the serial part only. The s4 values above come from both Bun summaries.
+- `ORIGIN`: every test step printed `ORIGIN` lines, and 0 lines named a path outside the checkout under test (s4: 2,603 lines).
+- `H200K-MISSING count=0`: no `missing capability history-fixture-h200k` line.
+- The v0.1.0 full run at b9fbda78 skipped the 14 H200K cases: the cache did not hold the H200K fixture, and that run did not set `ARBARETO_HISTORY_FIXTURES`. This run set `ARBARETO_HISTORY_FIXTURES=H200K`, reused both cached H200K variants, and ran the 14 cases. All 14 passed.
+- At the end, `git status --porcelain` equalled the start (empty). The run left 0 fixture folders.
+- Skips: 98 unique skipped cases (s4 56, s5 42). By class: platform 45, machine 13, user input 25, fixable by the run setup 9, unknown 6. The unknown class holds 3 hard-coded harness capabilities (`restart-keeps-lingering`, `other-account-owner`, `disposable-volume`) and 3 unconditional skips (sync-packaged SC-008 clone, spelling-packaged Q26 US2 keyboard run, spelling-perf Q27 during a download).
+- Every skipped case name also skipped in the previous full run (code efc0b771, 2026-11-11, 97 skips). The one new skip is "T164 (10) at 225%" of `submodule-tree-packaged.test.ts`. That file did not run in the previous run. A skip never counts as a pass.
+- 008 T048 revert (`revert-perf.test.ts`, the 1 MiB and 8 MiB binary case): pass. Binary median: confirmation 280.0 ms, refreshed diff 979.5 ms (budget 1,500 ms). In the previous full run, this case failed: "the restored binary file did not happen within 60000 ms". The cause of that fail is not confirmed.
+- The 010 values of this run are in 010 research.md "v0.1.1 full run (2026-11-13)".
+- Later merge cbdf7012 (on top of de82eccd) changed only the release workflow, CHANGELOG.md, `scripts/release/pins.ts`, the 007 docs, and two contract tests (`release-pins.test.ts`, `release-workflow.test.ts`). The post-merge check at cbdf7012 passed: typecheck and the schema check exit 0; `tests/contracts/groups.test.ts` 1 pass; `tests/contracts` 6,945 pass, 37 skip, 0 fail in 144 files; `hunspell-source.ts` build exit 0. Control: a mutation run of the release pins and workflow tests failed one release pins case (36 pass, 1 fail). The restore gave 37 pass, with `ORIGIN` at `scripts/release/pins.ts` of the checkout.
+- `OBSERVATION v0.1.1 full run: de82eccd, every step exit 0, test:all 10,212 pass 0 fail 56 skip, 33 tests/windows files 0 fail, gate 175 pass, installed exe equals the patched build, H200K cases ran, 98 skips classified, porcelain unchanged`

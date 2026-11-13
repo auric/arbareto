@@ -297,26 +297,19 @@ describeGit("rejected push and force push with lease (T035)", () => {
     expect(seen.args).toEqual([]);
   }, TIMEOUT_MS);
 
-  // A `remote.origin.vcs` push runs a remote helper, so T096 refuses its review with `remote-helper`. So only the review read is checked.
   // remote.c `remotes_remote_get_1`: a remote named as the push URL gives `ls-remote <url>` its settings.
-  caseTest("T093", "plan.md D5: with a pushurl in other bytes than the URL, a remote.origin.vcs entry or a remote named as the push URL gives no ls-remote --get-url read in the force-push review", SHELL, async () => {
-    const cases: [string, string, (a: ReturnType<typeof diverged>) => [string, string], string | undefined][] = [
-      ["vcs", "t093-review-vcs", () => ["remote.origin.vcs", "arbareto-none"], "SYNC_UNAVAILABLE"],
-      ["remote named as the push URL", "t093-review-named", (a) => [`remote.${fileUrl(a.remotes.origin!)}.uploadpack`, "git-upload-pack"], undefined],
-    ];
-    for (const [name, tag, entry, code] of cases) {
-      const a = diverged(true);
-      gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.remotes.origin!)]);
-      gitRun(a.h, a.repo, ["config", ...entry(a)]);
-      await withSync(tag, async (service) => {
-        const r = await register(service, a.repo);
-        expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
-        const from = service.runner.calls.length;
-        const response = await reviewSync(service, r, { action: "force-push" });
-        const getUrl = service.runner.calls.slice(from).filter((c) => c.arguments.includes("--get-url"));
-        expect({ name, code: response.code, getUrl: getUrl.length }).toEqual({ name, code, getUrl: 0 });
-      });
-    }
+  caseTest("T093", "plan.md D5: with a pushurl in other bytes than the URL, a remote named as the push URL gives no ls-remote --get-url read in the force-push review", SHELL, async () => {
+    const a = diverged(true);
+    gitRun(a.h, a.repo, ["config", "remote.origin.pushurl", fileUrl(a.remotes.origin!)]);
+    gitRun(a.h, a.repo, ["config", `remote.${fileUrl(a.remotes.origin!)}.uploadpack`, "git-upload-pack"]);
+    await withSync("t093-review-named", async (service) => {
+      const r = await register(service, a.repo);
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+      const from = service.runner.calls.length;
+      const response = await reviewSync(service, r, { action: "force-push" });
+      const getUrl = service.runner.calls.slice(from).filter((c) => c.arguments.includes("--get-url"));
+      expect({ code: response.code, getUrl: getUrl.length }).toEqual({ code: undefined, getUrl: 0 });
+    });
   }, TIMEOUT_MS);
 
   // User decision 2026-11-11 (contract "Contract gaps"): an scp form has no password field, so its user name may go into process arguments.

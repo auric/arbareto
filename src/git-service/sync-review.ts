@@ -562,7 +562,7 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
     if (!("value" in fetchOut)) return fetchOut;
     const sameUrl = Buffer.from(fetchOut.value).equals(Buffer.from(urlOut.value));
     if (sameUrl) return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease, sameUrl });
-    const urlReread = await pushUrlReread(ctx, entries, destination.remote, urls.url, urlOut.value);
+    const urlReread = await pushUrlReread(ctx, entries, urls.url, urlOut.value);
     if (typeof urlReread !== "boolean") return urlReread;
     return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease, sameUrl, urlReread });
   }
@@ -570,12 +570,12 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
 }
 
 // Plan.md D5 and contract Δ3 "Lease re-read": true when `ls-remote <push URL>` reads the URL that the push used.
-// `remote.<name>.vcs` selects a remote helper that a bare URL does not select. `ls-remote` applies the `insteadOf` rules to a URL argument again.
+// `ls-remote` applies the `insteadOf` rules to a URL argument again.
 // `pushUrls` is the `remote get-url --push --all` output of the one URL `url`.
 // A URL with user information never goes into process arguments: other processes and diagnostics can read them.
 // remote.c `remotes_remote_get_1`: a configured remote named as the URL gives `ls-remote <url>` its `remote.<url>.*` settings.
-async function pushUrlReread(ctx: ObserveContext, entries: readonly ConfigEntry[], remote: string, url: string, pushUrls: Uint8Array): Promise<boolean | Observation> {
-  if (redactUrlUserInfo(url) !== url || entries.some((e) => e.key === `remote.${remote}.vcs` || e.key.startsWith(`remote.${url}.`))) return false;
+async function pushUrlReread(ctx: ObserveContext, entries: readonly ConfigEntry[], url: string, pushUrls: Uint8Array): Promise<boolean | Observation> {
+  if (redactUrlUserInfo(url) !== url || entries.some((e) => e.key.startsWith(`remote.${url}.`))) return false;
   const out = await readOut(ctx, lsRemoteUrlArgs(url), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("limited" in out) return { code: "OUTPUT_LIMIT" };
   if (!("value" in out)) return out;

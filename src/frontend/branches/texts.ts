@@ -99,7 +99,7 @@ export const RD = {
   deletesTail: (remote: string, tracking: string) => ` on ${remote}, and the remote-tracking branch ${tracking} here.`,
   lost: (n: number) => (n === 1 ? "1 commit is on no other branch, tag, or remote-tracking branch here:" : `${n.toLocaleString("en-US")} commits are on no other branch, tag, or remote-tracking branch here:`),
   noneLost: (tracking: string) => `Another branch, tag, or remote-tracking branch here holds every commit of ${tracking}.`,
-  // X7, or X7h for a push URL with the exact lowercase prefixes of remote-curl.c `discover_refs` (feature 011 T027). `url` is the plan URL.
+  // X7, or X7h when the redacted plan URL `url` starts with the exact lowercase `http://` or `https://` (011 plan D13, T027).
   warning: (tracking: string, url: string) =>
     `Other people can lose work. The delete stops if ${tracking} changed since the last fetch.${url.startsWith("http://") || url.startsWith("https://") ? " Over a dumb HTTP server, Git cannot check this." : ""}`,
   button: "Delete remote branch",

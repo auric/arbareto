@@ -997,7 +997,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const parents = useSyncExternalStore(store.subscribe, () => store.getState().parents, () => store.getState().parents);
   const ignoreState = useSyncExternalStore(ignore.subscribe, ignore.getState, ignore.getState);
   // Feature 005 plan.md D19 and contract Δ3 `readSubmoduleWork`: a committed snapshot object is a complete `readWorkspace` result.
-  const readWork = useLatest((t: { repositoryId: string; repositoryGeneration: number; snapshotId: string }) => bridge.readSubmoduleWork({ repositoryId: t.repositoryId, repositoryGeneration: t.repositoryGeneration }, { snapshotId: t.snapshotId }));
+  const readWork = useLatest((t: { repositoryId: string; repositoryGeneration: number; snapshotId: string }, page: number = 0) => bridge.readSubmoduleWork({ repositoryId: t.repositoryId, repositoryGeneration: t.repositoryGeneration }, { snapshotId: t.snapshotId, page }));
   const submoduleWork: WorkRead | null = useSubmoduleWork(readWork, state.repository?.repositoryId ?? null, state.workspace);
   const [extraRow, setExtraRow] = useState<string | null>(null);
   // A status entry selection, such as Resolve conflicts or Back from Blame, ends the selection of a row with only local edits.

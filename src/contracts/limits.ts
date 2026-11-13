@@ -87,6 +87,8 @@ export const SUBMODULE_CHANGE_OUTPUT_BYTES = 256 * KIB;
 // Feature 004 contract Δ12 "Submodule bound": the local-edit marks keep their own bound, apart from the review bound.
 export const SUBMODULE_WORK_TARGETS = 256;
 export const SUBMODULE_WORK_PARALLEL = 8;
+// Feature 005 contract Δ5 (T114): the positions of one `readSubmoduleWork` page.
+export const SUBMODULE_WORK_PAGE = 16;
 // Feature 004 contract Δ5: the folder rows of the Submodules group (renderer, spec FR-111).
 export const SUBMODULE_TREE_FOLDERS = 1_024;
 export const WSL_DISTRO_START_MS = 60 * SECOND_MS;

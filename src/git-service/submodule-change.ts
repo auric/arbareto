@@ -7,7 +7,7 @@
 import type { FileFact } from "../contracts/channel";
 import type { ErrorCode } from "../contracts/errors";
 import type { GitlinkFact } from "../contracts/file-action";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_CHANGE_COMMITS, SUBMODULE_CHANGE_OUTPUT_BYTES, SUBMODULE_GITMODULES_BYTES, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS, TRUST_INPUT_BYTES } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_CHANGE_COMMITS, SUBMODULE_CHANGE_OUTPUT_BYTES, SUBMODULE_GITMODULES_BYTES, SUBMODULE_WORK_PAGE, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS, TRUST_INPUT_BYTES } from "../contracts/limits";
 import { both, fail, Stop, CLOSED, type InspectionOutcome, type InspectionTarget } from "./commit-changes";
 import {
   isObjectId,
@@ -140,11 +140,25 @@ function orThrow<T>(r: T | ReadFailure): T {
   return r as T;
 }
 
+// Contract Δ3 `readSubmoduleWork` "Pages": the targets in index order, then the `pathBytes` of the unlisted moved gitlinks while a position is free.
+// A cut index listing has one page.
+export function workPlan(snapshot: Pick<ChangeSnapshot, "indexEntries" | "indexCut">, moved: ReadonlySet<string>): { positions: (IndexEntry | string)[]; limited: number; pages: number } {
+  if (snapshot.indexCut) return { positions: [], limited: 0, pages: 1 };
+  const gitlinks = snapshot.indexEntries.filter((e) => e.stage === 0 && e.mode === GITLINK);
+  const targets = gitlinks.slice(0, SUBMODULE_WORK_TARGETS);
+  // Plan.md D11 check 3: a moved gitlink without its stage-0 gitlink entry in the snapshot index is no target. It gives `not-located`.
+  const indexed = new Set(gitlinks.map((e) => Buffer.from(e.path).toString("base64")));
+  const unlisted = [...moved].filter((p) => !indexed.has(p));
+  const shown = unlisted.slice(0, SUBMODULE_WORK_TARGETS - targets.length);
+  const positions = [...targets, ...shown];
+  return { positions, limited: gitlinks.length - targets.length + unlisted.length - shown.length, pages: Math.max(1, Math.ceil(positions.length / SUBMODULE_WORK_PAGE)) };
+}
+
 export interface SubmoduleReadsOptions {
   runner: GitRunner;
   trust: Trust;
   environment: ServiceEnvironment;
-  // Contract Δ3 `readSubmoduleWork`: the 001 read deadline of the whole read.
+  // Contract Δ3 `readSubmoduleWork`: the 001 read deadline of each page.
   readDeadlineMs: number;
 }
 
@@ -398,16 +412,19 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
     t: InspectionTarget,
     snapshot: Pick<ChangeSnapshot, "snapshotId" | "indexEntries" | "indexCut" | "completeness"> & { entries: readonly { pathBytes: string }[] },
     // Plan.md D20 rule 2: the `pathBytes` of the `movedGitlink` records of the snapshot.
-    moved: ReadonlySet<string> = new Set(),
+    moved: ReadonlySet<string>,
+    // Contract Δ3 "Pages": the session refuses a page at or above the page count.
+    page: number,
   ): Promise<InspectionOutcome> {
     // Contract §5: a cut index listing names no gitlink, so no target list exists.
     if (snapshot.indexCut) return { result: "failed", code: "OUTPUT_LIMIT" };
     const w = t.workspace;
     const forms = pathForms(w, t.installation);
     const root = forms.gitRoot.endsWith("/") ? forms.gitRoot : `${forms.gitRoot}/`;
-    const gitlinks = snapshot.indexEntries.filter((e) => e.stage === 0 && e.mode === GITLINK);
     const named = (e: IndexEntry) => ({ pathBytes: Buffer.from(e.path).toString("base64"), path: displayPath(e.path) });
-    const targets = gitlinks.slice(0, SUBMODULE_WORK_TARGETS);
+    const plan = workPlan(snapshot, moved);
+    const positions = plan.positions.slice(page * SUBMODULE_WORK_PAGE, (page + 1) * SUBMODULE_WORK_PAGE);
+    const targets = positions.filter((p): p is IndexEntry => typeof p !== "string");
     // Null: plan.md D11 check 4 or 5 failed, so the target gives `not-initialized`, or `not-located` for a moved gitlink.
     const results: (WorkEntry | null | undefined)[] = targets.map(() => undefined);
     const deadline = new AbortController();
@@ -466,11 +483,8 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
         if (r === undefined) entries.push({ ...named(targets[i]!), state: "unchecked", reason: "failed", code: "DEADLINE" });
         else entries.push(r ?? { ...named(targets[i]!), state: moved.has(named(targets[i]!).pathBytes) ? "not-located" : "not-initialized" });
       });
-      // Plan.md D11 check 3: a moved gitlink without its stage-0 gitlink entry in the snapshot index is no target. It gives `not-located`.
-      const indexed = new Set(gitlinks.map((e) => named(e).pathBytes));
-      const unlisted = [...moved].filter((p) => !indexed.has(p));
-      const shown = unlisted.slice(0, SUBMODULE_WORK_TARGETS - entries.length);
-      for (const pathBytes of shown) entries.push({ pathBytes, path: displayPath(Buffer.from(pathBytes, "base64")), state: "not-located" });
+      // Plan.md D11 check 3: the unlisted moved gitlinks of the page come after its targets. Each gives `not-located`.
+      for (const pathBytes of positions.filter((p): p is string => typeof p === "string")) entries.push({ pathBytes, path: displayPath(Buffer.from(pathBytes, "base64")), state: "not-located" });
       // Spec FR-075: a gitlink with local edits and no parent status record. A cut status listing names no such set.
       const listed = new Set(snapshot.entries.map((e) => e.pathBytes));
       const extraRows =
@@ -478,7 +492,7 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
           ? entries.filter((e) => e.state === "checked" && (e.modified || e.untracked) && !listed.has(e.pathBytes)).map(({ pathBytes, path }) => ({ pathBytes, path }))
           : [];
       // Contract Δ3: the gitlinks after the first SUBMODULE_WORK_TARGETS entries are not checked.
-      return { result: "succeeded", value: { snapshotId: snapshot.snapshotId, entries, extraRows, limited: gitlinks.length - targets.length + unlisted.length - shown.length } };
+      return { result: "succeeded", value: { snapshotId: snapshot.snapshotId, entries, extraRows, limited: plan.limited, next: page + 1 < plan.pages ? page + 1 : null } };
     } catch (error) {
       if (error instanceof Stop) return error.outcome;
       throw error;

@@ -24,7 +24,7 @@ import { FIXTURE_ROOT, ownedGit, removeTree, serviceEnv, useFixtureRoot } from "
 import { countPath, countWorld, deepWorld, flatName, flatWorld, folderWorld } from "./submodule-count-fixture";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
-import { gitPath, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService } from "./hunk-harness";
+import { gitPath, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService, workPages } from "./hunk-harness";
 import { caseTest, NO_TOTAL_DEADLINE_WAIT_MS, once, RESPONSE_WAIT_MS, withFsCalls, type Capability, type Service, type ServiceResponse } from "./service-harness";
 import {
   actionsOf,
@@ -2212,11 +2212,12 @@ describe("submodule bound (004 FR-115, contract Δ12 \"Submodule bound\")", () =
     await withTree(w, "t159-work", async (service) => {
       const { repositoryId } = await service.register(w.sup);
       const read = await readOk(service, repositoryId);
-      const response = await service.request<{ entries: { path: string; state: string }[]; limited: number }>("readSubmoduleWork", { snapshotId: read.snapshotId }, { repositoryId, repositoryGeneration: read.generation });
-      expect({ outcome: outcome(response), entries: response.result?.entries.map((e) => [e.path, e.state]), limited: response.result?.limited }).toEqual({
-        outcome: SUCCEEDED,
+      // T114: the 256 positions come in 16 pages, and each page gives the same `limited`.
+      const { pages, work } = await workPages<{ entries: { path: string; state: string }[]; extraRows: unknown[]; limited: number; next: number | null }>(service, repositoryId, read);
+      expect({ pages: pages.length, limited: pages.map((p) => p.limited), entries: work.entries.map((e) => [e.path, e.state]) }).toEqual({
+        pages: 16,
+        limited: Array.from({ length: 16 }, () => 44),
         entries: indexOrder(300).slice(0, 256).map((path) => [path, "not-initialized"]),
-        limited: 44,
       });
     });
   });

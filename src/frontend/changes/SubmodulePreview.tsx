@@ -22,8 +22,13 @@ export type SubmoduleReader = {
   /** Feature 005 plan.md D11 "Availability" of Open submodule, or null. */
   reason(pathBytes: string): string | null;
 };
-/** The newest finished `readSubmoduleWork` read of the open repository, and the snapshot that it read. */
-export type WorkRead = { snapshotId: string; response: BridgeResponse };
+type WorkRow = { entry: WorkEntry; extra: SubmoduleWork["extraRows"][number] | null; snapshotId: string };
+/**
+ * The `readSubmoduleWork` pages of the open repository (plan D19 "Page cycle", "Rows across snapshots").
+ * `snapshotId`: the snapshot of the newest cycle. `more`: that cycle has not ended. `rows`: the newest entry of each path.
+ * `work`: the rows as one result, or null after a failed page with the code `failure`.
+ */
+export type WorkRead = { snapshotId: string; more: boolean; rows: ReadonlyMap<string, WorkRow>; work: SubmoduleWork | null; failure: string };
 /** A `readSubmoduleChange` read: "pending", or its response. */
 export type ChangeRead = "pending" | BridgeResponse;
 
@@ -55,11 +60,16 @@ export function changeOf(read: ChangeRead | null): SubmoduleChange | null {
   return result?.state === undefined ? null : (result as SubmoduleChange);
 }
 
-/** The result of a succeeded read, else null. Plan D19 "Rows": the rows and marks keep it until the read of a newer snapshot ends. */
+/** The shown rows and marks, else null. Plan D19 "Rows across snapshots": an older entry stays until a page of a newer cycle replaces it or that cycle ends. */
 export function workOf(read: WorkRead | null): SubmoduleWork | null {
-  if (read === null || read.response.state !== "succeeded") return null;
-  const result = read.response.result as SubmoduleWork | undefined;
-  return result?.snapshotId === read.snapshotId && Array.isArray(result.entries) ? result : null;
+  return read?.work ?? null;
+}
+
+/** A succeeded page of `snapshotId`, else null. Contract Δ3 "Pages": `next` is `page` + 1, or null on the last page. */
+function pageOf(response: BridgeResponse, snapshotId: string, page: number): SubmoduleWork | null {
+  if (response.state !== "succeeded") return null;
+  const result = response.result as SubmoduleWork | undefined;
+  return result?.snapshotId === snapshotId && Array.isArray(result.entries) && Array.isArray(result.extraRows) && (result.next === null || result.next === page + 1) ? result : null;
 }
 
 /** Plan D19 row marks of a `checked` entry, in order. */
@@ -87,11 +97,12 @@ export const indexGitlink = (entry: ChangeEntry) => entry.entryId.startsWith(EXT
 /** Plan D19 Working tree row of the gitlink with `pathBytes` in the index of `snapshotId`. */
 function workText(read: WorkRead | null, snapshotId: string | undefined, pathBytes: string): string {
   if (read === null || read.snapshotId !== snapshotId) return PENDING_TEXT;
-  const work = workOf(read);
-  if (work === null) return `Working tree is unavailable: ${read.response.code ?? read.response.state}`;
-  const entry = work.entries.find((e) => e.pathBytes === pathBytes);
+  if (read.work === null) return `Working tree is unavailable: ${read.failure}`;
+  const row = read.rows.get(pathBytes);
+  const entry = row?.snapshotId === snapshotId ? row.entry : undefined;
+  if (entry === undefined && read.more) return PENDING_TEXT;
   // Contract Δ3: each of the first 256 stage-0 gitlinks has one entry, and `limited` counts the rest. No entry with `limited` 0 breaks the contract.
-  if (entry === undefined) return work.limited > 0 ? WORK_LIMIT_TEXT : "Working tree is unavailable: STATE_UNKNOWN";
+  if (entry === undefined) return read.work.limited > 0 ? WORK_LIMIT_TEXT : "Working tree is unavailable: STATE_UNKNOWN";
   if (entry.state === "not-initialized") return INITIALIZE_FIRST;
   if (entry.state === "not-located") return NOT_LOCATED_TEXT;
   if (entry.state === "unchecked") return entry.reason === "programs" ? PROGRAMS_TEXT : `Working tree is unavailable: ${entry.code}`;
@@ -99,13 +110,25 @@ function workText(read: WorkRead | null, snapshotId: string | undefined, pathByt
 }
 
 type WorkTarget = { repositoryId: string; repositoryGeneration: number; snapshotId: string };
+/** One page cycle: its start page, its pages by index, and the rows shown when it started. */
+type Cycle = { t: WorkTarget; start: number; pages: (SubmoduleWork | undefined)[]; older: ReadonlyMap<string, WorkRow> };
+// Plan D19 "Page failures": a newer snapshot or generation replaced the target, and its cycle follows.
+const REPLACED = new Set(["UNKNOWN_TARGET", "REPOSITORY_CHANGED"]);
+
 /**
- * Contract Δ3 `readSubmoduleWork` after each complete `readWorkspace` result. At most one read runs.
- * A newer snapshot during a read waits for its end, then the newest one runs once. The result of another repository never shows.
+ * Contract Δ3 "Page cycle" after each complete `readWorkspace` result. At most one page runs.
+ * A newer snapshot stops the cycle after its running page. The result of another repository never shows.
  */
-export function useSubmoduleWork(read: (target: WorkTarget) => Promise<BridgeResponse>, repositoryId: string | null, snapshot: { snapshotId: string; generation: number } | null): WorkRead | null {
+export function useSubmoduleWork(read: (target: WorkTarget, page: number) => Promise<BridgeResponse>, repositoryId: string | null, snapshot: { snapshotId: string; generation: number } | null): WorkRead | null {
   const [shown, setShown] = useState<{ repositoryId: string; read: WorkRead } | null>(null);
-  const flight = useRef<{ running: WorkTarget | null; due: WorkTarget | null; repositoryId: string | null; mounted: boolean }>({ running: null, due: null, repositoryId: null, mounted: true });
+  const flight = useRef<{ running: WorkTarget | null; due: WorkTarget | null; repositoryId: string | null; mounted: boolean; resume: number; rows: ReadonlyMap<string, WorkRow> }>({
+    running: null,
+    due: null,
+    repositoryId: null,
+    mounted: true,
+    resume: 0,
+    rows: new Map(),
+  });
   useEffect(() => {
     const f = flight.current;
     f.mounted = true;
@@ -113,21 +136,64 @@ export function useSubmoduleWork(read: (target: WorkTarget) => Promise<BridgeRes
   }, []);
   useEffect(() => {
     const f = flight.current;
+    if (f.repositoryId !== repositoryId) {
+      f.resume = 0;
+      f.rows = new Map();
+    }
     f.repositoryId = repositoryId;
     if (repositoryId === null || snapshot === null) return void (f.due = null);
     const target = { repositoryId, repositoryGeneration: snapshot.generation, snapshotId: snapshot.snapshotId };
-    const run = (t: WorkTarget) => {
-      f.running = t;
-      void read(t).then((response) => {
+    const show = (t: WorkTarget, more: boolean, rows: ReadonlyMap<string, WorkRow>, limited: number | null, failure: string) => {
+      f.rows = rows;
+      const all = [...rows.values()];
+      const work = limited === null ? null : { snapshotId: t.snapshotId, entries: all.map((r) => r.entry), extraRows: all.flatMap((r) => (r.extra === null ? [] : [r.extra])), limited, next: null };
+      setShown({ repositoryId: t.repositoryId, read: { snapshotId: t.snapshotId, more, rows, work, failure } });
+    };
+    const start = (t: WorkTarget, page: number) => run({ t, start: page, pages: [], older: f.rows }, page);
+    const run = (c: Cycle, page: number) => {
+      f.running = c.t;
+      void read(c.t, page).then((response) => {
         f.running = null;
         if (!f.mounted) return;
-        if (f.repositoryId === t.repositoryId) setShown({ repositoryId: t.repositoryId, read: { snapshotId: t.snapshotId, response } });
-        const next = f.due;
+        const due = f.due;
         f.due = null;
-        if (next !== null && next.repositoryId === f.repositoryId) run(next);
+        const later = due !== null && due.repositoryId === f.repositoryId ? due : null;
+        if (f.repositoryId !== c.t.repositoryId) return void (later !== null && start(later, f.resume));
+        const got = pageOf(response, c.t.snapshotId, page);
+        let next: number | null = null;
+        let restart = false;
+        if (got !== null) {
+          c.pages[page] = got;
+          const following = got.next ?? 0;
+          // Contract Δ3 "Page cycle": one cycle reads each page once, so it ends before its start page.
+          const ended = c.pages[following] !== undefined;
+          f.resume = ended ? 0 : following;
+          if (!ended) next = following;
+          // Data-model §16 "Join": the pages join in page order. Plan D19 "Rows across snapshots": older rows stay until the cycle ends.
+          const rows = new Map<string, WorkRow>();
+          for (const p of c.pages) {
+            if (p === undefined) continue;
+            const extra = new Map(p.extraRows.map((r) => [r.pathBytes, r]));
+            for (const entry of p.entries) rows.set(entry.pathBytes, { entry, extra: extra.get(entry.pathBytes) ?? null, snapshotId: c.t.snapshotId });
+          }
+          if (!ended) for (const [path, row] of c.older) if (!rows.has(path)) rows.set(path, row);
+          show(c.t, !ended, rows, got.limited, "");
+        } else if (response.code === "INVALID_REQUEST" && page > 0 && page === c.start && c.pages.length === 0) {
+          // Contract Δ3 "Page cycle": a resumed start page past the page count of the newer snapshot. The restart at page 0 runs once.
+          f.resume = 0;
+          restart = true;
+        } else if (REPLACED.has(response.code ?? "")) {
+          f.resume = page;
+        } else {
+          f.resume = 0;
+          show(c.t, false, new Map(), null, response.code ?? response.state);
+        }
+        if (later !== null) return start(later, f.resume);
+        if (restart) return start(c.t, 0);
+        if (next !== null) run(c, next);
       });
     };
-    if (f.running === null) return run(target);
+    if (f.running === null) return start(target, f.resume);
     f.due = f.running.snapshotId === target.snapshotId && f.running.repositoryId === target.repositoryId ? null : target;
   }, [repositoryId, snapshot]);
   return shown !== null && shown.repositoryId === repositoryId ? shown.read : null;

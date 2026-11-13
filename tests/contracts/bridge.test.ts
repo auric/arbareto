@@ -92,7 +92,7 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   previewIgnore: (b) => b.previewIgnore(gen(), { target: "gitignore", text: "Ki5sb2cKIWtlZXAubG9nCg==", snapshotId: id() }),
   openSubmodule: (b) => b.openSubmodule({ repositoryId: id(), path: "lib/core" }),
   readSubmoduleChange: (b) => b.readSubmoduleChange(gen(), { source: { kind: "workspace", snapshotId: id(), entryId: id() } }),
-  readSubmoduleWork: (b) => b.readSubmoduleWork(gen(), { snapshotId: id() }),
+  readSubmoduleWork: (b) => b.readSubmoduleWork(gen(), { snapshotId: id(), page: 1 }),
   // Feature 006 contract Δ1.
   listDictionaries: (b) => b.listDictionaries(),
   readDictionary: (b) => b.readDictionary({ language: "uk", file: "index.dic", offset: 1_048_576 }),

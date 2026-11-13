@@ -2,6 +2,24 @@
 
 Each section lists the changes that a user of Arbareto sees in that release.
 
+## [0.1.2]
+
+A preview release for Windows 11 x64.
+
+### Added
+
+- You can select static text and copy it with Ctrl+C. This includes the submodule preview in the Commit view and in History, the code text of Blame lines, the notices, the status texts of an operation, and the path heading of a comparison.
+
+### Changed
+
+- When Git rejects a remote branch delete for a stale lease, the message now starts with "Git deleted nothing: <reason>." The reason is the text of Git.
+- When Git gives no reason text, the message shows only "Git deleted nothing."
+- Arbareto does not delete a remote branch through a remote helper. This includes a `<transport>::` URL, a `remote.<name>.vcs` entry, `ftp://` and `ftps://` URLs, and an unknown or uppercase scheme. The message is "The remote of <tracking> pushes through a remote helper. Git cannot show that a remote helper keeps the lease, so Arbareto does not delete this branch."
+- Arbareto does not force push with lease through a remote helper. The status bar shows "This branch pushes through a remote helper. Git cannot show that a remote helper keeps the lease, so Arbareto does not force push this branch."
+- For an `http://` or `https://` push URL, the confirmations of a remote branch delete and of a force push add "Over a dumb HTTP server, Git cannot check this."
+- A `GIT_SMART_HTTP` value in your environment no longer reaches Git. An HTTP push thus keeps the lease check.
+- The History message filter shows its key in a tooltip: "Filter commit messages (Ctrl+F)".
+
 ## [0.1.1] - 2026-11-13
 
 A preview release for Windows 11 x64.

@@ -216,7 +216,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 ### Measurable Outcomes
 
 - **SC-001**: A clean Windows 11 x64 Sandbox with only the documented prerequisites installs and starts the preview from the public release page. The install needs no administrator rights.
-- **SC-002**: The SHA-256 value of every downloaded release file equals its line in the checksum file: 4 of 4 files.
+- **SC-002**: The SHA-256 value of each release file equals its line in the checksum file: 3 of 3 lines of `SHA256SUMS.txt`. The checksum file matches its attestation.
 - **SC-003**: The documented attestation check passes for every release file, and it fails for a copy with one changed byte.
 - **SC-004**: About in the installed preview shows the release version, the preview marker, and the full tag commit ID without `-dirty`.
 - **SC-005**: A tag with a wrong version, a tag outside `main`, a dirty identity, and a pin mismatch each fail the run, and none of them creates a public release: 4 of 4.

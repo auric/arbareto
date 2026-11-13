@@ -2,7 +2,7 @@
 
 Each section lists the changes that a user of Arbareto sees in that release.
 
-## [0.1.1]
+## [0.1.1] - 2026-11-13
 
 A preview release for Windows 11 x64.
 

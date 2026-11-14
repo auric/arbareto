@@ -147,6 +147,8 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
   // A newer view or a newer search makes older responses void.
   let epoch = 0;
   let searchSeq = 0;
+  // The `searchSeq` of a running search whose cancel waits for its operation ID (T069).
+  let searchCancel = 0;
   let revealSeq = 0;
   let reading = false;
   let loading: Promise<unknown> | null = null;
@@ -469,11 +471,17 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
   async function runSearch(text: string, mode: HistoryMode, keepOid: string | null) {
     const view = state.view;
     if (view === null) return;
+    const before = searchSeq;
     await settleLoad();
-    if (view !== state.view) return;
+    // A stop in the wait ends this search before its request (T069).
+    if (view !== state.view || before !== searchSeq) return;
     const mine = ++searchSeq;
     set({ search: { text, mode, state: "running", searchId: null, matches: 0, settled: 0, shallow: false }, matchEnd: null, version: state.version + 1 });
     const response = await bridge.searchHistory(repository(), { viewId: view.viewId, text }, (event) => {
+      if (searchCancel === mine) {
+        searchCancel = 0;
+        void bridge.cancel({ operationId: event.operationId });
+      }
       if (mine !== searchSeq || state.search === null) return;
       set({ search: { ...state.search, searchId: event.operationId, matches: event.counters.matches ?? state.search.matches, settled: event.counters.settled ?? state.search.settled } });
       // Rows that were not settled can be settled now.
@@ -548,8 +556,8 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
 
   /** Spec FR-030: the running search stops, and no count shows as final. */
   function stopSearch() {
+    cancelSearch();
     searchSeq++;
-    if (searching() && state.search!.searchId !== null) void bridge.cancel({ operationId: state.search!.searchId });
   }
 
   /** A changed text, a cleared text, and Escape: the full history returns with the selection kept. */
@@ -614,9 +622,11 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (position?.target === "found") select(oid, position.rows[0]!.index, "filter");
   }
 
-  /** Cancels the running search. The loaded rows stay (contract Δ3). */
+  /** Cancels the running search. The loaded rows stay (contract Δ3). Before the first progress event, the cancel waits for the operation ID. */
   function cancelSearch() {
-    if (searching() && state.search!.searchId !== null) void bridge.cancel({ operationId: state.search!.searchId });
+    if (!searching()) return;
+    if (state.search!.searchId !== null) void bridge.cancel({ operationId: state.search!.searchId });
+    else searchCancel = searchSeq;
   }
 
   /** Plan.md D3 "Selection": the view that reads `oid`, or null. The selection reads only after a select() in this view, because the view holds its row only then. With `others`, another commit reads at once. */

@@ -73,8 +73,8 @@ export function HistoryFilter({ search, unavailable, describedBy, inputRef, onSe
                 value={text}
                 onChange={(event) => {
                   setText(event.target.value);
-                  // Spec FR-030: a changed or cleared text stops the search, and the full history returns.
-                  if (search !== null) onClear();
+                  // Spec FR-030: a changed or cleared text stops the search, and the full history returns. `search` is still null while Enter waits for a load (T069).
+                  onClear();
                 }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;

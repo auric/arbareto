@@ -1296,7 +1296,7 @@ Each terminal state (data-model §7) carries one result code:
 - `completed-with-effects`: `COMPLETED_WITH_EFFECTS`.
 - `failed-with-effects`: `FAILED_WITH_EFFECTS`. After an update or mutation deadline, it also carries the deadline `reason` (below).
 - `unknown`: `STATE_UNKNOWN`, with its attribution reason. An `unknown` from a reconciliation read deadline after an update or mutation deadline carries the recorded deadline reason instead (§5 "Deadline outcomes"). An `unknown` from a failed, limited, or unavailable reconciliation observation (§8) also keeps any recorded deadline reason. The observation's code goes to the diagnostic, not to the outcome.
-- `rejected`: the refusal code. `SERVICE_UNAVAILABLE` is always a `rejected` result. Exception: `applyFiles` canceled in its decision reads gives `rejected` with `CANCELED` (decision 2026-11-14, T417).
+- `rejected`: the refusal code. `SERVICE_UNAVAILABLE` is always a `rejected` result. Exception: `applyFiles` canceled in its decision reads gives `rejected` with `CANCELED` (decision 2026-11-14, T417). When its decision reads reach their deadline, it gives `rejected` with `DEADLINE`.
 
 A mutation request in a workspace whose recovery state is `unknown` is rejected with `STATE_UNKNOWN`. Above the recovery-marker limit (§5), every mutation is rejected with `STATE_UNKNOWN`. The service checks both at mutation exclusion entry, after the other acceptance checks and before the `started` frame. So the refusal consumes no approval, and no lock or Git process follows. Unexpected diagnostic output above 4 MiB cancels the operation. A read then ends `failed` with `OUTPUT_LIMIT`. A mutation enters `reconciling`, and its diagnostic names `OUTPUT_LIMIT` as the cause.
 

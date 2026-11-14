@@ -163,6 +163,30 @@ describe("spec FR-027 to FR-031: the filter text", () => {
       expect(fake.of("cancel").map((c) => c.operationId)).toEqual([operationIdOf(1)]);
       expect(view.getState().search).toBeNull();
     });
+
+  test("T069: the visible load Cancel while Enter waits for that load ends the load and starts no search", async () => {
+    const { fake, input, host, view } = await mount({ total: 1_000_000, hold: { load: true } });
+    await type(input, "Commit");
+    const cancel = [...host.querySelectorAll("button")].find((b) => text(b) === "Cancel")!;
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      cancel.click();
+    });
+    await settle();
+    expect(fake.of("searchHistory")).toHaveLength(0);
+    expect([...new Set(fake.of("cancel").map((c) => c.operationId))]).toEqual([operationIdOf(1)]);
+    expect(view.getState().load).toBeNull();
+    expect(view.getState().search).toBeNull();
+  });
+
+  test("T069, plan.md D6: Enter during a running load cancels the load itself and still starts its search", async () => {
+    const { fake, input, view } = await mount({ total: 1_000_000, hold: { load: true } });
+    await type(input, "Commit");
+    await key(input, "Enter");
+    expect(fake.of("cancel").map((c) => c.operationId)).toEqual([operationIdOf(1)]);
+    expect(fake.of("searchHistory")).toEqual([{ viewId: viewIdOf(1), text: "Commit" }]);
+    expect(view.getState().search?.state).toBe("finished");
+  });
 });
 
 describe("spec FR-032 to FR-035: filter mode", () => {

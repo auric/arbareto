@@ -366,6 +366,12 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     else void bridge.cancel({ operationId });
   }
 
+  /** The load Cancel of the user. It also stops a search that waits for this load (T069). Internal paths call `cancelLoad`. */
+  function stopLoad() {
+    stopSearch();
+    cancelLoad();
+  }
+
   /** plan.md D6: End and a search first cancel a running load and wait for its terminal response. */
   async function settleLoad() {
     if (loading === null) return;
@@ -702,7 +708,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     demand,
     retry,
     end,
-    cancelLoad,
+    stopLoad,
     row,
     windowReady,
     listRows,

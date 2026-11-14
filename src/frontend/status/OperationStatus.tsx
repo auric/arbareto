@@ -319,12 +319,13 @@ const lineNode = (line: Line) => (
 // plan.md "Required visible states", Updating submodules: the step text of each contract §12 progress phase.
 const SUBMODULE_STEPS: Record<string, string> = { "fetch": "Fetching submodule", update: "Updating submodule" };
 
-function operationText(op: StatusOperation, worktreeRoot: string, head: Head | null, trusted: boolean): Line {
+// `requested`: the status bar holds a Cancel press for this operation (plan.md "Status area", Early Cancel).
+function operationText(op: StatusOperation, worktreeRoot: string, head: Head | null, trusted: boolean, requested: boolean): Line {
   const [name, verb] = textsOf(op);
   const response = op.response;
   if (response === null) {
     const progress = op.progress;
-    if (progress?.state === "cancel-requested") return { lead: "Cancel requested", tail: "" };
+    if (requested || progress?.state === "cancel-requested") return { lead: "Cancel requested", tail: "" };
     if (op.running !== undefined) return { lead: op.running, tail: "" };
     const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
     const { rowIndex, rowCount } = progress?.counters ?? {};
@@ -459,6 +460,8 @@ export function readStallRemedy(response: BridgeResponse): StallRemedy | null {
 
 type Area = { requestId: string; open: boolean; forStall: boolean };
 type Stall = { requestId: string; remedy: StallRemedy | null; ending: boolean };
+/** A Cancel press of one operation. `sent` is true after the one `cancel` request. */
+type CancelGuard = { requestId: string; sent: boolean };
 
 export function OperationStatus({ bridge, operation: op, worktreeRoot, head, trusted, panel, commitPanel, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, declinedFocus, areaMaxHeight, notice: workbenchNotice, children, ref }: OperationStatusProps) {
   const [area, setArea] = useState<Area | null>(null);
@@ -481,13 +484,16 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   const seen = useRef<string | null>(null);
   const focusFrom = useRef<"cancel" | "panel" | "other">("other");
   const wasStalled = useRef(false);
-  const canceled = useRef<string | null>(null);
+  // The ref blocks a second send before the next render. The state renders the "Cancel requested" cue.
+  const canceled = useRef<CancelGuard | null>(null);
+  const [pressed, setPressed] = useState<CancelGuard | null>(null);
 
   const requestId = op?.requestId ?? null;
   const response = op?.response ?? null;
+  const operationId = op?.progress?.operationId;
   const outcome = outcomeOf(response);
   const heading = op === null ? undefined : textsOf(op)[2];
-  const line = op === null ? null : operationText(op, worktreeRoot, head, trusted);
+  const line = op === null ? null : operationText(op, worktreeRoot, head, trusted, pressed !== null && pressed.requestId === requestId);
   const liveText = line === null ? "" : plain(line);
   const running = op !== null && response === null;
   const stalled = running && op.progress?.stalled === true;
@@ -565,7 +571,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   // Contract §12 "Reconciliation and outcome": `canceled` comes from a Cancel or a declined Run confirmation. This bar sends the only renderer Cancel (plan.md "Status area").
   function submoduleFocus(): "area-heading" | "stay" | "declined" {
     if (modalOpen || isEditable((document.activeElement as HTMLElement | null) ?? undefined)) return "stay";
-    return response?.state === "canceled" && canceled.current !== requestId ? "declined" : "area-heading";
+    return response?.state === "canceled" && !(canceled.current?.requestId === requestId && canceled.current.sent) ? "declined" : "area-heading";
   }
 
   useLayoutEffect(() => {
@@ -626,12 +632,34 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
     if (requestId !== null) setArea({ requestId, open: false, forStall: false });
   }
 
-  function cancel() {
-    const operationId = op?.progress?.operationId;
-    if (operationId === undefined || op?.progress?.state === "cancel-requested" || canceled.current === requestId) return;
-    canceled.current = requestId;
-    void bridge.cancel({ operationId });
+  function hold(guard: CancelGuard | null) {
+    canceled.current = guard;
+    setPressed(guard);
   }
+
+  // plan.md "Status area", Early Cancel: only a reply view that took the cancel keeps the guard. A rejected reply has no view.
+  // Data-model §7: `reconciling` takes `cancel` as `reconciling` with `endProcesses` (`transition` in src/contracts/outcome.ts).
+  function send(guard: CancelGuard, id: string) {
+    guard.sent = true;
+    void bridge.cancel({ operationId: id }).then((reply) => {
+      const view = isObject(reply.result) ? reply.result : {};
+      const taken = view.state === "cancel-requested" || (view.state === "reconciling" && view.endProcesses === true);
+      if (canceled.current === guard && !taken) hold(null);
+    });
+  }
+
+  function cancel() {
+    if (op === null || op.response !== null || op.progress?.state === "cancel-requested" || canceled.current?.requestId === op.requestId) return;
+    const guard = { requestId: op.requestId, sent: false };
+    hold(guard);
+    if (operationId !== undefined) send(guard, operationId);
+  }
+
+  // A held press waits for the `operationId` of the accepted event (contract §2). A request that ends first sends nothing.
+  useEffect(() => {
+    const guard = canceled.current;
+    if (guard !== null && guard.requestId === requestId && !guard.sent && operationId !== undefined && response === null) send(guard, operationId);
+  }, [requestId, operationId]);
 
   const copies: { key: string; label: "Copy command" | "Copy path"; text: string }[] = [];
   if (notice?.remedy?.command !== undefined) copies.push({ key: "stall", label: "Copy command", text: notice.remedy.command });

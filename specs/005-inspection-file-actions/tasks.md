@@ -39,6 +39,8 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Each new test file in `tests/contracts`, `tests/git`, or `tests/wsl` adds its line to `tests/groups.json` in the same task: `parallel`, or `serial` with its reason. A timing test or a 100,000-path test goes into `serial`. `tests/windows` files are not in `tests/groups.json`.
 - App runs set `ARBARETO_PROFILE_ROOT` to a scratch folder.
 - A task is ticked only after a green full run (`bun run test:all`) on Windows that verifies it, with `ORIGIN` lines in the checkout under test. A `tests/windows` task is ticked only after a green `bun run test:windows` on the reference host.
+- A task may be ticked while a "Depends on" task stays open only when (1) its own pass condition holds on a recorded run, (2) the open task's text names why it stays open, and (3) the ticked task's record names the part of the open task that stays unverified (constitution VI:59). A failed fact of an open fact gate unticks its dependents.
+- A record from an older build counts for a tick when the record names its build, and `git diff --quiet <record commit> <tick commit> -- <test file> <ORIGIN paths>` exits 0. A packaged record also needs the same installer SHA-256, or a rerun on the new package. Per-file `bun test ./tests/windows/<file>` steps count as `bun run test:windows` when the steps cover every file of `tests/windows`.
 - Batch verification tasks use only the README "Development" commands.
 - No heuristics: every outcome comes from a documented Git exit code, machine-readable Git output, a fresh read, an OS fact, or a contract value (spec FR-001, SC-011). A test that asserts a refusal asserts its code and reason, never Git's message text.
 

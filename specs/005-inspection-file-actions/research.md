@@ -590,6 +590,13 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - WSL Ubuntu-26.04, current route: 20 submodules 3,431 ms, 100 submodules 14,649 ms. `DEADLINE` states: 0 in 10 runs at each size.
 - R18 "Cost" records the same times.
 
+*T108 and T111 full run f013, run 2026-11-13/14.* Full run f013 ran on b4a70d35. The logs are in local scratch. The ORIGIN lines name the run checkout at b4a70d35.
+- `bun run test:all` exited 0: 10,288 pass, 56 skip, 0 fail, 10,344 tests in 306 files. Each of the 33 `tests/windows` files ran as its own `bun test ./tests/windows/<file>` step.
+- Installer SHA-256: 92c79f7a45a9970f5f6423efbf2586e39cd3a3915a95b853307c474c00d6946d. Installed app SHA-256: 5383f1f7577fa6181a22c1fc151a69ace61f5e13eba64cdd12512d2b88b9d5a9. The packaged ORIGIN lines name this app SHA-256.
+- Step `s5-inspection-packaged` (`inspection-packaged.test.ts`) passed 11/0. Step `s5-inspection-perf` (`inspection-perf.test.ts`) passed 9/0.
+- T108: 256 clean submodules, the Changes list to the last mark, median 8,586.4 ms (bound 14,080 ms).
+- Three other steps failed: `s5-commit-menu-perf`, `s5-remote-delete-packaged`, and `s5-revert-perf`, one case each. These steps run other files and are not related to T108 and T111.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.

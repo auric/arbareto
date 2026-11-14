@@ -41,7 +41,7 @@ description: "Task list for the Workbench UX feature"
 - App runs set `ARBARETO_PROFILE_ROOT` to a scratch folder.
 - A task is ticked only after a green full run (`bun run test:all`) on Windows that verifies it, with `ORIGIN` lines in the checkout under test. A `tests/windows` task is ticked only after a green `bun run test:windows` on the reference host.
 - A task may be ticked while a "Depends on" task stays open only when (1) its own pass condition holds on a recorded run, (2) the open task's text names why it stays open, and (3) the ticked task's record names the part of the open task that stays unverified (constitution VI:59). A failed fact of an open fact gate unticks its dependents.
-- A record from an older build counts for a tick when the record names its build, and `git diff --quiet <record commit> <tick commit> -- <test file> <ORIGIN paths>` exits 0. A packaged record also needs the same installer SHA-256, or a rerun on the new package. Per-file `bun test ./tests/windows/<file>` steps count as `bun run test:windows` when the steps cover every file of `tests/windows`.
+- A record from an older build counts for a tick only when one command exits 0. The command is `git diff --quiet <record commit> <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0. A packaged record also needs the same installer SHA-256. Otherwise, the tick needs a run on the tick build. Per-file `bun test ./tests/windows/<file>` steps count as `bun run test:windows` when the steps cover every file of `tests/windows`.
 - Batch verification tasks use only the README "Development" commands.
 - No heuristics: every outcome comes from a documented Git exit code, machine-readable Git output, a fresh read, an OS fact, or a contract value (spec FR-002, SC-013). A test that asserts a refusal asserts its code and reason, never Git's message text.
 
@@ -388,7 +388,7 @@ Then WP10:     T033 -> T034 -> T035
 | --- | --- |
 | FR-001 to FR-006 | T016, T017, T021, T027, T033, T034, T097 to T099, T103 (moved to a later feature) |
 | FR-007 to FR-013 (US1) | T011, T015, T021, T027, T040, T043, T088, T105, T109 (FR-007), T112 (FR-007), T115 (FR-007), T116 (FR-008), T118 (FR-007), T119 (FR-013) |
-| FR-014 to FR-020 (US2) | T010, T022 (FR-019), T028 (FR-019), T038, T040, T044, T089, T101, T114 (FR-014), T117 (FR-014), T119 (FR-016, FR-017), T128 (FR-014), T129 (FR-014) |
+| FR-014 to FR-020 (US2) | T010, T022 (FR-014 to FR-020), T028 (FR-014 to FR-020), T038, T040, T044, T089, T101, T114 (FR-014), T117 (FR-014), T119 (FR-016, FR-017), T128 (FR-014), T129 (FR-014) |
 | FR-021 to FR-028 (US3) | T007, T023, T029, T041, T045, T090, T098, T099, T119 (FR-026) |
 | FR-029 to FR-048 (US4) | T009, T010, T024 to T026, T030 to T032, T042, T046, T047, T091, T092, T103 (moved to a later feature), T106, T109 (FR-047), T112 (FR-029), T115 (FR-047), T120 (FR-032, FR-045), T121 (FR-029), T125 (FR-029) |
 | FR-049 to FR-057 (US5) | T049, T055, T060, T064, T070, T094 (FR-052 Browse), T095 (O-20 trust gate, Remove label), T104 (FR-051), T105, T106 (FR-050, FR-051), T107 (FR-050, FR-052, FR-055), T110 (FR-049, FR-050, FR-052, FR-054, FR-055), T116 (FR-049), T118 (FR-049), T119 (FR-049, FR-052, FR-055), T127 (FR-052, FR-053), T128 (FR-052), T129 (FR-052, FR-053) |

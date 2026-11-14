@@ -501,6 +501,17 @@ T032 and T063, the 37aa8d4 run (R21), Windows Git 2.56.0.windows.2 and Ubuntu-26
 | T067 | `tests/contracts/references-sidebar.test.tsx` is green in run 7. | `ReferencesSidebar.tsx:379` drops `font-semibold` on the current row. | 33 pass, 1 fail ("the current branch name is bold with aria-current and no Current text", line 164). | 34 pass |
 | T068 | `tests/contracts/commit-details.test.tsx` is green in run 7. | `CommitDetails.tsx:141` makes the parent button copy the selected commit ID. | 14 pass, 1 fail ("each parent has its own Copy parent ID button, and it copies that parent", line 109). | 15 pass |
 
+## R24 T064 contract change, 2026-11-10
+
+- 1708ac0f (2026-11-10) changed contract Δ3 `readHistoryRows` in contracts/operations.md, data-model.md §7, plan.md, `src/contracts/envelope.ts`, the `read-history-rows-result` schema, `HistoryList.tsx`, `history-search.ts`, and `history-view.ts`. `readHistoryRows` sends `reducedParents` for each settled filter row with a cell. The renderer reads the skip and no-earlier facts from it, not from the drawn cell.
+- f5256ad0 (2026-11-10) changed the same files. A row sends at most 64 reduced parents, plus the full count and a skip fact (contracts/operations.md `reducedParentCount`, data-model.md §7).
+- Both commits changed `tests/git/history-search.test.ts` and `tests/contracts/history-filter.test.tsx`. Merge 73aed6c0 holds both commits, and de82eccd contains it.
+- Red output: both commit messages say "Tests are not run yet". No record holds a red run. The test-first red output is unverified.
+- Control mutation: no record holds one. It is unverified.
+- Green: the v0.1.1 full run on de82eccd exited 0 (007 research.md R7 "v0.1.1 full run (2026-11-13)"). `tests/groups.json` at de82eccd lists both test files: `history-search.test.ts` in `serial`, `history-filter.test.tsx` in `parallel`. No record gives the pass, skip, and fail counts of these two files. Their results in that run are unverified.
+- From de82eccd to cc149d7a, `src/contracts/envelope.ts` and `tests/contracts/history-filter.test.tsx` changed (`git diff --stat`).
+- T064 stays open. Its tick needs a green full run that verifies both test files.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

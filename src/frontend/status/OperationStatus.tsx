@@ -320,12 +320,14 @@ const lineNode = (line: Line) => (
 const SUBMODULE_STEPS: Record<string, string> = { "fetch": "Fetching submodule", update: "Updating submodule" };
 
 // `requested`: the status bar holds a Cancel press for this operation (plan.md "Status area", Early Cancel).
+// The press cue covers only `accepted` and `running`, the states before the service reports a cancel state.
 function operationText(op: StatusOperation, worktreeRoot: string, head: Head | null, trusted: boolean, requested: boolean): Line {
   const [name, verb] = textsOf(op);
   const response = op.response;
   if (response === null) {
     const progress = op.progress;
-    if (requested || progress?.state === "cancel-requested") return { lead: "Cancel requested", tail: "" };
+    const cue = requested && (progress === null || progress.state === "accepted" || progress.state === "running");
+    if (cue || progress?.state === "cancel-requested") return { lead: "Cancel requested", tail: "" };
     if (op.running !== undefined) return { lead: op.running, tail: "" };
     const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
     const { rowIndex, rowCount } = progress?.counters ?? {};

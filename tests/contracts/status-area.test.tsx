@@ -887,13 +887,29 @@ describe("Cancel", () => {
     const op = running({ kind: "updateSubmodules" });
     const view = await mount({ operation: op, declinedFocus: () => double("history-row") });
     await view.update({ operation: { ...op, progress: progress(op, { state: "reconciling" }) } });
+    const reconciling = statusText();
     await click(button("Cancel"));
     await view.reply(0, viewReply("reconciling", { endProcesses: true }));
-    expect(statusText()).toBe("Cancel requested");
+    // The press cue covers only the time before the service reports a cancel state.
+    expect(statusText()).toBe(reconciling);
     await click(button("Cancel"));
     expect(cancels(view)).toEqual([SENT]);
     await view.update({ operation: respond(op, "canceled", { rows: [] }) });
     expect(document.activeElement === areaHeading()).toBe(true);
+  });
+
+  // 008 T071: a revert run sets `running` to "Checking the result…" for a `reconciling` event (Workbench.tsx `trackRevertRun`). SC-007 measures Cancel to that text.
+  test("T418: after a taken Cancel, a reconciling event shows its own text, not Cancel requested", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+    await click(button("Cancel"));
+    await view.reply(0, viewReply("cancel-requested"));
+    await view.update({ operation: { ...op, progress: progress(op, { state: "cancel-requested" }) } });
+    expect(statusText()).toBe("Cancel requested");
+    await view.update({ operation: { ...op, running: "Checking the result…", progress: progress(op, { state: "reconciling" }) } });
+    expect(statusText()).toBe("Checking the result…");
+    expect(cancels(view)).toEqual([SENT]);
   });
 
   test("T418: a held Cancel that is not sent before a canceled Update submodules outcome follows the declined rule", async () => {

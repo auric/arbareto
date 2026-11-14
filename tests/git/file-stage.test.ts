@@ -316,7 +316,7 @@ describe("candidate time and isolation (contract §4 \"Candidate time\")", () =>
 
 // T417, data-model §7: a Stage file takes `cancel` while the shell holds its `started` reply.
 describe("cancel while started waits (T417)", () => {
-  caseTest("T417", `T417: a Stage file cancel while started waits gives cancel-requested, and the marker reply ends the run canceled with no update-index process, the same index and working bytes, no candidate, and the frames started, ended, and resolved; the run consumed the approval, so a repeat answers with this operation`, SHELL, () => {
+  caseTest("T417", `T417: a Stage file cancel while started waits gives cancel-requested, and the marker reply ends the run canceled with no update-index process, the same index and working bytes, no candidate, and the frames started, ended, and resolved; the approval stays unused, so the same approval then stages once`, SHELL, () => {
     const hold = holdStarted();
     return withService({ name: "t417-file", onStarted: hold.onStarted }, async (service) => {
       const repo = repoOf(buildFileAccepted(gitPath(), "t417-file"));
@@ -336,10 +336,10 @@ describe("cancel while started waits (T417)", () => {
         repo: before,
         candidates: [],
       });
-      // Contract §2: a consumed approval answers a repeat with its operation, without an accepted event or a process.
       await nextTurn();
-      const repeat = await applyFile(service, repositoryId, c, "stage");
-      expect({ operationId: repeat.operationId, state: repeat.state, view: (repeat.result as { state?: string } | undefined)?.state }).toEqual({ operationId, state: "succeeded", view: "canceled" });
+      const again = await applyFile(service, repositoryId, c, "stage");
+      const expected = gitText(repo, ["hash-object", "--", "binary.dat"]).trim();
+      expect({ other: again.operationId !== operationId, ...outcome(again), oid: repoState(repo).entries.find((e) => e.path === "binary.dat")?.oid }).toEqual({ other: true, ...SUCCEEDED, oid: expected });
     });
   }, TIMEOUT_MS);
 });

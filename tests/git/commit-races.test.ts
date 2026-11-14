@@ -270,11 +270,12 @@ describe("cancel while started waits (T417)", () => {
       const { operationId, cancel } = await cancelHeld(service, hold);
       const canceled = await service.response(requestId);
       await until(() => mutationFrames(service, operationId).includes("resolved"), "resolved frame");
-      expect({ ...outcome(canceled), ...heldFacts(service, operationId, cancel), frames: mutationFrames(service, operationId), commits: commitCalls(service).length, lock: existsSync(gitPathOf(repo, "index.lock")), repo: repoState(repo) }).toEqual({
+      expect({ ...outcome(canceled), ...heldFacts(service, operationId, cancel), frames: mutationFrames(service, operationId), runs: service.runner.calls.filter((c) => c.operationId === operationId).length, commits: commitCalls(service).length, lock: existsSync(gitPathOf(repo, "index.lock")), repo: repoState(repo) }).toEqual({
         state: "canceled",
         code: "CANCELED",
         ...CANCELED_BEFORE_MARKER,
         frames: ["started", "ended", "resolved"],
+        runs: 0,
         commits: 0,
         lock: false,
         repo: before,

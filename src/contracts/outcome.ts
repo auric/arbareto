@@ -106,6 +106,7 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
 
   switch (snapshot.state) {
     case "accepted":
+      if (event.type === "cancel" && mutation) return next("cancel-requested", {}, ["signal-owned-processes"]);
       if (event.type === "valid-read" && !mutation) return next("running");
       if (event.type === "marker-recorded" && mutation) return next("running");
       if (event.type === "marker-refused" && mutation && (event.code === "BUSY" || event.code === "RECOVERY_MARKER_FAILED")) {
@@ -160,6 +161,11 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
       break;
 
     case "cancel-requested":
+      // A mutation canceled in `accepted` waits for the `started` reply. A marker keeps the cancel. Every other result takes its `accepted` row.
+      if (mutation && event.type === "marker-recorded") return next("cancel-requested");
+      if (mutation && (event.type === "marker-refused" || event.type === "exclusion-unavailable" || event.type === "invalid-approval" || event.type === "started-deadline")) {
+        return transition({ ...snapshot, state: "accepted" }, event);
+      }
       if (event.type === "revoke-trust" && mutation) return next("cancel-requested", { endProcesses: true });
       if (mutation && (event.type === "processes-stopped" || event.type === "cancel-deadline")) {
         const count = ended ? 0 : (event.lingeringDescendants ?? snapshot.lingeringDescendants);

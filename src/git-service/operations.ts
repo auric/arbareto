@@ -120,11 +120,13 @@ export function createOperationRegistry(
       return found && { ...found.view };
     },
 
-    // Data-model §7 has a cancel row only for `running` and `reconciling`. Other states stay unchanged.
+    // Data-model §7 has a cancel row for `running`, `reconciling`, and a mutation in `accepted`. Other states stay unchanged.
+    // A read applies `valid-read` in the turn of `start`, so no `cancel` finds a read in `accepted`.
     cancel(operationId: string): OperationView | undefined {
       const found = entries.get(operationId);
       if (!found) return undefined;
-      if (found.view.state === "running" || found.view.state === "reconciling") this.apply(operationId, { type: "cancel" });
+      const { state, operation } = found.view;
+      if (state === "running" || state === "reconciling" || (state === "accepted" && (MUTATIONS as readonly string[]).includes(operation))) this.apply(operationId, { type: "cancel" });
       return { ...found.view };
     },
   };

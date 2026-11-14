@@ -14,8 +14,8 @@ import { printOrigin } from "../origin";
 import { faGit, write } from "./file-actions-fixtures";
 import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
-import { copyRepo, gitPath, gitPathOf, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, withService } from "./hunk-harness";
-import { caseTest, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { copyRepo, gitPath, gitPathOf, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, withService } from "./hunk-harness";
+import { cancelHeld, CANCELED_BEFORE_MARKER, caseTest, heldFacts, holdStarted, nextTurn, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 for (const module of ["revert", "workbench-review", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 useFixtureRoot();
@@ -385,4 +385,34 @@ describe("revert all unstaged changes: Cancel and the per-file outcomes (plan.md
     }),
     TIMEOUT_MS,
   );
+
+  // T417, 001 data-model §7: the run takes `cancel` while the shell holds its `started` reply. Contract §2: a run that ends before the consumption leaves the token to a later run.
+  caseTest("T417", "T417: a revert run cancel while started waits gives cancel-requested, and the marker reply ends the run canceled with no fileReplace call, the same index and working bytes, and the frames started, ended, and resolved; the token then runs once more", SHELL, () => {
+    const hold = holdStarted();
+    return withService({ name: "t417-revert", onStarted: hold.onStarted }, async (service) => {
+      const paths = ["a.txt", "b.txt"];
+      const repo = build("t417", { "a.txt": "a\n", "b.txt": "b\n" }, (r) => {
+        for (const path of paths) write(r, path, `${path} changed\n`);
+      });
+      const oracle = restored(repo);
+      const { r, read } = await open(service, repo);
+      const reviewed = await reviewOk(service, r, read);
+      const before = state(repo);
+      const requestId = sendRun(service, r, reviewed.workbenchToken);
+      const { operationId, cancel } = await cancelHeld(service, hold);
+      const canceled = await service.response<RevertRun>(requestId);
+      await until(() => mutationFrames(service, operationId).includes("resolved"), "resolved frame");
+      expect({ ...outcome(canceled), ...heldFacts(service, operationId, cancel), frames: mutationFrames(service, operationId), replaces: frames(service, "fileReplace").length, ...state(repo) }).toEqual({
+        state: "canceled",
+        code: "CANCELED",
+        ...CANCELED_BEFORE_MARKER,
+        frames: ["started", "ended", "resolved"],
+        replaces: 0,
+        ...before,
+      });
+      await nextTurn();
+      const done = await run(service, r, reviewed.workbenchToken);
+      expect({ ...outcome(done), files: workingFileDigests(repo) }).toEqual({ ...SUCCEEDED, files: oracle });
+    });
+  }, TIMEOUT_MS);
 });

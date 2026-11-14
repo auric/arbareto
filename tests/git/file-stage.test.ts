@@ -10,8 +10,8 @@ import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF02, buildF04, buildF04Stage, buildF06, buildF07, buildF16StageInput, buildF17, buildFileAccepted, F04_BLOB_PROOFS, put, type Built, type F04StageVariant, type F04Variant } from "./fixtures";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
-import { approve, candidateFiles, compare, copyRepo, git, gitDirOf, gitPath, gitText, outcome, repoOf, repoState, subcommand, SUCCEEDED, TIMEOUT_MS, valuesOf, withService, type Comparison, type Direction } from "./hunk-harness";
-import { caseTest, type Capability, type ChangeEntry, type Envelope, type Service, type ServiceResponse } from "./service-harness";
+import { approve, candidateFiles, compare, copyRepo, git, gitDirOf, gitPath, gitText, mutationFrames, outcome, repoOf, repoState, subcommand, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService, type Comparison, type Direction } from "./hunk-harness";
+import { cancelHeld, CANCELED_BEFORE_MARKER, caseTest, heldFacts, holdStarted, nextTurn, type Capability, type ChangeEntry, type Envelope, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T196";
 const SHELL: Capability[] = ["shell-double"];
@@ -312,4 +312,34 @@ describe("candidate time and isolation (contract §4 \"Candidate time\")", () =>
     }),
     LONG_TIMEOUT_MS,
   );
+});
+
+// T417, data-model §7: a Stage file takes `cancel` while the shell holds its `started` reply.
+describe("cancel while started waits (T417)", () => {
+  caseTest("T417", `T417: a Stage file cancel while started waits gives cancel-requested, and the marker reply ends the run canceled with no update-index process, the same index and working bytes, no candidate, and the frames started, ended, and resolved; the run consumed the approval, so a repeat answers with this operation`, SHELL, () => {
+    const hold = holdStarted();
+    return withService({ name: "t417-file", onStarted: hold.onStarted }, async (service) => {
+      const repo = repoOf(buildFileAccepted(gitPath(), "t417-file"));
+      await underTest();
+      const { repositoryId } = await service.register(repo);
+      const c = await compare(service, repositoryId, "binary.dat", "unstaged");
+      const before = repoState(repo);
+      const requestId = service.send("applyFile", { comparisonId: c.comparisonId, snapshotId: c.read.snapshotId, direction: "stage" }, { repositoryId, repositoryGeneration: c.read.generation });
+      const { operationId, cancel } = await cancelHeld(service, hold);
+      const canceled = await service.response(requestId);
+      await until(() => mutationFrames(service, operationId).includes("resolved"), "resolved frame");
+      expect({ ...outcome(canceled), ...heldFacts(service, operationId, cancel), frames: mutationFrames(service, operationId), repo: repoState(repo), candidates: candidateFiles(repo) }).toEqual({
+        state: "canceled",
+        code: "CANCELED",
+        ...CANCELED_BEFORE_MARKER,
+        frames: ["started", "ended", "resolved"],
+        repo: before,
+        candidates: [],
+      });
+      // Contract §2: a consumed approval answers a repeat with its operation, without an accepted event or a process.
+      await nextTurn();
+      const repeat = await applyFile(service, repositoryId, c, "stage");
+      expect({ operationId: repeat.operationId, state: repeat.state, view: (repeat.result as { state?: string } | undefined)?.state }).toEqual({ operationId, state: "succeeded", view: "canceled" });
+    });
+  }, TIMEOUT_MS);
 });

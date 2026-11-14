@@ -36,7 +36,7 @@ import {
   withService,
 } from "./hunk-harness";
 import { buildFetchFlags } from "./remote-fixtures";
-import { caseTest, NO_TOTAL_DEADLINE_WAIT_MS, once, withFsCalls, withKeptWorkspaces, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
+import { cancelHeld, CANCELED_BEFORE_MARKER, caseTest, heldFacts, holdStarted, nextTurn, NO_TOTAL_DEADLINE_WAIT_MS, once, withFsCalls, withKeptWorkspaces, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
 import { callsFrom, gitExe, hostFor, native, register, reviewed as syncReviewed, subcommandOf, sync, withSync } from "./sync-harness";
 import { buildWorkbench } from "./workbench-fixtures";
 import {
@@ -324,6 +324,45 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
       expect(resultOf(await service.response(requestId), "mid/leaf").found).toBe(true);
     });
   });
+});
+
+// T417, data-model §7: Update submodules takes `cancel` while the shell holds its `started` reply.
+describe("cancel while started waits (T417)", () => {
+  caseTest("T417", `T417: F27 base: an Update submodules cancel while started waits gives cancel-requested, and the marker reply ends the run canceled with no update process, the same submodule state and superproject index, and the frames started, ended, and resolved; the same review then updates`, SHELL, () => {
+    const name = "t417-update";
+    const b = buildF27(gitPath(), name, "base");
+    const sup = superOf(b);
+    const submodules = stateOf(b);
+    const index = rawIndexDigest(gitPath(), sup);
+    const files = workingFileDigests(sup);
+    const hold = holdStarted();
+    return withFixture(
+      b,
+      name,
+      async (service) => {
+        await update();
+        const { repositoryId, r } = await reviewedOk(service, sup);
+        const from = service.runner.calls.length;
+        const requestId = sendUpdate(service, repositoryId, r);
+        const { operationId, cancel } = await cancelHeld(service, hold);
+        const canceled = await service.response(requestId);
+        await until(() => mutationFrames(service, operationId).includes("resolved"), "resolved frame");
+        expect({ ...outcome(canceled), ...heldFacts(service, operationId, cancel), steps: updateSteps(service, from).length, frames: mutationFrames(service, operationId), submodules: stateOf(b), index: rawIndexDigest(gitPath(), sup), files: workingFileDigests(sup) }).toEqual({
+          state: "canceled",
+          code: "CANCELED",
+          ...CANCELED_BEFORE_MARKER,
+          steps: 0,
+          frames: ["started", "ended", "resolved"],
+          submodules,
+          index,
+          files,
+        });
+        await nextTurn();
+        expect(outcome(await updateSubmodules(service, repositoryId, r))).toEqual(SUCCEEDED);
+      },
+      { onStarted: hold.onStarted },
+    );
+  }, TIMEOUT_MS);
 });
 
 describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {

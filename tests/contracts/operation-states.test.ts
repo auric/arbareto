@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
+import { MUTATIONS } from "../../src/contracts/operations";
 import { transition, workspaceTransition } from "../../src/contracts/outcome";
 
 printOrigin("../../src/contracts/outcome.ts", import.meta.dir);
@@ -291,6 +292,52 @@ describe("cancel-requested", () => {
       ["close-job", "refresh-state"],
     );
     expect(result.reason).toBeUndefined();
+  });
+});
+
+// T417: a mutation takes `cancel` in `accepted`. The `started` reply decides the next step (data-model §7).
+describe("cancel in accepted (T417)", () => {
+  const mutations = MUTATIONS.map((operation): [string] => [operation]);
+
+  test.each(mutations)("T417: an accepted %s takes cancel and becomes cancel-requested with signal-owned-processes", (operation) => {
+    const result = expectStep({ operation, state: "accepted" }, { type: "cancel" }, { state: "cancel-requested" });
+    expect({ actions: result.actions, code: result.code ?? null }).toEqual({ actions: ["signal-owned-processes"], code: null });
+  });
+
+  test("T417: an accepted read has no cancel row", () => {
+    expect(() => step({ operation: READ, state: "accepted" }, { type: "cancel" })).toThrow();
+  });
+
+  test.each(mutations)("T417: after a cancel in accepted, marker-recorded keeps %s cancel-requested, and the run reaches canceled through processes-stopped, reconciling, and no-effects", (operation) => {
+    const canceled = { operation, ...step({ operation, state: "accepted" }, { type: "cancel" }) } as Snapshot;
+    const marked = expectStep(canceled, { type: "marker-recorded" }, { state: "cancel-requested" });
+    expect(marked.actions).toEqual([]);
+    const stopped = { operation, ...expectStep({ operation, ...marked } as Snapshot, { type: "processes-stopped", lingeringDescendants: 0 }, { state: "reconciling" }) } as Snapshot;
+    expectStep(stopped, { type: "no-effects", observed: "canceled" }, { state: "canceled", code: "CANCELED" });
+  });
+
+  // Each `started` result other than the marker, and each refusal before it, keeps its `accepted` result.
+  const REFUSALS: [Event, Record<string, unknown>][] = [
+    [{ type: "marker-refused", code: "BUSY" }, { state: "rejected", code: "BUSY" }],
+    [{ type: "marker-refused", code: "RECOVERY_MARKER_FAILED" }, { state: "rejected", code: "RECOVERY_MARKER_FAILED" }],
+    [{ type: "exclusion-unavailable", code: "BUSY" }, { state: "rejected", code: "BUSY" }],
+    [{ type: "exclusion-unavailable", code: "GIT_FAILED" }, { state: "rejected", code: "GIT_FAILED" }],
+    [{ type: "invalid-approval", code: "CANCELED" }, { state: "rejected", code: "CANCELED" }],
+    [{ type: "invalid-approval", code: "STALE_REVIEW" }, { state: "rejected", code: "STALE_REVIEW" }],
+    [{ type: "started-deadline" }, { state: "failed", code: "DEADLINE", cause: "DEADLINE", reason: "deadline" }],
+  ];
+  for (const operation of MUTATIONS) {
+    test.each(REFUSALS)(`T417: after a cancel in accepted, ${operation} takes %j with the accepted result %j`, (event, expected) => {
+      const canceled = { operation, ...step({ operation, state: "accepted" }, { type: "cancel" }) } as Snapshot;
+      const result = expectStep(canceled, event, expected);
+      expect(result).toEqual(step({ operation, state: "accepted" }, event));
+    });
+  }
+
+  test("T417: a read in cancel-requested has no marker-recorded row and no started result row", () => {
+    for (const event of [{ type: "marker-recorded" }, ...REFUSALS.map(([e]) => e)] as Event[]) {
+      expect(() => step({ operation: READ, state: "cancel-requested" }, event)).toThrow();
+    }
   });
 });
 

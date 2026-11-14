@@ -30,8 +30,8 @@ export type FakeOptions = {
   shallow?: boolean;
   /** The match rule of the search. */
   matches?: (i: number) => boolean;
-  /** Hold load and search responses until `release` or a cancel. */
-  hold?: { load?: boolean; search?: boolean };
+  /** Hold load and search responses until `release` or a cancel. `accepted` holds the `accepted` event of a search until `accept`. */
+  hold?: { load?: boolean; search?: boolean; accepted?: boolean };
   /** The cell of a row. */
   cell?: (i: number) => ViewRow["cell"];
   /** All reduced parents of a filter row. The default is the next match below row i, in the linear history of the fake. */
@@ -55,6 +55,7 @@ export function createFake(options: FakeOptions) {
   let operations = 0;
   let viewId = "";
   let searchDone = false;
+  let accepted: (() => void) | null = null;
   // Contract Δ3: the `searchId` of the running or finished search. A cancel, a failure, a `limited` end, a newer search, `closeHistory`, and a view release end it.
   let liveSearch: string | null = null;
   // Contract Δ3: a match read waits while the search of the view runs.
@@ -235,7 +236,9 @@ export function createFake(options: FakeOptions) {
       const checked = filterText(payload.text, FILTER_TEXT_BYTES);
       if (checked.kind !== "search") return later({ requestId: "r", operationId, state: "rejected", code: "UNSUPPORTED_FILTER_TEXT", result: checked.kind === "refused" ? { reason: checked.reason } : {} });
       liveSearch = operationId;
-      onProgress?.({ requestId: "r", operationId, state: "accepted", counters: { matches: 0, settled: 0 } });
+      const accept = () => onProgress?.({ requestId: "r", operationId, state: "accepted", counters: { matches: 0, settled: 0 } });
+      if (options.hold?.accepted) accepted = accept;
+      else accept();
       const custom = options.searchResponse?.(payload.text);
       if (custom) {
         if (custom.state !== "succeeded") liveSearch = null;
@@ -279,6 +282,12 @@ export function createFake(options: FakeOptions) {
       next?.resolve(next.result());
     },
     held: () => held.length,
+    /** Sends the held `accepted` event of the last search. */
+    accept() {
+      const next = accepted;
+      accepted = null;
+      next?.();
+    },
     /** Sends a `history-load` progress event of the oldest held response. The view then serves `rows` rows (contract Δ3). */
     progress(rows: number) {
       const next = held[0]!;

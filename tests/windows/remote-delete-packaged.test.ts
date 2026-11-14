@@ -76,9 +76,11 @@ async function press(c: Cdp, name: string, modifiers = 0): Promise<void> {
 }
 
 const js = (value: unknown) => JSON.stringify(value);
+// The IPC log of each session page.
+const ipcOf = new WeakMap<Cdp, IpcLog>();
 async function until<T>(c: Cdp, what: string, expression: string, done: (value: T) => boolean, ms = KEY_WAIT_MS): Promise<T> {
   const value = await c.poll<T>(expression, done, ms);
-  if (!done(value)) throw new Error(`${what} did not happen within ${ms} ms: ${js(value)} ${js(await c.evaluate<unknown>(FACTS).catch((e) => String(e)))}`);
+  if (!done(value)) throw new Error(`${what} did not happen within ${ms} ms: ${js(value)} ${js(await c.evaluate<unknown>(FACTS).catch((e) => String(e)))} pending read_branches=${js(ipcOf.get(c)?.pending("read_branches") ?? null)}`);
   return value;
 }
 // The page waits for the end of every running animation, then for one frame. A closed Base UI popup stays in the DOM until its exit animation ends.
@@ -103,6 +105,8 @@ const remoteRow = (tracking: string) => treeRow(`n === ${js(remoteRowName(tracki
 // A local row name continues with the upstream and the track label (ReferencesSidebar.tsx `name`).
 const localRowEl = (branch: string) => treeRow(`n === ${js(`${branch}, ${LOCAL_NOUN}`)} || n.startsWith(${js(`${branch}, ${LOCAL_NOUN}, `)})`);
 const groupRow = (prefix: string) => treeRow(`n.startsWith(${js(prefix)})`);
+// ReferencesSidebar.tsx sets `aria-haspopup="menu"` on a row that is not current only when the row has its branch actions.
+const ROW_ACTIONS = `[${remoteRow(`${REMOTE}/topic`)}, ${localRowEl("feature")}].map((r) => (r === undefined ? 'no row' : r.getAttribute('aria-haspopup')))`;
 const inside = `const inside = (b) => b.left >= 0 && b.top >= 0 && b.right <= innerWidth && b.bottom <= innerHeight;`;
 
 const FACTS = `(() => {
@@ -113,6 +117,7 @@ const FACTS = `(() => {
     status: text(document.querySelector('[data-slot=status-region] footer')),
     menus: [...document.querySelectorAll('[role=menu]')].map((m) => m.getAttribute('aria-label') + ': ' + text(m)),
     dialogs: [...document.querySelectorAll('[role=alertdialog],[role=dialog]')].map(text),
+    rowActions: ${ROW_ACTIONS},
   };
 })()`;
 
@@ -300,6 +305,7 @@ describe.skipIf(process.platform !== "win32")("T019 packaged remote branch delet
     const c = await connectPage(port, MAX_WAIT_MS);
     sockets.add(c);
     const ipc = await watchIpc(c);
+    ipcOf.set(c, ipc);
     await uia(app.pid, "Use this Git", undefined, invoke);
     await uia(app.pid, OPEN_FOLDER, undefined, invoke);
     await uia(app.pid, "Folder:", ControlType.Edit, (field) => setValue(field, w.repo));
@@ -314,6 +320,8 @@ describe.skipIf(process.platform !== "win32")("T019 packaged remote branch delet
     await until<boolean>(c, "the History rows", `document.querySelector('[data-view="history"]')?.hidden === false && ${headRow} === ${js(rev(w.repo, "HEAD"))}`, (v) => v, ACTION_WAIT_MS);
     const s = { app, c, ipc, w };
     await showRemotes(s);
+    // The rows render from `readRefs`. Their actions need the `readBranches` entries (Workbench.tsx `onBranchAction`).
+    await until<(string | null)[]>(c, "the branch rows with actions", ROW_ACTIONS, (v) => v.every((a) => a === "menu"), ACTION_WAIT_MS);
     return s;
   }
   async function end(s: Session): Promise<void> {

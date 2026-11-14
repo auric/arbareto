@@ -1216,3 +1216,11 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - Skip, class machine: "T164 (10) at 225%" of `submodule-tree-packaged.test.ts` ("missing capability text-scale-225"). The Windows text size was 100%. T164 stays open.
 - The T144 file printed `SKIP T144 screenshots: ARBARETO_TREE_SHOTS_DIR is not set`. This is a log line, not a skipped case. The run wrote no T144 screenshot.
 - The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
+
+## R32 Review finding M1: Blame focus after a skipped click (2026-11-13)
+
+- Source: the review of the v0.1.2 code (T174), 2026-11-13. Code read, not run.
+- Location: the `click` handler of the line events in `src/frontend/blame/BlameView.tsx` (b4a70d35).
+- Case: a click on a row with a non-collapsed selection skips the line selection. The handler then focuses the `aria-selected` line through `elements.current`. In a virtual list, that line can be outside the rendered rows. Then no element exists, and the focus stays on the clicked row.
+- A call to `select(line)` scrolls the list. The scroll can unmount the clicked row, so the text selection collapses.
+- Follow-up: T175, after v0.1.2. plan.md D15 "Text selection" records the known limit.

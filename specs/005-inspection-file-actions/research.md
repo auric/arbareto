@@ -313,7 +313,7 @@ WP3 (T012 to T015), review of 709d32c, fixes in 820ea90. No path deletes outside
 - Medium: no test covered the Recycle Bin mode. Fix: ignored cargo tests for N1, N3, N4, N9, and N11, run on demand, that purge only their own items.
 - Medium: the `stopped` reply was ambiguous. Fix: `stopped` for a whole Windows request without a change, `interrupted` for a WSL outcome that is not known.
 - Low: unrelated folder trees refuse; the lock stays held during the shadow removal; a name lookup failure gives `error`; a replace that never started gives `stopped`.
-- Text: contract Δ10 and plan D14 "Allowlist" state that the service builds the arrays (001 §6).
+- Text: contract Δ10 and plan D14 "Commands" state that the service builds the arrays (001 §6).
 - Follow-ups: a broken WSL `replace` output gives `interrupted`; the shadow-create sweep removes leftovers outside the state lock.
 
 WP4 (T016 to T026), review of ce6dfa0, fixes in 3d6c5e3. No heuristic, and no read runs a repository program in an untrusted repository.
@@ -590,6 +590,13 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - WSL Ubuntu-26.04, current route: 20 submodules 3,431 ms, 100 submodules 14,649 ms. `DEADLINE` states: 0 in 10 runs at each size.
 - R18 "Cost" records the same times.
 
+*T108 and T111 full run f013, run 2026-11-13/14.* Full run f013 ran on b4a70d35. The logs are in local scratch. The ORIGIN lines name the run checkout at b4a70d35.
+- `bun run test:all` exited 0: 10,288 pass, 56 skip, 0 fail, 10,344 tests in 306 files. Each of the 33 `tests/windows` files ran as its own `bun test ./tests/windows/<file>` step.
+- Installer SHA-256: 92c79f7a45a9970f5f6423efbf2586e39cd3a3915a95b853307c474c00d6946d. Installed app SHA-256: 5383f1f7577fa6181a22c1fc151a69ace61f5e13eba64cdd12512d2b88b9d5a9. The packaged ORIGIN lines name this app SHA-256.
+- Step `s5-inspection-packaged` (`inspection-packaged.test.ts`) passed 11/0. Step `s5-inspection-perf` (`inspection-perf.test.ts`) passed 9/0.
+- T108: 256 clean submodules, the Changes list to the last mark, median 8,586.4 ms (bound 14,080 ms).
+- Three other steps failed: `s5-commit-menu-perf`, `s5-remote-delete-packaged`, and `s5-revert-perf`, one case each. These steps run other files and are not related to T108 and T111.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.
@@ -655,7 +662,7 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
   - Status does not stop early: Git collects the whole status before it prints the first record (Git builtin/commit.c:1655 collect, :1663 print). The stop after one tracked and one untracked record saves only output, not Git work.
   - No cheap authoritative "changed?" signal exists for a submodule. A stat or mtime check would be a heuristic, so the read runs the full status for each target.
   - Git Extensions (GPL-3.0, ideas only, commit d77a4f07): the parent status runs without `--ignore-submodules`, so submodule fsmonitor and filter programs run. Then one `git diff` runs per changed submodule, one at a time, in the background, at most every 15 s. It parses the English "-dirty" text. Arbareto takes none of these steps.
-- Orchestrator decisions of 2026-10-31, from this study: 8 at the same time (`SUBMODULE_WORK_PARALLEL`). SC-012 on Windows: at most 45 ms per clean submodule (39.6 ms measured at 8 at a time, plus a margin), so 4.5 s for 100 and 11.5 s for 256. The "Packaged cost" decision below replaces this value. WSL keeps the current route in v0.1.0 with no budget, and a target past the 30 s deadline gives `failed` with `DEADLINE`. After the release, T114 gives pages of 16 (first marks in about 0.78 s, estimated as 16 × 48.9 ms from "Packaged cost" below, as plan.md D19 "First mark" states), and T115 adds the WSL script `submoduleWork`.
+- Orchestrator decisions of 2026-10-31, from this study: 8 at the same time (`SUBMODULE_WORK_PARALLEL`). SC-012 on Windows: at most 45 ms per clean submodule (39.6 ms measured at 8 at a time, plus a margin), so 4.5 s for 100 and 11.5 s for 256. The "Packaged cost" decision below replaces this value. WSL keeps the current route in v0.1.0 with no budget, and a target past the 30 s deadline gives `failed` with `DEADLINE`. After the release, T114 gives pages of 16 (the 16 targets of page 0 cost about 0.78 s, estimated as 16 × 48.9 ms from "Packaged cost" below, as plan.md D19 "First mark" states), and T115 adds the WSL script `submoduleWork`.
 
 **Packaged cost (investigator reports of 2026-10-31, local scratch `inv-perf-1031` and `inv-pkg-1031`)**
 
@@ -664,8 +671,8 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
 - Preview before the speed fix: 7 serial steps. These are the read gate, the file facts, `kindOf`, check 5 `--show-toplevel`, the two `cat-file -e`, `rev-list`, and the two `log`. The in-process service took a median of 291.5 ms for 20 runs (measured).
 - Some runs stall in one process for about 120 ms (measured: 413.8 ms and 420.2 ms against a median of 291.5 ms). The cause is unknown. T116 splits it.
 - Speed fix of 2026-10-31 (plan.md D19 "Order"): 4 serial steps. `kindOf` runs beside check 5. `rev-list` and the two `log` run together. The two `cat-file -e` run only after a failed `rev-list`, so `missing` still comes only from their exit code. Each check and its order stay.
-- Orchestrator decisions of 2026-10-31, from these measurements: the marks budget is 55 ms per clean submodule on Windows (5.5 s for 100, 14.08 s for 256). The first preview budget was 350 ms. The rerun below replaces it.
-- Packaged rerun on 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031b`), warm, median of 10. History preview 345.4 ms, Changes preview 376.1 ms. The runs fall into two groups: about 215 ms to 250 ms and about 330 ms to 384 ms, with one first run of 669 ms. The gap matches the stall of about 120 ms in one Git process (above). Orchestrator decision 2026-10-31: the preview budget is 400 ms, the worst packaged median of 376.1 ms plus a margin. It replaces 350 ms. T116 splits the stall after the v0.1.0 release.
+- Orchestrator decisions of 2026-10-31, from these measurements: the marks budget is 55 ms per clean submodule on Windows (5.5 s for 100, 14.08 s for 256). The user approved this budget on 2026-11-13. The first preview budget was 350 ms. The rerun below replaces it.
+- Packaged rerun on 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031b`), warm, median of 10. History preview 345.4 ms, Changes preview 376.1 ms. The runs fall into two groups: about 215 ms to 250 ms and about 330 ms to 384 ms, with one first run of 669 ms. The gap matches the stall of about 120 ms in one Git process (above). Orchestrator decision 2026-10-31: the preview budget is 400 ms, the worst packaged median of 376.1 ms plus a margin. It replaces 350 ms. The user approved these budgets on 2026-11-13. T116 splits the stall after the v0.1.0 release.
 - T111 packaged rerun on 35a130d1 against the package of 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031c`), warm, median of 10. Changes preview 287.3 ms, History preview 214.6 ms, budget 400 ms. Both cases pass. The control with a budget of 1 ms failed both cases on the time bound.
 
 **Git Extensions (GPL-3.0, ideas only; investigator report of 2026-10-30)**

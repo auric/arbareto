@@ -19,7 +19,7 @@ import { GIT } from "../git/git-binary";
 import { sha256 } from "../git/git-oracle";
 import { printOrigin } from "../origin";
 import { inDistro, missingCapability, uncPath, useWslFolder, wslExec, wslHost } from "../wsl/wsl-host";
-import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
+import { connectPage, freePort, holdIpc, MOD, watchIpc, type Cdp, type IpcCall, type IpcLog, type IpcTiming } from "./cdp";
 import { appEnv, COMMIT_VIEW, descendants, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, SETTLED, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { applyRevertChanges, ensureRevertFixture, RV_BINARY, RV_BOTH, RV_SMALL, RV_TEXT, rvBinary, rvBothPath, rvSmall, rvSmallPath, rvText } from "./revert-fixtures";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
@@ -98,6 +98,8 @@ const NO_HUNK = "No hunk is selected.";
 // src/frontend/changes/PatchView.tsx annotation text.
 const SELECTED_HUNK = "Selected hunk";
 const REVERTING = "Reverting ";
+// src/frontend/changes/revert-text.ts `REVERT_RECONCILING` (008 T071).
+const RECONCILING = "Checking the result…";
 // src/frontend/commit/CommitTray.tsx.
 const MESSAGE = "Commit message";
 // src/frontend/changes/ChangesPane.tsx layout buttons.
@@ -207,6 +209,7 @@ const FACTS = `(() => {
     heading: document.querySelector('[data-section=comparison] h2')?.getAttribute('aria-label') ?? null,
     lineAction: [...document.querySelectorAll('[data-section=comparison] [data-slot=line-action]')].map((b) => text(b) + (b.disabled ? ' (disabled)' : '')),
     rows: [...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].slice(0, 4).map((r) => r.getAttribute('aria-label') + (r.getAttribute('aria-selected') === 'true' ? ' (selected)' : '')),
+    area: [...(document.querySelector('[data-slot=status-area]')?.querySelectorAll('h2, p, pre, code.block') ?? [])].map(text),
   };
 })()`;
 // A check is one JavaScript expression. A fragment that does not parse fails the whole CDP evaluate, so each check parses in Bun first.
@@ -432,12 +435,12 @@ function streamedCopyMiBps(dir: string, mib: number): { mib: number; ms: number;
 // ---- Run replies and the W9 outcome ----
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RunReply = { state: string; code?: string; result?: { files?: FileOutcome[] } };
+type RunReply = { state: string; code?: string; operationId?: string; result?: { files?: FileOutcome[] } };
 // `old` is the SHA-256 of the working bytes before the run.
 type Target = { path: string; old: string };
 
-async function runReply(ipc: IpcLog, before: number): Promise<RunReply> {
-  const calls = await ipc.wait("run_workbench", before + 1, STEP_LIMIT_MS);
+async function runReply(ipc: IpcLog, before: number, ms = STEP_LIMIT_MS): Promise<RunReply> {
+  const calls = await ipc.wait("run_workbench", before + 1, ms);
   return ipc.body<RunReply>(calls[before]!);
 }
 // Probe W9 (research.md R15): `failed`, each missed file `error` with `access-denied`, and exactly that many targets keep their old bytes.
@@ -580,24 +583,28 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     await press(c, "x");
   };
 
+  // Contract §1 "Renderer request body": the `payload` of the JSON request of a call.
+  async function payloadOf<T>(s: Session, call: IpcCall): Promise<T | undefined> {
+    const { postData, base64Encoded } = (await s.c.send("Network.getRequestPostData", { requestId: call.requestId })) as { postData: string; base64Encoded?: boolean };
+    return (JSON.parse(Buffer.from(postData, base64Encoded ? "base64" : "utf8").toString("utf8")) as { payload?: T }).payload;
+  }
+  async function replied(call: IpcTiming, what: string): Promise<void> {
+    for (const end = performance.now() + STEP_LIMIT_MS; call.end === null; await Bun.sleep(IDLE_POLL_MS)) if (performance.now() >= end) throw new Error(`${what}: no reply within ${STEP_LIMIT_MS} ms`);
+  }
+
   // Contract §2: the page calls `currentSession` only at load and after a `service-session` event. So a later reply marks a service restart.
   const F5_TRACE = ["read_workspace", "current_session", "restore_workspace"] as const;
   // The facts after F5 in reply arrival order. It prints request flags, reply summary fields, and page status texts, never file contents. The Remote sync text can hold fixture branch names.
   async function f5Trace(s: Session, from: Record<string, number>): Promise<string> {
-    type Sent = { payload?: { refresh?: unknown; check?: unknown } };
+    type Sent = { refresh?: unknown; check?: unknown };
     type Reply = { state?: string; result?: { generation?: unknown; snapshotId?: unknown; readKind?: unknown; recoveryState?: unknown } };
     const ends = new Map(s.ipc.calls().map((t) => [t.requestId, t.end ?? Number.POSITIVE_INFINITY]));
     const calls = F5_TRACE.flatMap((command) => s.ipc.finished(command).slice(from[command])).sort((x, y) => ends.get(x.requestId)! - ends.get(y.requestId)!);
     const replies = await Promise.all(
       calls.map(async (call) => {
         if (call.command !== "read_workspace") return { command: call.command };
-        const request = await s.c
-          .send("Network.getRequestPostData", { requestId: call.requestId })
-          .then((post) => {
-            const { postData, base64Encoded } = post as { postData: string; base64Encoded?: boolean };
-            const sent = JSON.parse(Buffer.from(postData, base64Encoded ? "base64" : "utf8").toString("utf8")) as Sent;
-            return { refresh: sent.payload?.refresh, check: sent.payload?.check };
-          })
+        const request = await payloadOf<Sent>(s, call)
+          .then((sent) => ({ refresh: sent?.refresh, check: sent?.check }))
           .catch((e) => ({ requestError: (e as Error).message }));
         const reply = await s.ipc
           .body<Reply>(call)
@@ -616,9 +623,21 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   // Waits for the reviewed state after an external restore. F5 reads the workspace again.
   async function refreshed(s: Session, what: string, expression: string): Promise<void> {
     const from = Object.fromEntries(F5_TRACE.map((command) => [command, s.ipc.finished(command).length]));
+    const calls = s.ipc.calls();
+    let next = calls.length;
     await press(s.c, "F5");
     // A read can end during the F5 read with `recoveryState` `refreshing` or `reconciling`. R then refuses with that block reason, so the wait also needs `SETTLED`.
     try {
+      // requests.ts `refresh`: in these cases only F5 sends `readWorkspace` with `refresh: true`. So a call before index `next` cannot match, and no clock is needed.
+      // A frame before the reply of that read proves nothing: after a run without an effect, the counts before and after F5 are equal.
+      let f5: IpcTiming | undefined;
+      for (const end = performance.now() + STEP_LIMIT_MS; ; await Bun.sleep(IDLE_POLL_MS)) {
+        for (; f5 === undefined && next < calls.length; next++) if (calls[next]!.command === "read_workspace" && (await payloadOf<{ refresh?: unknown }>(s, calls[next]!))?.refresh === true) f5 = calls[next];
+        if (f5 !== undefined && f5.end !== null) break;
+        if (performance.now() >= end) throw new Error(`${what}: no refresh read_workspace reply after F5 within ${STEP_LIMIT_MS} ms`);
+      }
+      const reply = await s.ipc.body<{ state?: string; code?: string }>(f5);
+      if (reply.state !== "succeeded") throw new Error(`${what}: the F5 read gave ${js({ state: reply.state, code: reply.code })}`);
       await until<boolean>(s.c, what, `(${expression}) && ${SETTLED}`, (v) => v);
     } catch (e) {
       throw new Error(`${(e as Error).message} checks expression, settled: ${await facts(s.c, [expression, SETTLED])} after F5: ${await f5Trace(s, from)}`);
@@ -830,7 +849,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     let confirmMs = 0;
     if (probe) await probing(s.c, "the review of all unstaged changes", messageProbe(s.c), () => press(s.c, "Enter"), () => until<boolean>(s.c, "the review", reviewed, (v) => v));
     else [busyMs, confirmMs] = await timed(s.c, "menu-to-review", [busy, reviewed], () => press(s.c, "Enter"));
-    if (!(await s.c.evaluate<boolean>(`!!(${dialog})`))) throw new Error(`the review refused: ${await s.c.evaluate<string>(statusText)}`);
+    if (!(await s.c.evaluate<boolean>(`!!(${dialog})`))) throw new Error(`the review refused: ${await facts(s.c, [])}`);
     await focusOn(s.c, revertButton, "the revert button");
     const confirmAt = Date.now();
     let endMs = 0;
@@ -842,6 +861,19 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   // Only the 1,000 small files keep unstaged changes. The both files keep their staged change (git-checkout(1) `-- <pathspec>` copies the index).
   function onlySmall(repo: string): void {
     git(repo, ["--literal-pathspecs", "checkout", "--", "rv/a", "rv/b"]);
+  }
+  // Contract §3 `cancel`: exactly one `cancel` call at call index `from` or later names the run. Its reply view state `cancel-requested` shows that the service took it.
+  async function cancelTaken(s: Session, from: number, reply: RunReply, label: string): Promise<{ index: number; phase?: string }> {
+    const calls = s.ipc.calls();
+    const sent: { index: number; operationId: unknown }[] = [];
+    for (let i = from; i < calls.length; i++) if (calls[i]!.command === "cancel") sent.push({ index: i, operationId: (await payloadOf<{ operationId?: unknown }>(s, calls[i]!))?.operationId });
+    const mine = sent.filter((c) => c.operationId === reply.operationId);
+    if (reply.operationId === undefined || mine.length !== 1) throw new Error(`${label}: ${mine.length} cancel calls name the run ${js(reply.operationId)}; the cancel calls name ${js(sent.map((c) => c.operationId))}`);
+    const call = calls[mine[0]!.index]!;
+    await replied(call, `${label}: the cancel call`);
+    const body = await s.ipc.body<{ state?: string; code?: string; result?: { state?: string; phase?: string } }>(call);
+    if (body.state !== "succeeded" || body.result?.state !== "cancel-requested") throw new Error(`${label}: the cancel reply is ${js(body)}`);
+    return { index: mine[0]!.index, phase: body.result.phase };
   }
 
   test.skipIf(reason !== null)(
@@ -918,28 +950,66 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           await refreshed(s, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
         }
         const limitEnd = record("SC-007 Revert all unstaged changes of 10,000 files: the revert button to the end", ends, LIMIT_END_MS);
-        // Cancel after the first REVERT_PROGRESS line. A run that ends before the Cancel measures nothing and fails the case.
-        const cancels: number[] = [];
+        // Run 0 holds the run request, so its Cancel comes before the first progress event (001 T417, T418). Runs 1 to RUNS press Cancel after the first file write.
+        // The fallback "Reverting in <folder>…" and "Reverting 0 of 10,000…" both show before any write (OperationStatus.tsx `operationText`, revert.ts `revert-files`).
+        const writing = parses(`/^${REVERTING}[1-9][0-9,]* of ${n}…$/.test(${statusText})`);
+        const stopped = `${statusText} === ${js(RECONCILING)} || ${ended}`;
+        const index = git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).toString("utf8").trim();
+        const toStop: number[] = [];
+        const toEnd: number[] = [];
         for (let run = 0; run <= RUNS; run++) {
           step(`limit-cancel-run-${run}`);
+          const label = `Cancel run ${run}`;
           const before = s.ipc.finished("run_workbench").length;
           await focusOn(s.c, headerMore, MORE_ACTIONS);
           await press(s.c, "Enter");
           await enabledItem(s.c);
           await press(s.c, "Enter");
           await until<boolean>(s.c, "the review", reviewed, (v) => v);
+          if (!(await s.c.evaluate<boolean>(`!!(${dialog})`))) throw new Error(`the review refused: ${await facts(s.c, [])}`);
           await focusOn(s.c, revertButton, "the revert button");
-          await press(s.c, "Enter");
-          await until<boolean>(s.c, "the first progress", `${statusText}.startsWith(${js(REVERTING)})`, (v) => v);
-          await focusOn(s.c, cancelButton, "Cancel");
-          const [stopped] = await timed(s.c, "cancel-to-end", [ended], () => press(s.c, "Enter"));
-          const reply = await runReply(s.ipc, before);
-          if (reply.state !== "canceled") throw new Error(`the Cancel run gave ${reply.state}`);
-          if (run > 0) cancels.push(stopped!);
+          const from = s.ipc.calls().length;
+          if (run === 0) {
+            const indexBefore = sha256(readFileSync(index));
+            const cancels = s.ipc.finished("cancel").length;
+            const holding = holdIpc(s.c, s.ipc, "run_workbench", STEP_LIMIT_MS);
+            // Bun 1.4.4 fails the case at an unhandled rejection. The `await holding` below still gets the error.
+            holding.catch(() => {});
+            await press(s.c, "Enter");
+            const hold = await holding;
+            let released: number;
+            try {
+              await focusOn(s.c, cancelButton, "Cancel");
+              await press(s.c, "Enter");
+            } finally {
+              released = s.ipc.calls().length;
+              await hold.release();
+            }
+            await s.ipc.wait("cancel", cancels + 1, STEP_LIMIT_MS);
+            const reply = await runReply(s.ipc, before, LIMIT_RUN_MS);
+            const taken = await cancelTaken(s, from, reply, label);
+            console.log(`OBSERVATION ${TASK}: SC-007 Cancel before the first progress event: the cancel reply phase is ${taken.phase ?? "absent"}`);
+            const changed = targets.filter((t) => sha256(winRead(repo)(t.path)) !== t.old).map((t) => t.path);
+            // The held run has no `operationId` before the release, so a held press sends its `cancel` only after the release.
+            expect({ state: reply.state, sentAfterRelease: taken.index >= released, changed: changed.slice(0, 5), index: sha256(readFileSync(index)) }).toEqual({ state: "canceled", sentAfterRelease: true, changed: [], index: indexBefore });
+          } else {
+            await press(s.c, "Enter");
+            await until<boolean>(s.c, "a counted progress line", writing, (v) => v);
+            await focusOn(s.c, cancelButton, "Cancel");
+            const [stopMs, endMs] = await timed(s.c, "cancel-to-stop-and-end", [stopped, ended], () => press(s.c, "Enter"));
+            const reply = await runReply(s.ipc, before);
+            await cancelTaken(s, from, reply, label);
+            if (counted(label, reply, winRead(repo), targets, "failed-with-effects")) {
+              toStop.push(stopMs!);
+              toEnd.push(endMs!);
+            }
+          }
           restore();
           await refreshed(s, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
         }
-        const cancel = record("SC-007 Cancel of a 10,000-file run: Cancel to the end", cancels, CANCEL_MS);
+        const shown = toStop.filter((t, i) => t < toEnd[i]!).length;
+        record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to ${js(RECONCILING)} or the outcome, the text showed first in ${shown} runs`, toStop);
+        const cancel = record("SC-007 Cancel of a 10,000-file run during the writes: Cancel to the outcome", toEnd, CANCEL_MS);
         // Run 0 is the first revert after the app start. It has the first-run bounds; runs 1 to RUNS have the later-run bounds. A W9 run leaves its series.
         const firstRuns = bounded.filter((b) => b.run === 0);
         const laterRuns = bounded.filter((b) => b.run > 0);
@@ -957,7 +1027,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         await end(s);
       }
     },
-    caseTimeout(120, (RUNS + 2) * LIMIT_RUN_MS + (2 * RUNS + 4) * 3 * STEP_LIMIT_MS),
+    caseTimeout(120, (RUNS + 3) * LIMIT_RUN_MS + (2 * RUNS + 4) * 3 * STEP_LIMIT_MS + RUNS * STEP_LIMIT_MS),
   );
 
   test.skipIf(reason !== null)(

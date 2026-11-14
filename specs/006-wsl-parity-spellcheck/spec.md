@@ -213,8 +213,8 @@ This feature changes these requirements for builds that include it. The earlier 
 - **004 Edge Cases** (`specs/004-workbench-ux/spec.md:288`): "Only English words get marks." Each word gets checked against each selected dictionary of its Unicode Script (FR-004).
 - **004 Assumptions** (`specs/004-workbench-ux/spec.md:527`): "The dictionary source and its license are a plan decision." The source is decided (Clarifications). The licence rule is FR-015 (Clarifications).
 - **004 User Story 10 and SC-012** (`specs/004-workbench-ux/spec.md:224-238`, `:504`): This feature delivers them as User Story 1 and SC-001.
-- **004 tasks T077 to T080** (`specs/004-workbench-ux/tasks.md:282-285`) and **T103** (`specs/004-workbench-ux/tasks.md:436`): They move into this feature. The ignore half of T103 belongs to feature 005.
-- **004 task T081** (`specs/004-workbench-ux/tasks.md:295`): "The Q26 parts that research.md R21 lists under "Not covered yet on WSL", and Add worktree through the service on WSL (the T206 double has no WSL `worktreeAdd` route), move to feature 005." Feature 005 moved them on (005 spec.md:21). This feature delivers them (User Story 4).
+- **004 tasks T077 to T080** (`specs/004-workbench-ux/tasks.md:287-290`) and **T103** (`specs/004-workbench-ux/tasks.md:466`): They move into this feature. The ignore half of T103 belongs to feature 005.
+- **004 task T081** (`specs/004-workbench-ux/tasks.md:300`): "The Q26 parts that research.md R21 lists under "Not covered yet on WSL", and Add worktree through the service on WSL (the T206 double has no WSL `worktreeAdd` route), move to feature 005." Feature 005 moved them on (005 spec.md:21). This feature delivers them (User Story 4).
 - **004 research.md R20** (`specs/004-workbench-ux/research.md:168`): "Decision (proposed): `nspell` with `dictionary-en`, in the renderer." `dictionary-en` stays. Hunspell through `hunspell-wasm` replaces `nspell` (Clarifications, 2026-10-22).
 
 ### Functional Requirements

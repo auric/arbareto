@@ -313,7 +313,7 @@ WP3 (T012 to T015), review of 709d32c, fixes in 820ea90. No path deletes outside
 - Medium: no test covered the Recycle Bin mode. Fix: ignored cargo tests for N1, N3, N4, N9, and N11, run on demand, that purge only their own items.
 - Medium: the `stopped` reply was ambiguous. Fix: `stopped` for a whole Windows request without a change, `interrupted` for a WSL outcome that is not known.
 - Low: unrelated folder trees refuse; the lock stays held during the shadow removal; a name lookup failure gives `error`; a replace that never started gives `stopped`.
-- Text: contract Δ10 and plan D14 "Allowlist" state that the service builds the arrays (001 §6).
+- Text: contract Δ10 and plan D14 "Commands" state that the service builds the arrays (001 §6).
 - Follow-ups: a broken WSL `replace` output gives `interrupted`; the shadow-create sweep removes leftovers outside the state lock.
 
 WP4 (T016 to T026), review of ce6dfa0, fixes in 3d6c5e3. No heuristic, and no read runs a repository program in an untrusted repository.

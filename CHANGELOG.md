@@ -20,6 +20,7 @@ A preview release for Windows 11 x64.
 - A `GIT_SMART_HTTP` value in your environment no longer reaches Git. An HTTP push thus keeps the lease check.
 - The History message filter shows its key in a tooltip: "Filter commit messages (Ctrl+F)".
 - In a repository with many submodules, the Commit view shows the local-edit marks of the first submodules sooner. Arbareto reads the submodules in groups of 16 and shows the marks of each group when it arrives. The marks of a submodule no longer wait for all other submodules.
+- A Cancel right after the start of an operation now always counts. The status bar shows "Cancel requested" at once. Before, Arbareto could lose a Cancel that came before the first progress report, and the operation ran to the end. This occurred in all versions since 0.1.0. It affects Revert, Stage, Commit, fetch, pull, push, and the other operations in the status bar. In History, the Cancel and Escape of a message search now count in the same way.
 
 ## [0.1.1] - 2026-11-13
 

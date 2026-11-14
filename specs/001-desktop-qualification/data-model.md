@@ -281,7 +281,7 @@ Compare actual commit scope through read-only Git inspection against that retain
 | --- | --- | --- |
 | none | A read arrives while 8 reads wait for a slot | `rejected` with `BUSY` before admission. No `operationId` is issued (contract §5 "Pending reads"). |
 | `accepted` | Valid read | `running` when the service admits it. The read waits for its slot in `running`. The read deadline starts when it takes its slot (contract §5). |
-| `running` (read waiting for a slot) | Cancellation request | The read leaves the queue at once. `canceled`, with no re-read. |
+| `running` (read waiting for a slot) | Cancellation request | The `cancel` reply view is `cancel-requested`. Then the read leaves the queue and ends `canceled`, with no re-read. |
 | `accepted` | Mutation exclusion unavailable | `rejected`; do not queue an old approval. |
 | `accepted` | Invalid approval, trust, or state | `rejected`; no process starts. |
 | `accepted` (mutation) | The shell replies to `started` with the marker ID | `running`. The approval, trust, and state checks passed, and the mutation exclusion is held. The shell flushed the marker file before its reply. No lock and no Git process exist before this step. The rechecks under the canonical index lock run in `running` (contract §4, §6 "Recovery markers"). |

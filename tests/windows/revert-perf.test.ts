@@ -59,6 +59,7 @@ const UNSTAGED_1000_MS = 30_000;
 // SC-007 (session 3 decision): on WSL a multi-file revert ends within 2 s plus 320 ms per file.
 const UNSTAGED_1000_WSL_MS = 2_000 + 320 * 1_000;
 const GIB_MS = 30_000;
+// Spec SC-007 (user decision 2026-11-15): the 1 s runs from Cancel to "Checking the result…". The time to the outcome has no budget.
 const CANCEL_MS = 1_000;
 const MEMORY_BYTES = 64 * MIB;
 // SC-007 (session 3 decision) at the 10,000-file limit: the process-tree peak growth and the growth RETAIN_MS after the run end.
@@ -972,11 +973,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           if (run === 0) {
             const indexBefore = sha256(readFileSync(index));
             const cancels = s.ipc.finished("cancel").length;
-            const holding = holdIpc(s.c, s.ipc, "run_workbench", STEP_LIMIT_MS);
-            // Bun 1.4.4 fails the case at an unhandled rejection. The `await holding` below still gets the error.
-            holding.catch(() => {});
-            await press(s.c, "Enter");
-            const hold = await holding;
+            const hold = await holdIpc(s.c, s.ipc, "run_workbench", STEP_LIMIT_MS, () => press(s.c, "Enter"));
             let released: number;
             try {
               await focusOn(s.c, cancelButton, "Cancel");
@@ -1008,8 +1005,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           await refreshed(s, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
         }
         const shown = toStop.filter((t, i) => t < toEnd[i]!).length;
-        record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to ${js(RECONCILING)} or the outcome, the text showed first in ${shown} runs`, toStop);
-        const cancel = record("SC-007 Cancel of a 10,000-file run during the writes: Cancel to the outcome", toEnd, CANCEL_MS);
+        const cancel = record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to ${js(RECONCILING)} or the outcome, the text showed first in ${shown} runs`, toStop, CANCEL_MS);
+        record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to the outcome, no budget, min ${Math.min(...toEnd).toFixed(1)} ms, max ${Math.max(...toEnd).toFixed(1)} ms`, toEnd);
         // Run 0 is the first revert after the app start. It has the first-run bounds; runs 1 to RUNS have the later-run bounds. A W9 run leaves its series.
         const firstRuns = bounded.filter((b) => b.run === 0);
         const laterRuns = bounded.filter((b) => b.run > 0);

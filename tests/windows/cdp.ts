@@ -104,7 +104,8 @@ export interface IpcHold {
 // Holds each new call of `command` in the page network layer (CDP `Fetch` at the request stage).
 // It returns when each call of `command` that `ipc` records in flight is held, and at least one call is held, at most `ms`.
 // A call sent before `watchIpc` started is not in `ipc`, so the caller starts `watchIpc` before the calls it must see.
-export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number): Promise<IpcHold> {
+// `start` runs after the `Fetch.enable` reply, so a call that `start` sends is held.
+export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number, start?: () => Promise<unknown>): Promise<IpcHold> {
   // `networkId` is the `Network` request ID of the held call.
   const held: { requestId: string; networkId: unknown }[] = [];
   let preflightError: unknown;
@@ -123,6 +124,12 @@ export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number):
     }
   }
   await c.send("Fetch.enable", { patterns: [{ urlPattern: `${IPC_ORIGIN}/${command}*`, requestStage: "Request" }] });
+  try {
+    await start?.();
+  } catch (error) {
+    await release();
+    throw error;
+  }
   const free = () => ipc.pending(command).filter((id) => !held.some((h) => h.networkId === id));
   for (const end = performance.now() + ms; held.length === 0 || free().length > 0; await Bun.sleep(POLL_MS)) {
     if (performance.now() < end) continue;

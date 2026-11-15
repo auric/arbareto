@@ -225,3 +225,55 @@ describe("holdIpc and the CORS preflight", () => {
     }
   }, 30_000);
 });
+
+// A call that goes out before the `Fetch.enable` reply can pass the hold.
+describe("holdIpc start", () => {
+  test("holdIpc runs start only after the Fetch.enable reply, and holds the call that start sends", async () => {
+    const event = (method: string, params: object) => JSON.stringify({ method, params });
+    const calls: string[] = [];
+    let enabled = false;
+    let socket: { send(m: string): unknown } | undefined;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req, srv) {
+        if (new URL(req.url).pathname === "/ws") return srv.upgrade(req) ? undefined : new Response("no upgrade", { status: 400 });
+        return Response.json([{ type: "page", url: "http://tauri.localhost/", webSocketDebuggerUrl: `ws://127.0.0.1:${srv.port}/ws` }]);
+      },
+      websocket: {
+        message(ws, data) {
+          socket = ws;
+          const { id, method } = JSON.parse(String(data)) as { id: number; method: string };
+          calls.push(method);
+          const reply = () => ws.send(JSON.stringify({ id, result: {} }));
+          if (method === "Fetch.enable")
+            setTimeout(() => {
+              enabled = true;
+              reply();
+            }, 200);
+          else {
+            if (method === "Fetch.continueRequest") ws.send(event("Network.loadingFinished", { requestId: "7" }));
+            reply();
+          }
+        },
+      },
+    });
+    const c = await connectPage(server.port!, 5_000);
+    try {
+      const ipc = await watchIpc(c);
+      const started: boolean[] = [];
+      const hold = await holdIpc(c, ipc, "run_workbench", 5_000, async () => {
+        started.push(enabled);
+        socket!.send(event("Network.requestWillBeSent", { requestId: "7", request: { method: "POST", url: "http://ipc.localhost/run_workbench" } }));
+        socket!.send(event("Fetch.requestPaused", { requestId: "f7", networkId: "7", request: { method: "POST", url: "http://ipc.localhost/run_workbench" } }));
+      });
+      expect({ started, pending: ipc.pending("run_workbench") }).toEqual({ started: [true], pending: ["7"] });
+      await hold.release();
+      expect(calls).toEqual(["Network.enable", "Fetch.enable", "Fetch.continueRequest", "Fetch.disable"]);
+      expect(ipc.finished("run_workbench").map((call) => call.requestId)).toEqual(["7"]);
+    } finally {
+      c.close();
+      server.stop(true);
+    }
+  }, 30_000);
+});

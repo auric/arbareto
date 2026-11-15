@@ -973,7 +973,10 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           if (run === 0) {
             const indexBefore = sha256(readFileSync(index));
             const cancels = s.ipc.finished("cancel").length;
-            const hold = await holdIpc(s.c, s.ipc, "run_workbench", STEP_LIMIT_MS, () => press(s.c, "Enter"));
+            const hold = await holdIpc(s.c, s.ipc, "run_workbench", STEP_LIMIT_MS, () => press(s.c, "Enter")).catch(async (error: Error) => {
+              throw new Error(`${error.message} ${await facts(s.c, []).catch(String)}`, { cause: error });
+            });
+            console.log(`OBSERVATION ${TASK}: SC-007 Cancel before the first progress event: the hold sent ${hold.probes} probes, paused ${js(hold.paused)}`);
             let released: number;
             try {
               await focusOn(s.c, cancelButton, "Cancel");

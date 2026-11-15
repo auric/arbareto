@@ -5,6 +5,7 @@
 // The virtual-key codes are the winuser.h values: VK_SHIFT 0x10, VK_F5 0x74, VK_F10 0x79. The CDP modifier bit of Shift is 8.
 
 import { describe, expect, test } from "bun:test";
+import type { ServerWebSocket } from "bun";
 import { printOrigin } from "../origin";
 import { connectPage, holdIpc, keyEvents, MOD, watchIpc } from "./cdp";
 
@@ -115,6 +116,18 @@ describe("T085 cdp.ts events and the IPC record", () => {
   }, 30_000);
 });
 
+// The page double of the hold probe. It runs the `Runtime.evaluate` expression with a recording `fetch` and gives the probe URL.
+function probeUrl(expression: string): string {
+  const seen: unknown[][] = [];
+  new Function("fetch", expression)((...args: unknown[]) => (seen.push(args), Promise.resolve()));
+  expect(seen).toEqual([[expect.stringMatching(/^http:\/\/ipc\.localhost\/__hold_probe\?\d+$/), { mode: "no-cors" }]]);
+  return seen[0]![0] as string;
+}
+// Fetch pauses the probe GET.
+const probePaused = (url: string, requestId = "fprobe") => JSON.stringify({ method: "Fetch.requestPaused", params: { requestId, networkId: "probe", request: { method: "GET", url } } });
+// The `Runtime.evaluate` reply to the probe expression.
+const evaluated = (id: number) => JSON.stringify({ id, result: { result: { type: "boolean", value: true } } });
+
 // The double follows the CDP `Fetch` domain: `requestPaused` names the held call by `networkId`, and `continueRequest` lets its reply arrive.
 describe("holdIpc", () => {
   // A loaded parallel run can need more than the 5 s default to start the local CDP server and connect.
@@ -133,8 +146,9 @@ describe("holdIpc", () => {
       },
       websocket: {
         message(ws, data) {
-          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { requestId?: string; patterns?: unknown } };
+          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { requestId?: string; patterns?: unknown; expression?: string } };
           calls.push([method, method === "Fetch.enable" ? params.patterns : params.requestId]);
+          if (method === "Runtime.evaluate") return void [probePaused(probeUrl(params.expression!)), evaluated(id)].forEach((m) => ws.send(m));
           // Call 1 is in flight before the hold. Call 4 is another command. The events go before the reply, so they arrive before the call returns.
           const events: Record<string, string[]> = {
             "Network.enable": [sent("0", "OPTIONS", "read_workspace"), sent("1", "POST", "read_workspace")],
@@ -158,15 +172,25 @@ describe("holdIpc", () => {
       const hold = await holdIpc(c, ipc, "read_workspace", 5_000);
       expect({ pending: ipc.pending("read_workspace"), refs: ipc.pending("read_refs") }).toEqual({ pending: ["3"], refs: ["4"] });
       await hold.release();
-      const pattern = [{ urlPattern: "http://ipc.localhost/read_workspace*", requestStage: "Request" }];
+      const pattern = [
+        { urlPattern: "http://ipc.localhost/read_workspace*", requestStage: "Request" },
+        { urlPattern: "http://ipc.localhost/__hold_probe*", requestStage: "Request" },
+      ];
+      const probe: [string, unknown][] = [
+        ["Runtime.evaluate", undefined],
+        ["Fetch.failRequest", "fprobe"],
+      ];
       expect(calls).toEqual([
         ["Network.enable", undefined],
         ["Fetch.enable", pattern],
+        ...probe,
         ["Fetch.continueRequest", "f2"],
         ["Fetch.disable", undefined],
         ["Fetch.enable", pattern],
+        ...probe,
         ["Fetch.disable", undefined],
         ["Fetch.enable", pattern],
+        ...probe,
         ["Fetch.continueRequest", "f3"],
         ["Fetch.disable", undefined],
       ]);
@@ -194,8 +218,9 @@ describe("holdIpc and the CORS preflight", () => {
       },
       websocket: {
         message(ws, data) {
-          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { requestId?: string } };
+          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { requestId?: string; expression?: string } };
           calls.push([method, params.requestId]);
+          if (method === "Runtime.evaluate") return void [probePaused(probeUrl(params.expression!)), evaluated(id)].forEach((m) => ws.send(m));
           const events: Record<string, string[]> = {
             "Fetch.enable": [sent("5", "OPTIONS"), paused("5", "OPTIONS")],
             "Fetch.continueRequest": params.requestId === "f5" ? [event("Network.loadingFinished", { requestId: "5" }), sent("6", "POST"), paused("6", "POST")] : [event("Network.loadingFinished", { requestId: "6" })],
@@ -211,7 +236,13 @@ describe("holdIpc and the CORS preflight", () => {
       const hold = await holdIpc(c, ipc, "read_workspace", 5_000);
       expect(ipc.pending("read_workspace")).toEqual(["6"]);
       await hold.release();
-      expect(calls).toEqual([
+      // The probe calls and the preflight continue can interleave.
+      const probe = (m: string) => m === "Runtime.evaluate" || m === "Fetch.failRequest";
+      expect(calls.filter(([m]) => probe(m))).toEqual([
+        ["Runtime.evaluate", undefined],
+        ["Fetch.failRequest", "fprobe"],
+      ]);
+      expect(calls.filter(([m]) => !probe(m))).toEqual([
         ["Network.enable", undefined],
         ["Fetch.enable", undefined],
         ["Fetch.continueRequest", "f5"],
@@ -243,10 +274,11 @@ describe("holdIpc start", () => {
       websocket: {
         message(ws, data) {
           socket = ws;
-          const { id, method } = JSON.parse(String(data)) as { id: number; method: string };
+          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { expression?: string } };
           calls.push(method);
           const reply = () => ws.send(JSON.stringify({ id, result: {} }));
-          if (method === "Fetch.enable")
+          if (method === "Runtime.evaluate") [probePaused(probeUrl(params.expression!)), evaluated(id)].forEach((m) => ws.send(m));
+          else if (method === "Fetch.enable")
             setTimeout(() => {
               enabled = true;
               reply();
@@ -269,8 +301,186 @@ describe("holdIpc start", () => {
       });
       expect({ started, pending: ipc.pending("run_workbench") }).toEqual({ started: [true], pending: ["7"] });
       await hold.release();
-      expect(calls).toEqual(["Network.enable", "Fetch.enable", "Fetch.continueRequest", "Fetch.disable"]);
+      expect(calls).toEqual(["Network.enable", "Fetch.enable", "Runtime.evaluate", "Fetch.failRequest", "Fetch.continueRequest", "Fetch.disable"]);
       expect(ipc.finished("run_workbench").map((call) => call.requestId)).toEqual(["7"]);
+    } finally {
+      c.close();
+      server.stop(true);
+    }
+  }, 30_000);
+});
+
+// The `Fetch.enable` reply can come before the page intercepts. The hold opens only on a paused probe GET.
+describe("holdIpc probe gate", () => {
+  const event = (method: string, params: object) => JSON.stringify({ method, params });
+  const sent = (n: string, method = "POST") => event("Network.requestWillBeSent", { requestId: n, request: { method, url: "http://ipc.localhost/run_workbench" } });
+  const paused = (n: string, method = "POST") => event("Fetch.requestPaused", { requestId: `f${n}`, networkId: n, request: { method, url: "http://ipc.localhost/run_workbench" } });
+  const probeRe = /^http:\/\/ipc\.localhost\/__hold_probe\?\d+$/;
+  // A CDP endpoint double. `answer` gets each CDP call of the client.
+  function serve(answer: (ws: ServerWebSocket<unknown>, id: number, method: string, params: { requestId?: string; expression?: string }) => void) {
+    return Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req, srv) {
+        if (new URL(req.url).pathname === "/ws") return srv.upgrade(req) ? undefined : new Response("no upgrade", { status: 400 });
+        return Response.json([{ type: "page", url: "http://tauri.localhost/", webSocketDebuggerUrl: `ws://127.0.0.1:${srv.port}/ws` }]);
+      },
+      websocket: {
+        message(ws, data) {
+          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { requestId?: string; expression?: string } };
+          answer(ws, id, method, params);
+        },
+      },
+    });
+  }
+
+  test("holdIpc runs start only after the probe pause and the Fetch.failRequest reply of the probe", async () => {
+    const calls: string[] = [];
+    let probeSeen = false;
+    let probeFailed = false;
+    let socket: ServerWebSocket<unknown> | undefined;
+    // The probe pause and the failRequest reply come late, so a start that does not wait sees neither.
+    const server = serve((ws, id, method, params) => {
+      socket = ws;
+      calls.push(method);
+      const reply = () => ws.send(JSON.stringify({ id, result: {} }));
+      if (method === "Runtime.evaluate") {
+        const url = probeUrl(params.expression!);
+        ws.send(evaluated(id));
+        setTimeout(() => {
+          probeSeen = true;
+          ws.send(probePaused(url));
+        }, 200);
+      } else if (method === "Fetch.failRequest")
+        setTimeout(() => {
+          probeFailed = true;
+          reply();
+        }, 200);
+      else {
+        if (method === "Fetch.continueRequest") ws.send(event("Network.loadingFinished", { requestId: "7" }));
+        reply();
+      }
+    });
+    const c = await connectPage(server.port!, 5_000);
+    try {
+      const ipc = await watchIpc(c);
+      const started: boolean[][] = [];
+      const hold = await holdIpc(c, ipc, "run_workbench", 5_000, async () => {
+        started.push([probeSeen, probeFailed]);
+        socket!.send(sent("7"));
+        socket!.send(paused("7"));
+      });
+      expect({ started, probes: hold.probes, pending: ipc.pending("run_workbench") }).toEqual({ started: [[true, true]], probes: 1, pending: ["7"] });
+      await hold.release();
+      expect(calls).toEqual(["Network.enable", "Fetch.enable", "Runtime.evaluate", "Fetch.failRequest", "Fetch.continueRequest", "Fetch.disable"]);
+    } finally {
+      c.close();
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("a probe pause never counts as a held call: the hold returns only after the POST pauses", async () => {
+    const calls: [string, unknown][] = [];
+    let socket: ServerWebSocket<unknown> | undefined;
+    const server = serve((ws, id, method, params) => {
+      socket = ws;
+      calls.push([method, params.requestId]);
+      if (method === "Runtime.evaluate") return void [probePaused(probeUrl(params.expression!)), evaluated(id)].forEach((m) => ws.send(m));
+      if (method === "Fetch.continueRequest") ws.send(event("Network.loadingFinished", { requestId: "8" }));
+      ws.send(JSON.stringify({ id, result: {} }));
+    });
+    const c = await connectPage(server.port!, 5_000);
+    try {
+      const ipc = await watchIpc(c);
+      // The POST goes out after start returns.
+      const hold = await holdIpc(c, ipc, "run_workbench", 5_000, async () =>
+        setTimeout(() => {
+          socket!.send(sent("8"));
+          socket!.send(paused("8"));
+        }, 200),
+      );
+      expect({ pending: ipc.pending("run_workbench"), probes: hold.probes, paused: hold.paused }).toEqual({
+        pending: ["8"],
+        probes: 1,
+        paused: [
+          { method: "GET", url: expect.stringMatching(probeRe), networkId: "probe", requestId: "fprobe", probe: true },
+          { method: "POST", url: "http://ipc.localhost/run_workbench", networkId: "8", requestId: "f8", probe: false },
+        ],
+      });
+      await hold.release();
+      expect(calls).toEqual([
+        ["Network.enable", undefined],
+        ["Fetch.enable", undefined],
+        ["Runtime.evaluate", undefined],
+        ["Fetch.failRequest", "fprobe"],
+        ["Fetch.continueRequest", "f8"],
+        ["Fetch.disable", undefined],
+      ]);
+    } finally {
+      c.close();
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("a probe that does not pause leads to a new probe, and the pause of the second probe opens the hold; no pause within the bound ends the hold", async () => {
+    const urls: string[] = [];
+    const failed: unknown[] = [];
+    let probes = 0;
+    let socket: ServerWebSocket<unknown> | undefined;
+    // Only the second probe after each Fetch.enable pauses.
+    const server = serve((ws, id, method, params) => {
+      socket = ws;
+      if (method === "Fetch.enable") probes = 0;
+      if (method === "Fetch.failRequest") failed.push(params.requestId);
+      if (method === "Fetch.continueRequest") ws.send(event("Network.loadingFinished", { requestId: "9" }));
+      if (method !== "Runtime.evaluate") return void ws.send(JSON.stringify({ id, result: {} }));
+      const url = probeUrl(params.expression!);
+      urls.push(url);
+      ws.send(evaluated(id));
+      if (++probes === 2) ws.send(probePaused(url, `f-${url}`));
+    });
+    const c = await connectPage(server.port!, 5_000);
+    try {
+      const ipc = await watchIpc(c);
+      await expect(holdIpc(c, ipc, "run_workbench", 300)).rejects.toThrow("the run_workbench calls were not held within 300 ms: the hold probe never paused, probes sent 1, paused []");
+      const started: number[] = [];
+      const hold = await holdIpc(c, ipc, "run_workbench", 5_000, async () => {
+        started.push(probes);
+        socket!.send(sent("9"));
+        socket!.send(paused("9"));
+      });
+      expect({ started, probes: hold.probes, urls: new Set(urls).size, failed }).toEqual({ started: [2], probes: 2, urls: 3, failed: [`f-${urls[2]}`] });
+      await hold.release();
+    } finally {
+      c.close();
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("a miss names each paused request and the error of the preflight Fetch.continueRequest", async () => {
+    let socket: ServerWebSocket<unknown> | undefined;
+    const server = serve((ws, id, method, params) => {
+      socket = ws;
+      if (method === "Runtime.evaluate") return void [probePaused(probeUrl(params.expression!)), evaluated(id)].forEach((m) => ws.send(m));
+      ws.send(JSON.stringify(method === "Fetch.continueRequest" ? { id, error: { code: -32000, message: "Invalid InterceptionId." } } : { id, result: {} }));
+    });
+    const c = await connectPage(server.port!, 5_000);
+    try {
+      const ipc = await watchIpc(c);
+      // The preflight pauses, its continue fails, and the POST goes out without a pause.
+      const error = await holdIpc(c, ipc, "run_workbench", 300, async () => {
+        socket!.send(paused("10", "OPTIONS"));
+        socket!.send(sent("11"));
+      }).then(
+        () => null,
+        (e: Error) => e,
+      );
+      const [head, list] = error!.message.split(", paused ");
+      expect(head).toBe('the run_workbench calls were not held within 300 ms: held 0, in flight and not held ["11"], probes sent 1');
+      expect(JSON.parse(list!)).toEqual([
+        { method: "GET", url: expect.stringMatching(probeRe), networkId: "probe", requestId: "fprobe", probe: true },
+        { method: "OPTIONS", url: "http://ipc.localhost/run_workbench", networkId: "10", requestId: "f10", probe: false, error: 'Error: CDP Fetch.continueRequest failed: {"code":-32000,"message":"Invalid InterceptionId."}' },
+      ]);
     } finally {
       c.close();
       server.stop(true);

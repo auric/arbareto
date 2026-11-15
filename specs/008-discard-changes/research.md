@@ -690,3 +690,13 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - LOW 3: the T049 text still says "Until T079 passes". T079 passes. SC-009 stays partial until T080 passes.
 - `/speckit-converge`: converged. It appended no task. The T075 to T079 fixes are in the code: `file_facts.rs` returns `Err(status)`, the WSL replace uses `Time::HiRes`, and `revert-frame`, `revert-refusal`, and `revert-packaged` hold the new cases. The open SC-009 items are T080 (after v0.1.0).
 - Not verified: converge checked the map files and the T075 to T079 fixes, not each FR again in the code. T052 did that full check on `0457d99c`.
+
+### SC-007 Cancel decision (T081, T082), 2026-11-15
+
+- Source: a packaged precheck of `tests/windows/revert-perf.test.ts` on the installed v0.1.2 build, 10,000-file case, Cancel during the writes (runs 1 to 10), warm, median.
+- Cancel to "Checking the result…": median 164.5 ms (144.5 to 180.7 ms).
+- Cancel to the outcome: median 8,056.3 ms (7,901.7 to 8,278.9 ms) in one run. A second run gave a median of 7,715.8 ms, with one run at 19,488.7 ms. The old check applied the 1 s budget to this series, so the case failed.
+- User decision of 2026-11-15, an explicit product trade-off under constitution VII (plan.md Constitution Check VII row): SC-007 "Cancel stops a multi-file run within 1 s" means 1 s from Cancel until the writes stop and the status bar shows "Checking the result…". Each run records the time from Cancel to the outcome, with no budget. The budget stays 1,000 ms, median of 10.
+- The test applies the `cancel` check to the Cancel to "Checking the result…" series. It prints the Cancel to the outcome series as an observation with its median, minimum, maximum, and all values.
+- T083 (v0.1.3) measures where the time from Cancel to the outcome goes, and shortens it. Plan.md D10 stays: the fresh read decides each outcome.
+- Run 0 of the precheck failed once with "the run_workbench calls were not held within 60000 ms: held 0". Cause: the test pressed Enter before the CDP `Fetch.enable` reply was known to have arrived. So the run request could pass the hold. Fix: `holdIpc` takes a `start` step. It runs `start` only after the `Fetch.enable` reply. `tests/windows/cdp.test.ts` "holdIpc start" holds this order.

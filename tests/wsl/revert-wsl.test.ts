@@ -449,6 +449,28 @@ describe("T042 the revert actions in the distro equal Git's own commands on a co
     });
   });
 
+  W("200 files: the reconcile reads 4 fileFacts frames at once (T083), and the index and the working bytes equal git restore --staged --worktree --source=HEAD on a copy", async (w) => {
+    const paths = Array.from({ length: 200 }, (_, k) => `f${String(k).padStart(3, "0")}.txt`);
+    // Each file has its own bytes, so a digest names one file only.
+    const repo = build(w, "frames", { "keep.txt": "keep\n" }, (r) => {
+      inRepo(r, 'for p in "$@"; do printf "%s\\n" "$p" > "$p"; done', paths);
+      add(r, ...paths);
+      git(r, ["commit", "-q", "--no-verify", "-m", "frames"]);
+      inRepo(r, 'for p in "$@"; do printf "%s changed\\n" "$p" > "$p"; done', paths);
+    });
+    const copy = copyOf(repo);
+    git(copy, ["--literal-pathspecs", "restore", "--staged", "--worktree", "--source=HEAD", "--", ...paths]);
+    await withWsl(w, "t083-frames", async (s) => {
+      const r = await s.register(uncPath(w, repo.dir));
+      const read = await readOk(s, r.repositoryId);
+      const reviewed = await reviewOk(s, r, read, { action: "revert-files", entryIds: paths.map((p) => idOf(read, p, "unstaged")) });
+      const done = await run(s, r, reviewed.workbenchToken);
+      expect({ ...outcome(done), ...listed(done) }).toEqual({ ...SUCCEEDED, counts: { ...NONE, reverted: 200 }, files: [] });
+    });
+    expect(state(repo)).toEqual(state(copy));
+    expect(temps(repo)).toEqual([]);
+  });
+
   W("a Cancel during the WSL write gives interrupted: no fresh read comes before the process-end fact, the run ends canceled, and the file keeps its bytes", async (w) => {
     const repo = build(w, "interrupted", { "f.txt": "committed\n" }, (r) => put(r, "f.txt", "changed\n"));
     const before = state(repo);

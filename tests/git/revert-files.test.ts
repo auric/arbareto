@@ -10,8 +10,9 @@ import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Response, RunWorkbenchResult } from "../../src/contracts/envelope";
-import { MULTI_FILE_ACTION_FILES, PIPE_FRAME_BYTES, REVERT_PROGRESS_EVENTS_PER_SECOND } from "../../src/contracts/limits";
+import { MULTI_FILE_ACTION_FILES, MULTI_FILE_PROOF_CONCURRENCY, MUTATION_RAW_INDEX_BYTES, PIPE_FRAME_BYTES, REVERT_PROGRESS_EVENTS_PER_SECOND } from "../../src/contracts/limits";
 import { inTreeOrder } from "../../src/frontend/changes/revert-text";
+import { indexListArgs } from "../../src/git-service/commands";
 import { RunnerRefusal } from "../../src/git-service/git-runner";
 import { PROFILE_TEXTS } from "../../src/git-service/hunk-publish";
 import { LOCKED_REMEDY } from "../../src/git-service/index-lock";
@@ -762,6 +763,161 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
       TIMEOUT_MS,
     );
   }
+});
+
+// T083 (contracts Δ3 `runWorkbench`): the reconcile reads. `enterReconciling` sends the `reconciliation` event before them, so a seam can act on them alone.
+const reconciling = (service: Service) => (service.progress as { phase?: string }[]).some((p) => p.phase === "reconciliation");
+// Each file has its own bytes, so a digest names one file only.
+const changedFiles = (name: string, paths: readonly string[]) =>
+  build(name, Object.fromEntries(paths.map((p) => [p, `${p}\n`])), (repo) => {
+    for (const p of paths) write(repo, p, `${p} changed\n`);
+  });
+// 4 frames of FILE_FACT_ENTRIES.
+const FRAMED = Array.from({ length: 200 }, (_, k) => `f${String(k).padStart(3, "0")}.txt`);
+// 3,000 paths of 63 characters need several command-line batches (WINDOWS_COMMAND_LINE_UNITS). 64 of them fit one, so D5a keeps its batched read.
+const LONG = Array.from({ length: 3_000 }, (_, k) => `t083-a-folder-with-a-long-name/a-file-with-a-long-name-${String(k).padStart(4, "0")}.txt`);
+
+describe("revert files: the reconcile reads the digests in parallel frames and the index beside them (T083, contracts Δ3)", () => {
+  caseTest("T083", "200 files: frame 0 of the fresh digests replies last, and each outcome still matches its own file", SHELL, () =>
+    withService({ name: "t083-order" }, async (service) => {
+      const repo = changedFiles("order", FRAMED);
+      const oracle = restored(repo, FRAMED);
+      const { r, read } = await open(service, repo);
+      const reviewed = await reviewOk(service, r, read, FRAMED.map((p) => idOf(read, p, "unstaged")));
+      const calls = service.runner.fileFactCalls;
+      let from = -1;
+      // Frame 0 waits until the other 3 frames replied, at most 2 s, so a serial read still ends.
+      service.runner.inject.holdWalk = async (kind) => {
+        if (kind !== "fileFacts" || !reconciling(service) || from >= 0) return;
+        from = calls.length;
+        const end = performance.now() + 2_000;
+        while (calls.length < from + 3 && performance.now() < end) await Bun.sleep(10);
+      };
+      try {
+        const done = await run(service, r, reviewed.workbenchToken);
+        const firsts = calls.slice(from).map((c) => c.files[0]!.path.join("/"));
+        expect({ ...outcome(done), counts: done.result?.counts, files: done.result?.files, frames: firsts.toSorted(), last: firsts.at(-1) }).toEqual({
+          ...SUCCEEDED,
+          counts: { ...NONE, reverted: 200 },
+          files: [],
+          frames: ["f000.txt", "f064.txt", "f128.txt", "f192.txt"],
+          last: "f000.txt",
+        });
+      } finally {
+        service.runner.inject.holdWalk = null;
+      }
+      expect({ index: indexOf(repo), files: workingFileDigests(repo) }).toEqual(oracle);
+    }),
+    LONG_TIMEOUT_MS,
+  );
+
+  caseTest("T083", `200 files: the reconcile runs 2 to ${MULTI_FILE_PROOF_CONCURRENCY} digest frames at once, and every other digest read runs one frame at a time`, SHELL, () =>
+    withService({ name: "t083-lanes" }, async (service) => {
+      const repo = changedFiles("lanes", FRAMED);
+      const { r, read } = await open(service, repo);
+      const most = { reconcile: 0, other: 0 };
+      let active = 0;
+      // The walk reads after its hold, so each hold keeps one `fileFacts` call open for 50 ms.
+      service.runner.inject.holdWalk = async (kind) => {
+        if (kind !== "fileFacts") return;
+        const key = reconciling(service) ? "reconcile" : "other";
+        most[key] = Math.max(most[key], ++active);
+        await Bun.sleep(50);
+        active--;
+      };
+      try {
+        const reviewed = await reviewOk(service, r, read, FRAMED.map((p) => idOf(read, p, "unstaged")));
+        const done = await run(service, r, reviewed.workbenchToken);
+        const lanes = most.reconcile >= 2 && most.reconcile <= MULTI_FILE_PROOF_CONCURRENCY ? "2 to K" : most.reconcile;
+        expect({ ...outcome(done), counts: done.result?.counts, lanes, other: most.other }).toEqual({ ...SUCCEEDED, counts: { ...NONE, reverted: 200 }, lanes: "2 to K", other: 1 });
+      } finally {
+        service.runner.inject.holdWalk = null;
+      }
+    }),
+    LONG_TIMEOUT_MS,
+  );
+
+  caseTest("T083", "a failed fresh index read beside a digest frame at its deadline leaves the outcome unknown with the cause DEADLINE (001 contract §5)", SHELL, () =>
+    withService({ name: "t083-deadline" }, async (service) => {
+      const repo = build("t083-deadline", TWO, changeTwo);
+      const { r, read } = await open(service, repo);
+      const reviewed = await reviewOk(service, r, read, [idOf(read, "a.txt", "unstaged"), idOf(read, "sub/c.txt", "unstaged")]);
+      const { inject } = service.runner;
+      let renamed = 0;
+      // `walk` reads `inject.deadlineMs` before it calls `holdWalk`, so the last write sets it for the reconcile walk.
+      inject.replaceStep = (step) => {
+        if (step === "renamed" && ++renamed === 2) inject.deadlineMs = 50;
+        return undefined;
+      };
+      inject.holdWalk = (kind) => {
+        if (kind !== "fileFacts" || !reconciling(service)) return Promise.resolve();
+        inject.deadlineMs = null;
+        return new Promise<void>(() => {});
+      };
+      inject.exit = (call) => (reconciling(service) && call.arguments.includes("ls-files") ? 1 : undefined);
+      try {
+        const done = await run(service, r, reviewed.workbenchToken);
+        const entry = service.log().find((e) => (e as { operationId?: string }).operationId === done.operationId) as { cause?: string } | undefined;
+        expect({ ...outcome(done), renamed, cause: entry?.cause }).toEqual({ state: "unknown", code: "STATE_UNKNOWN", renamed: 2, cause: "DEADLINE" });
+      } finally {
+        inject.replaceStep = null;
+        inject.holdWalk = null;
+        inject.exit = undefined;
+        inject.deadlineMs = null;
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  // A Cancel at the first `checkout-index` leaves every file unchanged, and the reconcile still reads all 3,000 paths.
+  // Each `ls-files --stage` call names its window: the review, the run before the reconcile, or the reconcile.
+  async function longRun(name: string, stdout?: (args: readonly string[]) => Uint8Array | undefined) {
+    let target: Service | null = null;
+    let at = "review";
+    const listings: { at: string; args: readonly string[] }[] = [];
+    let done: ServiceResponse<RevertRun> | null = null;
+    await withService(
+      {
+        name,
+        revertCheckpoint: async (c: RevertCheckpoint) => {
+          if (c.step === "checkout-index") await target!.cancel(c.operationId);
+        },
+      },
+      async (service) => {
+        target = service;
+        const repo = changedFiles(name, LONG);
+        const { r, read } = await open(service, repo);
+        const release = service.runner.holdStart((call) => {
+          if (call.arguments.includes("ls-files") && call.arguments.includes("--stage")) listings.push({ at: reconciling(service) ? "reconcile" : at, args: call.arguments });
+          return false;
+        });
+        if (stdout !== undefined) service.runner.inject.stdout = (call) => stdout(call.arguments);
+        try {
+          const reviewed = await reviewOk(service, r, read, LONG.map((p) => idOf(read, p, "unstaged")));
+          at = "run";
+          done = await run(service, r, reviewed.workbenchToken);
+        } finally {
+          release();
+          service.runner.inject.stdout = undefined;
+        }
+      },
+    );
+    const of = (window: string) => listings.filter((l) => l.at === window).map((l) => l.args);
+    return { done: done!, review: of("review"), reconcile: of("reconcile") };
+  }
+
+  caseTest("T083", "3,000 long paths: the review and the reconcile each read the index entries with exactly one whole-index ls-files -z --stage", SHELL, async () => {
+    const { done, review, reconcile } = await longRun("t083-whole");
+    expect({ state: done.state, counts: done.result?.counts, review, reconcile }).toEqual({ state: "canceled", counts: { ...NONE, "not-started": LONG.length }, review: [indexListArgs()], reconcile: [indexListArgs()] });
+  }, LONG_TIMEOUT_MS);
+
+  caseTest("T083", "3,000 long paths: a whole index above MUTATION_RAW_INDEX_BYTES falls back to the batched reads, which list every path once", SHELL, async () => {
+    const above = new Uint8Array(MUTATION_RAW_INDEX_BYTES + 1);
+    const { done, review, reconcile } = await longRun("t083-fallback", (args) => (Bun.deepEquals(args, indexListArgs()) ? above : undefined));
+    const listed = (reads: (readonly string[])[]) => ({ first: reads[0], batches: reads.length - 1 >= 2, paths: reads.slice(1).flatMap((args) => args.slice(args.indexOf("--") + 1)).toSorted() });
+    const fallback = { first: indexListArgs(), batches: true, paths: LONG.toSorted() };
+    expect({ state: done.state, counts: done.result?.counts, review: listed(review), reconcile: listed(reconcile) }).toEqual({ state: "canceled", counts: { ...NONE, "not-started": LONG.length }, review: fallback, reconcile: fallback });
+  }, LONG_TIMEOUT_MS);
 });
 
 describe("revert reviews always answer, and their refusal values fit the result schema (defects of batch 2)", () => {

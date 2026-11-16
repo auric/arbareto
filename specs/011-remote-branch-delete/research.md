@@ -251,6 +251,17 @@ Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62
 - Skips in these files: none.
 - The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
 
+### v0.1.2 records (T031), 2026-11-16
+
+Build: full run f014 (the v0.1.2 full run, 2026-11-15 to 2026-11-16) on code `2d109fff`, branch `v0.1.2-rc`. Installer SHA-256 `065fedd6bf2b76387adfd0e2db0ed81c4c1f8572c5e6cc78d1457e616d09981f`. Installed `arbareto.exe` SHA-256 `478ac4cc1fedacdebe82be4fcdbfba03be719b1fcd0e36b0b17b59bd88ac225e`. OS: Windows NT 10.0.26300.0, UBR 9974, x64. Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4. Every step of f014 exited 0. Every `ORIGIN` line named the checkout under test. The f014 logs are in local scratch `f014-full`. The extra runs and the controls are in local scratch `v012-controls-f014`.
+
+- T031 ran `tests/windows/remote-delete-packaged.test.ts` 5 times on the installed exe `478ac4cc…`. The runs are the f014 step and `t031-rd-1` to `t031-rd-4` on 2026-11-16. Each run gave 7 pass, 2 skip, 0 fail. The extra runs used a clean `2d109fff` checkout.
+- Skips, class machine: "SC-008 at text size 150%" and "SC-008 at text size 225%" (f014 step log). The extra runs print only the skip count.
+- Control 1 (`t031-c1`): hold `read_branches` with `holdIpc` from before the folder choice, and remove the wait. The log printed `CONTROL T019: read_branches held`. FR-010 turned red at the dialog wait: "the local dialog with X9 did not happen within 30000 ms".
+- Control 2 (`t031-c2`): the same hold, with the wait. The log printed `CONTROL T019: read_branches held`. The case turned red at "the branch rows with actions did not happen within 30000 ms: [null,null]".
+- Both controls ran test patches on the installed f014 exe. Each gave 0 pass, 1 fail.
+- Earlier records on `3879e24d` (local scratch `v012-precheck2`) ran on another exe (`0a960e77…`) with an older `tests/windows/cdp.ts`. This record does not use them.
+
 ## R8 Lease gap of remote helpers and dumb HTTP (T027, user decision 2026-11-13)
 
 Git source, tag `v2.55.0`. This batch read remote-curl.c on 2026-11-13. The transport-helper.c and transport.c lines come from the T027 finding of 2026-11-10 and from 003 contract Δ7.

@@ -1224,3 +1224,11 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - Case: a click on a row with a non-collapsed selection skips the line selection. The handler then focuses the `aria-selected` line through `elements.current`. In a virtual list, that line can be outside the rendered rows. Then no element exists, and the focus stays on the clicked row.
 - A call to `select(line)` scrolls the list. The scroll can unmount the clicked row, so the text selection collapses.
 - Follow-up: T175, after v0.1.2. plan.md D15 "Text selection" records the known limit.
+
+## R33 v0.1.2 records (T174), 2026-11-16
+
+- Build: full run f014 (the v0.1.2 full run, 2026-11-15 to 2026-11-16) on code `2d109fff`, branch `v0.1.2-rc`. Installer SHA-256 `065fedd6bf2b76387adfd0e2db0ed81c4c1f8572c5e6cc78d1457e616d09981f`. Installed `arbareto.exe` SHA-256 `478ac4cc1fedacdebe82be4fcdbfba03be719b1fcd0e36b0b17b59bd88ac225e`. Every step exited 0. Every `ORIGIN` line named the checkout under test. The logs are in local scratch `f014-full`.
+- T174 green part: `tests/windows/inspection-packaged.test.ts` 11 pass, 1 skip, 0 fail on the installed exe `478ac4cc…`, with both T111 cases.
+- T174 packaged control (`t174-c1`, 2026-11-16, local scratch `v012-controls-f014`): remove ` select-text` from the submodule preview root in `src/frontend/changes/SubmodulePreview.tsx`. The control built a package from a clean `2d109fff` checkout with this mutation. Installed exe SHA-256 `58509680151c6b7781b8c3fe525859834df7084a4944421e025a81950af42f6d`.
+- Result: 0 pass, 2 fail. Both T111 cases ("T111 FR-067, FR-074 …" and "T111 FR-010, FR-069 …") failed at the `userSelects` `toEqual` (`inspection-packaged.test.ts:837` and `:910`). Each received `"code": "none"` and `"subject": "none"`. The run then installed the f014 package again, and its exe hash matched.
+- Open: the ten DOM control mutations of T174 have no record on `2d109fff` yet. The tick waits for them. The older-build rule (tasks.md:44) applies to each record.

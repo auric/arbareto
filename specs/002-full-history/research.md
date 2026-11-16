@@ -512,6 +512,15 @@ T032 and T063, the 37aa8d4 run (R21), Windows Git 2.56.0.windows.2 and Ubuntu-26
 - From de82eccd to cc149d7a, `src/contracts/envelope.ts` and `tests/contracts/history-filter.test.tsx` changed (`git diff --stat`).
 - T064 stays open. Its tick needs a green full run that verifies both test files.
 
+## R25 v0.1.2 records, 2026-11-16
+
+- Full run f014 (the v0.1.2 full run) ran on 2026-11-15 to 2026-11-16. Build: code `2d109fff` on branch `v0.1.2-rc`, installer SHA-256 `065fedd6bf2b76387adfd0e2db0ed81c4c1f8572c5e6cc78d1457e616d09981f`, installed `arbareto.exe` SHA-256 `478ac4cc1fedacdebe82be4fcdbfba03be719b1fcd0e36b0b17b59bd88ac225e`. OS: Windows NT 10.0.26300.0, UBR 9974, x64. Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4.
+- Every step exited 0. Every `ORIGIN` line named the checkout under test. `bun run test:all` gave 10,384 pass, 56 skip, 0 fail. The logs are in local scratch `f014-full`.
+- T069 (ticked): `tests/contracts/history-filter.test.tsx` 25 pass, 0 skip, 0 fail. All seven T069 cases passed. `tests/contracts/history-view.test.tsx` 25, 0, 0. `tests/git/history-view.test.ts` 17, 0, 0. The red records and the controls are in the T069 row.
+- T065 (open), green part: `tests/contracts/history-filter.test.tsx` 25, 0, 0. `tests/windows/keys-cdp.test.ts` 7, 0, 0 on the installed exe `478ac4cc…`.
+- T065 (open), packaged control on 2026-11-16 (local scratch `v012-controls-f014`, control `t065-2`). The mutation made `filterTarget` in `src/frontend/keyboard/shortcuts.ts` send History Ctrl+F only to `historyFiles`. The control built and installed a package from `2d109fff` with this mutation, installed exe SHA-256 `3f43e6f08e1b23e4772d3b624d9363b346aae6b1d2b80d7700be3e93d92c8e02`. `keys-cdp.test.ts` gave 6 pass, 1 fail. The failed case is "Ctrl+F on the History commit list moves focus to Filter commit messages". It failed at the `toEqual` of `keys-cdp.test.ts:265`. The run then installed the f014 package again and checked its exe hash.
+- T065 open part: the DOM control (the tooltip text "Filter commit messages") has no verified record on `2d109fff` yet.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

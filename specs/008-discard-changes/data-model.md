@@ -120,7 +120,7 @@ The refusal value (contract Δ3): `{reason}` for a repository-level reason, with
 
 Phases: `revert-index` (no counters), then `revert-files` (`fileIndex`, `fileCount`), then `reconciling`.
 
-Event rate: at most `REVERT_PROGRESS_EVENTS_PER_SECOND` (4) `revert-files` events per second. The event with `fileIndex` 0 and the event with the final count always go (contract Δ2).
+Event rate: at most `REVERT_PROGRESS_EVENTS_PER_SECOND` (4) `revert-files` events per second. The event with `fileIndex` 0 and the event with the final count always go, also above that rate (contract Δ2). The final count is the last count that the run reached. A canceled run sends its count at the stop.
 
 Per-file outcome from the fresh read (plan D10):
 

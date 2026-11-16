@@ -12,7 +12,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - `MUTATIONS` keeps `runWorkbench`. No new mutation operation.
 - New phases: `revert-index` (no counters) and `revert-files` (counters `fileIndex` and `fileCount`). Events carry no path and no Git text.
-- At most `REVERT_PROGRESS_EVENTS_PER_SECOND` (4) `revert-files` events per second. The event with `fileIndex` 0 and the event with the final count always go. No event follows the terminal response (001 §2).
+- At most `REVERT_PROGRESS_EVENTS_PER_SECOND` (4) `revert-files` events per second. The event with `fileIndex` 0 and the event with the final count always go, also above that rate. The final count is the last count that the run reached. A canceled run sends its count at the stop. No event follows the terminal response (001 §2).
 - New marker actions of kind `workbench`: `revert-lines`, `revert-files`, and `revert-unstaged`.
 
 ## Δ3 Public operations (001 §3)
@@ -30,7 +30,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - `{action: "revert-files", snapshotId, entryIds}` with 1 to 10,000 unique IDs.
   - `{action: "revert-unstaged", snapshotId}`.
 - Common refusals (004 Δ3) apply: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED`. A running mutation gives `BUSY`. No trust class (Δ7).
-- Reads of every action: the snapshot entries (no Git process); `ls-files --stage -z` and `ls-files --eol -z` for the paths, as literal pathspecs after `--` (for `ls-files --stage -z`: when the paths need more than one command-line batch, one `ls-files -z --stage` of the whole index, bound `MUTATION_RAW_INDEX_BYTES`; above the bound, the batched read); `check-attr -z --stdin` and `check-attr --cached -z --stdin` for `text`, `eol`, `crlf`, `ident`, `filter`, `working-tree-encoding`, and `diff`; `fileFacts` with `digest: true` and `detail: true`, 64 entries per frame, with `stream: true` for the targets of `revert-files` and `revert-unstaged`.
+- Reads of every action: the snapshot entries (no Git process); `ls-files --stage -z` and `ls-files --eol -z` for the paths, as literal pathspecs after `--` (for `ls-files --stage -z`: when the paths need more than one command-line batch, one `ls-files --stage -z` of the whole index, bound `MUTATION_RAW_INDEX_BYTES`; above the bound, the batched read); `check-attr -z --stdin` and `check-attr --cached -z --stdin` for `text`, `eol`, `crlf`, `ident`, `filter`, `working-tree-encoding`, and `diff`; `fileFacts` with `digest: true` and `detail: true`, 64 entries per frame, with `stream: true` for the targets of `revert-files` and `revert-unstaged`.
 - `revert-lines` reads: the retained comparison; `cat-file blob <index oid>` for the index side, bounded at 1 MiB (`COMPARED_RAW_VERSION_BYTES`), to build the expected working side (a larger blob refuses with `size`); the working bytes (Windows: the service read of at most 1 MiB; WSL: `fileFacts` with `content: true`); for a staged comparison, `status --porcelain=v2 -z` of the path with the snapshot flags (a record other than the shown entry gives `STALE_SELECTION`); then `hash-object --path=<path> --stdin` with the new bytes on stdin. `hash-object` runs without `-w` and writes no object.
 - `revert-files` and `revert-unstaged` reads: no content read. `cat-file --batch-check` gives the blob size of each source entry (for the batches and the deadlines of plan D5a).
 - Refusals before a token: `LOCKED` with the path and the 001 remedy when `index.lock` exists (plan D2); `WORKBENCH_UNAVAILABLE` with a reason of data-model §7; `UNSUPPORTED_COMPARISON` with the 001 support reason; `UNSUPPORTED_HUNK_PROFILE` with the eligibility reason; `INVALID_REQUEST` for an entry of another snapshot, a duplicate ID, or a comparison of another snapshot; `UNKNOWN_TARGET` for an unknown comparison or hunk; `OBJECT_MISSING` with the 001 remedy when `cat-file --batch-check` names a source blob of `revert-files` missing.
@@ -105,7 +105,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 ## Δ10 Required contract checks (001 §10)
 
 - Schema tests and golden vectors for the three payloads, the three plans, the result, the two phases, the new reasons, and the widened `fileReplace` and `fileFacts` frames, in Bun and Rust.
-- Result vectors: the `counts` of each outcome, and `files` with at most 20 files that did not revert, in tree order. Invalid vectors: a listed `reverted` file, a `files` length other than the smaller of 20 and the count of files that did not revert, and an outcome listed more often than its count.
+- Result vectors: the `counts` of each outcome, and `files` with at most 20 files that did not revert, in tree order. Invalid vectors: a listed `reverted` file, and an outcome listed more often than its count. A third invalid vector has too many or too few `files`. The length must be the smaller of 20 and the count of files that did not revert.
 - The Rust side checks the path rules, the byte bound, the `folders` count, and the marker action explicitly.
 
 ## Δ11 WSL repositories (001 §11)

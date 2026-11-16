@@ -1224,3 +1224,27 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - Case: a click on a row with a non-collapsed selection skips the line selection. The handler then focuses the `aria-selected` line through `elements.current`. In a virtual list, that line can be outside the rendered rows. Then no element exists, and the focus stays on the clicked row.
 - A call to `select(line)` scrolls the list. The scroll can unmount the clicked row, so the text selection collapses.
 - Follow-up: T175, after v0.1.2. plan.md D15 "Text selection" records the known limit.
+
+## R33 v0.1.2 records (T174), 2026-11-16
+
+- Build: full run f014 (the v0.1.2 full run, 2026-11-15 to 2026-11-16) on code `2d109fff`, branch `v0.1.2-rc`. Installer SHA-256 `065fedd6bf2b76387adfd0e2db0ed81c4c1f8572c5e6cc78d1457e616d09981f`. Installed `arbareto.exe` SHA-256 `478ac4cc1fedacdebe82be4fcdbfba03be719b1fcd0e36b0b17b59bd88ac225e`. Every step exited 0. Every `ORIGIN` line named the checkout under test. The logs are in local scratch `f014-full`.
+- T174 green part: `tests/windows/inspection-packaged.test.ts` 11 pass, 1 skip, 0 fail on the installed exe `478ac4cc…`, with both T111 cases.
+- T174 packaged control (`t174-c1`, 2026-11-16, local scratch `v012-controls-f014`): remove ` select-text` from the submodule preview root in `src/frontend/changes/SubmodulePreview.tsx`. The control built a package from a clean `2d109fff` checkout with this mutation. Installed exe SHA-256 `58509680151c6b7781b8c3fe525859834df7084a4944421e025a81950af42f6d`.
+- Result: 0 pass, 2 fail. Both T111 cases ("T111 FR-067, FR-074 …" and "T111 FR-010, FR-069 …") failed at the `userSelects` `toEqual` (`inspection-packaged.test.ts:837` and `:910`). Each received `"code": "none"` and `"subject": "none"`. The run then installed the f014 package again, and its exe hash matched.
+- f014 green counts of the DOM files (pass, skip, fail): `submodule-preview.test.tsx` 55, 0, 0. `inspection-blame.test.tsx` 37, 0, 0. `notice-band.test.tsx` 42, 0, 0. `status-area.test.tsx` 114, 0, 0. `comparison-view.test.tsx` 21, 0, 0. `history-view.test.tsx` 25, 0, 0. `references-sidebar.test.tsx` 39, 0, 0. `workbench-commit.test.tsx` 109, 0, 0. `platform-label.test.tsx` 10, 0, 0. All are in `tests/contracts`.
+- T174 DOM controls on 2026-11-16 (local scratch `v012-dom-controls`). Each control ran alone in a clean `2d109fff` checkout with `ORIGIN` lines there. The run script restored the files after each control. Every control turned its case red:
+
+  | Control | Mutation (row wording) | Red line |
+  | --- | --- | --- |
+  | `t174-c1-preview-root` | remove `select-text` from the submodule preview root | both preview cases, `submodule-preview.test.tsx:140`: `classList.contains("select-text")` expected true, got false |
+  | `t174-c2-blame-check` | remove the Blame selection check | `inspection-blame.test.tsx:375`: `aria-selected` expected "true", got "false" |
+  | `t174-c3-blame-focus` | remove the focus return after a skipped Blame click | `inspection-blame.test.tsx:379`: `document.activeElement` was Line 3, expected Line 1 |
+  | `t174-c4-blame-ctrlc` | call `preventDefault` on Ctrl+C in the Blame list | `inspection-blame.test.tsx:409`: `defaultPrevented` expected false, got true |
+  | `t174-c5-notice-column` | remove `select-text` from the NoticeBand text column | `notice-band.test.tsx:209`: expected true, got false |
+  | `t174-c6-status-block` | remove `select-text` from the OperationStatus row text block | 2 T174 cases, `status-area.test.tsx:130`: expected true, got false |
+  | `t174-c7-message-span` | remove `select-text` from the status bar message span | `status-area.test.tsx:487`: the class list lacks "select-text" |
+  | `t174-c8-refusal-span` | remove `select-text` from the refusal span | `status-area.test.tsx:495`: the class list lacks "select-text" |
+  | `t174-c9-comparison-h2` | remove `select-text` from the comparison heading `h2` | `comparison-view.test.tsx:81`: expected true, got false |
+  | `t174-c10-history-row` | add `select-text` to a History row | `history-view.test.tsx:81`: `row.closest(".select-text")` not null |
+
+- T174 (ticked): the ten DOM controls and the packaged control ran red on code `2d109fff`. The packaged control used the f014 installer above. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0 (tasks.md:44). The f014 `tests/windows` steps cover every file of `tests/windows` at `2d109fff`, and each step exited 0.

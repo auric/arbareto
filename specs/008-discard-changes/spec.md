@@ -361,7 +361,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - Revert all unstaged changes sits in a menu of the Changes header, and it has no key. Git Extensions offers it in the commit dialog without a default key. This is a reviewer default.
 - The confirmation shows counts and paths, not the reverted lines. The selection stays visible in the diff behind the modal. This is a reviewer default.
 - Known limit: over 12 back-to-back runs at the 004 multi-file limit, the idle process-tree memory before each run rose by about 43 MiB per cycle (841 to 1,317 MiB). Each cycle is a run, an external restore, and F5. The cause is open. T072 finds it after v0.1.0 (research R15 "Batch 4 budget decisions").
-- Known limit: after Cancel of a 10,000-file revert, the outcome showed after a median of 8.1 s. One run took 19.5 s. SC-007 sets no budget for this time, and the 001 5 s target does not apply to a revert (user decision 2026-11-15, contracts/operations.md Δ5). T083 finds the cause (research R15 "SC-007 Cancel decision").
+- Known limit: after Cancel of a 10,000-file revert, the outcome showed after a median of 8.1 s. One run took 19.5 s. SC-007 sets no budget for this time. The 001 5 s target does not apply to a revert (user decision 2026-11-15, contracts/operations.md Δ5). T083 finds the cause (research R15 "SC-007 Cancel decision").
 - The modal and result texts are proposals. The plan records them, as every visible text comes from plan.md.
 - The fileReplace step of feature 005 grows to working files. Today it covers only `.gitignore` and `info/exclude` up to 1 MiB. For a whole file, it copies from Git's temporary file instead of a frame.
 

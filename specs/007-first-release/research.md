@@ -1031,7 +1031,7 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
   - `actions/variables`: none. So `ARBARETO_SIGNING` is absent, and signing stays off.
   - The release list holds only `v0.1.1` and `v0.1.0`. The remote has no tag `v0.1.2` and no branch `v0.1.2`, `v0.1.2-rc`, or `release-dry-run`.
   - `main` on the remote is daafd403.
-- `OBSERVATION v0.1.2 pre-tag: 19 ticks; analyze 0 CRITICAL 0 HIGH; 08a096e8 tree equals c83d5f67; no change outside specs/ from 2d109fff; post-merge check exit 0, release tests 79 pass 0 fail; deb54088 changes only the CHANGELOG date line; settings read-back 9 of 9 as v0.1.1; no v0.1.2 release or tag before the tag push`
+- `OBSERVATION v0.1.2 pre-tag: 19 ticks; analyze 0 CRITICAL 0 HIGH; 08a096e8 tree equals c83d5f67; no change outside specs/ from 2d109fff; post-merge check exit 0, release tests 79 pass 0 fail; deb54088 changes only the CHANGELOG date line; settings read-back as v0.1.1; no v0.1.2 release or tag before the tag push`
 
 ### T026 Local rehearsal of the build job, fifth run (2026-11-16, clean clone at 08a096e8)
 
@@ -1104,9 +1104,11 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
 - deb54088 is the head of `origin/main`.
 - Run https://github.com/auric/arbareto/actions/runs/43855930867, attempt 1, created 11:14:05Z, conclusion success.
 - `build`: 11:14:08Z to 11:22:39Z, success, 8 min 31 s (budget 90 min).
-- Approval: the approvals API gives `approved`, user `auric`, environment `release`. Deployment 7822575160.
-- `publish`: 11:23:24Z to 11:23:59Z, success.
-- From the orchestrator's run summary: SC-006 approval to publish takes 32 s (budget 15 min).
+- Approval: the approvals API gives `approved`, user `auric`, environment `release`. The API holds no approval time.
+- Deployment 7822575160 (`dep.txt`) statuses: waiting 11:22:41Z, queued 11:23:23Z. The record takes the queued time as the approval time.
+- No file in local scratch holds the two status times. They come from the orchestrator's read of the deployment statuses.
+- `publish`: 11:23:24Z to 11:23:59Z, success (`run.json`).
+- SC-006: approval to publish takes 32 s (11:23:23Z to 11:23:55Z, budget 15 min). The build takes 8 min 31 s (budget 90 min).
 - Release "Arbareto Preview v0.1.2": prerelease, immutable, not a draft, published 2026-11-16T11:23:55Z, four files.
 - `releases/latest` gives HTTP 404. So the release is not latest.
 - The release body holds the `--signer-workflow` command (line 60). It also holds "Unsigned builds do not run when Smart App Control is on." (line 43).
@@ -1115,19 +1117,23 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
   - `arbareto-0.1.2-hunspell-source.tar.gz` 2211100 bytes `96b555f6654003978b2fb708dff2adbe70520d350009857c499cc1e7c030860e`.
   - `arbareto-0.1.2-third-party-notices.txt` 650568 bytes `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
   - `SHA256SUMS.txt` 304 bytes `2a04726b5ca3755381b9ceabafccb5fdf78e69894c0e48410d13bbbc3ed18588`.
-- From the orchestrator's run summary: `sums.ts verify` on the downloads exit 0.
-- The `gh attestation verify` JSON output (`attj-*.json`) holds a verified attestation for each of the four files.
+- `sums.ts verify` on the downloads exit 0, run from the checkout at deb54088.
+- SC-002, first sentence: `sha256sum --ignore-missing --check SHA256SUMS.txt` in `dl` exit 0, with 3 OK lines.
+- The 3 OK lines name the installer, the Hunspell archive, and the notices file.
+- `gh attestation verify <file> -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml` exit 0 for each of the four files.
+- Its JSON output is in `attj-*.json`. The `att-*.log` files are empty.
 - The JSON output names the signer `release.yml@refs/tags/v0.1.2` and the source digest deb54088 for each file.
+- SC-002, second sentence: the `SHA256SUMS.txt` attestation check exit 0.
 - The notices file is byte-equal to the v0.1.1 and v0.1.0 notices files (`00971cc0…`). So its attestation JSON holds three attestations.
 - The other two attestations have the signers `release.yml@refs/tags/v0.1.1` (source digest a90e7ef9) and `release.yml@refs/tags/v0.1.0` (source digest 7545e5b8).
 - Attestation controls (`ctl1.log`, `ctl2.log`), each exit 1:
   - An installer copy with byte 1001 changed (XOR 0xFF): HTTP 404, no attestation for that digest.
-  - The real installer with `--signer-workflow auric/arbareto/.github/workflows/other.yml`: verification fails with issuer "sigstore.dev".
+  - The real installer with `--signer-workflow auric/arbareto/.github/workflows/other.yml`: verification fails.
 - Upload refusal: not run for v0.1.2 (user decision). The v0.1.0 record holds the HTTP 422 refusal.
-- The `publish` job log has 373 lines. Its six `RELEASE_CHECK` hits are all in the echoed script source. `GH_TOKEN: ***` occurs once.
+- The `publish` job log has 373 lines. Its six `RELEASE_CHECK` hits are all in the echoed script source. `GH_TOKEN: ***` occurs once, in the step "Publish the release".
 - SC-007: the T039 release run gives HTTP 200 for `https://github.com/auric/arbareto/tree/deb540883378f1cfb82f45d9873a308713c625c6`.
 - SC-007: the same run gives HTTP 200 for `https://github.com/auric/arbareto/releases/download/v0.1.2/arbareto-0.1.2-hunspell-source.tar.gz`.
 - The About buttons open these URLs. See "v0.1.2 Sandbox runs (2026-11-16, reference host)".
 - The Sandbox install of the downloaded installer passes as T030. See the same section.
 - The user approved the README update on 2026-11-16. README.md Status and Download now name v0.1.2.
-- `OBSERVATION v0.1.2 release: v0.1.2 at deb54088 (tag object afed9a8f), prerelease, immutable, not latest, four files; build 8 min 31 s, approval to publish 32 s; downloads equal API digests; sums verify exit 0; attestation verified for each file with the release.yml signer, exit 1 for a changed byte and for other.yml; notices file carries three attestations; GH_TOKEN once in the publish log; both About URLs HTTP 200; upload refusal not run`
+- `OBSERVATION v0.1.2 release: v0.1.2 at deb54088 (tag object afed9a8f), prerelease, immutable, not latest, four files; build 8 min 31 s, approval to publish 32 s; downloads equal API digests; sums verify exit 0, 3 OK lines; attestation exit 0 for each file with the release.yml signer, exit 1 for a changed byte and for other.yml; notices file carries three attestations; GH_TOKEN only in "Publish the release"; both About URLs HTTP 200; upload refusal not run`

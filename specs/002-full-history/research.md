@@ -386,7 +386,7 @@ Run of 2026-10-12 and 2026-10-13 for T011, T020, T030, and T050. Host: Windows 1
 | `tests/wsl/registration.test.ts` on Ubuntu-24.04 | not in the log | 42 tests: 38 pass, 4 skip, 0 fail |
 | `bun run test:windows` | 1 | 10 files, 112 tests: 107 pass, 4 skip, 1 fail |
 
-- `ORIGIN`: `test:all` prints 1,256 lines, all under `C:\Projects\arbareto-l1`. Each control mutation run also prints its lines under this checkout.
+- `ORIGIN`: `test:all` prints 1,256 lines, all under the worktree l1. Each control mutation run also prints its lines under this checkout.
 - `test:all` skips (44): golden vectors of another platform 29; POSIX-only cases 2; Linux `F_SETPIPE_SZ` 1; `ssh-server` 3; `history-fixture-h1m` 2 (T001, T003); `distro-git-below-2.55` 2; `two-test-distros` 1; `other-account-owner` 1; `disposable-volume` 1; `fifo` 1; `restart-keeps-lingering` 1.
 - Ubuntu-24.04 skips (4): `distro-git-2.55` 4.
 - `test:windows` skips (4): `display-off` 1; live input needs the measurement account 2; `history-fixture-h1m` 1 (T006).
@@ -413,7 +413,7 @@ Open items:
 
 ## R21 Verification run of f002-b3 37aa8d4
 
-Run of 2026-10-13, 06:21 to 07:40 local, in `C:\Projects\arbareto-l4` at 37aa8d4, for T001 to T003, T006, T011, T030 to T037, T050, T061, and T063. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2 (`C:\Program Files\Git\ucrt64\bin\git.exe`). WSL: Ubuntu-26.04 with Git 2.55.0, and Ubuntu-24.04 with Git 2.43.0 for the registration file. The run built H1M. Each batch review of 002 is recorded ("Batch reviews").
+Run of 2026-10-13, 06:21 to 07:40 local, in the worktree l4 at 37aa8d4, for T001 to T003, T006, T011, T030 to T037, T050, T061, and T063. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2 (`C:\Program Files\Git\ucrt64\bin\git.exe`). WSL: Ubuntu-26.04 with Git 2.55.0, and Ubuntu-24.04 with Git 2.43.0 for the registration file. The run built H1M. Each batch review of 002 is recorded ("Batch reviews").
 
 | Step | Exit | Counts |
 |---|---|---|
@@ -435,7 +435,7 @@ Run of 2026-10-13, 06:21 to 07:40 local, in `C:\Projects\arbareto-l4` at 37aa8d4
 - The 5c2bc0a rerun failed on two intermittent 001 tests. (1) `tests/contracts/workbench-mount.test.tsx` B4-1 counted 3 reads, not 2. The real 1 s poll fired in the settle window. This was a test defect, and 5dc33f6 fixes it. (2) The WSL F31 silent-fetch case (T232) failed with `REPOSITORY_UNAVAILABLE`. The cause was environmental (next item).
 - Environmental cause of F31: at about 06:28 UTC, an unattended upgrade in Ubuntu-26.04 installed libc6. The package then re-executed systemd (`daemon-reexec`). During that step, `systemd-run` could not start the scope of the call. The wrapper exited nonzero, and the service reported `REPOSITORY_UNAVAILABLE`. Timer facts: `apt-daily.timer` and `apt-daily-upgrade.timer` start these upgrades in the test distro, and the 19c47d0 run saw neither timer fire. **experiment**
 - Product gap from F31: the WSL wrapper reports a scope start failure as a Git exit. `systemd-run` exits 1 for every start failure, from systemd 258 on. Feature 001 fixes this later in a new task. The design of a scope start byte exists.
-- The 19c47d0 rerun is green. `ORIGIN`: 1,290 lines, all under `C:\Projects\arbareto-l4`. The T001 and T003 H1M cases ran. Skips (43): golden vectors of another platform 29; `ssh-server` 3; `distro-git-below-2.55` 2; `disposable-volume` 1; `fifo` 1; `restart-keeps-lingering` 1; `empty-locpath-hides-c-utf8` 1 (T063 case (c)); `two-test-distros` 1; skips by test name 4.
+- The 19c47d0 rerun is green. `ORIGIN`: 1,290 lines, all under the worktree l4. The T001 and T003 H1M cases ran. Skips (43): golden vectors of another platform 29; `ssh-server` 3; `distro-git-below-2.55` 2; `disposable-volume` 1; `fifo` 1; `restart-keeps-lingering` 1; `empty-locpath-hides-c-utf8` 1 (T063 case (c)); `two-test-distros` 1; skips by test name 4.
 - From 37aa8d4 to 19c47d0, no file changed in `src-tauri`, `tests/windows`, `tests/wsl`, or the 002 service and test code. The changes are `Workbench.tsx`, `notices.ts`, three contract tests, and spec files. So the 37aa8d4 results of cargo, `test:windows`, Ubuntu-24.04, and the control mutations stand.
 
 Ticks after the 19c47d0 rerun. Each task cites its proof.
@@ -457,7 +457,7 @@ Ticks after the 19c47d0 rerun. Each task cites its proof.
 | T036 | T034 passes in 19c47d0. |
 | T037 | `typecheck` and `test:all` exit 0 in 19c47d0. The `--regexp-ignore-case` mutation went red, then green. R22 holds the records. "Batch reviews" holds the batch 3 review. |
 | T063 | The cargo cases pass on 37aa8d4, and `tests/wsl/history-wsl.test.ts` passes in 19c47d0 with case (c) skipped as a finding (R10, R22). Both control mutations went red, then green. |
-- `ORIGIN`: `test:all` prints 1,290 lines, all under `C:\Projects\arbareto-l4`. Each control mutation run also prints its lines under this checkout.
+- `ORIGIN`: `test:all` prints 1,290 lines, all under the worktree l4. Each control mutation run also prints its lines under this checkout.
 - `test:all` skips (43). Parallel step (36): golden vectors of another platform 29; `distro-git-below-2.55` 2; POSIX-only cases 2; `other-account-owner` 1; `disposable-volume` 1; `two-test-distros` 1. Serial step (7): `ssh-server` 3; Linux `F_SETPIPE_SZ` 1; `fifo` 1; `restart-keeps-lingering` 1; `empty-locpath-hides-c-utf8` 1 (T063 case (c)).
 - The T063 case (c) skip is a finding. On Ubuntu-26.04 (glibc 2.43), `LC_ALL=C.UTF-8 locale charmap` with an empty `LOCPATH` folder gives `UTF-8` with exit 0, not `ANSI_X3.4-1968`. So an empty `LOCPATH` does not hide C.UTF-8, and the case cannot make the locale missing (R10, R22).
 - No `history-fixture-h1m` skip remains: the T001, T003, T006, and T061 H1M cases ran.
@@ -494,7 +494,7 @@ T032 and T063, the 37aa8d4 run (R21), Windows Git 2.56.0.windows.2 and Ubuntu-26
 
 ## R23 Ticks of T067 and T068, 2026-10-22
 
-001 full run 7 at b7eff6a is green (001 research.md R10 "Full runs 6 and 7"): parallel 6,611 pass, serial 588 pass, 0 fail. All `ORIGIN` lines name `C:\Projects\arbareto-l5`. Commit eef188d holds both tasks. From b7eff6a to c741ade, no file of either task changed. The control mutations ran at c741ade in `C:\Projects\arbareto-l8`, and each `ORIGIN` line names that checkout. Each source file was restored byte for byte (sha256 check).
+001 full run 7 at b7eff6a is green (001 research.md R10 "Full runs 6 and 7"): parallel 6,611 pass, serial 588 pass, 0 fail. All `ORIGIN` lines name the worktree l5. Commit eef188d holds both tasks. From b7eff6a to c741ade, no file of either task changed. The control mutations ran at c741ade in `C:\Projects\arbareto-l8`, and each `ORIGIN` line names that checkout. Each source file was restored byte for byte (sha256 check).
 
 | Task | Proof | Edit | Red | Green |
 |---|---|---|---|---|

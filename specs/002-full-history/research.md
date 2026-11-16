@@ -522,7 +522,7 @@ T032 and T063, the 37aa8d4 run (R21), Windows Git 2.56.0.windows.2 and Ubuntu-26
 - T065 DOM control on 2026-11-16 (local scratch `v012-dom-controls`, control `t065-c1`): change the tooltip text to "Filter commit messages". The control ran in a clean `2d109fff` checkout with `ORIGIN` lines there. The run script restored the file after the run. `history-filter.test.tsx` gave 24 pass, 1 fail, at `expect(tooltipText()).toBe("Filter commit messages (Ctrl+F)")`. It received `"Filter commit messages"`.
 - T065 tests-first step: no record keeps its red output, and local scratch holds none. Commit 7a001590 holds the tests and the fix together. So the red-before-fix step is unverified. The red proof is the DOM control `t065-c1` and the packaged control `t065-2`.
 - T065 (ticked): both controls ran red on code `2d109fff`. f014 also gave `tests/contracts/workbench-mount.test.tsx` 95, 0, 0 and `tests/contracts/workbench-commit.test.tsx` 109, 0, 0. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0.
-- T065 depends on T050, and T050 stays open. This record does not verify T050: its manual check and its batch 4 review stay unverified.
+- T065 depends on T050, and T050 stays open. This record does not verify T050. The quickstart.md "Manual check in the app" did not run, and T045 stays open. "Batch reviews" below records the batch 4 review of 2026-10-13.
 
 ## Batch reviews
 

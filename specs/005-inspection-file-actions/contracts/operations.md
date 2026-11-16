@@ -142,6 +142,20 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Programs: step 3 loads the submodule index. Protected programs from system, global, and command scope can run, as in the parent read (001 §7). No repository-controlled program of the submodule runs, because step 2 refuses it.
 - Bounds: the 001 §5 status record and byte bounds per target, `READ_DEADLINE_MS` for each page (decided 2026-11-13). So one cycle can take up to the page count × 30 s, at most 16 × 30 s = 480 s. A deadline ends every running target of the page. The targets of the page without a result give `unchecked` reason `failed` with `DEADLINE`.
 - A path that is no valid UTF-8 or breaks the 001 §6 component rule gives `unchecked` reason `failed` with `SUBMODULE_UNAVAILABLE`. A read deadline during the parent gate or the file facts gives every target of the page `failed` with `DEADLINE`.
+- WSL route (T115): each page runs the fixed script `submoduleWork` (Δ6, Δ11) in two phases, on the targets of that page only. The checks and the states stay those of steps 1 to 3.
+  - Phase a: one run for the targets that pass check 4. Per target, it runs check 5 (`rev-parse --show-toplevel`), then step 2 (`config list`). Then the service runs the step 2 trust check per target.
+  - Phase b: one run for the targets that pass check 5 and step 2. Per target, it runs step 3 (`status`). A page without such a target runs no phase b.
+  - Arguments: `[dir, phase, bound, ...targets]`. `dir` is `/tmp/arbareto-probe-<uuid>`, with a lowercase uuid from the service. `phase` is `a` or `b`. `targets` are 1 to 16 (`SUBMODULE_WORK_PAGE`) absolute distro paths `<worktree root>/<path>`.
+  - `bound` is the byte bound of one command output: `TRUST_INPUT_BYTES` in phase a, `STATUS_LISTING_BYTES` in phase b. The shell admits a decimal number from 1 to `STATUS_LISTING_BYTES` without a leading zero.
+  - Commands: the arrays of `submoduleToplevelArgs`, `submoduleConfigListArgs`, and `submoduleStatusArgs` with the target as the worktree: `--no-lazy-fetch --no-optional-locks -C <target> --git-dir=.git <args>`.
+  - Output: one frame per command, in argument order. Phase a gives two frames per target (check 5, then step 2). Phase b gives one frame per target. `<i>` is the zero-based target index in the run arguments.
+  - Frame: `<i> <exit> <n>\n` and then the `n` output bytes, with `<exit>` the Git exit code. An output above `bound` gives `<i> limit <bound>\n` and then the first `bound` bytes of the output (orchestrator decision E4, 2026-11-16).
+  - The service reads the check 5 frame with the 64 KiB bound of the Windows route (`DIAGNOSTIC_RETAINED_BYTES_PER_STREAM`). A longer check 5 output or a step 2 `limit` frame gives `failed` with `OUTPUT_LIMIT`.
+  - A step 3 `limit` frame keeps the early stop of step 3. When its bytes set both `modified` and `untracked`, the state is `checked`. Otherwise it is `failed` with `OUTPUT_LIMIT`.
+  - Command lines (orchestrator decision E3, 2026-11-16): a phase whose targets do not fit `WINDOWS_COMMAND_LINE_UNITS` splits into more runs. Each run takes the next targets in page order that fit. The units are those of the `wsl.exe` command line that the shell builds, with the script text. A target that does not fit a run alone gives `failed` with `INVALID_REQUEST`, as the Windows route does.
+  - Failures: a script exit other than 0 gives each target of the run without a frame `failed` with `GIT_FAILED`. Output in another form gives each such target `MALFORMED_GIT_OUTPUT`. A shell refusal gives each target of the run `INVALID_REQUEST`.
+  - Deadline: a target with its frames complete keeps its state. Each other target of the page gives `failed` with `DEADLINE`.
+  - Cleanup: the script makes `dir` with `umask 077` and `mkdir` without `-p`, so an existing folder fails. An `EXIT` trap set after `mkdir` removes the folder. A cancel or a deadline leaves the folder (contract gaps).
 - Errors of a page: `TRUST_REQUIRED`, `TRUST_CHANGED` (parent gate); `UNKNOWN_TARGET` (an old snapshot, `src/git-service/snapshot.ts` `lookup`); `REPOSITORY_CHANGED` (a new repository generation, the same `lookup` through `reader.selection` in `src/git-service/status.ts`); `INVALID_REQUEST` (a page at or above the page count); `OUTPUT_LIMIT` (index cut); `CANCELED`. No new error code.
 - Result: data-model §16, one page.
 
@@ -254,6 +268,12 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - Accepted arrays in an `ignorePreview` context, cwd `<shadow>/s` or `<shadow>/c`: `--no-lazy-fetch init -q --template=`; `--no-lazy-fetch hash-object -w --no-filters --stdin-paths`; `--no-lazy-fetch hash-object -w --no-filters --stdin`; `--no-lazy-fetch hash-object --no-filters --stdin-paths`; `--no-lazy-fetch update-index -z --index-info`; `--no-lazy-fetch -c core.autocrlf=false -c core.eol=lf checkout-index -a -f`, also with `--prefix=.git/info/`; `--no-lazy-fetch -c core.ignorecase=<true|false> [-c core.excludesFile=<path>] check-ignore --no-index -z --stdin -v -n`. On Windows, the `hash-object --stdin-paths`, `checkout-index`, and `check-ignore` arrays carry `-c core.longpaths=true` right after `--no-lazy-fetch`. The request names the repository (`s` or `c`) and the index: `index` or `exclude` sets `GIT_INDEX_FILE` to `<cwd>/.git/index` or `<cwd>/.git/exclude.index`. The shell sets `GIT_DIR` to `.git`, which names `<cwd>/.git`; a WSL run takes `--git-dir=.git` after `-C <cwd>`. So Git never finds a repository above the shadow folder, and `git init` makes a repository with a work tree: with `GIT_DIR` set, `git init` guesses a bare repository unless `GIT_DIR` is `.git` or ends in `/.git` (Git `builtin/init-db.c` `guess_repository_type`). For the `ignorePreview` context on Windows the shell sets `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` to an empty file in the shadow folder; the service passes every setting the preview needs as `-c` items. Any other array, cwd, or index gives `INVALID_REQUEST`.
   - `run` fields of the context (001 §6 "Channel frames"): `contextKind: "ignorePreview"`, `gitInstallationId` (the Git of the repository, as every non-bootstrap context names it), `shadowId` (the `shadow` reply), `shadowRepository` (`s` or `c`, the cwd), and `shadowIndex` (`index` or `exclude`). The `run` field `indexFile` stays absent, because `shadowIndex` names the index. A `shadowId` that no live context of the operation holds gives `UNKNOWN_TARGET` (001 §6 `refused` codes: an unbound ID).
   - Policy: the 001 `read` policy with the shadow cwd. The shell never runs a repository context command in an `ignorePreview` context.
+- The 002 Δ6 `run` field `script` adds the value `submoduleWork` (T115, Δ3 `readSubmoduleWork` "WSL route"). The shell runs it through the wrapper in mode `read`, with `/bin/sh`, the script text, and the approved Git path.
+  - Policy per script: `matchingProbe` takes only `search`, and `submoduleWork` takes only `read`.
+  - The shell refuses a `submoduleWork` run with `INVALID_REQUEST` and starts nothing for: another policy, a transaction or an index file, or a Windows Git.
+  - It also refuses: a folder other than `/tmp/arbareto-probe-<uuid>`, a phase other than `a` or `b`, and a bound that is not a decimal number from 1 to `STATUS_LISTING_BYTES` without a leading zero.
+  - It also refuses: no target, more than 16 targets (`SUBMODULE_WORK_PAGE`), and a target that does not start with `/`.
+  - Otherwise a `submoduleWork` run follows every `run` rule: Job, deadline, cancel, output bounds, and the `exit` reply.
 - `reveal` reply adds `absent` for a walk that finds no entry. The service maps it to `UNKNOWN_TARGET` with reason `absent`.
 - `fileFacts` gains `content: boolean`, WSL only, with `digest: true`, exactly one entry, and no `index`. The `file` fact then adds `bytes` (base64) for a file up to 1 MiB. A Windows request with `content` gives `INVALID_REQUEST`.
 - `openSubmodule` native step: as `openWorktree` (004 Δ6), with the joined path. `registered_root` (`service.rs:760-768`) adds `openSubmodule`, so a `succeeded` result stores a recent entry, and the settings keep it as the last repository (`service.rs:1007`).
@@ -299,6 +319,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Vector tests for the raw record parser, both blame grammars, the line map, the ignore codec, and `tree-order.ts`.
 - The service builds the new command arrays (001 §6). The shell keeps no per-command list for registered runs. A Rust test admits the new registered arrays. The `ignorePreview` context admits only the Δ6 shadow arrays.
 - The Rust check of `src-tauri/src/schema.rs` reads each new vector of `native-first-envelope`, `mutation-request`, `progress`, and `process-request`.
+- T115: schema tests and golden vectors for the `script` value `submoduleWork`. Rust and Bun tests for each Δ6 `submoduleWork` refusal. A text test proves that the script runs the arrays of `submoduleToplevelArgs`, `submoduleConfigListArgs`, and `submoduleStatusArgs`.
 
 ## Δ11 WSL repositories (001 §11)
 
@@ -310,6 +331,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - New `wslFiles` mode `scratch`: `create` makes the shadow folder and its `s` and `c` folders with `mkdir` mode 0700 under `/tmp` with the data-model §13 name. `remove` deletes one shadow folder depth-first, only below a name that starts with `arbareto-preview-`, and never through a link: it opens `/tmp` and each folder with `O_RDONLY|O_DIRECTORY|O_NOFOLLOW`, enters it with `chdir`, compares the `stat(".")` device and inode with the `lstat` of the name, and then uses only relative names with `lstat`, `unlink`, and `rmdir`. `sweep` lists the `arbareto-preview-*` entries whose `lstat` owner is the distro user (`$<`) for the leftover rule.
 - The shadow Git commands run inside the distro through the wrapper in mode `read`: `git --no-lazy-fetch -C /tmp/<shadow>/<s|c> --git-dir=.git <array without --no-lazy-fetch>`, with `GIT_INDEX_FILE` `<cwd>/.git/index` or `<cwd>/.git/exclude.index`. The arrays are the Δ6 arrays without `-c core.longpaths=true`. The run takes the WSL Git of the shadow's distro; another Git gives `INVALID_REQUEST`.
 - `revealPath` with `folder` takes the UNC form of the folder.
+- New fixed script `submoduleWork` in `src/contracts/wsl-process.json` (T115). Only the `run` field `script` starts it (Δ6). It runs the Δ3 `readSubmoduleWork` "WSL route" phases in one `wsl.exe` run per phase. Each Git command passes `--no-lazy-fetch` first. Each output goes through `head -c <bound + 1>` into a file in `dir`, so the script holds at most `bound + 1` bytes per command.
 
 ## Δ12 Submodules (001 §12)
 
@@ -324,6 +346,9 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - 002 spec Scope Boundaries: historical diffs and blame are in feature 005. The Files tab and branch filtering stay out.
 - 002 Δ3 views: `readCommitChanges` and `readBlame` take the view topology and shallow set. A view release drops their retained results.
 - The 001 commit details line "Changed files are not shown in this version." goes.
+- 002 Δ6 `run` field `script` (T115): "Its only value is `matchingProbe`." becomes "Its values are `matchingProbe` and `submoduleWork`." Only the `registeredOperation` context takes it.
+- 002 Δ6 refusals (T115): "a policy other than `search`" applies to `matchingProbe` only. A `submoduleWork` run takes only `read` and has its own refusals (Δ6).
+- 002 Δ11 "New fixed script `matchingProbe`" (T115): `src/contracts/wsl-process.json` also holds the fixed script `submoduleWork` (Δ11).
 
 ## Δ14 Changes to 003 deltas
 
@@ -355,5 +380,6 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - `blame.ignoreRevsFile` values that the shell `below` rule refuses, such as a value outside the worktree or with a `..` component, pass to Git unchecked. A missing file there gives `GIT_FAILED` with the output tail. `config --type=path` removes the prefix rules but not this gap, because `fileFacts` checks only paths below the worktree root.
 - Stage file of a moved gitlink reads the submodule HEAD again at step 7. A commit inside the submodule between that read and the publication goes unseen. The index then records the commit of the step 7 read, and the next status shows the submodule as moved again.
 - `readSubmoduleWork` checks the submodule settings in step 2 and runs status in step 3. A settings change between the two steps is not seen. The next snapshot checks again.
+- A cancel or a deadline of a WSL `submoduleWork` run ends its scope with SIGKILL, so the `EXIT` trap does not run. The `/tmp/arbareto-probe-<uuid>` folder then stays, as for the 002 matching probe. Nothing removes it. It holds the bounded output of the last commands: config listings or status records of the submodules. Mode 0700 keeps it private to the distro user.
 - A submodule with a repository-controlled status program gets no local-edit check. No approval path exists for it in the parent window. Open submodule gives it its own trust (spec FR-050). A later feature can reuse that approval.
 - `FileDispositionInfoEx` and `FileRenameInfoEx` need a file system with POSIX delete and rename support. Another file system gives `error`, and the file stays (plan O-4).

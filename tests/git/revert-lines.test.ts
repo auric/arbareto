@@ -25,7 +25,9 @@ const TASK = "T025";
 const SHELL: Capability[] = ["shell-double"];
 const LONG_TIMEOUT_MS = 600_000;
 
-type RevertRun = { action: string; files: { entryId: string; outcome: string; code?: string; reason?: string }[]; foldersCreated: string[]; index: string };
+// Data-model §9: the count of each outcome.
+const NONE = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+type RevertRun = { action: string; counts: typeof NONE; files: { entryId: string; outcome: string; code?: string; reason?: string }[]; foldersCreated: string[]; index: string };
 type Reviewed = { action: string; plan: { scope: string; fileBytes: string; lines: number | null }; workbenchToken: string };
 
 // The line-ending keys and `core.filemode` of `tests/git/fixtures.ts` `lineEndings`. A case adds its own keys after them.
@@ -174,7 +176,7 @@ async function revertCase(service: Service, r: RegistrationResult, repo: string,
   const reviewed = await reviewOk(service, r, read, { comparisonId: c.comparisonId, hunkId: c.hunkIds[index]!, ...(picked === null ? {} : { lines: picked }) });
   expect({ ...label, plan: reviewed.plan }).toEqual({ ...label, plan: { scope: "unstaged", fileBytes: b64(path), lines: picked === null ? null : picked.length } });
   const done = await run(service, r, reviewed.workbenchToken);
-  expect({ ...label, ...outcome(done), result: done.result }).toEqual({ ...label, ...SUCCEEDED, result: { action: "revert-lines", files: [{ entryId: c.entry.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" } });
+  expect({ ...label, ...outcome(done), result: done.result }).toEqual({ ...label, ...SUCCEEDED, result: { action: "revert-lines", counts: { ...NONE, reverted: 1 }, files: [], foldersCreated: [], index: "none" } });
 
   const after = readFileSync(join(repo, ...path.split("/")));
   const proof = g(repo, ["hash-object", `--path=${path}`, "--stdin"], after).toString("utf8").trim();
@@ -369,7 +371,7 @@ describe("revert lines: the bound and the token (spec FR-011, plan.md D2, D13)",
         const reviewed = await reviewOk(service, r, read, { comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! });
         const index = state(repo).index;
         const done = await run(service, r, reviewed.workbenchToken);
-        expect({ state: done.state, files: done.result?.files }).toEqual({ state: "failed-with-effects", files: [{ entryId: c.entry.entryId, outcome: "changed-outside" }] });
+        expect({ state: done.state, counts: done.result?.counts, files: done.result?.files }).toEqual({ state: "failed-with-effects", counts: { ...NONE, "changed-outside": 1 }, files: [{ entryId: c.entry.entryId, outcome: "changed-outside" }] });
         expect(seen.map(({ step, path }) => ({ step, path }))).toEqual([{ step: "before-write", path: b64("f.txt") }]);
         // The shell got the bound size and SHA-256 as `expected` and wrote nothing.
         const frames = service.runner.frames.filter((f) => f.type === "fileReplace") as { expected: { size: number; sha256: string } }[];

@@ -72,7 +72,7 @@ type Candidate = { entry: ChangeEntry; path: Uint8Array; names: string[] | null 
 type FileReason = { pathBytes: string; reason: string };
 
 const SLASH = 0x2f;
-// Contract Δ3 "Refusal value": the first 20 refused files in tree order.
+// Contract Δ3 "Refusal value": the first 20 refused files in tree order. Data-model §9: a run result lists as many files.
 const REFUSED_FILES = 20;
 // Data-model §5: the first confirmation paths in tree order.
 const CONFIRMATION_PATHS = 20;
@@ -1035,7 +1035,10 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
     if (sameEntry(index, plan.indexEntry) && digest === old) return reply === null ? at("not-started") : at("not-changed", why);
     return at("changed-outside");
   });
-  const value = { action: bound.action, files: outcomes, foldersCreated: [...created].map((path) => Buffer.from(path).toString("base64")), index };
+  const counts = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+  for (const o of outcomes) counts[o.outcome]++;
+  // Data-model §9: `plans` is in tree order, so `files` lists the first files that did not revert.
+  const value = { action: bound.action, counts, files: outcomes.filter((o) => o.outcome !== "reverted").slice(0, REFUSED_FILES), foldersCreated: [...created].map((path) => Buffer.from(path).toString("base64")), index };
   // Plan.md D10: created folders and a Git temporary file that can stay are effects too, so such a run never ends `succeeded` or `no-effects`.
   const effects = outcomes.filter((o) => o.outcome === "reverted" || o.outcome === "unstaged-only" || o.outcome === "changed-outside").length + created.size + (tempKept ? 1 : 0);
   if (tempKept) return r.finish({ type: "failed-with-effects" }, value);

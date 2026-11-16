@@ -27,7 +27,9 @@ const TASK = "T038";
 const SHELL: Capability[] = ["shell-double"];
 const LONG_TIMEOUT_MS = 600_000;
 
-type RevertRun = { action: string; files: { entryId: string; outcome: string; code?: string; reason?: string }[]; foldersCreated: string[]; index: string };
+// Data-model §9: the count of each outcome.
+const NONE = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+type RevertRun = { action: string; counts: typeof NONE; files: { entryId: string; outcome: string; code?: string; reason?: string }[]; foldersCreated: string[]; index: string };
 type Reviewed = { action: string; plan: { scope: string; fileBytes: string; lines: number | null }; workbenchToken: string };
 
 // The line-ending keys and `core.filemode` of `tests/git/fixtures.ts` `lineEndings`. A case adds its own keys after them.
@@ -153,7 +155,7 @@ async function stagedCase(service: Service, r: RegistrationResult, repo: string,
   const reviewed = await reviewOk(service, r, read, { comparisonId: c.comparisonId, hunkId: c.hunkIds[index]!, ...(picked === null ? {} : { lines: picked }) });
   expect({ ...label, plan: reviewed.plan }).toEqual({ ...label, plan: { scope: "staged", fileBytes: b64(path), lines: picked === null ? null : picked.length } });
   const done = await run(service, r, reviewed.workbenchToken);
-  expect({ ...label, ...outcome(done), result: done.result }).toEqual({ ...label, ...SUCCEEDED, result: { action: "revert-lines", files: [{ entryId: c.entry.entryId, outcome: "reverted" }], foldersCreated: [], index: "published" } });
+  expect({ ...label, ...outcome(done), result: done.result }).toEqual({ ...label, ...SUCCEEDED, result: { action: "revert-lines", counts: { ...NONE, reverted: 1 }, files: [], foldersCreated: [], index: "published" } });
 
   // Spec FR-016: the index equals Git's own reverse apply, and the working file loses the same changes.
   expect({ ...label, index: indexOf(repo) }).toEqual({ ...label, index: expected.index });
@@ -335,7 +337,14 @@ describe("revert staged lines: the index part stays when the working part does n
           } finally {
             service.runner.inject.workingReply = null;
           }
-          expect({ seam, state: done.state, code: done.code, index: done.result?.index, files: done.result?.files }).toEqual({ seam, state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", index: "published", files: [{ entryId: c.entry.entryId, ...s.file }] });
+          expect({ seam, state: done.state, code: done.code, index: done.result?.index, counts: done.result?.counts, files: done.result?.files }).toEqual({
+            seam,
+            state: "failed-with-effects",
+            code: "FAILED_WITH_EFFECTS",
+            index: "published",
+            counts: { ...NONE, [s.file.outcome]: 1 },
+            files: [{ entryId: c.entry.entryId, ...s.file }],
+          });
           expect({ seam, seen: [...seen] }).toEqual({ seam, seen: ["before-index", "before-write"] });
           // Spec FR-017: the index part stays, and the working file keeps its bytes or the other writer's bytes.
           expect({ seam, index: indexOf(repo), bytes: readFileSync(join(repo, "f.txt"), "utf8") }).toEqual({ seam, index: expected.index, bytes: s.other ? "another writer\n" : STAGED["f.txt"] });

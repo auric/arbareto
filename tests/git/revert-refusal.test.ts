@@ -786,13 +786,14 @@ describe("revert refusals: the shell refusals at the write (contract Δ6, plan.m
             expect({ act, ...outcome(response) }).toEqual({ act, ...SUCCEEDED });
             const before = state(repo);
             const token = valuesOf(response.result, "workbenchToken")[0];
-            const done = await service.response<{ files: unknown[]; index: string }>(service.send("runWorkbench", { workbenchToken: token, start: true }, { repositoryId: r.repositoryId }));
+            const done = await service.response<{ counts: Record<string, number>; files: unknown[]; index: string }>(service.send("runWorkbench", { workbenchToken: token, start: true }, { repositoryId: r.repositoryId }));
             expect({ act, result: RunWorkbenchResult.safeParse(done.result).success }).toEqual({ act, result: true });
-            expect({ act, ...outcome(done), index: done.result?.index, files: done.result?.files }).toEqual({
+            expect({ act, ...outcome(done), index: done.result?.index, counts: done.result?.counts, files: done.result?.files }).toEqual({
               act,
               state: "failed",
               code: "WORKBENCH_UNAVAILABLE",
               index: "none",
+              counts: { reverted: 0, "unstaged-only": 0, "not-changed": 1, "changed-outside": 0, "not-started": 0 },
               files: [{ entryId: rowOf(read, "a.txt", "unstaged").entryId, outcome: "not-changed", code: "refused", reason }],
             });
             expect({ act, state: state(repo) }).toEqual({ act, state: before });

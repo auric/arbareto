@@ -436,7 +436,7 @@ function streamedCopyMiBps(dir: string, mib: number): { mib: number; ms: number;
 // ---- Run replies and the W9 outcome ----
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RunReply = { state: string; code?: string; operationId?: string; result?: { files?: FileOutcome[] } };
+type RunReply = { state: string; code?: string; operationId?: string; result?: { counts?: Record<string, number>; files?: FileOutcome[] } };
 // `old` is the SHA-256 of the working bytes before the run.
 type Target = { path: string; old: string };
 
@@ -444,22 +444,26 @@ async function runReply(ipc: IpcLog, before: number, ms = STEP_LIMIT_MS): Promis
   const calls = await ipc.wait("run_workbench", before + 1, ms);
   return ipc.body<RunReply>(calls[before]!);
 }
+// Data-model §9: the count of files that did not revert.
+const missedOf = (reply: RunReply) => Object.values(reply.result?.counts ?? {}).reduce((sum, n) => sum + n, 0) - (reply.result?.counts?.reverted ?? 0);
 // Probe W9 (research.md R15): `failed`, each missed file `error` with `access-denied`, and exactly that many targets keep their old bytes.
+// The result lists at most 20 missed files, so the case detects W9 only up to 20 missed files.
 // The reply names no step, so the case cannot assert that the rename failed. It asserts the code and the old bytes.
 function isW9(reply: RunReply, read: (path: string) => Buffer, targets: readonly Target[]): boolean {
-  const missed = (reply.result?.files ?? []).filter((o) => o.outcome !== "reverted");
-  if (reply.state !== "failed" || missed.length === 0 || !missed.every((o) => o.code === "error" && o.reason === "access-denied")) return false;
-  return targets.filter((t) => sha256(read(t.path)) === t.old).length === missed.length;
+  const files = reply.result?.files ?? [];
+  const missed = missedOf(reply);
+  if (reply.state !== "failed" || missed === 0 || missed !== files.length || !files.every((o) => o.code === "error" && o.reason === "access-denied")) return false;
+  return targets.filter((t) => sha256(read(t.path)) === t.old).length === missed;
 }
 // True for a counted run. A W9 run prints its OBSERVATION line and gives false. Any other reply fails the case.
 function counted(label: string, reply: RunReply, read: (path: string) => Buffer, targets: readonly Target[], expected = "succeeded"): boolean {
   if (reply.state === expected) return true;
+  const files = reply.result?.files ?? [];
   if (isW9(reply, read, targets)) {
-    const missed = (reply.result?.files ?? []).filter((o) => o.outcome !== "reverted");
-    console.log(`OBSERVATION ${TASK}: W9 ${label}: state=failed ${missed.length} files ${js(missed.map((o) => `${o.outcome}:${o.code}:${o.reason}`))}, old bytes kept; the run leaves the median (spec FR-037)`);
+    console.log(`OBSERVATION ${TASK}: W9 ${label}: state=failed ${files.length} files ${js(files.map((o) => `${o.outcome}:${o.code}:${o.reason}`))}, old bytes kept; the run leaves the median (spec FR-037)`);
     return false;
   }
-  throw new Error(`${label}: the run gave ${js({ state: reply.state, code: reply.code, files: (reply.result?.files ?? []).filter((o) => o.outcome !== "reverted").slice(0, 5) })}`);
+  throw new Error(`${label}: the run gave ${js({ state: reply.state, code: reply.code, counts: reply.result?.counts, files: files.slice(0, 5) })}`);
 }
 
 describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", () => {

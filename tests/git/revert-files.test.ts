@@ -11,6 +11,7 @@ import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { Response, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { MULTI_FILE_ACTION_FILES, PIPE_FRAME_BYTES, REVERT_PROGRESS_EVENTS_PER_SECOND } from "../../src/contracts/limits";
+import { inTreeOrder } from "../../src/frontend/changes/revert-text";
 import { RunnerRefusal } from "../../src/git-service/git-runner";
 import { PROFILE_TEXTS } from "../../src/git-service/hunk-publish";
 import { LOCKED_REMEDY } from "../../src/git-service/index-lock";
@@ -32,7 +33,9 @@ const LONG_TIMEOUT_MS = 600_000;
 const MIB = 1024 * 1024;
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RevertRun = { action: string; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
+// Data-model §9: the count of each outcome.
+const NONE = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+type RevertRun = { action: string; counts: typeof NONE; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
 type Reviewed = { action: string; plan: { count: number; paths: string[]; newFiles: number; staged: number; unstaged: number }; workbenchToken: string };
 type Category = "unstaged" | "staged" | "untracked";
 
@@ -170,13 +173,7 @@ describe("revert files: Git's restore bytes, the index part, and the plan (plan.
       expect({ ...reviewed.plan, paths: [...reviewed.plan.paths].sort() }).toEqual({ count: 9, paths: paths.map(b64).sort(), newFiles: 0, staged: 3, unstaged: 7 });
       expect(reviewed.plan.paths[0]).toBe(b64("deep/er/udel.txt"));
       const done = await run(service, r, reviewed.workbenchToken);
-      const ids = picked.filter(([path, category]) => !(path === "part.txt" && category === "staged")).map(([path, category]) => idOf(read, path, category));
-      expect({ ...outcome(done), index: done.result?.index, outcomes: done.result?.files.map((f) => f.outcome), ids: done.result?.files.map((f) => f.entryId).sort() }).toEqual({
-        ...SUCCEEDED,
-        index: "published",
-        outcomes: Array(9).fill("reverted"),
-        ids: ids.sort(),
-      });
+      expect({ ...outcome(done), index: done.result?.index, counts: done.result?.counts, files: done.result?.files }).toEqual({ ...SUCCEEDED, index: "published", counts: { ...NONE, reverted: 9 }, files: [] });
       expect({ index: indexOf(repo), files: workingFileDigests(repo) }).toEqual(oracle);
       expect(gitTemps(repo)).toEqual([]);
       // Spec FR-022: one `update-index --index-info` covers every index change, so the index changes for all files or none.
@@ -206,7 +203,7 @@ describe("revert files: Git's restore bytes, the index part, and the plan (plan.
       const reviewed = await reviewOk(service, r, read, ["new.txt", "newmod.txt", "gone.txt"].map((p) => idOf(read, p, "staged")));
       expect({ ...reviewed.plan, paths: undefined }).toEqual({ count: 3, paths: undefined, newFiles: 3, staged: 3, unstaged: 2 });
       const done = await run(service, r, reviewed.workbenchToken);
-      expect({ ...outcome(done), index: done.result?.index, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, index: "published", outcomes: ["reverted", "reverted", "reverted"] });
+      expect({ ...outcome(done), index: done.result?.index, counts: done.result?.counts, files: done.result?.files }).toEqual({ ...SUCCEEDED, index: "published", counts: { ...NONE, reverted: 3 }, files: [] });
       expect(indexOf(repo)).toBe(g(repo, ["ls-files", "--stage", "-z", "--", "base.txt"]).toString("latin1"));
       expect(indexOf(repo).includes("new.txt")).toBe(false);
       expect(workingFileDigests(repo)).toEqual(before.files);
@@ -231,7 +228,7 @@ describe("revert files: Git's restore bytes, the index part, and the plan (plan.
       const reviewed = await reviewOk(service, r, read, [idOf(read, "a.txt", "staged"), idOf(read, "sub/b.txt", "staged"), idOf(read, "m.txt", "unstaged")]);
       expect({ ...reviewed.plan, paths: undefined }).toEqual({ count: 3, paths: undefined, newFiles: 3, staged: 3, unstaged: 1 });
       const done = await run(service, r, reviewed.workbenchToken);
-      expect({ ...outcome(done), outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, outcomes: ["reverted", "reverted", "reverted"] });
+      expect({ ...outcome(done), counts: done.result?.counts, files: done.result?.files }).toEqual({ ...SUCCEEDED, counts: { ...NONE, reverted: 3 }, files: [] });
       expect(indexOf(repo)).toBe("");
       expect(workingFileDigests(repo)).toEqual(before.files);
     }),
@@ -368,11 +365,12 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         const before = workingFileDigests(repo);
         const done = await run(service, r, reviewed.workbenchToken);
         // T059: the multi-file STALE_REVIEW result names revert-changed (contract Δ9), so the renderer shows the plan.md D11 multi-file stale text.
-        expect({ state: done.state, code: done.code, index: done.result?.index, reason: done.result?.reason, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({
+        expect({ state: done.state, code: done.code, index: done.result?.index, reason: done.result?.reason, counts: done.result?.counts, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({
           state: "failed",
           code: "STALE_REVIEW",
           index: "none",
           reason: "revert-changed",
+          counts: { ...NONE, "not-changed": 2 },
           outcomes: [
             ["not-changed", "stale"],
             ["not-changed", "stale"],
@@ -417,10 +415,11 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         service.runner.inject.tempRemoveReply = () => reply;
         try {
           const done = await run(service, r, reviewed.workbenchToken);
-          expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome), removes: frames(service, "tempRemove").length }).toEqual({
+          expect({ state: done.state, code: done.code, counts: done.result?.counts, files: done.result?.files, removes: frames(service, "tempRemove").length }).toEqual({
             state: "failed-with-effects",
             code: "FAILED_WITH_EFFECTS",
-            outcomes: ["reverted", "reverted"],
+            counts: { ...NONE, reverted: 2 },
+            files: [],
             removes: 1,
           });
         } finally {
@@ -492,7 +491,7 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         expect(refusal(done)).toEqual({
           state: "failed",
           code: "UNSUPPORTED_HUNK_PROFILE",
-          result: { action: "revert-files", files: [{ entryId: id, outcome: "not-started" }], foldersCreated: [], index: "refused", reason: "split-index", remedy: { text: PROFILE_TEXTS["split-index"] } },
+          result: { action: "revert-files", counts: { ...NONE, "not-started": 1 }, files: [{ entryId: id, outcome: "not-started" }], foldersCreated: [], index: "refused", reason: "split-index", remedy: { text: PROFILE_TEXTS["split-index"] } },
         });
         expect({ files: workingFileDigests(repo), writes: frames(service, "fileReplace").length }).toEqual({ files, writes: 0 });
       },
@@ -511,10 +510,11 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
       };
       try {
         const done = await run(service, r, reviewed.workbenchToken);
-        expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome), removes: frames(service, "tempRemove").length }).toEqual({
+        expect({ state: done.state, code: done.code, counts: done.result?.counts, files: done.result?.files, removes: frames(service, "tempRemove").length }).toEqual({
           state: "failed-with-effects",
           code: "FAILED_WITH_EFFECTS",
-          outcomes: ["reverted", "reverted"],
+          counts: { ...NONE, reverted: 2 },
+          files: [],
           removes: 1,
         });
       } finally {
@@ -543,9 +543,74 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         const reviewed = await reviewOk(service, r, read, [idOf(read, "a.txt", "unstaged"), idOf(read, "sub/c.txt", "unstaged")]);
         const before = state(repo);
         const done = await run(service, r, reviewed.workbenchToken);
-        expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "canceled", code: "CANCELED", outcomes: ["not-started", "not-started"] });
+        expect({ state: done.state, code: done.code, counts: done.result?.counts, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "canceled", code: "CANCELED", counts: { ...NONE, "not-started": 2 }, outcomes: ["not-started", "not-started"] });
         expect({ temps: gitTemps(repo), removes: frames(service, "tempRemove").length, writes: frames(service, "fileReplace").length }).toEqual({ temps: [], removes: 2, writes: 0 });
         expect(state(repo)).toEqual(before);
+      },
+    );
+  }, TIMEOUT_MS);
+
+  // Data-model §1: two picked rows of one file merge into one file plan, and the first picked row names the file in the result.
+  caseTest("T085", "a partly staged file with both rows picked names the first picked row in the result, in both pick orders", SHELL, () =>
+    withService({ name: "t085-rows" }, async (service) => {
+      for (const [first, second] of [
+        ["unstaged", "staged"],
+        ["staged", "unstaged"],
+      ] as const) {
+        const repo = build(`rows-${first}`, { "part.txt": "p1\n", "keep.txt": "keep\n" }, (r) => {
+          write(r, "part.txt", "p2\n");
+          add(r, "part.txt");
+          write(r, "part.txt", "p3\n");
+        });
+        const { r, read } = await open(service, repo);
+        const reviewed = await reviewOk(service, r, read, [idOf(read, "part.txt", first), idOf(read, "part.txt", second)]);
+        service.runner.inject.workingReply = () => ({ result: "error", code: "sharing-violation" });
+        try {
+          const done = await run(service, r, reviewed.workbenchToken);
+          expect({ first, state: done.state, counts: done.result?.counts, files: done.result?.files }).toEqual({
+            first,
+            state: "failed-with-effects",
+            counts: { ...NONE, "unstaged-only": 1 },
+            files: [{ entryId: idOf(read, "part.txt", first), outcome: "unstaged-only", code: "error", reason: "sharing-violation" }],
+          });
+        } finally {
+          service.runner.inject.workingReply = null;
+        }
+        expect(gitTemps(repo)).toEqual([]);
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T085", "a canceled 25-file run counts 25 not-started files and lists the first 20 in the renderer tree order (data-model §9)", SHELL, async () => {
+    let target: Service | null = null;
+    await withService(
+      {
+        name: "t085-first",
+        revertCheckpoint: async (c: RevertCheckpoint) => {
+          if (c.step === "checkout-index") await target!.cancel(c.operationId);
+        },
+      },
+      async (service) => {
+        target = service;
+        // Byte order puts `a-b` and `a.txt` before `a/b`, and `z/inner.txt` last. The 005 tree order puts each folder first.
+        const paths = ["a.txt", "a/b", "a-b", "z/inner.txt", ...Array.from({ length: 21 }, (_, k) => `f${String(k).padStart(2, "0")}.txt`)];
+        const repo = build("first", Object.fromEntries(paths.map((p) => [p, `${p}\n`])), (r) => {
+          for (const p of paths) write(r, p, `${p} changed\n`);
+        });
+        const { r, read } = await open(service, repo);
+        const entries = read.entries.filter((e) => e.category === "unstaged");
+        expect(entries.length).toBe(25);
+        const reviewed = await reviewOk(service, r, read, entries.map((e) => e.entryId));
+        const done = await run(service, r, reviewed.workbenchToken);
+        const first = inTreeOrder(entries).slice(0, 20).map((e) => e.entryId);
+        expect(first).not.toEqual(entries.toSorted((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path))).slice(0, 20).map((e) => e.entryId));
+        expect({ state: done.state, code: done.code, counts: done.result?.counts, files: done.result?.files.map((f) => [f.entryId, f.outcome]) }).toEqual({
+          state: "canceled",
+          code: "CANCELED",
+          counts: { ...NONE, "not-started": 25 },
+          files: first.map((entryId) => [entryId, "not-started"]),
+        });
       },
     );
   }, TIMEOUT_MS);
@@ -588,8 +653,12 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         const { r, read } = await open(service, repo);
         const reviewed = await reviewOk(service, r, read, paths.map((p) => idOf(read, p, "unstaged")));
         const done = await run(service, r, reviewed.workbenchToken);
-        const outcomes = done.result?.files.map((f) => f.outcome) ?? [];
-        expect({ state: done.state, outcomes }).toEqual({ state: "failed-with-effects", outcomes: [...paths.slice(0, 3).map(() => "reverted"), "not-changed", ...paths.slice(4).map(() => "not-started")] });
+        const ids = paths.map((p) => idOf(read, p, "unstaged"));
+        expect({ state: done.state, counts: done.result?.counts, files: done.result?.files.map((f) => [f.entryId, f.outcome]) }).toEqual({
+          state: "failed-with-effects",
+          counts: { ...NONE, reverted: 3, "not-changed": 1, "not-started": 6 },
+          files: [[ids[3], "not-changed"], ...ids.slice(4).map((id) => [id, "not-started"])],
+        });
         // The fourth request still went out and got the `stopped` reply, so the run counts four answered writes.
         expect(counters(service).at(-1)).toEqual({ fileIndex: 4, fileCount: 10 });
       },
@@ -619,7 +688,7 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         service.runner.inject.exit = (call) => (call.arguments.includes("update-index") ? 1 : undefined);
         try {
           const done = await run(service, r, (await reviewOk(service, r, read, ids)).workbenchToken);
-          expect({ state: done.state, code: done.code, index: done.result?.index, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "failed", code: "GIT_FAILED", index: "refused", outcomes: ["not-started", "not-started"] });
+          expect({ state: done.state, code: done.code, index: done.result?.index, counts: done.result?.counts, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "failed", code: "GIT_FAILED", index: "refused", counts: { ...NONE, "not-started": 2 }, outcomes: ["not-started", "not-started"] });
         } finally {
           service.runner.inject.exit = undefined;
         }

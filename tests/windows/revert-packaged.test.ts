@@ -240,17 +240,19 @@ async function uiaFocusOnCancel(processId: number, task: string, other: string):
 // ---- The run reply ----
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RunReply = { state: string; code?: string; result?: { action: string; files: FileOutcome[]; index: string } };
+// Data-model §9: the count of each outcome, and the files that did not revert.
+type RunReply = { state: string; code?: string; result?: { action: string; counts: Record<string, number>; files: FileOutcome[]; index: string } };
 const outcomes = (reply: RunReply) => (reply.result?.files ?? []).map((f) => ({ outcome: f.outcome, code: f.code, reason: f.reason }));
+const oneFile = (outcome: string) => ({ reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0, [outcome]: 1 });
 async function runReply(ipc: IpcLog, n: number, ms: number): Promise<RunReply> {
   const calls = await ipc.wait("run_workbench", n, ms);
   const reply = await ipc.body<RunReply>(calls[n - 1]!);
-  console.log(`RUN_REPLY ${TASK}: state=${reply.state} code=${reply.code ?? "-"} files=${js(outcomes(reply))}`);
+  console.log(`RUN_REPLY ${TASK}: state=${reply.state} code=${reply.code ?? "-"} counts=${js(reply.result?.counts)} files=${js(outcomes(reply))}`);
   return reply;
 }
 // Research.md R15 probe W9: with Windows Defender on, a rename can fail with STATUS_ACCESS_DENIED, and the file keeps its old bytes. Spec FR-037: no retry.
-const W9 = { state: "failed", files: [{ outcome: "not-changed", code: "error", reason: "access-denied" }] };
-const isW9 = (reply: RunReply) => js({ state: reply.state, files: outcomes(reply) }) === js(W9);
+const W9 = { state: "failed", counts: oneFile("not-changed"), files: [{ outcome: "not-changed", code: "error", reason: "access-denied" }] };
+const isW9 = (reply: RunReply) => Bun.deepEquals({ state: reply.state, counts: reply.result?.counts, files: outcomes(reply) }, W9);
 
 // ---- A holder process (research.md R15 probe W8 (b)) ----
 
@@ -596,7 +598,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
           console.log(`OBSERVATION ${TASK}: W9 the rename gave access-denied, and ${PATH} kept its old bytes (typed outcome, research.md R15)`);
           return;
         }
-        expect({ state: reply.state, files: outcomes(reply) }).toEqual({ state: "succeeded", files: [{ outcome: "reverted", code: undefined, reason: undefined }] });
+        expect({ state: reply.state, counts: reply.result?.counts, files: outcomes(reply) }).toEqual({ state: "succeeded", counts: oneFile("reverted"), files: [] });
         expect(state()).toEqual(oracle);
         const statusTexts = await waitStatus(s.app.pid, linesDone(SELECTED, PATH));
         console.log(`STATUS ${TASK}: ${js(statusTexts)}`);
@@ -793,7 +795,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
         await keyTo(s.c, "Tab", "the Revert lines button", (a) => a.dialog && a.text === LINES_BUTTON);
         await press(s.c, "Enter");
         const reply = await runReply(s.ipc, 1, ACTION_WAIT_MS);
-        expect({ state: reply.state, files: outcomes(reply) }).toEqual({ state: "failed", files: [{ outcome: "not-changed", code: "error", reason: "sharing-violation" }] });
+        expect({ state: reply.state, counts: reply.result?.counts, files: outcomes(reply) }).toEqual({ state: "failed", counts: oneFile("not-changed"), files: [{ outcome: "not-changed", code: "error", reason: "sharing-violation" }] });
         await until<(string | null)[]>(s.c, "the sharing-violation text", STATUS_LINES, (v) => v.includes(sharingText(PATH)), ACTION_WAIT_MS);
         await waitStatus(s.app.pid, sharingText(PATH));
         expect({ digest: fileDigest(repo, PATH), index: indexOf(repo) }).toEqual(before);
@@ -825,7 +827,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
         await keyTo(s.c, "Tab", "the Revert lines button", (a) => a.dialog && a.text === LINES_BUTTON);
         await press(s.c, "Enter");
         const reply = await runReply(s.ipc, 1, ACTION_WAIT_MS);
-        expect({ state: reply.state, files: outcomes(reply) }).toEqual({ state: "failed", files: [{ outcome: "not-changed", code: "error", reason: "access-denied" }] });
+        expect({ state: reply.state, counts: reply.result?.counts, files: outcomes(reply) }).toEqual({ state: "failed", counts: oneFile("not-changed"), files: [{ outcome: "not-changed", code: "error", reason: "access-denied" }] });
         await until<(string | null)[]>(s.c, "the access-denied text", STATUS_LINES, (v) => v.includes(notChanged(PATH, "access-denied")), ACTION_WAIT_MS);
         await waitStatus(s.app.pid, notChanged(PATH, "access-denied"));
         expect({ digest: fileDigest(repo, PATH), index: indexOf(repo) }).toEqual(before);
@@ -891,7 +893,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
         await keyTo(s.c, "Tab", "the Revert lines button", (a) => a.dialog && a.text === LINES_BUTTON);
         await press(s.c, "Enter");
         const lines = await runReply(s.ipc, 1, WSL_WAIT_MS);
-        expect({ state: lines.state, files: outcomes(lines) }).toEqual({ state: "succeeded", files: [{ outcome: "reverted", code: undefined, reason: undefined }] });
+        expect({ state: lines.state, counts: lines.result?.counts, files: outcomes(lines) }).toEqual({ state: "succeeded", counts: oneFile("reverted"), files: [] });
         await waitStatus(s.app.pid, linesDone(SELECTED, PATH), WSL_WAIT_MS);
         expect(state(dir)).toEqual(afterLines);
 
@@ -903,7 +905,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
         await keyTo(s.c, "Tab", "the Revert file button", (a) => a.dialog && a.text === FILE_BUTTON);
         await press(s.c, "Enter");
         const file = await runReply(s.ipc, 2, WSL_WAIT_MS);
-        expect({ state: file.state, files: outcomes(file) }).toEqual({ state: "succeeded", files: [{ outcome: "reverted", code: undefined, reason: undefined }] });
+        expect({ state: file.state, counts: file.result?.counts, files: outcomes(file) }).toEqual({ state: "succeeded", counts: oneFile("reverted"), files: [] });
         await waitStatus(s.app.pid, FILE_DONE, WSL_WAIT_MS);
         expect(state(dir)).toEqual(afterFile);
         expect(stats(dir)).toEqual(statsBefore);

@@ -20,6 +20,7 @@ printOrigin("../../src/frontend/history/CommitChanges.tsx", import.meta.dir);
 printOrigin("../../src/frontend/keyboard/shortcuts.ts", import.meta.dir);
 printOrigin("../../src/frontend/changes/ChangesPane.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
+printOrigin("../../src/frontend/changes/revert-text.ts", import.meta.dir);
 
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children?: ReactNode }) => <>{children}</> }));
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: PatchDouble }));
@@ -35,7 +36,11 @@ beforeAll(() => void (restoreLayout = stubLayout(800)));
 afterAll(() => restoreLayout());
 afterEach(() => unmountAll());
 
-const reviews = (double: Awaited<ReturnType<typeof shownDiff>>["double"]) => double.calls.filter((c) => c.operation === "reviewWorkbench");
+// Data-model §9: the count of each outcome, and the first 20 files that did not revert in the service order.
+const NONE = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+const revertRun = (action: string, counts: Partial<typeof NONE>, files: unknown[] = [], fields: Record<string, unknown> = {}) => ({ action, counts: { ...NONE, ...counts }, files, foldersCreated: [], index: "none", ...fields });
+
+const reviews =(double: Awaited<ReturnType<typeof shownDiff>>["double"]) => double.calls.filter((c) => c.operation === "reviewWorkbench");
 const refresh = async () => {
   await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "F5", bubbles: true, cancelable: true })));
   await settle();
@@ -134,7 +139,7 @@ describe("R in the staged diff (US4)", () => {
     await click(button("Revert lines", dialog));
     return { file, runCall: double.pending("runWorkbench")! };
   }
-  const linesRun = (entryId: string, outcome: Record<string, unknown>) => ({ action: "revert-lines", files: [{ entryId, ...outcome }], foldersCreated: [], index: "published" });
+  const linesRun = (entryId: string, o: { outcome: string; code?: string; reason?: string }) => revertRun("revert-lines", { [o.outcome]: 1 }, o.outcome === "reverted" ? [] : [{ entryId, ...o }], { index: "published" });
 
   test("success: Arbareto reverted 2 lines in login.ts.", async () => {
     const { file, runCall } = await runStaged();
@@ -247,12 +252,11 @@ describe("R in the Changes and Staged lists (FR-018, FR-046)", () => {
     const files = [entry("unstaged", "a.ts"), entry("unstaged", "b.ts"), entry("unstaged", "c.ts")];
     const { world, double } = await openFiles(workbench, files);
     const revert = async (path: string, rest: typeof files) => {
-      const gone = files.find((f) => f.path === path)!;
       await rowKey(item("Changes", path));
       await answer(double.pending("reviewWorkbench"), filesReviewed(filesPlan([path])));
       await click(button("Revert file", alertDialog()!));
       world.entries = rest;
-      await answer(double.pending("runWorkbench"), succeeded({ action: "revert-files", files: [{ entryId: gone.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" }));
+      await answer(double.pending("runWorkbench"), succeeded(revertRun("revert-files", { reverted: 1 })));
       await settle();
     };
     await revert("b.ts", [files[0]!, files[2]!]);
@@ -335,13 +339,13 @@ describe("open revert dialogs follow the shown read (data-model §10) and one re
 
   // plan.md "Task flow and command placement": a successful own hunk action anchors the next patch, as Stage hunk does.
   test("after Revert lines succeeds, the next patch shows the anchored hunk without the reset notice", async () => {
-    const { double, world, file } = await shownDiff(workbench, { freshIds: true });
+    const { double, world } = await shownDiff(workbench, { freshIds: true });
     await selectLines({ start: 2, side: "deletions", end: 3, endSide: "additions" });
     await revertKey();
     await click(button("Revert lines", await confirmFor(double, plan(3))));
     changePatch(world, AFTER, [hunk(0, 10, 2, 10, 3)]);
     const reads = double.count("readComparison");
-    await answer(double.pending("runWorkbench")!, succeeded({ action: "revert-lines", files: [{ entryId: file.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" }));
+    await answer(double.pending("runWorkbench")!, succeeded(revertRun("revert-lines", { reverted: 1 })));
     await refresh();
     expect(double.count("readComparison")).toBeGreaterThan(reads);
     expect(text(commitView())).toContain("+y");
@@ -352,13 +356,13 @@ describe("open revert dialogs follow the shown read (data-model §10) and one re
 
   // Data-model §14: the line selection belongs to the shown diff. A later patch with the same text must not bring it back.
   test("after Revert lines succeeds, a patch equal to the one before the revert shows no line selection, and R sends no line review", async () => {
-    const { double, world, file } = await shownDiff(workbench, { freshIds: true });
+    const { double, world } = await shownDiff(workbench, { freshIds: true });
     await selectLines({ start: 2, side: "deletions", end: 3, endSide: "additions" });
     expect(commitView().querySelector('[data-slot="patch-double"]')!.getAttribute("data-lines")).toBe("selected");
     await revertKey();
     await click(button("Revert lines", await confirmFor(double, plan(3))));
     changePatch(world, AFTER, [hunk(0, 10, 2, 10, 3)]);
-    await answer(double.pending("runWorkbench")!, succeeded({ action: "revert-lines", files: [{ entryId: file.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" }));
+    await answer(double.pending("runWorkbench")!, succeeded(revertRun("revert-lines", { reverted: 1 })));
     await refresh();
     expect(text(commitView())).toContain("+y");
     changePatch(world, PATCH, HUNKS);
@@ -388,7 +392,8 @@ describe("open revert dialogs follow the shown read (data-model §10) and one re
 // tasks.md T036 (feature 008, WP4). Story US3. Spec FR-007, FR-030, FR-039, FR-040. Plan D11 REVERT_CHECKING, REVERT_PROGRESS, REVERT_COUNTS, OUTCOME_LABEL, D12 "Busy and progress", "Result" (boards Progress-checking, Progress-reverting, Result-success, Result-mixed).
 const footer = () => document.querySelector("footer")!;
 const statusArea = () => document.querySelector('section[data-slot="status-area"]');
-const runResult = (files: unknown[], fields: Record<string, unknown> = {}) => ({ action: "revert-unstaged", files, foldersCreated: [], index: "none", ...fields });
+// The detail lines of the status area: one line per listed file, then the rest.
+const areaLines = () => [...statusArea()!.querySelectorAll("p.break-all")].map((p) => text(p));
 
 /** Revert all unstaged changes of `files` up to Revert unstaged changes in the confirmation. */
 async function runUnstaged(files: ReturnType<typeof entry>[]) {
@@ -447,37 +452,46 @@ describe("Revert all unstaged changes: progress and result (FR-007, FR-030, FR-0
   test("success: Arbareto reverted the unstaged changes of <n> files., and of 1 file.", async () => {
     const files = [entry("unstaged", "a.ts"), entry("unstaged", "b.ts")];
     const { runCall } = await runUnstaged(files);
-    await answer(runCall, succeeded(runResult(files.map((f) => ({ entryId: f.entryId, outcome: "reverted" })))));
+    await answer(runCall, succeeded(revertRun("revert-unstaged", { reverted: 2 })));
     expect(statusBar()).toContain("Arbareto reverted the unstaged changes of 2 files.");
     expect(statusArea()).toBeNull();
     await unmountAll();
 
-    const one = [entry("unstaged", "a.ts")];
-    const second = await runUnstaged(one);
-    await answer(second.runCall, succeeded(runResult([{ entryId: one[0]!.entryId, outcome: "reverted" }])));
+    const second = await runUnstaged([entry("unstaged", "a.ts")]);
+    await answer(second.runCall, succeeded(revertRun("revert-unstaged", { reverted: 1 })));
     expect(statusBar()).toContain("Arbareto reverted the unstaged changes of 1 file.");
   });
 
-  test("a mixed result: the count of each outcome, the heading, the first 20 files that did not revert in tree order, and and <m> more files.", async () => {
+  test("a mixed result: the count of each outcome, the heading, the listed files in the service order, and and <m> more files.", async () => {
     const files = Array.from({ length: 25 }, (_, i) => entry("unstaged", `f${String(i).padStart(2, "0")}.ts`));
     const { runCall } = await runUnstaged(files);
     // f00 and f01 reverted; f02 not changed with a sharing violation; f03 not started; f04 to f24 changed outside Arbareto.
-    const outcomes = files.map((f, i) => ({ entryId: f.entryId, outcome: i < 2 ? "reverted" : i === 2 ? "not-changed" : i === 3 ? "not-started" : "changed-outside", ...(i === 2 ? { code: "error", reason: "sharing-violation" } : {}) }));
-    await answer(runCall, { ...succeeded(runResult([...outcomes].reverse())), state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
+    // The service lists the first 20 files that did not revert (f02 to f21). The renderer keeps the given order.
+    const listed = files.slice(2, 22).map((f, i) => ({ entryId: f.entryId, outcome: i === 0 ? "not-changed" : i === 1 ? "not-started" : "changed-outside", ...(i === 0 ? { code: "error", reason: "sharing-violation" } : {}) }));
+    const counts = { reverted: 2, "not-changed": 1, "not-started": 1, "changed-outside": 21 };
+    await answer(runCall, { ...succeeded(revertRun("revert-unstaged", counts, listed.toReversed())), state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
     const count = "2 files reverted. 1 file not changed. 21 files changed outside Arbareto. 1 file not started.";
     expect(statusBar()).toContain(count);
     const area = statusArea()!;
     expect(area).not.toBeNull();
     expect(text(area)).toContain("Revert all unstaged changes");
     expect(text(area)).toContain(count);
-    expect(text(area)).toContain("Another program has f02.ts open. Arbareto did not change it. Close the file, then try again.");
-    expect(text(area)).toContain("f03.ts: Not started.");
-    expect(text(area)).toContain("f04.ts: Changed outside Arbareto.");
-    // 23 files did not revert: the first 20 (f02 to f21), then the rest.
-    expect(text(area)).toContain("f21.ts: Changed outside Arbareto.");
-    expect(text(area)).not.toContain("f22.ts");
-    expect(text(area)).toContain("and 3 more files.");
-    expect(text(area)).not.toContain("f00.ts");
+    expect(areaLines()).toEqual([
+      ...files.slice(4, 22).map((f) => `${f.path}: Changed outside Arbareto.`).toReversed(),
+      "f03.ts: Not started.",
+      "Another program has f02.ts open. Arbareto did not change it. Close the file, then try again.",
+      "and 3 more files.",
+    ]);
+  });
+
+  // T085: the rest comes from the counts. The service lists at most 20 files.
+  test("9,975 reverted and 25 not changed: 20 lines, then and 5 more files.", async () => {
+    const files = Array.from({ length: 25 }, (_, i) => entry("unstaged", `f${String(i).padStart(2, "0")}.ts`));
+    const { runCall } = await runUnstaged(files);
+    const listed = files.slice(0, 20).map((f) => ({ entryId: f.entryId, outcome: "not-changed" }));
+    await answer(runCall, { ...succeeded(revertRun("revert-unstaged", { reverted: 9975, "not-changed": 25 }, listed)), state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
+    expect(statusBar()).toContain("9,975 files reverted. 25 files not changed.");
+    expect(areaLines()).toEqual([...files.slice(0, 20).map((f) => `${f.path}: Not changed.`), "and 5 more files."]);
   });
 });
 
@@ -497,7 +511,7 @@ describe("run refusals with a RevertRun reason (T059)", () => {
     return { files, runCall: double.pending("runWorkbench")! };
   }
   const STALE = "The files changed after the review. Arbareto changed nothing. Check the changes, then try again.";
-  const filesRun = (files: ReturnType<typeof entry>[], fields: Record<string, unknown>) => ({ action: "revert-files", files: notStarted(files), foldersCreated: [], index: "none", ...fields });
+  const filesRun = (files: ReturnType<typeof entry>[], fields: Record<string, unknown>) => revertRun("revert-files", { "not-started": files.length }, notStarted(files), fields);
 
   test("a multi-file STALE_REVIEW with reason revert-changed shows the multi-file text", async () => {
     const { files, runCall } = await runFiles(["a.ts", "b.ts"]);
@@ -508,7 +522,7 @@ describe("run refusals with a RevertRun reason (T059)", () => {
   test("Revert all unstaged changes: a STALE_REVIEW with reason revert-changed shows the multi-file text", async () => {
     const files = [entry("unstaged", "a.ts"), entry("unstaged", "b.ts")];
     const { runCall } = await runUnstaged(files);
-    await answer(runCall, { ...succeeded(runResult(notStarted(files), { reason: "revert-changed" })), state: "failed", code: "STALE_REVIEW" });
+    await answer(runCall, { ...succeeded(revertRun("revert-unstaged", { "not-started": files.length }, notStarted(files), { reason: "revert-changed" })), state: "failed", code: "STALE_REVIEW" });
     expect(statusBar()).toContain(STALE);
   });
 
@@ -556,7 +570,7 @@ describe("change polls during a revert run", () => {
     await tick();
     expect(double.count("readWorkspace")).toBe(reads);
     world.entries = [];
-    await answer(double.pending("runWorkbench")!, succeeded({ action: "revert-files", files: [{ entryId: files[0]!.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" }));
+    await answer(double.pending("runWorkbench")!, succeeded(revertRun("revert-files", { reverted: 1 })));
     await settle();
     expect(double.count("readWorkspace")).toBe(reads + 1);
     await tick();
@@ -590,7 +604,7 @@ describe("block reasons of a status read that is not ready", () => {
     world.answers.readWorkspace = () => succeeded({ ...snapshot(world), recoveryState });
     await refresh();
     const during = statusBar();
-    await answer(runCall, succeeded({ action: "revert-files", files: [{ entryId: files[0]!.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" }));
+    await answer(runCall, succeeded(revertRun("revert-files", { reverted: 1 })));
     await settle();
     const sent = double.count("reviewWorkbench");
     await rowKey(item("Changes", "b.ts"));
@@ -632,7 +646,7 @@ describe("anchor after a staged revert that ends with effects", () => {
   test("failed-with-effects with the index published: the next patch shows the anchored hunk, no reset notice, and no line selection", async () => {
     const { double, file, runCall } = await stagedRun();
     const reads = double.count("readComparison");
-    await answer(runCall, { ...succeeded({ action: "revert-lines", files: [{ entryId: file.entryId, outcome: "changed-outside" }], foldersCreated: [], index: "published" }), state: "failed-with-effects" });
+    await answer(runCall, { ...succeeded(revertRun("revert-lines", { "changed-outside": 1 }, [{ entryId: file.entryId, outcome: "changed-outside" }], { index: "published" })), state: "failed-with-effects" });
     await refresh();
     expect(double.count("readComparison")).toBeGreaterThan(reads);
     expect(text(commitView())).toContain("+y");
@@ -643,7 +657,7 @@ describe("anchor after a staged revert that ends with effects", () => {
 
   test("a failed run with no effects sets no anchor: a changed patch shows the reset notice", async () => {
     const { file, runCall } = await stagedRun();
-    await answer(runCall, { ...succeeded({ action: "revert-lines", files: [{ entryId: file.entryId, outcome: "not-started" }], foldersCreated: [], index: "none", reason: "revert-changed" }), state: "failed", code: "STALE_REVIEW" });
+    await answer(runCall, { ...succeeded(revertRun("revert-lines", { "not-started": 1 }, [{ entryId: file.entryId, outcome: "not-started" }], { reason: "revert-changed" })), state: "failed", code: "STALE_REVIEW" });
     await refresh();
     expect(text(commitView())).toContain("+y");
     expect(text(commitView())).toContain(RESET_NOTICE);

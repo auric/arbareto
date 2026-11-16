@@ -233,7 +233,7 @@ Rules:
 
 ### D10 Outcome and failure handling
 
-- Reconcile reads after every run, also after Cancel and failure: the index entries of every path (`ls-files --stage -z` with the bound object format), `fileFacts` with `digest: true` for every path. The run does no status read. The renderer's reconcile read after the run (contract §3) is the status read of spec FR-039. A deadline of a reconcile read gives the unknown outcome, as a failed read does.
+- Reconcile reads after every run, also after Cancel and failure: the index entries of every path (`ls-files --stage -z` with the bound object format), `fileFacts` with `digest: true` for every path. Contract Δ3 `runWorkbench` gives the rules: one whole-index `ls-files` above one command-line batch, and at most `MULTI_FILE_PROOF_CONCURRENCY` (8) `fileFacts` frames at once beside the index read. The run does no status read. The renderer's reconcile read after the run (contract §3) is the status read of spec FR-039. A deadline of a reconcile read gives the unknown outcome, as a failed read does.
 - Per-file outcome (data-model §8): `reverted` (the index entry and the digest equal the plan), `unstaged-only` (the index entry equals the plan, the digest equals the old file), `not-changed` (both equal the old state), `changed-outside` (the digest equals neither), `not-started` (no request reached the file). A `not-changed` file carries the reply code `stale`, `refused` with its reason, or `error` with its code. This is the "failed with its code" outcome of spec FR-039. A `not-changed` file without a code got `stopped` or `interrupted`.
 - Response state. Each row needs the fresh read. A Cancel never turns an effect into `canceled`, and it never reports an undo (spec FR-039, constitution I). The Cancel rows follow 005 plan D6 "Response state".
 
@@ -242,9 +242,9 @@ Rules:
 | none, or published | every file `reverted` | `succeeded` (intended effects confirmed), also after a late Cancel | none |
 | refused before publication | none started | `failed` (no effects) | the refusal code, such as `STALE_REVIEW` or the lock code |
 | published | some files not reverted | `failed-with-effects` | the first file in tree order names its code |
-| published | Cancel before the last file | `failed-with-effects` | none; the result names each file outcome |
+| published | Cancel before the last file | `failed-with-effects` | none; the result counts each outcome and names the first 20 files that did not revert |
 | none | some files `reverted` or `changed-outside`, then a failure | `failed-with-effects` | the first file in tree order that did not revert names its code |
-| none | some files `reverted` or `changed-outside`, then Cancel | `failed-with-effects` | none; the result names each file outcome |
+| none | some files `reverted` or `changed-outside`, then Cancel | `failed-with-effects` | none; the result counts each outcome and names the first 20 files that did not revert |
 | none | no file changed, Cancel | `canceled` | none |
 | none | no file changed | `failed` | the code of the first file in tree order |
 | unknown (WSL without a process-end fact, or a failed reconcile read) | — | outcome unknown; the recovery marker stays (001 FR-023) | `GIT_FAILED` or `DEADLINE` |

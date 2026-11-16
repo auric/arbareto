@@ -714,3 +714,17 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - T082 control 1 (`t082-c1`): the new case ran against the installed b4a70d35 package (f013 installer SHA-256 `92c79f7a…`, exe `5383f1f7…`). The test came from `2d109fff` with a patch that shortens the case. Run 0 turned red at the `cancel` reply wait: "1 cancel replies did not arrive within 60000 ms: 0". The hold held the call with 1 probe. The run then installed the f014 package again, and its exe hash matched.
 - T082 control 2 (`t082-c2`): the loop waits on `startsWith("Reverting ")` again, on the installed f014 exe. Runs 1 to 10 turned red: "Cancel run 1: the run gave {"state":"canceled","code":"CANCELED","files":[]}".
 - The older Cancel values 49 ms and 56.1 ms were a Cancel before the first write. 49 ms is in "Full run (T049), 2026-11-03", Fail 1. 56.1 ms is in "Package run (T050), 2026-11-03", the 10,000-file row. Both places now carry this mark.
+
+### T083 split, 2026-11-16
+
+- Source: a packaged measurement build of `a7405f8b`, 10,000-file case of `tests/windows/revert-perf.test.ts`, Cancel during the writes, 10 runs, median. The log is in local scratch `t083-measure`.
+- Cancel to the outcome: median 8,120 ms.
+- `cancel` sent to the reconcile start: 130 ms.
+- Fresh index read: median 2,131 ms (6 `ls-files --stage -z` runs, one per command-line batch).
+- Fresh digest read: median 5,757 ms (157 `fileFacts` frames of 64 entries, one after the other).
+- Outcome build: 14 ms. Reply: 750 KB. Renderer share: 70 ms.
+- So the two fresh reads take about 97% of the time. The reply transport and the renderer are small.
+- Fix (T083, contracts Δ3 `runWorkbench`): A, one whole-index `ls-files -z --stage` read when the paths need more than one command-line batch, bound `MUTATION_RAW_INDEX_BYTES`; B, at most `MULTI_FILE_PROOF_CONCURRENCY` (8) `fileFacts` frames at once, with the index read beside them. Plan.md D10 stays: the fresh read decides each outcome.
+- After the packaged result of the fix, the user decides on the 5 s target for a revert run (contracts Δ5). Until then, Δ5 and spec SC-007 stay as they are.
+- T084 limits the `revert-files` events to 4 per second (contracts Δ2). T085 makes the result small: `counts` and the first 20 files that did not revert (data-model §9).
+- Known limit of T085: the packaged W9 detection of `tests/windows/revert-perf.test.ts` is exact only up to 20 missed files, because the result lists at most 20 files.

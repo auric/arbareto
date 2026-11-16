@@ -745,7 +745,7 @@ At 240 DIPs and 1280×800, the open form leaves the group region at most 114.8 D
 | 5 | P8 | A: WP21. B: WP22. C: WP23. D: WP24. E: WP25. F: WP29. | P2 frontend. |
 | 6 | P10 | None. WP26 moves to a later feature (spec Clarifications, 2026-10-19). | P3 spell check, postponed by the user. |
 | 7 | P9 | WP27 (WSL, alone). WP28 (packaged). | Qualification. |
-| 8 | P11 | WP30, then WP31, then WP32, then WP34, then T147. Then one `implementer-xhigh` sequence: T148, T149, T156, T157, T159, T160 (WP35), then T152 and T153 (WP38). Then T150 (WP36), T154 (WP39), T158 and T161 (WP36, WP39), T151 (WP37, alone), T155 and T162 (WP40, alone), then T145 (WP33). Then T163 (WP41) and T164 (WP42, user decision 2026-11-07). One implementer at a time. | US12 (D20), before v0.1.0. |
+| 8 | P11 | WP30, then WP31, then WP32, then WP34, then T147. Then one `implementer-xhigh` sequence: T148, T149, T156, T157, T159, T160 (WP35), then T152 and T153 (WP38). Then T150 (WP36), T154 (WP39), T158 and T161 (WP36, WP39), T151 (WP37, alone), T155 and T162 (WP40, alone), then T145 (WP33). Then T163 (WP41) and T164 (WP42, user decision 2026-11-07). One implementer at a time. | US12 (D20). T145 and T164 now target v0.1.3 (user decision 2026-11-16, tasks.md T164). |
 
 User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 and US11 (batches 4 and 5), and US12 (batch 8). P3 is US10 (batch 6), which moves to a later feature.
 

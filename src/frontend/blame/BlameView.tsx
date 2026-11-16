@@ -3,7 +3,7 @@
 
 import { ArrowLeft01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
 import type { Blame } from "../../contracts/envelope";
 import type { BlameUnavailableReason } from "../../contracts/errors";
@@ -215,7 +215,18 @@ function Lines({ result, line, inspection, headingId, now, onSelectCommit, focus
   const facts = useMemo(() => commitFacts(result, now()), [result]);
   const text = useMemo(() => textOf(result.content).split("\n"), [result]);
   const virtual = result.lines > VIRTUAL_MIN;
-  const virtualizer = useVirtualizer({ count: result.lines, enabled: virtual, getScrollElement: () => scroller.current, estimateSize: () => ROW_HEIGHT, overscan: 8 });
+  const virtualizer = useVirtualizer({
+    count: result.lines,
+    enabled: virtual,
+    getScrollElement: () => scroller.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 8,
+    // The selected row stays mounted (plan.md D15 "Text selection").
+    rangeExtractor: (range) => {
+      const shown = defaultRangeExtractor(range);
+      return line < 1 || line > result.lines || shown.includes(line - 1) ? shown : [...shown, line - 1].sort((a, b) => a - b);
+    },
+  });
 
   // A new result (Blame before this commit, an option) shows its selected line. Focus stays in the list when it was there, and comes back when a state change removed it (plan.md D15 "Blame focus").
   useLayoutEffect(() => {
@@ -279,7 +290,7 @@ function Lines({ result, line, inspection, headingId, now, onSelectCommit, focus
       // Plan.md D15 "Text selection": a text selection inside this row keeps the line, and the focus returns to the selected line.
       const selection = window.getSelection();
       if (selection !== null && !selection.isCollapsed && row.contains(selection.anchorNode) && row.contains(selection.focusNode)) {
-        elements.current.get(latest.current.line)?.focus();
+        elements.current.get(latest.current.line)?.focus({ preventScroll: true });
         return;
       }
       latest.current.select(n);

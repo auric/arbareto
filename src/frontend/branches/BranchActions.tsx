@@ -135,6 +135,7 @@ export function useBranchActions(options: BranchActionsOptions) {
   const entries = branches !== null && branches.repositoryId === repositoryId ? branches.entries : null;
   const current = head?.state === "branch" ? branchName(head.target) : null;
   const entryOf = (ref: string) => entries?.find((e) => e.ref === ref) ?? null;
+  const failure = branches !== null && branches.repositoryId === repositoryId && branches.entries === null ? (branches.code === null ? unknownReadText("The branches") : T.listFailed(branches.code)) : null;
 
   /** Data-model §13: `switchChoice` preselects. An unborn HEAD takes Keep changes, because Git can stash only after the first commit. */
   async function preset(): Promise<Preset> {
@@ -549,7 +550,7 @@ export function useBranchActions(options: BranchActionsOptions) {
     /** The newest `readBranches` entries of the open repository, or null while they load or after a failed read. */
     entries,
     /** The text of a failed `readBranches`. */
-    failure: branches !== null && branches.repositoryId === repositoryId && branches.entries === null ? (branches.code === null ? unknownReadText("The branches") : T.listFailed(branches.code)) : null,
+    failure,
     entryOf,
     /** A pick in the toolbar list. */
     pick: (entry: BranchEntry, anchor: Element | null) => startSwitch(entry, anchor, false),
@@ -559,8 +560,12 @@ export function useBranchActions(options: BranchActionsOptions) {
     openMenu,
     /** Reads the branches again, such as when the list opens. */
     refresh: () => workbench.readBranches(),
-    /** A sidebar row or a history label by its 002 kind and short name. A ref outside the newest `readBranches` result does nothing. */
+    /** A sidebar row or a history label by its 002 kind and short name. Without entries, it reads the branches again and states why it does nothing. A ref outside the newest `readBranches` result does nothing. */
     onRef(kind: "branch" | "remote", name: string, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement, byKey = false) {
+      if (entries === null) {
+        workbench.readBranches();
+        return onNotice(failure ?? T.branchesLoading);
+      }
       const entry = entryOf(`${kind === "branch" ? "refs/heads/" : "refs/remotes/"}${name}`);
       if (entry === null) return;
       if (action === "menu") openMenu(entry, anchor, byKey);

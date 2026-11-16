@@ -558,6 +558,47 @@ describe("virtual rows (spec FR-068)", () => {
     expect(lines(m.host).length).toBeLessThan(200);
     expect(text(view(m.host).querySelector('[role="toolbar"]')!)).toContain("100,000 lines");
   });
+
+  test("T175: a skipped click with the selected line outside the view keeps the text selection and the scroll offset, and focuses the selected line", async () => {
+    const m = await answered(blameResult([{ oid: C3, time: NOW_S - DAY }], [{ commit: 0, count: 1_000 }]));
+    const scroller = view(m.host).querySelector<HTMLElement>('[role="listbox"]')!;
+    const focus = HTMLElement.prototype.focus;
+    // happy-dom does not scroll on focus. A browser scrolls a focused row outside the view into the view, unless the call sets preventScroll. Rows are 20 px high.
+    HTMLElement.prototype.focus = function (this: HTMLElement, options?: FocusOptions) {
+      if (!options?.preventScroll && this.getAttribute("role") === "option" && scroller.contains(this)) {
+        const top = (Number(this.dataset.line) - 1) * 20;
+        if (top < scroller.scrollTop || top + 20 > scroller.scrollTop + scroller.clientHeight) scroller.scrollTo({ top });
+      }
+      focus.call(this, options);
+    };
+    const selection = window.getSelection()!;
+    try {
+      await act(async () => scroller.scrollTo({ top: 10_000 }));
+      await settle();
+      expect(line(m.host, 520)).toBeDefined();
+      expect(20).toBeLessThanOrEqual(scroller.scrollTop);
+      const code = line(m.host, 520).lastElementChild!.firstChild!;
+      await act(async () => selection.setBaseAndExtent(code, 0, code, 4));
+      const copied = selection.toString();
+      expect(copied).toBe("line");
+      await act(async () => line(m.host, 520).focus());
+      await click(line(m.host, 520));
+      await settle();
+      expect(m.inspection.getState().blame!.line).toBe(1);
+      expect(m.selected).toEqual([]);
+      // (1) The text selection stays.
+      expect(selection.isCollapsed).toBe(false);
+      expect(selection.toString()).toBe(copied);
+      // (2) The scroll offset stays.
+      expect(scroller.scrollTop).toBe(10_000);
+      // (3) The focus and the one Tab stop are on the selected line.
+      expect(document.activeElement).toBe(line(m.host, 1));
+      expect(lines(m.host).filter((row) => row.tabIndex === 0)).toEqual([line(m.host, 1)]);
+    } finally {
+      HTMLElement.prototype.focus = focus;
+      selection.removeAllRanges();
+    }
+  });
 });
 
 describe("workbench dock swap", () => {

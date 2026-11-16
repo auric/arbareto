@@ -60,6 +60,8 @@ const FIRST_PROGRESS_MS = 500;
 const CANCEL_MS = 1_000;
 // Spec SC-002 for v0.1.0: the highest recorded peak growth (559.8 MiB) plus a 64 MiB margin, rounded up to whole MiB.
 const MEMORY_BYTES = 624 * 1024 * 1024;
+// T104 stage 1: process samples after the limit text. A later fall shows garbage, and a level value shows retention. They have no bound.
+const LATE_SAMPLES_MS = [15_000, 30_000, 60_000];
 const INPUT_P95_MS = 100;
 const INPUT_MAX_MS = 500;
 // The Event Timing API reports no entry below its 16 ms minimum `durationThreshold`, so such an input counts as 16 ms.
@@ -496,7 +498,9 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         for (let i = 0; i < 3; i++) samples.push(treeRecords(s.app.pid));
         expect(await until<boolean>(s.c, "the limit text", `document.querySelector('[data-section=changedFiles]').textContent.includes(${js(limitText(shown))})`, (v) => v)).toBe(true);
         // The settled sample comes after the limit text shows. Only the peak has a bound.
+        const shownAt = performance.now();
         const settledTree = treeRecords(s.app.pid);
+        const late: [number, Sized[]][] = [[performance.now() - shownAt, settledTree]];
         const settled = treeTotal(settledTree);
         const peak = Math.max(...samples.map(treeTotal), settled);
         // T104 P0: the growth of each process against its own `before`. A process that starts after `before` grows from 0.
@@ -522,12 +526,19 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         // Each sample is one CIM query, so a short Git run can fall between two samples. The Job case records the Git peak.
         console.log(`OBSERVATION T104 P0 git.exe seen in ${samples.filter((tree) => tree.some((r) => r.name.toLowerCase() === "git.exe")).length} of ${samples.length} samples`);
         console.log(`OBSERVATION ${TASK}: SC-002 process tree private bytes before ${before}, peak ${peak}, growth ${mib(peak - before)} MiB, settled ${settled}, settled growth ${mib(settled - before)} MiB, bound ${mib(MEMORY_BYTES)} MiB, ${shown} files shown`);
+        // T104 stage 1: the record only. The peak above keeps its sample set, so the bound does not change.
+        for (const at of LATE_SAMPLES_MS) {
+          const wait = shownAt + at - performance.now();
+          if (wait > 0) await Bun.sleep(wait);
+          late.push([performance.now() - shownAt, treeRecords(s.app.pid)]);
+        }
+        for (const [ms, tree] of late) console.log(`OBSERVATION T104 P0 ${Math.round(ms)} ms after the limit text: tree ${treeTotal(tree)} growth ${mib(treeTotal(tree) - before)} MiB; ${tree.map((r) => `${label(r)} private ${r.privateBytes} growth ${growth(r)} MiB`).join("; ")}`);
         expect({ bounded: shown > 0 && shown < 100_001, growth: peak - before <= MEMORY_BYTES }).toEqual({ bounded: true, growth: true });
       } finally {
         await end(s);
       }
     },
-    caseTimeout(30, 4 * STEP_LIMIT_MS),
+    caseTimeout(30 + LATE_SAMPLES_MS.length, 4 * STEP_LIMIT_MS + LATE_SAMPLES_MS.at(-1)!),
   );
 
   // T104 P0: the Git share of SC-002. Git writes to NUL here, so no reader holds it back.

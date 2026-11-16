@@ -117,6 +117,75 @@ export function parseRawListing(raw: Uint8Array, objectFormat: ObjectFormat, tru
   return entries;
 }
 
+const OID_BYTES: Record<ObjectFormat, number> = { sha1: 40, sha256: 64 };
+const COLON = 0x3a;
+const SPACE = 0x20;
+const DIGIT_0 = 0x30;
+const DIGIT_1 = 0x31;
+const [ADDED, DELETED, RENAMED] = [0x41, 0x44, 0x52];
+const ONE_LETTER_CODES = new Set([ADDED, DELETED, 0x4d, 0x54]);
+const isDigit = (b: number | undefined) => b !== undefined && b >= DIGIT_0 && b <= 0x39;
+const isOctal = (b: number) => b >= DIGIT_0 && b <= 0x37;
+const isHex = (b: number) => isDigit(b) || (b >= 0x61 && b <= 0x66);
+const allZero = (raw: Uint8Array, from: number, to: number) => {
+  for (let i = from; i < to; i++) if (raw[i] !== DIGIT_0) return false;
+  return true;
+};
+
+// The end of the record at `at`, with the checks of `parseRawListing` in the same order. "unfinished": a NUL is missing. Null: the record breaks the grammar.
+// The header is `:<mode> <mode> <oid> <oid> <code>`. Every field has a fixed length, so the code starts at byte 17 + 2 × (OID length).
+function recordEnd(raw: Uint8Array, at: number, oidBytes: number): number | "unfinished" | null {
+  const nul = raw.indexOf(NUL, at);
+  if (nul < 0) return "unfinished";
+  const code = at + 17 + 2 * oidBytes;
+  const renamed = raw[code] === RENAMED;
+  if (nul - at !== (renamed ? 21 : 18) + 2 * oidBytes || raw[at] !== COLON) return null;
+  for (let i = 1; i < code - at; i++) {
+    const b = raw[at + i]!;
+    const space = i === 7 || i === 14 || i === 15 + oidBytes || i === 16 + 2 * oidBytes;
+    if (!(space ? b === SPACE : i < 14 ? isOctal(b) : isHex(b))) return null;
+  }
+  const d1 = raw[code + 1];
+  const d2 = raw[code + 2];
+  const d3 = raw[code + 3];
+  if (renamed ? !((d1 === DIGIT_0 && isDigit(d2) && isDigit(d3)) || (d1 === DIGIT_1 && d2 === DIGIT_0 && d3 === DIGIT_0)) : !ONE_LETTER_CODES.has(raw[code]!)) return null;
+  let end = nul + 1;
+  for (let i = 0; i < (renamed ? 2 : 1); i++) {
+    const stop = raw.indexOf(NUL, end);
+    if (stop < 0) return "unfinished";
+    if (stop === end) return null;
+    end = stop + 1;
+  }
+  // Data-model §1 sides, as `parseRawListing` checks them.
+  const oldMode = !allZero(raw, at + 1, at + 7);
+  const newMode = !allZero(raw, at + 8, at + 14);
+  const oldOid = !allZero(raw, at + 15, at + 15 + oidBytes);
+  const newOid = !allZero(raw, at + 16 + oidBytes, code - 1);
+  const sides = raw[code] === ADDED ? !oldMode && !oldOid && newMode && newOid : raw[code] === DELETED ? !newMode && !newOid && oldMode && oldOid : oldMode && newMode;
+  return sides ? end : null;
+}
+
+// Contract Δ3 `readCommitChanges` "Parse" with no entry objects: the start of each record, then the end of the last record.
+// It accepts and refuses exactly as `parseRawListing`. `truncated` has the same meaning.
+export function rawListingOffsets(raw: Uint8Array, objectFormat: ObjectFormat, truncated: boolean): Uint32Array | null {
+  const oidBytes = OID_BYTES[objectFormat];
+  let offsets = new Uint32Array(1024);
+  let count = 1;
+  for (let at = 0; at < raw.length; ) {
+    const end = recordEnd(raw, at, oidBytes);
+    if (end === null || (end === "unfinished" && !truncated)) return null;
+    if (end === "unfinished") break;
+    if (count === offsets.length) {
+      const grown = new Uint32Array(count * 2);
+      grown.set(offsets);
+      offsets = grown;
+    }
+    offsets[count++] = end;
+    at = end;
+  }
+  return offsets.slice(0, count);
+}
+
 // The sections of a `diff-tree -p` output. Each section starts at a line that begins with `diff --git `. Hunk lines carry a prefix byte,
 // so no body line begins that way. Null for output before the first section.
 export function splitPatch(raw: Uint8Array): Uint8Array[] | null {
@@ -327,24 +396,21 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
       }
       const trustListing = await gate(t);
       const base = parents.length === 0 ? { kind: "empty-tree" as const, oid: await emptyTreeOf((args, out, input) => step(t, args, out, input), w.objectFormat) } : { kind: "parent" as const, index: parent, oid: parents[parent]! };
-      const out = createCollector({ maxBytes: STATUS_LISTING_BYTES });
+      let out: ReturnType<typeof createCollector> | null = createCollector({ maxBytes: STATUS_LISTING_BYTES });
       const exit = await step(t, commitChangesArgs(base.oid, target.oid, w.objectFormat), out);
+      const limited = out.limited;
       // Contract §5: a reached bound stops the process, so its exit status proves nothing.
-      if (!out.limited && exit.exitCode !== 0) {
+      if (!limited && exit.exitCode !== 0) {
         if (await missing(t, trustListing)) return { result: "failed", code: "OBJECT_MISSING", value: { remedy: { text: OBJECT_MISSING_REMEDY } } };
         return { result: "failed", code: "GIT_FAILED" };
       }
       const raw = out.take();
-      const parsed = parseRawListing(raw, w.objectFormat, out.limited);
-      if (parsed === null) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
-      let reason: "STATUS_LISTING_RECORDS" | "STATUS_LISTING_BYTES" | "COMMIT_CHANGES_RESULT_BYTES" | null = out.limited ? "STATUS_LISTING_BYTES" : null;
-      let entries = parsed;
-      if (entries.length > STATUS_LISTING_RECORDS) {
-        entries = entries.slice(0, STATUS_LISTING_RECORDS);
-        reason ??= "STATUS_LISTING_RECORDS";
-      }
-      // Contract Δ5: the encoded result holds at most COMMIT_CHANGES_RESULT_BYTES. Whole records in Git order, so the first cut wins.
-      const files = entries.map(entryValue);
+      // The collector chunks hold a second copy of the listing while the collector is reachable.
+      out = null;
+      const offsets = rawListingOffsets(raw, w.objectFormat, limited);
+      if (offsets === null) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
+      const records = offsets.length - 1;
+      let reason: "STATUS_LISTING_RECORDS" | "STATUS_LISTING_BYTES" | "COMMIT_CHANGES_RESULT_BYTES" | null = limited ? "STATUS_LISTING_BYTES" : records > STATUS_LISTING_RECORDS ? "STATUS_LISTING_RECORDS" : null;
       // The encoded size of the result without its entries. Only the reason and the digit count of `shown` change it.
       const fixed = new Map<string, number>();
       const sizeOf = (n: number, r: string | null) => {
@@ -352,24 +418,30 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
         if (!fixed.has(key)) fixed.set(key, encodedBytes(value(base, [], r === null ? { state: "complete" } : { state: "limited", code: "OUTPUT_LIMIT", reason: r, shown: n })));
         return fixed.get(key)!;
       };
-      let total = sizeOf(files.length, reason);
-      for (const f of files) total += encodedBytes(f) + 1;
-      if (files.length > 0) total -= 1;
-      if (total > COMMIT_CHANGES_RESULT_BYTES) {
-        let n = 0;
-        let sum = 0;
-        for (const f of files) {
-          const next = sum + encodedBytes(f) + (n === 0 ? 0 : 1);
-          if (sizeOf(n + 1, "COMMIT_CHANGES_RESULT_BYTES") + next > COMMIT_CHANGES_RESULT_BYTES) break;
-          sum = next;
-          n++;
-        }
-        files.length = n;
-        entries = entries.slice(0, n);
+      // Contract Δ5: the encoded result holds at most COMMIT_CHANGES_RESULT_BYTES. Whole records in Git order, so the first cut wins.
+      // The whole listing keeps its reason when it fits. Else the result keeps the longest prefix that fits with the reason COMMIT_CHANGES_RESULT_BYTES.
+      const count = Math.min(records, STATUS_LISTING_RECORDS);
+      const whole = sizeOf(count, reason);
+      const files: ReturnType<typeof entryValue>[] = [];
+      // `sum`: the encoded entries and the separators between them. `prefix`: the entry count before the first prefix that does not fit.
+      let sum = -1;
+      let prefix: number | undefined;
+      let over = false;
+      for (let i = 0; i < count; i++) {
+        const f = entryValue(parseRawListing(raw.subarray(offsets[i]!, offsets[i + 1]!), w.objectFormat, false)![0]!, i);
+        sum += encodedBytes(f) + 1;
+        files.push(f);
+        if (prefix === undefined && sizeOf(i + 1, "COMMIT_CHANGES_RESULT_BYTES") + sum > COMMIT_CHANGES_RESULT_BYTES) prefix = i;
+        over ||= whole + sum > COMMIT_CHANGES_RESULT_BYTES;
+        if (over && prefix !== undefined) break;
+      }
+      if (over) {
+        files.length = prefix ?? files.length;
         reason = "COMMIT_CHANGES_RESULT_BYTES";
       }
-      const offsets = Uint32Array.from([...entries.map((e) => e.start), entries.at(-1)?.end ?? 0]);
-      const kept: Listing = { ...listing, base: base.oid, raw: raw.subarray(0, entries.at(-1)?.end ?? 0), offsets };
+      const end = offsets[files.length]!;
+      // A copy of a cut listing, so the retained listing does not keep the whole collector buffer.
+      const kept: Listing = { ...listing, base: base.oid, raw: end === raw.length ? raw : raw.slice(0, end), offsets: files.length === records ? offsets : offsets.slice(0, files.length + 1) };
       if (t.signal.aborted) return { result: "canceled" };
       byView.set(target.viewId, kept);
       byId.set(kept.changesId, kept);
@@ -387,7 +459,8 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
     const listing = byId.get(changesId);
     if (listing === undefined) return { refused: "UNKNOWN_TARGET" };
     if (!Number.isSafeInteger(fileId) || fileId < 0 || fileId >= listing.offsets.length - 1) return { refused: "INVALID_REQUEST" };
-    const record = listing.raw.subarray(listing.offsets[fileId]!, listing.offsets[fileId + 1]!);
+    // A copy, so a stored path of the entry does not keep the retained listing.
+    const record = listing.raw.slice(listing.offsets[fileId]!, listing.offsets[fileId + 1]!);
     const entry = parseRawListing(record, listing.objectFormat, false)![0]!;
     return { listing, entry };
   }

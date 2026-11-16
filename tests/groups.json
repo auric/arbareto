@@ -6,6 +6,8 @@
     "tests/git/bun-runner.test.ts": "asserts LINGER_MS - 1000 bounds",
     "tests/git/clone.test.ts": "asserts reconciliation within 5 s",
     "tests/git/commit-changes.test.ts": "reads the 100,001-file commit",
+    "tests/git/commit-changes-listing.test.ts": "holds 33 MiB and 100,001-record listings",
+    "tests/git/commit-changes-memory.test.ts": "measures the heap of the 100,001-file commit read",
     "tests/git/commit.test.ts": "asserts a commit outcome within 2000 ms of the Git exit",
     "tests/git/external-changes.test.ts": "asserts watcher hints within HINT_BUDGET_MS",
     "tests/git/file-actions-facts.test.ts": "builds or reads the 100,001-path preview fixture",

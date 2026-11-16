@@ -15,21 +15,22 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
-import { SUBMODULE_WORK_PAGE, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, SUBMODULE_WORK_PAGE, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
+import { commitChangesArgs, type ObjectFormat } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { buildPathsBound, faGit } from "../git/file-actions-fixtures";
-import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
+import { fixtureDir, FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { blameLarge, buildWide, wideLarge } from "../git/history-diff-fixtures";
 import { untrackedFixture } from "../git/workbench-fixtures";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
-import { appEnv, COMMIT_VIEW, descendants, findInstalledApp, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess, type ProcessRecord } from "./installed-app";
+import { appEnv, COMMIT_VIEW, descendants, findInstalledApp, powershellJson, PROBE_TIMEOUT_MS, processRecords, spawnOwned, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess, type ProcessRecord } from "./installed-app";
 import { PERF_CACHE_ROOT } from "./perf-fixtures";
 import { goneAt, seen, startPoller, type Sample } from "./process-poller";
 import { MARKED, PARENT_FILE, PARENT_TEXT, submoduleWorld } from "./submodule-perf-fixture";
 import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
-for (const helper of ["./cdp.ts", "./process-poller.ts", "./uia.ts", "./installed-app.ts", "../git/file-actions-fixtures.ts", "../git/history-diff-fixtures.ts", "../git/workbench-fixtures.ts", "./submodule-perf-fixture.ts"]) printOrigin(helper, import.meta.dir);
+for (const helper of ["../../src/git-service/commands.ts", "./cdp.ts", "./process-poller.ts", "./uia.ts", "./installed-app.ts", "../git/file-actions-fixtures.ts", "../git/history-diff-fixtures.ts", "../git/workbench-fixtures.ts", "./submodule-perf-fixture.ts"]) printOrigin(helper, import.meta.dir);
 
 const TASK = "T061";
 const STEP_MS = MAX_WAIT_MS + MAX_CALL_MS;
@@ -59,6 +60,8 @@ const FIRST_PROGRESS_MS = 500;
 const CANCEL_MS = 1_000;
 // Spec SC-002 for v0.1.0: the highest recorded peak growth (559.8 MiB) plus a 64 MiB margin, rounded up to whole MiB.
 const MEMORY_BYTES = 624 * 1024 * 1024;
+// T104 stage 1: process samples after the limit text. A later fall shows garbage, and a level value shows retention. They have no bound.
+const LATE_SAMPLES_MS = [15_000, 30_000, 60_000];
 const INPUT_P95_MS = 100;
 const INPUT_MAX_MS = 500;
 // The Event Timing API reports no entry below its 16 ms minimum `durationThreshold`, so such an input counts as 16 ms.
@@ -283,12 +286,15 @@ function sizedRecords(): Sized[] {
 ConvertTo-Json -Compress -InputObject $r`,
   ) as Sized[];
 }
-// Spec SC-002: the private bytes of the app and of every process below it (001 plan.md: sum private bytes, never working sets).
-function treeBytes(root: number): number {
+// Spec SC-002: the app and every process below it. The tree total sums private bytes, never working sets (001 plan.md).
+function treeRecords(root: number): Sized[] {
   const records = sizedRecords();
-  const tree = [records.find((r) => r.pid === root), ...(descendants(root, records) as Sized[])].filter((r): r is Sized => r !== undefined);
-  return tree.reduce((n, r) => n + r.privateBytes, 0);
+  return [records.find((r) => r.pid === root), ...(descendants(root, records) as Sized[])].filter((r): r is Sized => r !== undefined);
 }
+const treeTotal = (tree: Sized[]) => tree.reduce((n, r) => n + r.privateBytes, 0);
+const mib = (bytes: number) => (bytes / 1048576).toFixed(1);
+// T104 P0: the PID and the creation time identify a process, so a reused PID is a new process.
+const processKey = (r: Sized) => `${r.pid}/${r.created}`;
 
 const { ptr: P, u32, i32 } = FFIType;
 const openKernel = () =>
@@ -468,8 +474,9 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
       try {
         // The selection starts on the Index row, so the measured key selects the commit and starts the read.
         await selectRow(s.c, "index");
-        const before = treeBytes(s.app.pid);
-        const samples: number[] = [];
+        const beforeTree = treeRecords(s.app.pid);
+        const before = treeTotal(beforeTree);
+        const samples: Sized[][] = [];
         const shown = await probing(
           s.c,
           "the 100,001-file read",
@@ -480,7 +487,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
           },
           async () => {
             for (const end = performance.now() + STEP_LIMIT_MS; ; ) {
-              samples.push(treeBytes(s.app.pid));
+              samples.push(treeRecords(s.app.pid));
               const m = /^Changed files \(([\d,]+)\)$/.exec(await s.c.evaluate<string>(heading));
               if (m !== null) return Number(m[1]!.replaceAll(",", ""));
               if (performance.now() >= end) throw new Error("the limited listing did not show");
@@ -488,18 +495,71 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
           },
         );
         expect(await s.c.evaluate<string | null>(activeRow)).toBe(cached.oids.wide!);
-        for (let i = 0; i < 3; i++) samples.push(treeBytes(s.app.pid));
+        for (let i = 0; i < 3; i++) samples.push(treeRecords(s.app.pid));
         expect(await until<boolean>(s.c, "the limit text", `document.querySelector('[data-section=changedFiles]').textContent.includes(${js(limitText(shown))})`, (v) => v)).toBe(true);
         // The settled sample comes after the limit text shows. Only the peak has a bound.
-        const settled = treeBytes(s.app.pid);
-        const peak = Math.max(...samples, settled);
-        const mib = (bytes: number) => (bytes / 1048576).toFixed(1);
+        const shownAt = performance.now();
+        const settledTree = treeRecords(s.app.pid);
+        const late: [number, Sized[]][] = [[performance.now() - shownAt, settledTree]];
+        const settled = treeTotal(settledTree);
+        const peak = Math.max(...samples.map(treeTotal), settled);
+        // T104 P0: the growth of each process against its own `before`. A process that starts after `before` grows from 0.
+        const own = new Map(beforeTree.map((r) => [processKey(r), r.privateBytes]));
+        const growth = (r: Sized) => mib(r.privateBytes - (own.get(processKey(r)) ?? 0));
+        // Chromium gives each WebView2 child process a `--type=<kind>` argument. The browser process has none.
+        const label = (r: Sized) => {
+          const type = / --type=(\S+)/.exec(r.commandLine ?? "")?.[1];
+          return `${r.name}${type === undefined ? "" : ` ${type}`} pid ${r.pid}`;
+        };
+        samples.forEach((tree, i) => console.log(`OBSERVATION T104 P0 sample ${i}: tree ${treeTotal(tree)} growth ${mib(treeTotal(tree) - before)} MiB; ${tree.map((r) => `${label(r)} private ${r.privateBytes} growth ${growth(r)} MiB`).join("; ")}`));
+        const known = new Map([...beforeTree, ...samples.flat(), ...settledTree].map((r) => [processKey(r), r]));
+        for (const [key, r] of known) {
+          const bytesIn = (tree: Sized[]) => tree.find((x) => processKey(x) === key)?.privateBytes;
+          const start = own.get(key);
+          const last = bytesIn(settledTree);
+          const sampled = [...samples, settledTree].map(bytesIn).filter((n) => n !== undefined);
+          const high = sampled.length === 0 ? undefined : Math.max(...sampled);
+          console.log(
+            `OBSERVATION T104 P0 ${label(r)}: before ${start ?? "absent"}, peak ${high ?? "-"}, settled ${last ?? "gone"}, peak growth ${high === undefined ? "-" : mib(high - (start ?? 0))} MiB, settled growth ${last === undefined ? "-" : mib(last - (start ?? 0))} MiB, in ${sampled.length} of ${samples.length + 1} samples`,
+          );
+        }
+        // Each sample is one CIM query, so a short Git run can fall between two samples. The Job case records the Git peak.
+        console.log(`OBSERVATION T104 P0 git.exe seen in ${samples.filter((tree) => tree.some((r) => r.name.toLowerCase() === "git.exe")).length} of ${samples.length} samples`);
         console.log(`OBSERVATION ${TASK}: SC-002 process tree private bytes before ${before}, peak ${peak}, growth ${mib(peak - before)} MiB, settled ${settled}, settled growth ${mib(settled - before)} MiB, bound ${mib(MEMORY_BYTES)} MiB, ${shown} files shown`);
+        // T104 stage 1: the record only. The peak above keeps its sample set, so the bound does not change.
+        for (const at of LATE_SAMPLES_MS) {
+          const wait = shownAt + at - performance.now();
+          if (wait > 0) await Bun.sleep(wait);
+          late.push([performance.now() - shownAt, treeRecords(s.app.pid)]);
+        }
+        for (const [ms, tree] of late) console.log(`OBSERVATION T104 P0 ${Math.round(ms)} ms after the limit text: tree ${treeTotal(tree)} growth ${mib(treeTotal(tree) - before)} MiB; ${tree.map((r) => `${label(r)} private ${r.privateBytes} growth ${growth(r)} MiB`).join("; ")}`);
         expect({ bounded: shown > 0 && shown < 100_001, growth: peak - before <= MEMORY_BYTES }).toEqual({ bounded: true, growth: true });
       } finally {
         await end(s);
       }
     },
+    caseTimeout(30 + LATE_SAMPLES_MS.length, 4 * STEP_LIMIT_MS + LATE_SAMPLES_MS.at(-1)!),
+  );
+
+  // T104 P0: the Git share of SC-002. Git writes to NUL here, so no reader holds it back.
+  test.skipIf(GIT === null)(
+    "Q6 SC-002 T104 P0: the commitChangesArgs diff-tree of the 100,001-file commit runs in an owned Job, and the Job records its peak process committed bytes",
+    async () => {
+      const cached = wideLarge(GIT!);
+      const format = ownedGit(GIT!, PERF_CACHE_ROOT, cached.repo, ["rev-parse", "--show-object-format"]).toString("utf8");
+      if (format !== "sha1\n" && format !== "sha256\n") throw new Error(`unknown object format ${js(format)}`);
+      const args = commitChangesArgs(cached.oids.base!, cached.oids.wide!, format.trimEnd() as ObjectFormat);
+      const run = spawnOwned([GIT!, ...args], cached.repo, serviceEnv());
+      try {
+        const code = await waitExit(run, GIT_PROCESS_DEADLINE_MS);
+        const a = run.accounting();
+        console.log(`OBSERVATION T104 P0 git diff-tree peak ${mib(a.peakProcessBytes)} MiB: peak process committed bytes ${a.peakProcessBytes}, peak Job committed bytes ${a.peakJobBytes}, processes ${a.processes}, exit ${code}, argv ${js([GIT, ...args])}`);
+        expect(code).toBe(0);
+      } finally {
+        run.stop();
+      }
+    },
+    // A cold cache builds the same fixture as the SC-002 case.
     caseTimeout(30, 4 * STEP_LIMIT_MS),
   );
 

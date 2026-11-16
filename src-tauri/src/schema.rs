@@ -1617,9 +1617,10 @@ mod tests {
         // WP4 adds the 2 `run` vectors of the size rule. The batch 1 gaps add 4 `fileReplace` and 1 `tempRemove` request vectors.
         // Feature 004 T159 adds the 2 `confirmRun` vectors of the 1,024-path bound (contract Δ12 "Submodule bound").
         // Feature 010 T003 adds 5 `mutation-request` and 8 `progress` vectors (contract Δ10).
+        // Feature 005 T115 adds the 2 `run` vectors of the `script` value `submoduleWork` (contract Δ10).
         assert_eq!(
             checked,
-            if cfg!(windows) { 281 } else { 276 },
+            if cfg!(windows) { 283 } else { 278 },
             "shell-read vectors"
         );
     }

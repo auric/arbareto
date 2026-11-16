@@ -45,9 +45,11 @@ import {
   IDENTITY_PATHS,
   REGISTERED_DEADLINE_CAP_MS,
   STALL_NOTICE_MS,
+  STATUS_LISTING_BYTES,
   STREAMED_PROCESS_INPUT_BYTES,
   SUBMODULE_UPDATE_CEILING_MS,
   SUBMODULE_UPDATE_INACTIVITY_MS,
+  SUBMODULE_WORK_PAGE,
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
@@ -133,8 +135,8 @@ export interface GitCall {
   environmentPolicy: EnvironmentPolicy;
   // Contract §6: only the `mutation` policy. `indexFile` is a candidate index in the registered Git directory.
   transaction?: { transactionId: string; indexFile: string };
-  // Feature 002 contract Δ6: the shell runs its fixed WSL script, and `arguments` are the script arguments.
-  script?: "matchingProbe";
+  // Feature 002 contract Δ6, feature 005 contract Δ6: the shell runs its fixed WSL script, and `arguments` are the script arguments.
+  script?: "matchingProbe" | "submoduleWork";
   limits: ProcessLimits;
   stdout: Collector;
   stderr: Collector;
@@ -441,7 +443,9 @@ export function checkCall(call: GitCall): void {
   const clone = kind === "clone";
   const bootstrap = kind === "gitProbe" || kind === "repositoryDiscovery";
   if (clone && (policy !== "remote" || args.length !== 7 || !CLONE_PREFIX.every((arg, i) => args[i] === arg))) refuse("clone");
-  if (call.script !== undefined) {
+  if (call.script === "submoduleWork") {
+    checkWorkScript(call);
+  } else if (call.script !== undefined) {
     checkProbeScript(call);
   } else if (context.contextKind === "gitProbe") {
     const probe = args.length === 1 && (args[0] === "--exec-path" || args[0] === "version");
@@ -485,6 +489,24 @@ function checkProbeScript(call: GitCall): void {
     runs[0] === "--no-lazy-fetch" &&
     runs[count] === "--no-lazy-fetch";
   if (!valid) refuse("matchingProbe");
+}
+
+// Feature 005 contract Δ6 (T115): the checks of src-tauri/src/wsl.rs `submodule_work_command` and the `run` route of the shell.
+// The script evaluates `$((bound + 1))`, so the bound holds only digits, as the probe run length does.
+function checkWorkScript(call: GitCall): void {
+  const [folder = "", phase = "", bound = "", ...targets] = call.arguments;
+  const owned = folder.startsWith(MATCHING_PROBE_WSL_FOLDER) && isIdentifier(folder.slice(MATCHING_PROBE_WSL_FOLDER.length));
+  const valid =
+    call.context.contextKind === "registeredOperation" &&
+    call.environmentPolicy === "read" &&
+    owned &&
+    (phase === "a" || phase === "b") &&
+    /^[1-9][0-9]*$/.test(bound) &&
+    Number(bound) <= STATUS_LISTING_BYTES &&
+    targets.length >= 1 &&
+    targets.length <= SUBMODULE_WORK_PAGE &&
+    targets.every((target) => target.startsWith("/"));
+  if (!valid) refuse("submoduleWork");
 }
 
 export function checkIdentityPaths(paths: readonly string[]): void {

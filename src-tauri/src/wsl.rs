@@ -62,6 +62,10 @@ pub const RETAINED_BYTES: usize = 64 * 1024;
 /// Contract §11 "Distro checks": the list calls use the §5 probe deadline. The identity probes and the anchor answer use it too.
 const PROBE_DEADLINE: Duration = Duration::from_millis(BOOTSTRAP_DEADLINE_MS);
 const INVALID: Code = Code::InvalidRequest;
+/// Feature 005 contract Δ6: `src/contracts/limits.ts` `STATUS_LISTING_BYTES`, the largest `submoduleWork` bound.
+const STATUS_LISTING_BYTES: usize = 32 * 1024 * 1024;
+/// Feature 005 contract Δ6: `src/contracts/limits.ts` `SUBMODULE_WORK_PAGE`, the most `submoduleWork` targets.
+const SUBMODULE_WORK_PAGE: usize = 16;
 /// The registration key of the WSL distros (contract §11 "Distro checks").
 const LXSS: &str = r"Software\Microsoft\Windows\CurrentVersion\Lxss";
 
@@ -78,6 +82,8 @@ pub struct Texts {
     pub wsl_files: String,
     /// Feature 002 contract Δ3 "Matching probe": the `/bin/sh` probe text with the Git path and the probe arguments.
     pub matching_probe: String,
+    /// Feature 005 contract Δ11: the `/bin/sh` text of the two-phase `submoduleWork` script.
+    pub submodule_work: String,
 }
 
 pub fn texts() -> &'static Texts {
@@ -105,6 +111,7 @@ pub fn texts() -> &'static Texts {
             file_facts: perl("fileFacts"),
             wsl_files: perl("wslFiles"),
             matching_probe: text("matchingProbe"),
+            submodule_work: text("submoduleWork"),
         }
     })
 }
@@ -600,6 +607,50 @@ pub fn matching_probe_command(
     Ok(wrapped(
         installation,
         Mode::Search,
+        unit,
+        None,
+        "/bin/sh",
+        &script,
+        base,
+        stdin,
+    ))
+}
+
+/// Feature 005 contract Δ3 `readSubmoduleWork` "WSL route", Δ6, Δ11: the fixed `submoduleWork` text through the wrapper in mode `read`.
+/// `arguments`: the work folder, the phase `a` or `b`, the output bound, and 1 to 16 absolute targets.
+pub fn submodule_work_command(
+    installation: &Installation,
+    unit: &str,
+    arguments: &[String],
+    base: &[(OsString, OsString)],
+    stdin: Stdin,
+) -> Result<Command, Code> {
+    let [folder, phase, bound, targets @ ..] = arguments else {
+        return Err(INVALID);
+    };
+    // The script evaluates `$((bound + 1))`. A bash `/bin/sh` runs a command in an array subscript there, so the bound holds only digits.
+    let bound = Some(bound.as_str())
+        .filter(|n| is_decimal(n) && !n.starts_with('0'))
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|n| *n <= STATUS_LISTING_BYTES);
+    // The folder and each target start with `/`, so `mkdir` and `-C` never read them as options.
+    let owned = folder
+        .strip_prefix("/tmp/arbareto-probe-")
+        .is_some_and(is_identifier);
+    if !owned
+        || !matches!(phase.as_str(), "a" | "b")
+        || bound.is_none()
+        || targets.is_empty()
+        || targets.len() > SUBMODULE_WORK_PAGE
+        || !targets.iter().all(|target| target.starts_with('/'))
+    {
+        return Err(INVALID);
+    }
+    let mut script = strings(&["-c", &texts().submodule_work, "sh", &installation.git]);
+    script.extend(arguments.iter().cloned());
+    Ok(wrapped(
+        installation,
+        Mode::Read,
         unit,
         None,
         "/bin/sh",
@@ -3795,6 +3846,157 @@ mod tests {
             .is_ok(),
             "run length 1"
         );
+    }
+
+    /// The folder, phase `a`, the bound `TRUST_INPUT_BYTES`, and two targets.
+    fn work_arguments() -> Vec<String> {
+        strings(&[
+            PROBE_DIR,
+            "a",
+            "4194304",
+            "/home/u/r/m/000",
+            "/home/u/r/m/001",
+        ])
+    }
+
+    /// Feature 005 contract Δ3 `readSubmoduleWork` "WSL route", Δ6, Δ11: the fixed script through the wrapper in mode `read`.
+    #[test]
+    fn the_submodule_work_script_runs_with_the_approved_git_in_read_mode() {
+        let command = submodule_work_command(
+            &installation(),
+            "arbareto-op-1.scope",
+            &work_arguments(),
+            &base(),
+            Stdin::Closed,
+        )
+        .expect("work");
+        let (wrapper, work) = (json_text("wrapper"), json_text("submoduleWork"));
+        let mut expected = strings(&[
+            "--distribution",
+            "Ubuntu-24.04",
+            "--cd",
+            "/",
+            "--exec",
+            "/bin/sh",
+            "-c",
+            &wrapper,
+            "sh",
+            "arbareto-op-1.scope",
+            "read",
+            "",
+            "/usr/bin/systemd-run",
+            "/usr/bin/systemctl",
+            "/usr/bin/setsid",
+            "1",
+            "/bin/sh",
+            "-c",
+            &work,
+            "sh",
+            "/usr/local/bin/git",
+        ]);
+        expected.extend(work_arguments());
+        assert_eq!(command.arguments, expected);
+        assert_eq!(texts().submodule_work, work);
+        assert_eq!(command.environment, environment(&base()));
+        assert!(matches!(command.stdin, Stdin::Closed));
+        let lines: Vec<&str> = work.lines().collect();
+        assert_eq!(lines.first(), Some(&"git=$1 dir=$2 phase=$3 bound=$4"));
+        for line in [
+            "umask 077",
+            "mkdir -- \"$dir\" || exit 1",
+            "trap 'rm -rf -- \"$dir\"' EXIT",
+        ] {
+            assert!(lines.contains(&line), "{line}");
+        }
+    }
+
+    /// Feature 005 contract Δ6: each broken `submoduleWork` argument is refused, so no process sees it.
+    #[test]
+    fn the_submodule_work_command_refuses_each_broken_argument() {
+        let edit = |at: usize, value: &str| {
+            let mut arguments = work_arguments();
+            arguments[at] = value.to_string();
+            arguments
+        };
+        let targets = |count: usize| {
+            let mut arguments = strings(&[PROBE_DIR, "b", "1"]);
+            arguments.extend((0..count).map(|i| format!("/home/u/r/m/{i:03}")));
+            arguments
+        };
+        let cases = [
+            ("no arguments", Vec::new()),
+            ("no targets", strings(&[PROBE_DIR, "a", "1"])),
+            (
+                "another folder",
+                edit(
+                    0,
+                    "/tmp/arbareto-other-0f0f0f0f-0000-4000-8000-0000000000aa",
+                ),
+            ),
+            (
+                "a folder without the leading slash",
+                edit(0, &PROBE_DIR[1..]),
+            ),
+            (
+                "an uppercase folder ID",
+                edit(
+                    0,
+                    "/tmp/arbareto-probe-0F0F0F0F-0000-4000-8000-0000000000AA",
+                ),
+            ),
+            (
+                "a folder below the probe folder",
+                edit(0, &format!("{PROBE_DIR}/x")),
+            ),
+            ("phase c", edit(1, "c")),
+            ("phase A", edit(1, "A")),
+            ("an empty phase", edit(1, "")),
+            ("phase ab", edit(1, "ab")),
+            ("bound 01", edit(2, "01")),
+            ("bound 0", edit(2, "0")),
+            ("bound +1", edit(2, "+1")),
+            ("an empty bound", edit(2, "")),
+            ("bound a[$(id)]", edit(2, "a[$(id)]")),
+            ("a bound above STATUS_LISTING_BYTES", edit(2, "33554433")),
+            ("a bound of 30 digits", edit(2, &"1".repeat(30))),
+            ("17 targets", targets(17)),
+            ("a relative target", edit(3, "home/u/r/m/000")),
+            ("a target that is an option", edit(4, "-C")),
+            ("an empty target", edit(4, "")),
+        ];
+        for (name, arguments) in cases {
+            assert_eq!(
+                submodule_work_command(
+                    &installation(),
+                    "arbareto-op-1.scope",
+                    &arguments,
+                    &base(),
+                    Stdin::Closed
+                )
+                .err(),
+                Some(INVALID),
+                "{name}"
+            );
+        }
+        for (name, arguments) in [
+            ("bound 1", edit(2, "1")),
+            ("bound STATUS_LISTING_BYTES", edit(2, "33554432")),
+            ("phase b", edit(1, "b")),
+            ("one target", targets(1)),
+            ("16 targets", targets(16)),
+        ] {
+            assert!(
+                submodule_work_command(
+                    &installation(),
+                    "arbareto-op-1.scope",
+                    &arguments,
+                    &base(),
+                    Stdin::Closed
+                )
+                .is_ok(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

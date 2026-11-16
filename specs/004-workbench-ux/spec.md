@@ -398,6 +398,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **001 contract §5, §6, §8, and §12, submodule bound**: The bound is 1,024 submodules, and each submodule counts once (FR-114, FR-115). The `confirmRun` path cap, the notice paths, and the row results follow it.
 - **005 FR-075**: The local-edit marks read keeps its bound of 256 submodules, apart from the 1,024 review bound (FR-115).
 - **005 FR-056**: A click on a Blame line MUST NOT select the line or its commit while a text selection that is not collapsed lies inside that line. Enter and every other click keep the 005 rule (FR-118, plan.md D15 "Text selection").
+- **005 FR-068**: A virtual list MAY also mount its selected or focused row outside the rows near the visible area. So the list keeps one Tab stop (T175, user decision 2026-11-16, plan.md D15 "Text selection").
 - **001 FR-056**: The branch button, the worktree button, and Git settings become visible. Stash stays hidden as a control.
 - **001 FR-057**: The references sidebar gets a branch context menu, the Worktrees group, and the Submodules group.
 - **001 plan.md "Section minima", "Reduced pane"**: Outside the constrained profile, the Submodules group region of the sidebar keeps the reduced pane minimum while the "Keys in the tree" panel shows. The references region keeps at least 1.5 times it. The panel closes or hides when these minima do not fit (FR-116, plan.md D20 "Fit rule").

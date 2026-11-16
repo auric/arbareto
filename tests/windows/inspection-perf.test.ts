@@ -74,7 +74,7 @@ const DELETE_PROBES = 20;
 const DELETE_PROBE_INTERVAL_MS = 50;
 // Spec SC-012: the last mark shows within this time per submodule after the Changes list. The T108 control sets it to 1.
 const MARK_MS_PER_SUBMODULE = 55;
-// Spec SC-012 and plan.md D19 "First mark" (provisional): at 100 submodules the first marks show within this time after the Changes list.
+// Spec SC-012, plan.md D19 "First mark": at 100 submodules the first marks show within this time after the Changes list.
 // Only a user approval changes it (constitution VII). The T124 control sets it to 1.
 const FIRST_MARK_MS = 1_000;
 const FIRST_MARK_COUNT = 100;

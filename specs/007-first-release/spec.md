@@ -232,4 +232,5 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - A GitHub-hosted runner for a public repository is free (research.md R2).
 - The installer stays current-user NSIS and does not install the WebView2 Runtime, as `bun run package` builds it today.
 - English is the only bundled dictionary. Downloaded dictionaries do not ship with the release (006 plan.md D18).
+- Later releases (v0.1.1 and on) reuse the release process of this feature. Each release records its evidence in research.md R7.
 - Linux and macOS packages are out of scope. Feature 009 covers Linux (user decision 2026-10-27; 008 is `008-discard-changes`).

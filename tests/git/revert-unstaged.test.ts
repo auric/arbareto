@@ -220,8 +220,9 @@ describe("revert all unstaged changes: Git's restore bytes, the plan, and the wr
       expect(writes.map((f) => ({ target: f.target, bytes: "bytes" in f, source: /^\.merge_file_/.test(String((f.source as { name?: string } | undefined)?.name)) }))).toEqual(paths.map(() => ({ target: "working", bytes: false, source: true })));
       expect(service.runner.calls.some((c) => ["restore", "checkout", "apply", "reset", "stash"].includes(c.arguments.find((a) => !a.startsWith("-")) ?? ""))).toBe(false);
       expect({ removes: frames(service, "tempRemove").length, temps: gitTemps(repo) }).toEqual({ removes: 0, temps: [] });
-      // Contract Δ2: `revert-files` counts from 0 to the file count. No index part runs, so no `revert-index` phase comes.
-      expect(counters(service)).toEqual([0, 1, 2, 3].map((fileIndex) => ({ fileIndex, fileCount: 3 })));
+      // Contract Δ2: `revert-files` counts from 0 to the file count at most 4 times per second. No index part runs, so no `revert-index` phase comes.
+      const sent = counters(service);
+      expect({ first: sent.at(0), last: sent.at(-1), rising: sent.every((c, k) => c.fileCount === 3 && (k === 0 || c.fileIndex > sent[k - 1]!.fileIndex)) }).toEqual({ first: { fileIndex: 0, fileCount: 3 }, last: { fileIndex: 3, fileCount: 3 }, rising: true });
       expect((service.progress as { phase?: string }[]).some((p) => p.phase === "revert-index")).toBe(false);
     }),
     TIMEOUT_MS,

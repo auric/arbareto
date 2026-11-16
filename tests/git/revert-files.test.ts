@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Response, RunWorkbenchResult } from "../../src/contracts/envelope";
-import { MULTI_FILE_ACTION_FILES, PIPE_FRAME_BYTES } from "../../src/contracts/limits";
+import { MULTI_FILE_ACTION_FILES, PIPE_FRAME_BYTES, REVERT_PROGRESS_EVENTS_PER_SECOND } from "../../src/contracts/limits";
 import { RunnerRefusal } from "../../src/git-service/git-runner";
 import { PROFILE_TEXTS } from "../../src/git-service/hunk-publish";
 import { LOCKED_REMEDY } from "../../src/git-service/index-lock";
@@ -106,6 +106,7 @@ async function run(service: Service, r: RegistrationResult, token: string): Prom
 
 const refusal = (response: ServiceResponse<unknown>) => ({ state: response.state, code: response.code, result: response.result });
 const frames = (service: Service, type: string) => service.runner.frames.filter((f) => f.type === type) as Record<string, unknown>[];
+const counters = (service: Service) => (service.progress as { phase?: string; counters?: { fileIndex: number; fileCount: number } }[]).filter((p) => p.phase === "revert-files").map((p) => p.counters!);
 
 // Two unstaged changes and no index part.
 const TWO = { "a.txt": "a\n", "sub/c.txt": "c\n", "keep.txt": "keep\n" };
@@ -545,6 +546,52 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "canceled", code: "CANCELED", outcomes: ["not-started", "not-started"] });
         expect({ temps: gitTemps(repo), removes: frames(service, "tempRemove").length, writes: frames(service, "fileReplace").length }).toEqual({ temps: [], removes: 2, writes: 0 });
         expect(state(repo)).toEqual(before);
+      },
+    );
+  }, TIMEOUT_MS);
+
+  caseTest("T084", `a 300-file run sends at most ${REVERT_PROGRESS_EVENTS_PER_SECOND} revert-files events per second, from fileIndex 0 to the file count (contract Δ2, T084)`, SHELL, () =>
+    withService({ name: "t084-rate" }, async (service) => {
+      const paths = Array.from({ length: 300 }, (_, k) => `f${String(k).padStart(3, "0")}.txt`);
+      const repo = build("rate", Object.fromEntries(paths.map((p) => [p, `${p}\n`])), (r) => {
+        for (const p of paths) write(r, p, `${p} changed\n`);
+      });
+      const { r, read } = await open(service, repo);
+      const reviewed = await reviewOk(service, r, read, paths.map((p) => idOf(read, p, "unstaged")));
+      const started = performance.now();
+      const done = await run(service, r, reviewed.workbenchToken);
+      const wallMs = performance.now() - started;
+      expect(outcome(done)).toEqual(SUCCEEDED);
+      const sent = counters(service);
+      expect({ first: sent.at(0), last: sent.at(-1), rising: sent.every((c, k) => c.fileCount === 300 && (k === 0 || c.fileIndex > sent[k - 1]!.fileIndex)) }).toEqual({ first: { fileIndex: 0, fileCount: 300 }, last: { fileIndex: 300, fileCount: 300 }, rising: true });
+      expect(sent.length).toBeLessThanOrEqual(2 + Math.floor((wallMs * REVERT_PROGRESS_EVENTS_PER_SECOND) / 1000));
+    }),
+    LONG_TIMEOUT_MS,
+  );
+
+  caseTest("T084", "a Cancel at the fourth write sends the count of the answered writes before the reconcile (contract Δ2, T084)", SHELL, async () => {
+    let target: Service | null = null;
+    let writes = 0;
+    await withService(
+      {
+        name: "t084-cancel",
+        revertCheckpoint: async (c: RevertCheckpoint) => {
+          if (c.step === "before-write" && ++writes === 4) await target!.cancel(c.operationId);
+        },
+      },
+      async (service) => {
+        target = service;
+        const paths = Array.from({ length: 10 }, (_, k) => `f${k}.txt`);
+        const repo = build("t084-cancel", Object.fromEntries(paths.map((p) => [p, `${p}\n`])), (r) => {
+          for (const p of paths) write(r, p, `${p} changed\n`);
+        });
+        const { r, read } = await open(service, repo);
+        const reviewed = await reviewOk(service, r, read, paths.map((p) => idOf(read, p, "unstaged")));
+        const done = await run(service, r, reviewed.workbenchToken);
+        const outcomes = done.result?.files.map((f) => f.outcome) ?? [];
+        expect({ state: done.state, outcomes }).toEqual({ state: "failed-with-effects", outcomes: [...paths.slice(0, 3).map(() => "reverted"), "not-changed", ...paths.slice(4).map(() => "not-started")] });
+        // The fourth request still went out and got the `stopped` reply, so the run counts four answered writes.
+        expect(counters(service).at(-1)).toEqual({ fileIndex: 4, fileCount: 10 });
       },
     );
   }, TIMEOUT_MS);

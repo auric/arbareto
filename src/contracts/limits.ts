@@ -217,3 +217,4 @@ export const DICTIONARY_LANGUAGE_MEMORY_BYTES = 256 * MIB;
 // The bytes of one `fileReplace` `working` frame of a line revert. Revert file and Revert all unstaged changes have no byte bound.
 // Research.md R11: the working bytes (at most 1 MiB), the restored lines of the other side (at most 1 MiB), and one CR per restored diff line.
 export const REVERT_FILE_BYTES = 2 * COMPARED_RAW_VERSION_BYTES + CANONICAL_DIFF_LINES;
+export const REVERT_PROGRESS_EVENTS_PER_SECOND = 4;

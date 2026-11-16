@@ -49,6 +49,10 @@ describe("contract Δ5 bounds", () => {
     expect(limits.MULTI_FILE_ACTION_FILES).toBe(10_000);
     expect(limits.FILE_FACT_ENTRIES).toBe(64);
   });
+
+  test("REVERT_PROGRESS_EVENTS_PER_SECOND is 4 (contract Δ2, T084)", () => {
+    expect(L.REVERT_PROGRESS_EVENTS_PER_SECOND).toBe(4);
+  });
 });
 
 describe("contract Δ1 and Δ2 operations, phases, and markers", () => {

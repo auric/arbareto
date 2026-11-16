@@ -9,7 +9,7 @@ import type { ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
 import { filterReason } from "../contracts/file-action";
 import { GITLINK } from "../contracts/git-mode";
-import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_COMPONENT_UNITS, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_ATTRIBUTE_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
+import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_COMPONENT_UNITS, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_ATTRIBUTE_BYTES, REVERT_PROGRESS_EVENTS_PER_SECOND, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
 import { attributeArgs, blobArgs, blobHashProofArgs, cachedAttributeArgs, checkoutTempArgs, indexPathArgs, lineEndingPathArgs, objectCheckArgs, OID_HEX, statusArgs } from "./commands";
@@ -78,6 +78,7 @@ const REFUSED_FILES = 20;
 const CONFIRMATION_PATHS = 20;
 const SYMLINK = "120000";
 const ABSENT_MODE = "000000";
+const PROGRESS_MS = 1000 / REVERT_PROGRESS_EVENTS_PER_SECOND;
 // Research.md R8: the write keeps hidden, system, and not-content-indexed, and archive and normal are no compared fact.
 // FILE_ATTRIBUTE_READONLY, _HIDDEN, _SYSTEM, _ARCHIVE, _NORMAL, _NOT_CONTENT_INDEXED, and _ENCRYPTED (Microsoft Learn "File Attribute Constants").
 const READ_ONLY = 0x1;
@@ -832,7 +833,17 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
     }
     stopped = index !== "published";
   }
-  if (!stopped && count > 0) r.progress("revert-files", { fileIndex: 0, fileCount: count });
+  // Contract Δ2: at most REVERT_PROGRESS_EVENTS_PER_SECOND events per second. No timer sends one, so no event follows the terminal response.
+  let sent = -1;
+  let sentAt = 0;
+  const report = (force: boolean) => {
+    const now = performance.now();
+    if (done === sent || (!force && now - sentAt < PROGRESS_MS)) return;
+    sent = done;
+    sentAt = now;
+    r.progress("revert-files", { fileIndex: done, fileCount: count });
+  };
+  if (!stopped && count > 0) report(true);
 
   // Plan.md D5a step 6: each Git temporary file that no write consumed. The cleanup reads with the signal that never aborts.
   // Plan.md D10: a file that stays is an effect, so the run never ends `succeeded` or `no-effects`.
@@ -902,7 +913,8 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
     for (let f = 0; f < made; f++) created.add(names[i]!.slice(0, depth + skipped + f + 1).join("/"));
     if (reply.result === "interrupted") ends.push({ exit: null, canceled: ctx.signal.aborted, refused: null, outputTail: "" });
     if (reply.result === "stopped" || reply.result === "interrupted") stopped = true;
-    r.progress("revert-files", { fileIndex: ++done, fileCount: count });
+    done++;
+    report(done === count);
     return reply;
   };
 
@@ -992,6 +1004,7 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
     await removeTemps(unused);
   }
 
+  if (sent >= 0) report(true);
   const settled_ = await r.reconcile(ends);
   // Plan.md D10 "unknown": a lost reply leaves the outcome unknown, and the recovery marker stays (001 FR-023).
   // Contract gap: RevertRun has no `foreign` field, so an owned index file that stays also leaves the outcome unknown.

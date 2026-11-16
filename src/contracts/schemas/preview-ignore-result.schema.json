@@ -247,6 +247,7 @@
                 "RETAINED_COMPARISONS",
                 "RETAINED_COMPARISON_BYTES",
                 "REVERT_FILE_BYTES",
+                "REVERT_PROGRESS_EVENTS_PER_SECOND",
                 "SESSION_LOG_ENTRIES",
                 "SHALLOW_METADATA_BYTES",
                 "SPELLING_LANGUAGES",

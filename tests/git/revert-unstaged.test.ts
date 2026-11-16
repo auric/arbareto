@@ -27,7 +27,9 @@ const LONG_TIMEOUT_MS = 600_000;
 const CANCEL_MS = 1_000;
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RevertRun = { action: string; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
+// Data-model §9: the count of each outcome.
+const NONE = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+type RevertRun = { action: string; counts: typeof NONE; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
 type Reviewed = { action: string; plan: { count: number; paths: string[]; submodules: number }; workbenchToken: string };
 
 // The line-ending keys and `core.filemode` of `tests/git/fixtures.ts` `lineEndings`.
@@ -172,14 +174,13 @@ describe("revert all unstaged changes: Git's restore bytes, the plan, and the wr
       expect({ ...reviewed.plan, paths: [...reviewed.plan.paths].sort() }).toEqual({ count: COVERED.length, paths: COVERED.map(b64).sort(), submodules: 1 });
       expect(reviewed.plan.paths[0]).toBe(b64("deep/er/udel.txt"));
       const done = await run(service, r, reviewed.workbenchToken);
-      // Data-model §8 and §9: each covered file names its outcome, and the run has no index part.
-      expect({ ...outcome(done), result: done.result && { ...done.result, files: [...done.result.files].sort((a, b) => a.entryId.localeCompare(b.entryId)), foldersCreated: [...done.result.foldersCreated].sort() } }).toEqual({
+      // Data-model §8 and §9: the result counts each covered file, and the run has no index part.
+      expect({ ...outcome(done), result: done.result && { ...done.result, foldersCreated: [...done.result.foldersCreated].sort() } }).toEqual({
         ...SUCCEEDED,
         result: {
           action: "revert-unstaged",
-          files: unstagedIds(read, COVERED)
-            .map((entryId) => ({ entryId, outcome: "reverted" }))
-            .sort((a, b) => a.entryId.localeCompare(b.entryId)),
+          counts: { ...NONE, reverted: COVERED.length },
+          files: [],
           foldersCreated: [b64("deep"), b64("deep/er")].sort(),
           index: "none",
         },
@@ -208,7 +209,7 @@ describe("revert all unstaged changes: Git's restore bytes, the plan, and the wr
       const reviewed = await reviewOk(service, r, read);
       expect(reviewed.plan).toEqual({ count: 3, paths: paths.map(b64), submodules: 0 });
       const done = await run(service, r, reviewed.workbenchToken);
-      expect({ ...outcome(done), files: done.result?.files }).toEqual({ ...SUCCEEDED, files: unstagedIds(read, paths).map((entryId) => ({ entryId, outcome: "reverted" })) });
+      expect({ ...outcome(done), counts: done.result?.counts, files: done.result?.files }).toEqual({ ...SUCCEEDED, counts: { ...NONE, reverted: 3 }, files: [] });
       expect(workingFileDigests(repo)).toEqual(oracle);
       // Plan.md D5a step 2: one batch, the exact argument array, and the batch paths on stdin in tree order.
       const checkouts = service.runner.calls.filter((c) => c.arguments.includes("checkout-index"));
@@ -220,8 +221,9 @@ describe("revert all unstaged changes: Git's restore bytes, the plan, and the wr
       expect(writes.map((f) => ({ target: f.target, bytes: "bytes" in f, source: /^\.merge_file_/.test(String((f.source as { name?: string } | undefined)?.name)) }))).toEqual(paths.map(() => ({ target: "working", bytes: false, source: true })));
       expect(service.runner.calls.some((c) => ["restore", "checkout", "apply", "reset", "stash"].includes(c.arguments.find((a) => !a.startsWith("-")) ?? ""))).toBe(false);
       expect({ removes: frames(service, "tempRemove").length, temps: gitTemps(repo) }).toEqual({ removes: 0, temps: [] });
-      // Contract Δ2: `revert-files` counts from 0 to the file count. No index part runs, so no `revert-index` phase comes.
-      expect(counters(service)).toEqual([0, 1, 2, 3].map((fileIndex) => ({ fileIndex, fileCount: 3 })));
+      // Contract Δ2: `revert-files` counts from 0 to the file count at most 4 times per second. No index part runs, so no `revert-index` phase comes.
+      const sent = counters(service);
+      expect({ first: sent.at(0), last: sent.at(-1), rising: sent.every((c, k) => c.fileCount === 3 && (k === 0 || c.fileIndex > sent[k - 1]!.fileIndex)) }).toEqual({ first: { fileIndex: 0, fileCount: 3 }, last: { fileIndex: 3, fileCount: 3 }, rising: true });
       expect((service.progress as { phase?: string }[]).some((p) => p.phase === "revert-index")).toBe(false);
     }),
     TIMEOUT_MS,
@@ -239,7 +241,7 @@ describe("revert all unstaged changes: Git's restore bytes, the plan, and the wr
       const reviewed = await reviewOk(service, r, read);
       expect(reviewed.plan).toEqual({ count: 3, paths: paths.map(b64), submodules: 0 });
       const done = await run(service, r, reviewed.workbenchToken);
-      expect({ ...outcome(done), outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, outcomes: ["reverted", "reverted", "reverted"] });
+      expect({ ...outcome(done), counts: done.result?.counts, files: done.result?.files }).toEqual({ ...SUCCEEDED, counts: { ...NONE, reverted: 3 }, files: [] });
     }),
     TIMEOUT_MS,
   );
@@ -363,11 +365,11 @@ describe("revert all unstaged changes: Cancel and the per-file outcomes (plan.md
         expect(RunWorkbenchResult.safeParse(done.result).success).toBe(true);
         expect(service.responseAt.get(requestId)! - canceledAt).toBeLessThan(CANCEL_MS);
         // Plan.md D10: the first file reverted, the held write stopped before it wrote, and the third file got no request.
-        expect({ state: done.state, code: done.code, files: done.result?.files }).toEqual({
+        expect({ state: done.state, code: done.code, counts: done.result?.counts, files: done.result?.files }).toEqual({
           state: "failed-with-effects",
           code: "FAILED_WITH_EFFECTS",
+          counts: { ...NONE, reverted: 1, "not-changed": 1, "not-started": 1 },
           files: [
-            { entryId: unstagedIds(read, paths)[0], outcome: "reverted" },
             { entryId: unstagedIds(read, paths)[1], outcome: "not-changed" },
             { entryId: unstagedIds(read, paths)[2], outcome: "not-started" },
           ],

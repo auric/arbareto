@@ -583,7 +583,7 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 | FR-027 | `tests/git/revert-unstaged.test.ts`, `tests/contracts/revert-menus.test.tsx` | The working files equal Git's `restore .` on a copy. Untracked files and submodule working trees stay byte-identical. The plan covers the rows that Filter files hides. | None. |
 | FR-028 | `tests/git/revert-unstaged.test.ts` | Git's `restore .` bytes on a copy. The recorded calls show `checkout-index --temp` and one `fileReplace` with a source per file. The index stays. | None. |
 | FR-029 | `tests/git/revert-unstaged.test.ts`, `tests/contracts/revert-contract.test.ts` | One refused entry makes the action unavailable. The value names the first 20 refused files in tree order with their typed reasons. More files than the limit give `limit` before any file read. | None. |
-| FR-030 | `tests/git/revert-unstaged.test.ts`, `tests/contracts/revert-keys.test.tsx` | A seam holds the second write. Cancel then stops the action before the next file, and the fresh read names each file outcome. The renderer shows "Checking <n> files…" with Cancel. | None. The stop point comes from the seam. The 1 s bound is a budget check, not an input to the outcome. |
+| FR-030 | `tests/git/revert-unstaged.test.ts`, `tests/contracts/revert-keys.test.tsx` | A seam holds the second write. Cancel then stops the action before the next file, and the fresh read counts each outcome and names the files that did not revert. The renderer shows "Checking <n> files…" with Cancel. | None. The stop point comes from the seam. The 1 s bound is a budget check, not an input to the outcome. |
 | FR-031 | `tests/git/revert-frame.test.ts` | The recorded argument arrays of every run hold no `apply` without `--cached`, `checkout`, `restore`, `checkout-index` without `--temp`, `reset`, or `stash`. | None. |
 | FR-032 | `src-tauri/src/file_replace.rs`, `tests/git/revert-races.test.ts`, `tests/wsl/revert-wsl-files.test.ts` | At each write step seam and at each shell end, the SHA-256 of each target equals its old or its new digest, and the file is present. | None. |
 | FR-033 | `src-tauri/src/file_replace.rs`, `tests/git/revert-races.test.ts` | A target that differs from the expected size and SHA-256, or a target swapped after the check, gives `stale` and no rename. Another writer during the run gives `changed-outside`. | None. |
@@ -592,7 +592,7 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 | FR-036 | `tests/git/revert-races.test.ts`, `tests/git/revert-files.test.ts`, `src-tauri/src/file_replace.rs` | The folder listing after each stop holds no temporary file, except the recorded crash limit. `tempRemove` removes only the name that Git printed, after a size and SHA-256 match. | None. Removal uses the printed name, never a name pattern. |
 | FR-037 | `src-tauri/src/file_replace.rs`, `tests/windows/revert-packaged.test.ts` | A held target or a late read-only attribute gives its code, and the rename counter of the thread equals 1. | None. The test counts the renames to prove that no retry happens. |
 | FR-038 | `tests/git/revert-refusal.test.ts`, `tests/git/revert-lines.test.ts`, `tests/contracts/revert-contract.test.ts` | Each data-model §7 reason refuses each action where it applies, with its typed code and reason. The index digest and every working byte stay. | None. |
-| FR-039 | `tests/git/revert-frame.test.ts`, `tests/git/revert-unstaged.test.ts` | Each file outcome comes from the fresh `ls-files --stage -z` read and the SHA-256 digests after the run, also after a failure and after Cancel. | None. |
+| FR-039 | `tests/git/revert-frame.test.ts`, `tests/git/revert-unstaged.test.ts`, `tests/git/revert-files.test.ts`, `tests/contracts/revert-contract.test.ts` | Each file outcome comes from the fresh `ls-files --stage -z` read and the SHA-256 digests after the run, also after a failure and after Cancel. | None. |
 | FR-040 | `tests/contracts/revert-keys.test.tsx`, `tests/contracts/revert-confirm.test.tsx` | The exact FR-040 texts. | None. |
 | FR-041 | `tests/git/revert-files.test.ts`, `tests/windows/revert-packaged.test.ts` | The shell reply code (from the OS status) gives `failed` with that code, and the file keeps its old bytes. The package shows the exact sharing-violation text and the 005 form for access denied. | None. |
 | FR-042 | `tests/contracts/revert-keys.test.tsx`, `tests/contracts/revert-confirm.test.tsx` | The DOM focus goes to the next entry, then to the previous entry, then to the list heading. After Cancel, the focus returns to the opener. | None. |
@@ -714,3 +714,18 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - T082 control 1 (`t082-c1`): the new case ran against the installed b4a70d35 package (f013 installer SHA-256 `92c79f7a…`, exe `5383f1f7…`). The test came from `2d109fff` with a patch that shortens the case. Run 0 turned red at the `cancel` reply wait: "1 cancel replies did not arrive within 60000 ms: 0". The hold held the call with 1 probe. The run then installed the f014 package again, and its exe hash matched.
 - T082 control 2 (`t082-c2`): the loop waits on `startsWith("Reverting ")` again, on the installed f014 exe. Runs 1 to 10 turned red: "Cancel run 1: the run gave {"state":"canceled","code":"CANCELED","files":[]}".
 - The older Cancel values 49 ms and 56.1 ms were a Cancel before the first write. 49 ms is in "Full run (T049), 2026-11-03", Fail 1. 56.1 ms is in "Package run (T050), 2026-11-03", the 10,000-file row. Both places now carry this mark.
+
+### T083 split, 2026-11-16
+
+- Source: a packaged measurement build of `a7405f8b`, 10,000-file case of `tests/windows/revert-perf.test.ts`, Cancel during the writes, 10 runs, median. The log is in local scratch `t083-measure`.
+- Cancel to the outcome: median 8,120 ms.
+- `cancel` sent to the reconcile start: 130 ms.
+- Fresh index read: median 2,131 ms (6 `ls-files --stage -z` runs, one per command-line batch).
+- Fresh digest read: median 5,757 ms (157 `fileFacts` frames of 64 entries, one after the other).
+- Outcome build: 14 ms. Reply: 750 KB. Renderer share: 70 ms.
+- So the two fresh reads take about 97% of the time. The reply transport and the renderer are small.
+- Fix (T083, contracts Δ3 `runWorkbench`): A, one whole-index `ls-files -z --stage` read when the paths need more than one command-line batch, bound `MUTATION_RAW_INDEX_BYTES`; B, at most `MULTI_FILE_PROOF_CONCURRENCY` (8) `fileFacts` frames at once, with the index read beside them. Plan.md D10 stays: the fresh read decides each outcome.
+- Decision point for K: if the packaged SC-011 probe fails with K = 8, use K = 4 with a new constant.
+- After the packaged result of the fix, the user decides on the 5 s target for a revert run (contracts Δ5). Until then, Δ5 and spec SC-007 stay as they are.
+- T084 limits the `revert-files` events to 4 per second (contracts Δ2). T085 makes the result small: `counts` and the first 20 files that did not revert (data-model §9).
+- Known limit of T085: the result lists at most 20 files. So the packaged W9 detection of `tests/windows/revert-perf.test.ts` is exact only up to 20 missed files.

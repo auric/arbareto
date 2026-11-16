@@ -9,10 +9,10 @@ import type { ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
 import { filterReason } from "../contracts/file-action";
 import { GITLINK } from "../contracts/git-mode";
-import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_COMPONENT_UNITS, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_ATTRIBUTE_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
+import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_COMPONENT_UNITS, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_ATTRIBUTE_BYTES, MULTI_FILE_PROOF_CONCURRENCY, MUTATION_RAW_INDEX_BYTES, REVERT_PROGRESS_EVENTS_PER_SECOND, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
-import { attributeArgs, blobArgs, blobHashProofArgs, cachedAttributeArgs, checkoutTempArgs, indexPathArgs, lineEndingPathArgs, objectCheckArgs, OID_HEX, statusArgs } from "./commands";
+import { attributeArgs, blobArgs, blobHashProofArgs, cachedAttributeArgs, checkoutTempArgs, indexListArgs, indexPathArgs, lineEndingPathArgs, objectCheckArgs, OID_HEX, statusArgs } from "./commands";
 import { parsePatch, type PatchHunk } from "./diff-parser";
 import { HUNK_REFUSAL_REASONS, hunkEligibility, IndexFormatError, rawIndexEntries, type RawIndexEntry } from "./eligibility";
 import { createCollector, isDeadlineStop, RunnerRefusal, settleSteps, sizeDeadlineMs, stepUnits, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
@@ -20,7 +20,7 @@ import { applyToContent } from "./hunk-candidate";
 import { canonicalIndex, hunkApprovals, indexOf, indexSession, isStop, lingeringText, missingObject, prepareHunk, PROFILE_TEXTS, publishIndex, settled, stepOf, type Ending, type Fact, type Failure, type PrepareOptions, type PublicationSession, type Refusal, type Stop } from "./hunk-publish";
 import { LOCKED_REMEDY } from "./index-lock";
 import { subHunk } from "./line-patch";
-import { prepareFiles, type Admitted, type FileItem } from "./multi-publish";
+import { firstOf, prepareFiles, type Admitted, type FileItem } from "./multi-publish";
 import { contextOf, latin1, readBounded, strictUtf8 } from "./read-steps";
 import { unavailable, type Refused } from "./ref-facts";
 import type { Workspace } from "./registration";
@@ -72,12 +72,13 @@ type Candidate = { entry: ChangeEntry; path: Uint8Array; names: string[] | null 
 type FileReason = { pathBytes: string; reason: string };
 
 const SLASH = 0x2f;
-// Contract Δ3 "Refusal value": the first 20 refused files in tree order.
+// Contract Δ3 "Refusal value": the first 20 refused files in tree order. Data-model §9: a run result lists as many files.
 const REFUSED_FILES = 20;
 // Data-model §5: the first confirmation paths in tree order.
 const CONFIRMATION_PATHS = 20;
 const SYMLINK = "120000";
 const ABSENT_MODE = "000000";
+const PROGRESS_MS = 1000 / REVERT_PROGRESS_EVENTS_PER_SECOND;
 // Research.md R8: the write keeps hidden, system, and not-content-indexed, and archive and normal are no compared fact.
 // FILE_ATTRIBUTE_READONLY, _HIDDEN, _SYSTEM, _ARCHIVE, _NORMAL, _NOT_CONTENT_INDEXED, and _ENCRYPTED (Microsoft Learn "File Attribute Constants").
 const READ_ONLY = 0x1;
@@ -118,21 +119,30 @@ const nativePath = (w: Workspace, names: readonly string[]) => NATIVE.path.join(
 
 // Contract §6 "File facts" in frames of 64 entries. A `stream` digest has no bound, so each fact holds its digest.
 // Contract Δ11: `content` gives the bytes of one WSL file up to 1 MiB.
-async function factsOf(ctx: WorkbenchContext, files: { root: "worktreeRoot" | "gitDirectory"; path: string[] }[], options: { digest: boolean; detail?: boolean; stream?: boolean; content?: boolean }): Promise<Fact<FileFact[]>> {
-  const facts: FileFact[] = [];
-  for (let at = 0; at < files.length; at += FILE_FACT_ENTRIES) {
-    const frame = files.slice(at, at + FILE_FACT_ENTRIES);
-    let reply: FileFact[] | WalkStop;
-    try {
-      reply = await ctx.runner.fileFacts({ operationId: ctx.operationId, ...contextOf(ctx.workspace), digest: options.digest, files: frame, ...(options.detail ? { detail: true } : {}), ...(options.stream ? { stream: true } : {}), ...(options.content ? { content: true } : {}) }, ctx.signal);
-    } catch (error) {
-      if (error instanceof RunnerRefusal) return { code: error.code };
-      throw error;
-    }
-    if (!Array.isArray(reply)) return reply;
-    facts.push(...reply);
-  }
-  return { value: facts };
+// Contract Δ3 `runWorkbench`: at most `lanes` frames at once. Their replies can arrive in any order.
+async function factsOf(ctx: WorkbenchContext, files: { root: "worktreeRoot" | "gitDirectory"; path: string[] }[], options: { digest: boolean; detail?: boolean; stream?: boolean; content?: boolean }, lanes = 1): Promise<Fact<FileFact[]>> {
+  const replies: FileFact[][] = [];
+  const stop = new AbortController();
+  const signal = AbortSignal.any([ctx.signal, stop.signal]);
+  const end = await firstOf(
+    Math.ceil(files.length / FILE_FACT_ENTRIES),
+    stop,
+    async (k): Promise<Failure | Stop | null> => {
+      const frame = files.slice(k * FILE_FACT_ENTRIES, (k + 1) * FILE_FACT_ENTRIES);
+      let reply: FileFact[] | WalkStop;
+      try {
+        reply = await ctx.runner.fileFacts({ operationId: ctx.operationId, ...contextOf(ctx.workspace), digest: options.digest, files: frame, ...(options.detail ? { detail: true } : {}), ...(options.stream ? { stream: true } : {}), ...(options.content ? { content: true } : {}) }, signal);
+      } catch (error) {
+        if (error instanceof RunnerRefusal) return { code: error.code };
+        throw error;
+      }
+      if (!Array.isArray(reply)) return reply;
+      replies[k] = reply;
+      return null;
+    },
+    lanes,
+  );
+  return end ?? { value: replies.flat() };
 }
 
 // Contract Δ3: the paths after `--` in batches within the command-line bound of contract §6.
@@ -157,10 +167,15 @@ async function indexEntriesOf(ctx: WorkbenchContext, paths: readonly Uint8Array[
   const wanted = new Set(paths.map(latin1));
   const header = new RegExp(`^([0-7]{6}) (${OID_HEX[ctx.workspace.objectFormat]}) ([0-3])$`);
   const entries = new Map<string, Entry>();
-  for (const batch of batches) {
-    const out = createCollector({ maxBytes: batch.reduce((n, p) => n + Buffer.byteLength(p) * 2 + 128, 0) });
-    const step = await stepOf(ctx, indexPathArgs(batch), out);
+  // Contract Δ3 reads: paths of more than one batch take one whole-index read. Above MUTATION_RAW_INDEX_BYTES, the batches read them.
+  const reads: (string[] | "whole")[] = batches.length > 1 ? ["whole", ...batches] : batches;
+  for (const read of reads) {
+    const whole = read === "whole";
+    const out = createCollector({ maxBytes: whole ? MUTATION_RAW_INDEX_BYTES : read.reduce((n, p) => n + Buffer.byteLength(p) * 2 + 128, 0) });
+    const step = await stepOf(ctx, whole ? indexListArgs() : indexPathArgs(read), out);
     if (!("exit" in step)) return step;
+    // Contract §6 `stop`: a read stops at its collector bound, so its exit code is null.
+    if (whole && out.limited) continue;
     if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
     if (out.limited) return { code: "MALFORMED_GIT_OUTPUT" };
     const raw = out.take();
@@ -177,6 +192,7 @@ async function indexEntriesOf(ctx: WorkbenchContext, paths: readonly Uint8Array[
       if (m[3] !== "0" || entries.has(key)) return { code: "MALFORMED_GIT_OUTPUT" };
       entries.set(key, { mode: m[1]!, oid: m[2]! });
     }
+    if (whole) break;
   }
   return { value: entries };
 }
@@ -832,7 +848,17 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
     }
     stopped = index !== "published";
   }
-  if (!stopped && count > 0) r.progress("revert-files", { fileIndex: 0, fileCount: count });
+  // Contract Δ2: at most REVERT_PROGRESS_EVENTS_PER_SECOND events per second. No timer sends one, so no event follows the terminal response.
+  let sent = -1;
+  let sentAt = 0;
+  const report = (force: boolean) => {
+    const now = performance.now();
+    if (done === sent || (!force && now - sentAt < PROGRESS_MS)) return;
+    sent = done;
+    sentAt = now;
+    r.progress("revert-files", { fileIndex: done, fileCount: count });
+  };
+  if (!stopped && count > 0) report(true);
 
   // Plan.md D5a step 6: each Git temporary file that no write consumed. The cleanup reads with the signal that never aborts.
   // Plan.md D10: a file that stays is an effect, so the run never ends `succeeded` or `no-effects`.
@@ -902,7 +928,8 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
     for (let f = 0; f < made; f++) created.add(names[i]!.slice(0, depth + skipped + f + 1).join("/"));
     if (reply.result === "interrupted") ends.push({ exit: null, canceled: ctx.signal.aborted, refused: null, outputTail: "" });
     if (reply.result === "stopped" || reply.result === "interrupted") stopped = true;
-    r.progress("revert-files", { fileIndex: ++done, fileCount: count });
+    done++;
+    report(done === count);
     return reply;
   };
 
@@ -992,13 +1019,18 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
     await removeTemps(unused);
   }
 
+  if (sent >= 0) report(true);
   const settled_ = await r.reconcile(ends);
   // Plan.md D10 "unknown": a lost reply leaves the outcome unknown, and the recovery marker stays (001 FR-023).
   // Contract gap: RevertRun has no `foreign` field, so an owned index file that stays also leaves the outcome unknown.
   if (settled_ === null || lost || indexUnknown) return r.unknown({ code: "GIT_FAILED" }, result);
   // Plan.md D10: the fresh index entries and the fresh digests. The renderer's contract §3 reconcile read is the status read.
-  const freshIndex = await indexEntriesOf(q, paths);
-  const freshFacts = await factsOf(q, names.map((path) => ({ root: "worktreeRoot", path })), { digest: true, stream: true });
+  // Contract Δ3 `runWorkbench`: the index read runs beside at most MULTI_FILE_PROOF_CONCURRENCY digest frames.
+  const fresh = await settleSteps([indexEntriesOf(q, paths), factsOf(q, names.map((path) => ({ root: "worktreeRoot", path })), { digest: true, stream: true }, MULTI_FILE_PROOF_CONCURRENCY)], isDeadlineStop);
+  // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads, so a deadline decides first.
+  const expired = fresh.find(isDeadlineStop);
+  if (expired !== undefined) return r.unknown(expired as Stop, result);
+  const [freshIndex, freshFacts] = fresh;
   if (!("value" in freshIndex)) return r.unknown("code" in freshIndex ? { code: freshIndex.code } : freshIndex, result);
   if (!("value" in freshFacts)) return r.unknown("code" in freshFacts ? { code: freshFacts.code } : freshFacts, result);
   // A fresh `error` fact cannot tell the old bytes from the new bytes, so the outcome stays unknown (contract §8).
@@ -1022,7 +1054,10 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
     if (sameEntry(index, plan.indexEntry) && digest === old) return reply === null ? at("not-started") : at("not-changed", why);
     return at("changed-outside");
   });
-  const value = { action: bound.action, files: outcomes, foldersCreated: [...created].map((path) => Buffer.from(path).toString("base64")), index };
+  const counts = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+  for (const o of outcomes) counts[o.outcome]++;
+  // Data-model §9: `plans` is in tree order, so `files` lists the first files that did not revert.
+  const value = { action: bound.action, counts, files: outcomes.filter((o) => o.outcome !== "reverted").slice(0, REFUSED_FILES), foldersCreated: [...created].map((path) => Buffer.from(path).toString("base64")), index };
   // Plan.md D10: created folders and a Git temporary file that can stay are effects too, so such a run never ends `succeeded` or `no-effects`.
   const effects = outcomes.filter((o) => o.outcome === "reverted" || o.outcome === "unstaged-only" || o.outcome === "changed-outside").length + created.size + (tempKept ? 1 : 0);
   if (tempKept) return r.finish({ type: "failed-with-effects" }, value);

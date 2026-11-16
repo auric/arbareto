@@ -10478,6 +10478,38 @@ pub(crate) mod tests {
         );
     }
 
+    /// Feature 008 contract Δ3 `runWorkbench`: the reconcile of one revert sends up to 8 `fileFacts` frames at once.
+    #[test]
+    fn two_walks_of_one_operation_run_at_once_and_both_reply() {
+        let harness = Harness::child();
+        let workspace = hooks_workspace(&harness, &["first", "second"]);
+        let (Some(first_lock), Some(second_lock)) = (
+            Oplock::request(&hook(&workspace, "first")),
+            Oplock::request(&hook(&workspace, "second")),
+        ) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let operation = uuid();
+        let first = blocked_walk(&harness, &workspace, &first_lock, "first", &operation);
+        let second = blocked_walk(&harness, &workspace, &second_lock, "second", &operation);
+        assert_eq!(
+            harness.requests.active_walks(),
+            2,
+            "both walks of the operation wait at once"
+        );
+        drop(first_lock);
+        drop(second_lock);
+        for call in [&first, &second] {
+            assert_eq!(
+                harness.reply(call)["facts"][0]["digest"],
+                crate::file_facts::tests::ABC,
+                "each walk replies its fact"
+            );
+        }
+        assert!(harness.settled(), "every thread of the shell side ended");
+    }
+
     #[test]
     fn a_cancel_after_the_walk_ended_but_before_its_reply_gives_no_reply() {
         let harness = Harness::child();

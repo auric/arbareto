@@ -1,0 +1,8 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"revert-files\",\"counts\":{\"reverted\":0,\"unstaged-only\":0,\"not-changed\":0,\"changed-outside\":0,\"not-started\":0},\"files\":[],\"foldersCreated\":[],\"index\":\"none\"}",
+  "repair": {
+    "counts.reverted": 1
+  }
+}

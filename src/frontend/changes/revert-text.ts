@@ -189,8 +189,9 @@ export function reviewRefusal(response: BridgeResponse, file: string, lines: boo
 }
 
 type FileOutcome = RevertFileOutcome;
-type RevertRun = { action: string; files: FileOutcome[]; index: string };
-const isRun = (result: unknown): result is RevertRun => typeof result === "object" && result !== null && Array.isArray((result as { files?: unknown }).files);
+// Data-model §9: `files` lists the first 20 files that did not revert, in tree order.
+type RevertRun = { action: string; counts: Record<FileOutcome["outcome"], number>; files: FileOutcome[]; index: string };
+const isRun = (result: unknown): result is RevertRun => typeof result === "object" && result !== null && typeof (result as { counts?: unknown }).counts === "object" && Array.isArray((result as { files?: unknown }).files);
 
 // Spec FR-039 labels (board Result-mixed).
 const OUTCOME_LABEL: Record<string, string> = { "unstaged-only": "Unstaged only.", "not-changed": "Not changed.", "changed-outside": "Changed outside Arbareto.", "not-started": "Not started." };
@@ -234,10 +235,10 @@ export function revertLinesOutcome(response: BridgeResponse, plan: RevertLinesPl
   const refused = runRefusal(response, file, plan.lines !== null);
   if (refused !== undefined) return refused;
   const result = response.result;
-  if (!isRun(result) || result.files.length !== 1) return undefined;
-  const o = result.files[0]!;
-  if (o.outcome === "reverted" && response.state === "succeeded") return plan.lines === null ? `Arbareto reverted a hunk in ${file}.` : `Arbareto reverted ${lineCount(plan.lines)} in ${file}.`;
-  if (o.outcome === "reverted") return undefined;
+  if (!isRun(result)) return undefined;
+  if (result.counts.reverted === 1 && response.state === "succeeded") return plan.lines === null ? `Arbareto reverted a hunk in ${file}.` : `Arbareto reverted ${lineCount(plan.lines)} in ${file}.`;
+  const o = result.files[0];
+  if (o === undefined) return undefined;
   // Data-model §8: a published index part with a working digest that is neither old nor new is the case of spec US4 scenario 4.
   if (o.outcome === "changed-outside" && result.index === "published") return revertPartial(file, FILE_CHANGED);
   return outcomeLine(file, o, plan.lines !== null);
@@ -268,15 +269,11 @@ export function revertFilesOutcome(response: BridgeResponse, entries: ReadonlyMa
   if (refused !== undefined) return { text: refused, lines: [] };
   const result = response.result;
   if (!isRun(result)) return undefined;
-  const all = result.files;
-  if (response.state === "succeeded" && all.every((o) => o.outcome === "reverted")) return { text: unstaged ? `Arbareto reverted the unstaged changes of ${fileCount(all.length)}.` : `Arbareto reverted ${fileCount(all.length)}.`, lines: [] };
-  const text = COUNT_PART.flatMap(([outcome, word]) => {
-    const n = all.filter((o) => o.outcome === outcome).length;
-    return n === 0 ? [] : [`${fileCount(n)} ${word}.`];
-  }).join(" ");
-  const missed = all.filter((o) => o.outcome !== "reverted").map((o) => ({ o, entry: entries.get(o.entryId) }));
-  const known = inTreeOrder(missed.flatMap((m) => (m.entry === undefined ? [] : [{ ...m, pathBytes: m.entry.pathBytes, submodule: m.entry.submodule }])));
-  const ordered = [...known, ...missed.filter((m) => m.entry === undefined)];
-  const lines = ordered.slice(0, 20).map(({ o, entry }) => outcomeLine(entry?.path ?? o.entryId, o, false));
-  return { text, lines: ordered.length > 20 ? [...lines, MORE_FILES(ordered.length - 20)] : lines };
+  const { counts } = result;
+  const sum = COUNT_PART.reduce((total, [outcome]) => total + counts[outcome], 0);
+  if (response.state === "succeeded" && counts.reverted === sum) return { text: unstaged ? `Arbareto reverted the unstaged changes of ${fileCount(sum)}.` : `Arbareto reverted ${fileCount(sum)}.`, lines: [] };
+  const text = COUNT_PART.flatMap(([outcome, word]) => (counts[outcome] === 0 ? [] : [`${fileCount(counts[outcome])} ${word}.`])).join(" ");
+  const lines = result.files.map((o) => outcomeLine(entries.get(o.entryId)?.path ?? o.entryId, o, false));
+  const more = sum - counts.reverted - result.files.length;
+  return { text, lines: more > 0 ? [...lines, MORE_FILES(more)] : lines };
 }

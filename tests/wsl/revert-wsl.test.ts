@@ -37,7 +37,11 @@ const GLOBAL = "[user]\n\tname = Arbareto Fixture\n\temail = fixture@arbareto.in
 const MIB = 1024 * 1024;
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RevertRun = { action: string; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
+// Data-model §9: the count of each outcome.
+const NONE = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+type RevertRun = { action: string; counts: typeof NONE; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
+const ONE_REVERTED = { counts: { ...NONE, reverted: 1 }, files: [] };
+const listed = (done: ServiceResponse<RevertRun>) => ({ counts: done.result?.counts, files: done.result?.files });
 type Reviewed = { action: string; plan: Record<string, unknown>; workbenchToken: string };
 type Category = "staged" | "unstaged" | "untracked";
 
@@ -199,7 +203,7 @@ async function linesCase(s: Service, r: RegistrationResult, repo: Repo, path: st
   expect({ ...label, plan: reviewed.plan }).toEqual({ ...label, plan: { scope: category, fileBytes: b64(path), lines: picked === null ? null : picked.length } });
   const done = await run(s, r, reviewed.workbenchToken);
   const index = category === "staged" ? "published" : "none";
-  expect({ ...label, ...outcome(done), result: done.result }).toEqual({ ...label, ...SUCCEEDED, result: { action: "revert-lines", files: [{ entryId: c.entry.entryId, outcome: "reverted" }], foldersCreated: [], index } });
+  expect({ ...label, ...outcome(done), result: done.result }).toEqual({ ...label, ...SUCCEEDED, result: { action: "revert-lines", ...ONE_REVERTED, foldersCreated: [], index } });
   // SC-008: the result equals Git's own command on the copy, and the mode bits, the owner, the group, and the link count stay.
   expect({ ...label, state: state(repo), stats: stats(repo, [path]) }).toEqual({ ...label, state: state(copy), stats: before });
 }
@@ -253,7 +257,7 @@ describe("T042 the revert actions in the distro equal Git's own commands on a co
       const reviewed = await reviewOk(s, r, read, { action: "revert-files", entryIds: picked.map(([path, category]) => idOf(read, path, category)) });
       expect<Record<string, unknown>>({ ...reviewed.plan, paths: (reviewed.plan.paths as string[]).toSorted() }).toEqual({ count: 7, paths: [...paths, "new.txt"].map(b64).toSorted(), newFiles: 1, staged: 4, unstaged: 4 });
       const done = await run(s, r, reviewed.workbenchToken);
-      expect({ ...outcome(done), index: done.result?.index, outcomes: done.result?.files.map((f) => f.outcome), folders: done.result?.foldersCreated.toSorted() }).toEqual({ ...SUCCEEDED, index: "published", outcomes: Array(7).fill("reverted"), folders: [b64("deep"), b64("deep/er")] });
+      expect({ ...outcome(done), index: done.result?.index, ...listed(done), folders:done.result?.foldersCreated.toSorted() }).toEqual({ ...SUCCEEDED, index: "published", counts: { ...NONE, reverted: 7 }, files: [], folders: [b64("deep"), b64("deep/er")] });
     });
     expect(state(repo)).toEqual(state(copy));
     expect(temps(repo)).toEqual([]);
@@ -282,7 +286,7 @@ describe("T042 the revert actions in the distro equal Git's own commands on a co
       const reviewed = await reviewOk(s, r, read, { action: "revert-unstaged" });
       expect<Record<string, unknown>>({ ...reviewed.plan, paths: (reviewed.plan.paths as string[]).toSorted() }).toEqual({ count: 4, paths: ["del.txt", "mod.txt", "part.txt", "run.sh"].map(b64).toSorted(), submodules: 0 });
       const done = await run(s, r, reviewed.workbenchToken);
-      expect({ ...outcome(done), index: done.result?.index, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, index: "none", outcomes: Array(4).fill("reverted") });
+      expect({ ...outcome(done), index: done.result?.index, ...listed(done) }).toEqual({ ...SUCCEEDED, index: "none", counts: { ...NONE, reverted: 4 }, files: [] });
     });
     expect(state(repo)).toEqual(state(copy));
     expect({ temps: temps(repo), run: stats(repo, ["run.sh"]), del: stats(repo, ["del.txt"]) }).toEqual({ temps: [], run: before, del: stats(copy, ["del.txt"]) });
@@ -319,7 +323,7 @@ describe("T042 the revert actions in the distro equal Git's own commands on a co
         const before = stats(repo, ["grp.txt"]);
         const read = await readOk(s, r.repositoryId);
         const done = await run(s, r, (await reviewOk(s, r, read, { action: "revert-files", entryIds: [idOf(read, "grp.txt", "unstaged")] })).workbenchToken);
-        expect({ ...outcome(done), outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, outcomes: ["reverted"] });
+        expect({ ...outcome(done), ...listed(done) }).toEqual({ ...SUCCEEDED, ...ONE_REVERTED });
         expect({ stats: stats(repo, ["grp.txt"]), digest: state(repo).files["grp.txt"] }).toEqual({ stats: before, digest: state(copy).files["grp.txt"] });
         expect(before["grp.txt"]!.split(" ")[2]).toBe(String(second));
       }
@@ -335,7 +339,7 @@ describe("T042 the revert actions in the distro equal Git's own commands on a co
       read = await readOk(s, r.repositoryId);
       const id = idOf(read, "foreign.txt", "unstaged");
       const done = await run(s, r, (await reviewOk(s, r, read, { action: "revert-files", entryIds: [id] })).workbenchToken);
-      expect(refusal(done)).toEqual({ state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { action: "revert-files", files: [{ entryId: id, outcome: "not-changed", code: "refused", reason: "owner" }], foldersCreated: [], index: "none" } });
+      expect(refusal(done)).toEqual({ state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { action: "revert-files", counts: { ...NONE, "not-changed": 1 }, files: [{ entryId: id, outcome: "not-changed", code: "refused", reason: "owner" }], foldersCreated: [], index: "none" } });
       expect(kept("foreign.txt")).toEqual(foreign);
     });
   });
@@ -395,7 +399,7 @@ describe("T042 the revert actions in the distro equal Git's own commands on a co
       const read = await readOk(s, r.repositoryId);
       const [frames, facts, calls] = [s.runner.frames.length, s.runner.fileFactCalls.length, s.runner.calls.length];
       const done = await run(s, r, (await reviewOk(s, r, read, { action: "revert-files", entryIds: [idOf(read, "big.bin", "unstaged")] })).workbenchToken);
-      expect({ ...outcome(done), outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, outcomes: ["reverted"] });
+      expect({ ...outcome(done), ...listed(done) }).toEqual({ ...SUCCEEDED, ...ONE_REVERTED });
       // Contract Δ11: the write names Git's temporary file and carries no bytes. The strict `working_reply` parse proves an output within 8 KiB.
       const writes = s.runner.frames.slice(frames).filter((f) => f.type === "fileReplace");
       expect(writes.map((f) => ({ bytes: "bytes" in f, size: (f.source as { size?: number } | undefined)?.size }))).toEqual([{ bytes: false, size: 40 * MIB }]);
@@ -445,6 +449,28 @@ describe("T042 the revert actions in the distro equal Git's own commands on a co
     });
   });
 
+  W("200 files: the reconcile reads 4 fileFacts frames at once (T083), and the index and the working bytes equal git restore --staged --worktree --source=HEAD on a copy", async (w) => {
+    const paths = Array.from({ length: 200 }, (_, k) => `f${String(k).padStart(3, "0")}.txt`);
+    // Each file has its own bytes, so a digest names one file only.
+    const repo = build(w, "frames", { "keep.txt": "keep\n" }, (r) => {
+      inRepo(r, 'for p in "$@"; do printf "%s\\n" "$p" > "$p"; done', paths);
+      add(r, ...paths);
+      git(r, ["commit", "-q", "--no-verify", "-m", "frames"]);
+      inRepo(r, 'for p in "$@"; do printf "%s changed\\n" "$p" > "$p"; done', paths);
+    });
+    const copy = copyOf(repo);
+    git(copy, ["--literal-pathspecs", "restore", "--staged", "--worktree", "--source=HEAD", "--", ...paths]);
+    await withWsl(w, "t083-frames", async (s) => {
+      const r = await s.register(uncPath(w, repo.dir));
+      const read = await readOk(s, r.repositoryId);
+      const reviewed = await reviewOk(s, r, read, { action: "revert-files", entryIds: paths.map((p) => idOf(read, p, "unstaged")) });
+      const done = await run(s, r, reviewed.workbenchToken);
+      expect({ ...outcome(done), ...listed(done) }).toEqual({ ...SUCCEEDED, counts: { ...NONE, reverted: 200 }, files: [] });
+    });
+    expect(state(repo)).toEqual(state(copy));
+    expect(temps(repo)).toEqual([]);
+  });
+
   W("a Cancel during the WSL write gives interrupted: no fresh read comes before the process-end fact, the run ends canceled, and the file keeps its bytes", async (w) => {
     const repo = build(w, "interrupted", { "f.txt": "committed\n" }, (r) => put(r, "f.txt", "changed\n"));
     const before = state(repo);
@@ -487,7 +513,7 @@ describe("T042 the revert actions in the distro equal Git's own commands on a co
       expect(facts.length).toBeGreaterThan(0);
       const factEnd = Math.min(...facts.map((c) => c.at + c.durationMs!));
       const early = [...s.runner.calls.filter((c) => c.at >= stopAt && c.at < factEnd && !probe(c)).map((c) => c.arguments.join(" ")), ...walks.filter((x) => x.kind === "fileFacts" && x.at >= stopAt && x.at < factEnd).map((x) => x.kind)];
-      expect({ early, lingering, ...refusal(done) }).toEqual({ early: [], lingering: [], state: "canceled", code: "CANCELED", result: { action: "revert-files", files: [{ entryId: id, outcome: "not-changed" }], foldersCreated: [], index: "none" } });
+      expect({ early, lingering, ...refusal(done) }).toEqual({ early: [], lingering: [], state: "canceled", code: "CANCELED", result: { action: "revert-files", counts: { ...NONE, "not-changed": 1 }, files: [{ entryId: id, outcome: "not-changed" }], foldersCreated: [], index: "none" } });
     });
     expect({ state: state(repo), temps: temps(repo) }).toEqual({ state: before, temps: [] });
   });
@@ -552,7 +578,7 @@ describe("T045 a stop between link and unlink without syscall.ph (research.md R1
       inRepo(repo, 'rm -- "$1"', [tmp]);
       const now = await readOk(s, r.repositoryId);
       const done = await run(s, r, (await reviewOk(s, r, now, { action: "revert-files", entryIds: [idOf(now, "f.txt", "unstaged")] })).workbenchToken);
-      expect({ ...outcome(done), outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, outcomes: ["reverted"] });
+      expect({ ...outcome(done), ...listed(done) }).toEqual({ ...SUCCEEDED, ...ONE_REVERTED });
     });
     expect({ bytes: repo.h.read(`${repo.dir}/f.txt`)?.toString(), links: inode("f.txt").split(" ")[1], temps: temps(repo) }).toEqual({ bytes: "base\n", links: "1", temps: [] });
   });

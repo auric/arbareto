@@ -12,6 +12,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - `MUTATIONS` keeps `runWorkbench`. No new mutation operation.
 - New phases: `revert-index` (no counters) and `revert-files` (counters `fileIndex` and `fileCount`). Events carry no path and no Git text.
+- At most `REVERT_PROGRESS_EVENTS_PER_SECOND` (4) `revert-files` events per second. The event with `fileIndex` 0 and the event with the final count always go, also above that rate. The final count is the last count that the run reached. A canceled run sends its count at the stop. No event follows the terminal response (001 §2).
 - New marker actions of kind `workbench`: `revert-lines`, `revert-files`, and `revert-unstaged`.
 
 ## Δ3 Public operations (001 §3)
@@ -29,7 +30,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - `{action: "revert-files", snapshotId, entryIds}` with 1 to 10,000 unique IDs.
   - `{action: "revert-unstaged", snapshotId}`.
 - Common refusals (004 Δ3) apply: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED`. A running mutation gives `BUSY`. No trust class (Δ7).
-- Reads of every action: the snapshot entries (no Git process); `ls-files --stage -z` and `ls-files --eol -z` for the paths, as literal pathspecs after `--`; `check-attr -z --stdin` and `check-attr --cached -z --stdin` for `text`, `eol`, `crlf`, `ident`, `filter`, `working-tree-encoding`, and `diff`; `fileFacts` with `digest: true` and `detail: true`, 64 entries per frame, with `stream: true` for the targets of `revert-files` and `revert-unstaged`.
+- Reads of every action: the snapshot entries (no Git process); `ls-files --stage -z` and `ls-files --eol -z` for the paths, as literal pathspecs after `--` (for `ls-files --stage -z`: when the paths need more than one command-line batch, one `ls-files --stage -z` of the whole index, bound `MUTATION_RAW_INDEX_BYTES`; above the bound, the batched read); `check-attr -z --stdin` and `check-attr --cached -z --stdin` for `text`, `eol`, `crlf`, `ident`, `filter`, `working-tree-encoding`, and `diff`; `fileFacts` with `digest: true` and `detail: true`, 64 entries per frame, with `stream: true` for the targets of `revert-files` and `revert-unstaged`.
 - `revert-lines` reads: the retained comparison; `cat-file blob <index oid>` for the index side, bounded at 1 MiB (`COMPARED_RAW_VERSION_BYTES`), to build the expected working side (a larger blob refuses with `size`); the working bytes (Windows: the service read of at most 1 MiB; WSL: `fileFacts` with `content: true`); for a staged comparison, `status --porcelain=v2 -z` of the path with the snapshot flags (a record other than the shown entry gives `STALE_SELECTION`); then `hash-object --path=<path> --stdin` with the new bytes on stdin. `hash-object` runs without `-w` and writes no object.
 - `revert-files` and `revert-unstaged` reads: no content read. `cat-file --batch-check` gives the blob size of each source entry (for the batches and the deadlines of plan D5a).
 - Refusals before a token: `LOCKED` with the path and the 001 remedy when `index.lock` exists (plan D2); `WORKBENCH_UNAVAILABLE` with a reason of data-model §7; `UNSUPPORTED_COMPARISON` with the 001 support reason; `UNSUPPORTED_HUNK_PROFILE` with the eligibility reason; `INVALID_REQUEST` for an entry of another snapshot, a duplicate ID, or a comparison of another snapshot; `UNKNOWN_TARGET` for an unknown comparison or hunk; `OBJECT_MISSING` with the 001 remedy when `cat-file --batch-check` names a source blob of `revert-files` missing.
@@ -38,7 +39,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ### `runWorkbench` (004 Δ3)
 
-- Every revert action: the marker of its action; the frame's full observation again (a difference gives `STALE_REVIEW` with reason `revert-changed`); then the parts below; then the reconcile reads (`ls-files --stage -z` of the paths, `fileFacts` with `digest: true`). The run starts no `readWorkspace`. The renderer's full read after the run (contract §3) gives the status.
+- Every revert action: the marker of its action; the frame's full observation again (a difference gives `STALE_REVIEW` with reason `revert-changed`); then the parts below; then the reconcile reads (`ls-files --stage -z` of the paths with the index-read rule of the reads above, `fileFacts` with `digest: true` and `stream: true`). The reconcile sends at most `MULTI_FILE_PROOF_CONCURRENCY` (8) `fileFacts` frames at once (004 plan O-17). The index read runs beside them. The run starts no `readWorkspace`. The renderer's full read after the run (contract §3) gives the status.
 - An `index.lock` at the run start gives `LOCKED` with the result `{path, remedy: {text}}`, as the review gives it (001 FR-016). Nothing runs.
 - Index part (`revert-lines` staged, `revert-files` with an index change): phase `revert-index`; the owned lock and the checked candidate of 001 §4 through `publishIndex` (plan D7). A lock or candidate refusal ends the run before any working write.
 - Working part: phase `revert-files`, in tree order. A file without a working change (`keep`) sends none. A line revert sends one `fileReplace` `working` with `bytes`. Whole files follow plan D5a in batches of at most 64 paths: `ls-files --stage -z` and the raw index digest; `git --no-lazy-fetch checkout-index --temp --stdin -z` with the batch paths on stdin, in the worktree root; the entries and the digest again (a difference gives `STALE_REVIEW` `revert-changed`); `fileFacts` with `stream: true` for each temporary file; one `fileReplace` `working` with `source` per path; `tempRemove` for each unused temporary file.
@@ -46,6 +47,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Run frame `limits` (001 §6): a `registeredOperation` `run` takes a `deadlineMs` above `REGISTERED_DEADLINE_CAP_MS` only with the exact array `--no-lazy-fetch checkout-index --temp --stdin -z`. The frame bound of that deadline is the safe integer range. Every other `run` keeps the cap.
 - Cancel stops the run before the next request. A started `fileReplace` runs to its end.
 - Response state and per-file outcomes: plan D10 and data-model §8. An `unstaged-only` outcome carries `code` and `reason` under the same rules as `not-changed`.
+- The result counts each outcome and lists the first 20 files that did not revert, in tree order. It lists no `reverted` file (data-model §9).
 - File result fields `reason` and `remedy` (data-model §9):
   - `reason: "revert-changed"`: a `STALE_REVIEW` result in which no file changed. `index` is `none` or `refused`.
   - An eligibility reason: the index part refused with `UNSUPPORTED_HUNK_PROFILE`. `index` is `refused`, and `remedy: {text}` holds the text of the review refusal.
@@ -59,6 +61,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - `revert-files` and `revert-unstaged` have no byte bound per file or per action (spec FR-025).
 - `revert-lines` keeps `COMPARED_RAW_VERSION_BYTES`, `COMPARED_NORMALIZED_VERSION_BYTES`, and `CANONICAL_DIFF_LINES`.
 - `revert-files` and `revert-unstaged` keep `MULTI_FILE_ACTION_FILES` (10,000).
+- `REVERT_PROGRESS_EVENTS_PER_SECOND` = 4: the `revert-files` event rate of a run (Δ2).
 - The token lifetime stays `APPROVAL_LIFETIME_MS` (60 s).
 - 001 §5 "Cancellation/reconciliation target" (5 seconds) does not apply to a revert run. A revert run has no target from Cancel to the outcome (spec SC-007, user decision 2026-11-15). A 10,000-file run took a median of 8.1 s. One run took 19.5 s (research R15 "SC-007 Cancel decision"). This is a known limit. T083 finds the cause and aims to bring the time under 5 s. The 1 s from Cancel to "Checking the result…" stays (spec SC-007).
 - "Retained comparison data": a `readComparison` with the same facts as a retained comparison returns that comparison. It keeps its `comparisonId` and each `hunkId`, and it moves to the newest age slot. The facts are all retained values except the IDs: `repositoryId`, `snapshotId`, `generation`, the entry, `scope`, the raw patch bytes, the hunks, `support`, `fileAction`, the `working` binding, `attributes`, `workingVersion`, `sharedRepository`, the file `remedy`, and the completeness. The service compares each value exactly, with raw bytes byte for byte. The service never returns a comparison with a hunk or file approval that an accepted operation consumed. The 001 §2 repeat rule would answer each new attempt with that operation. Every other read gives a new comparison with new IDs. So the equal full read of each WSL poll keeps the shown comparison and its revert review (001 §8 "Equal full read").
@@ -102,6 +105,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 ## Δ10 Required contract checks (001 §10)
 
 - Schema tests and golden vectors for the three payloads, the three plans, the result, the two phases, the new reasons, and the widened `fileReplace` and `fileFacts` frames, in Bun and Rust.
+- Result vectors: the `counts` of each outcome, and `files` with at most 20 files that did not revert, in tree order. Invalid vectors: a listed `reverted` file, and an outcome listed more often than its count. A third invalid vector has too many or too few `files`. The length must be the smaller of 20 and the count of files that did not revert.
 - The Rust side checks the path rules, the byte bound, the `folders` count, and the marker action explicitly.
 
 ## Δ11 WSL repositories (001 §11)

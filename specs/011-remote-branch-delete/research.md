@@ -202,7 +202,7 @@ Review 2026-11-07 by the reviewer on `f15e91fc`. The map below adds the later fi
 | FR-003 | `remote-delete.test.ts` "D4 read 3…"; `remote-delete.test.tsx` "X15 no-remote-branch gives its text" | yes |
 | FR-004 | `remote-delete.test.ts` "SC-003…"; `remote-delete-local.test.ts` "D4 order: read 6 default-branch wins…"; `remote-delete.test.tsx` X13/X14, "Del with the refusal X13 shows it in the refusal slot…", "a later delete clears the old refusal…"; `sync-parsers.test.ts` "parseSymref…"; `remote-delete-wsl.test.ts` "T018 SC-003…" | yes |
 | FR-005 | `remote-delete.test.ts` refusals before any network process; `remote-delete-local.test.ts` "D4 order: … config-in-include wins over the earlier-read push-urls"; `sync-parsers.test.ts` "push URLs (O-11)" (5); `remote-delete.test.tsx` "X17 UNKNOWN_TARGET…", Del during a merge | yes |
-| FR-006 | `remote-delete.test.tsx` "remote confirmation (plan D2, FR-006, SC-008)" (9, with "a count above 999 groups its digits…"); `remote-delete.test.ts` "D4 read 10…"; `remote-delete-packaged.test.ts` "FR-006: the remote dialog gives Cancel…" (t2 pass, control c1 red) | yes |
+| FR-006 | `remote-delete.test.tsx` "remote confirmation (plan D2, FR-006, SC-008)" (9, with "a count above 999 groups its digits…"); `remote-delete.test.ts` "D4 read 10…"; `remote-delete-packaged.test.ts` "FR-006: the remote dialog gives Cancel…" (t2 pass, control c1 red); T027 X7 and X7h: `remote-delete.test.tsx` "T027 remote confirmation warning (spec FR-006, plan D13 X7 and X7h)" (6), `workbench-branches.test.tsx` "T027: the checked plan with … shows X7h" and "… shows X7" (6) | yes |
 | FR-007 | `sync-commands.test.ts` lease cases; `remote-delete.test.ts` "SC-002…"; `remote-delete-contract.test.ts` invalid vectors; `remote-delete-wsl.test.ts` "T018 SC-002…" | yes |
 | FR-008 | `sync-parsers.test.ts` "remote branch delete porcelain (feature 011)"; `remote-delete.test.ts` "P3 to P6…", "P7…", "FR-008: a credential helper that exits non-zero gives GIT_FAILED with status none and the terminal remedy…"; `remote-delete-local.test.ts` "D7: a network failure…" (asserts STEP_REMEDY); `remote-delete.test.tsx` "remote only: a failed push gives E3" | yes |
 | FR-009 | `remote-delete.test.ts` "SC-001: …" (branch `keep` keeps `branch.keep.remote` and `.merge`; config bytes equal); `remote-delete-wsl.test.ts` "T018 SC-001…" | yes |
@@ -213,9 +213,10 @@ Review 2026-11-07 by the reviewer on `f15e91fc`. The map below adds the later fi
 | FR-014 | `sync-trust.test.ts` "011 SC-007…"; `remote-delete.test.ts` trust required, P7; `trust-classes.test.ts` (2); `remote-delete.test.tsx` trust ask names push; `remote-delete-packaged.test.ts` "U6: with a pre-push hook…" (t4 pass) | yes |
 | FR-015 | `remote-delete-wsl.test.ts` all 6 T018 cases (6/0, control red) | yes |
 | FR-016 | `remote-delete.test.tsx` X2 to X30, E2 to E4, wrap, tooltip; `workbench-branches.test.tsx` X9 to X12; cargo `close.rs`, `schema.rs` (28/0); `remote-delete-packaged.test.ts` t5 themes, t6 densities pass; t7 text size skipped | yes, with the text-size skip accepted (010 precedent) |
+| FR-017 | `remote-delete.test.ts` "FR-017, SC-003: a foo:: URL, a foo:// URL, an ftp and an ftps URL, …" and "FR-017: the local bare remote, a file:// URL, an https:// URL, …" (T027); `remote-delete.test.tsx` "T027: the remote-helper refusal under the check box states X31" and "T027: Del with the refusal remote-helper shows X31 …"; `vectors.test.ts` the contract Δ10 vectors (f014 green, controls red: "v0.1.2 records (T027, T029, T030)") | yes |
 | SC-001 | `remote-delete.test.ts` "SC-001…"; `remote-delete-wsl.test.ts` "T018 SC-001…" | yes |
 | SC-002 | `remote-delete.test.ts` "SC-002…", "P9 and P16…"; `remote-delete-gone.test.ts` "D8: a moved remote branch…"; `remote-delete-wsl.test.ts` "T018 SC-002…" | yes |
-| SC-003 | `remote-delete.test.ts` "SC-003…"; `remote-delete-wsl.test.ts` "T018 SC-003…" | yes |
+| SC-003 | `remote-delete.test.ts` "SC-003…", T027 "FR-017, SC-003: a foo:: URL, …"; `remote-delete-wsl.test.ts` "T018 SC-003…" | yes |
 | SC-004 | `remote-delete-local.test.ts` SC-004, D6 step 7, D7, P14; `remote-delete-gone.test.ts` combined; `remote-delete-wsl.test.ts` "T018 SC-004…" | yes |
 | SC-005 | `sync-credentials.test.ts` "011 SC-005…"; `remote-delete.test.ts` "FR-008: a credential helper…" | yes |
 | SC-006 | config bytes compared as a Buffer in `remote-delete.test.ts`, `remote-delete-local.test.ts`, `remote-delete-wsl.test.ts` (harness `stateOf` uses `rev-parse --path-format=absolute --git-path config`) | yes |
@@ -261,6 +262,17 @@ Build: full run f014 (the v0.1.2 full run, 2026-11-15 to 2026-11-16) on code `2d
 - Control 2 (`t031-c2`): the same hold, with the wait. The log printed `CONTROL T019: read_branches held`. The case turned red at "the branch rows with actions did not happen within 30000 ms: [null,null]".
 - Both controls ran test patches on the installed f014 exe. Each gave 0 pass, 1 fail.
 - Earlier records on `3879e24d` (local scratch `v012-precheck2`) ran on another exe (`0a960e77…`) with an older `tests/windows/cdp.ts`. This record does not use them.
+
+### v0.1.2 records (T027, T029, T030), 2026-11-16
+
+Build: full run f014 on code `2d109fff`, as in the T031 record above. The controls ran one at a time on 2026-11-16 in a clean `2d109fff` checkout (local scratch `v012-dom-controls`). The run script restored the files after each control. Each control log shows `ORIGIN` lines in that checkout. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0.
+
+- f014 green counts (pass, skip, fail): `tests/git/remote-delete.test.ts` 16, 0, 0. `tests/contracts/remote-delete.test.tsx` 76, 0, 0. `tests/contracts/workbench-branches.test.tsx` 72, 0, 0. `tests/contracts/vectors.test.ts` 1,109, 37, 0 (the 37 skips are the platform class). `tests/contracts/sync-rejected.test.tsx` 24, 0, 0. `tests/git/remote-delete-gone.test.ts` 10, 0, 0. `tests/git/bun-runner.test.ts` 46, 1, 0, with the T030 exit barrier self-test. Its skip is the Linux-only `F_SETPIPE_SZ` case, platform class. The schema check step `export:schemas --check` passed.
+- T027 control 1 (`t027-c1`), "remove the `remote-helper` check": the refusal case failed. All 8 refusal entries gave `"code": undefined`.
+- T027 control 2 (`t027-c2`), "always give X7": the 3 X7h cases failed in each DOM file, at `remote-delete.test.tsx:350` and `workbench-branches.test.tsx:1113`.
+- T027 control 3 (`t027-c3`), "always give X7h": the 3 X7 cases failed in each DOM file, at the same lines, with the extra http(s) sentence.
+- T029 control (`t029-c1`), "remove the `!== ""` check in `outcomeOf`": exactly 4 tests failed (96 pass, 4 fail), as the row predicts. Received text: `"Rejected by the remote: ."`. The E5 table row stayed green.
+- T030 control (`t030-c1`), "remove `&& !signal.aborted`": the case failed at `remote-delete-gone.test.ts:101`. An `ls-remote --exit-code -- origin` call reached the runner.
 
 ## R8 Lease gap of remote helpers and dumb HTTP (T027, user decision 2026-11-13)
 

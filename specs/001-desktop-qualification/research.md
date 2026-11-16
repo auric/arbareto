@@ -2452,7 +2452,11 @@ Fixes: T389.
 - T417: `tests/contracts/operation-registry.test.ts` 20, 0, 0. `tests/contracts/operation-states.test.ts` 171, 0, 0. In `tests/git`: `commit-races` 29, `file-stage` 14, `multi-stage` 15, `publish-index` 5, `revert-unstaged` 9, `submodule-update` 97, `sync-fetch` 20. Each has 0 skip and 0 fail. The red records and the controls are in the T417 row.
 - T418: `tests/contracts/status-area.test.tsx` 114, 0, 0. `tests/contracts/workbench-mount.test.tsx` 95, 0, 0. The red records and the controls are in the T418 row.
 - Skips in these files: only the 37 platform skips of `vectors.test.ts`.
-- T416 (open): `git_env::tests::every_policy_removes_git_smart_http` passed. `tests/contracts/native-runner.test.ts` 69, 0, 0. `tests/git/remote-servers.test.ts` 4, 0, 0. No control record is verified yet.
+- T416 (ticked): `git_env::tests::every_policy_removes_git_smart_http` passed. `tests/contracts/native-runner.test.ts` 69, 0, 0. `tests/git/remote-servers.test.ts` 4, 0, 0. The `test:contracts` and `test:git` files ran in `test:all`.
+- T416 controls on 2026-11-16 (local scratch `v012-dom-controls`). Each control ran in a clean `2d109fff` checkout with `ORIGIN` lines there. The mutation removes `GIT_SMART_HTTP` from the `probe` policy in `src/contracts/git-environment.json`. The run script restored the file after each control.
+  - Bun half (`t416-c1-bun`): `native-runner.test.ts` gave 1 fail in "every policy removes GIT_SMART_HTTP". `"remove": true` was expected, `false` was received.
+  - Cargo half (`t416-c2-cargo`): `cargo test --locked --manifest-path src-tauri/Cargo.toml every_policy_removes_git_smart_http` gave 0 passed, 1 failed. Red line: `panicked at src\git_env.rs:340:13: probe: GIT_SMART_HTTP reaches the child`. The unmutated rerun gave 1 passed.
+  - The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0.
 
 ### Dependency reviews
 

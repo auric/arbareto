@@ -29,6 +29,7 @@ const KEYS: Record<string, { key: string; code: string; vk: number; text?: strin
   F6: { key: "F6", code: "F6", vk: 0x75 },
   F10: { key: "F10", code: "F10", vk: 0x79 },
   a: { key: "a", code: "KeyA", vk: 0x41 },
+  f: { key: "f", code: "KeyF", vk: 0x46 },
   s: { key: "s", code: "KeyS", vk: 0x53 },
   r: { key: "r", code: "KeyR", vk: 0x52 },
 };
@@ -95,23 +96,46 @@ export interface IpcLog {
   pending(command: string): string[];
 }
 
+// The hold probe is a GET to a path that names no command. Tauri answers a GET with 405 and runs no command (tauri 2.12.5 `src/ipc/protocol.rs`).
+const PROBE_PATH = "/__hold_probe";
+// The wait for a probe pause before the next probe. Only a pause opens the hold, never this time.
+const PROBE_MS = 500;
+let probeId = 0;
+
+// One CDP `Fetch.requestPaused` of a hold. `error` is the error of its `Fetch.continueRequest` or `Fetch.failRequest`.
+export type FetchPause = { method: string; url: string; networkId: unknown; requestId: string; probe: boolean; error?: string };
+
 export interface IpcHold {
   // Continues each held call, then ends the hold.
   release(): Promise<void>;
+  // Each `Fetch.requestPaused` until the release, in arrival order.
+  paused: readonly FetchPause[];
+  // The probes that the hold sent.
+  probes: number;
 }
 
 // Holds each new call of `command` in the page network layer (CDP `Fetch` at the request stage).
 // It returns when each call of `command` that `ipc` records in flight is held, and at least one call is held, at most `ms`.
 // A call sent before `watchIpc` started is not in `ipc`, so the caller starts `watchIpc` before the calls it must see.
-export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number): Promise<IpcHold> {
+// The `Fetch.enable` reply can come before the page intercepts. `start` runs only after a probe GET pauses, so a call that `start` sends is held.
+export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number, start?: () => Promise<unknown>): Promise<IpcHold> {
   // `networkId` is the `Network` request ID of the held call.
   const held: { requestId: string; networkId: unknown }[] = [];
-  let preflightError: unknown;
-  // WebView2 also pauses the CORS preflight (method OPTIONS) and sends the POST only after the preflight continues.
+  const paused: FetchPause[] = [];
+  let probes = 0;
+  let probeFailed = undefined as Promise<unknown> | undefined;
   const off = c.on("Fetch.requestPaused", (p) => {
-    if ((p.request as { method: string }).method === "OPTIONS") void c.send("Fetch.continueRequest", { requestId: p.requestId }).catch((error) => void (preflightError ??= error));
-    else held.push({ requestId: p.requestId as string, networkId: p.networkId });
+    const request = p.request as { method: string; url: string };
+    const url = new URL(request.url);
+    const pause: FetchPause = { method: request.method, url: request.url, networkId: p.networkId, requestId: p.requestId as string, probe: url.origin === IPC_ORIGIN && url.pathname === PROBE_PATH };
+    paused.push(pause);
+    // WebView2 also pauses the CORS preflight (method OPTIONS) and sends the POST only after the preflight continues.
+    if (!pause.probe && pause.method !== "OPTIONS") return void held.push({ requestId: pause.requestId, networkId: pause.networkId });
+    const sent = pause.probe ? c.send("Fetch.failRequest", { requestId: pause.requestId, errorReason: "Aborted" }) : c.send("Fetch.continueRequest", { requestId: pause.requestId });
+    sent.catch((error) => void (pause.error = String(error)));
+    if (pause.probe) probeFailed ??= sent;
   });
+  const facts = () => `probes sent ${probes}, paused ${JSON.stringify(paused)}`;
   async function release(): Promise<void> {
     try {
       for (const h of held) await c.send("Fetch.continueRequest", { requestId: h.requestId });
@@ -121,15 +145,32 @@ export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number):
       off();
     }
   }
-  await c.send("Fetch.enable", { patterns: [{ urlPattern: `${IPC_ORIGIN}/${command}*`, requestStage: "Request" }] });
-  const free = () => ipc.pending(command).filter((id) => !held.some((h) => h.networkId === id));
-  for (const end = performance.now() + ms; held.length === 0 || free().length > 0; await Bun.sleep(POLL_MS)) {
-    if (performance.now() < end) continue;
-    const state = `held ${held.length}, in flight and not held ${JSON.stringify(free())}`;
+  await c.send("Fetch.enable", { patterns: [{ urlPattern: `${IPC_ORIGIN}/${command}*`, requestStage: "Request" }, { urlPattern: `${IPC_ORIGIN}${PROBE_PATH}*`, requestStage: "Request" }] });
+  const end = performance.now() + ms;
+  try {
+    for (let next = 0; probeFailed === undefined; await Bun.sleep(POLL_MS)) {
+      const now = performance.now();
+      if (now >= end) throw new Error(`the ${command} calls were not held within ${ms} ms: the hold probe never paused, ${facts()}`);
+      if (now < next) continue;
+      next = now + PROBE_MS;
+      probes++;
+      // A no-cors GET without custom headers sends no CORS preflight.
+      await c.evaluate(`fetch(${JSON.stringify(`${IPC_ORIGIN}${PROBE_PATH}?${++probeId}`)}, { mode: "no-cors" }).catch(() => {}); true`);
+    }
+    await probeFailed;
+    await start?.();
+  } catch (error) {
     await release();
-    throw new Error(`the ${command} calls were not held within ${ms} ms: ${state}`, { cause: preflightError });
+    throw error;
   }
-  return { release };
+  const free = () => ipc.pending(command).filter((id) => !held.some((h) => h.networkId === id));
+  for (; held.length === 0 || free().length > 0; await Bun.sleep(POLL_MS)) {
+    if (performance.now() < end) continue;
+    const state = `held ${held.length}, in flight and not held ${JSON.stringify(free())}, ${facts()}`;
+    await release();
+    throw new Error(`the ${command} calls were not held within ${ms} ms: ${state}`);
+  }
+  return { release, paused, probes };
 }
 
 // Records the IPC calls of the page from now on. `onFinished` runs when the reply of a call has fully arrived.

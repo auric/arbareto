@@ -841,9 +841,9 @@ export async function publishIndex(
 ): Promise<Ending> {
   const { ctx, run, kept, claim } = s;
   const { workspace: w, signal, operationId } = ctx;
-  if (!claim.consume(operationId)) return { code: claim.refusal() };
-  // Research R3 step 4 and contract §4 "File staging" step 2.
+  // Research R3 step 4 and contract §4 "File staging" step 2. A canceled run keeps its approval unused.
   if (signal.aborted) return CANCELED;
+  if (!claim.consume(operationId)) return { code: claim.refusal() };
   const refuse = async (locked: Exclude<LockResult | WslLockResult, { ok: true }>) => {
     const answer = "ok" in locked && "code" in locked ? await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null) : null;
     return lockRefusal(locked, typeof answer === "number" ? answer : null, ctx.trust.currentTrustId(w) !== undefined);

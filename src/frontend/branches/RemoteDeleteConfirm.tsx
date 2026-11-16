@@ -8,7 +8,7 @@ import { RD } from "./texts";
 
 // Feature 011 spec FR-006, plan.md D2 and D13 (X2 to X8, X30), and the approved boards Remote-confirm-lost, -none, and -long.
 
-export type RemoteDeletePlan = ForcePlan;
+export type RemoteDeletePlan = ForcePlan & { destination: { url: string } };
 
 /** The alert dialog of a remote branch delete. Cancel has the first focus, and no button is the default (FR-006). */
 export function RemoteDeleteConfirm({ plan, onConfirm, onCancel }: { plan: RemoteDeletePlan; onConfirm(): void; onCancel(): void }) {
@@ -26,7 +26,7 @@ export function RemoteDeleteConfirm({ plan, onConfirm, onCancel }: { plan: Remot
       }
       paths={null}
       more={null}
-      notices={[RD.warning(tracking)]}
+      notices={[RD.warning(tracking, destination.url)]}
       button={RD.button}
       noUndo={false}
       onConfirm={onConfirm}

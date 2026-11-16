@@ -75,6 +75,16 @@ describe("comparison view", () => {
     expect(host.querySelector("h2")!.getAttribute("aria-label")).toBe("src/big.bin, Unstaged, Index to working file");
   });
 
+  test("T174: the heading h2 is select-text, its ellipsis measure span and Copy path are select-none", async () => {
+    const host = await show(<ComparisonView entry={entry} response={ok(comparison({}))} selectedHunk={null} onRefresh={noop} />);
+    const heading = host.querySelector("h2")!;
+    expect(heading.classList.contains("select-text")).toBe(true);
+    for (const part of ["folder", "file", "scope"]) expect(heading.querySelector(`[data-part="${part}"]`)!.closest(".select-text")).toBe(heading);
+    expect(heading.querySelector('[data-part="ellipsis"]')!.classList.contains("select-none")).toBe(true);
+    const copyPath = [...host.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Copy path")!;
+    expect(copyPath.classList.contains("select-none")).toBe(true);
+  });
+
   test("an unsupported entry that applyFile refuses shows the limitation sentence beside the remedy with Copy command, and no diff", async () => {
     const host = await show(<ComparisonView entry={entry} response={ok(comparison({ support: "size", fileAction: "size", remedy }))} selectedHunk={null} onRefresh={noop} />);
     for (const part of ["This file is larger than the Arbareto size limit.", remedy.text, remedy.command]) expect(text(host)).toContain(part);

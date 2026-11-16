@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { FINISHED_OPERATION_RECORDS } from "../../src/contracts/limits";
+import { MUTATIONS } from "../../src/contracts/operations";
 import { createSessionLog } from "../../src/git-service/log";
 import { createOperationRegistry } from "../../src/git-service/operations";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
@@ -181,6 +182,50 @@ describe("operation registry", () => {
     ops.apply(operationId, { type: "processes-stopped" });
     expect(ops.cancel(operationId)).toMatchObject({ state: "canceled", code: "CANCELED" });
     expect(ops.cancel(crypto.randomUUID())).toBeUndefined();
+  });
+
+  // The renderer shows Cancel from the `accepted` event on. A cancel there must stop the run before its first effect.
+  test("cancel of a runWorkbench in accepted ends the run canceled with no effect", () => {
+    const { ops, sent } = registry();
+    const { operationId, signal } = ops.start("runWorkbench", crypto.randomUUID());
+    ops.cancel(operationId);
+    ops.apply(operationId, { type: "marker-recorded" });
+    expect(ops.get(operationId)?.state).toBe("cancel-requested");
+    expect(signal.aborted).toBe(true);
+    ops.apply(operationId, { type: "processes-stopped", lingeringDescendants: 0 });
+    ops.apply(operationId, { type: "no-effects", observed: "canceled" });
+    expect(sent.filter((s) => s.kind === "response").map((s) => s.value)).toEqual([expect.objectContaining({ operationId, state: "canceled", code: "CANCELED" })]);
+  });
+
+  test("T417: cancel of an accepted mutation returns cancel-requested and aborts its signal; cancel of an accepted read returns accepted and keeps its signal", () => {
+    const { ops } = registry();
+    for (const operation of MUTATIONS) {
+      const { operationId, signal } = ops.start(operation, crypto.randomUUID());
+      const view = ops.cancel(operationId)!;
+      expect({ operation, state: view.state, phase: view.phase, aborted: signal.aborted }).toEqual({ operation, state: "cancel-requested", phase: undefined, aborted: true });
+    }
+    const read = ops.start("readRefs", crypto.randomUUID());
+    expect({ state: ops.cancel(read.operationId)?.state, aborted: read.signal.aborted }).toEqual({ state: "accepted", aborted: false });
+  });
+
+  // Contract §6: `ended` follows the terminal response of a mutation with a marker. A refusal without a marker gets `closeJob`.
+  test("T417: after a cancel in accepted, a marker reply ends with ended, and a busy reply ends rejected with closeJob", () => {
+    const { ops, timeline } = registry();
+    const marked = ops.start("commit", crypto.randomUUID()).operationId;
+    ops.cancel(marked);
+    ops.apply(marked, { type: "marker-recorded" });
+    ops.apply(marked, { type: "processes-stopped", lingeringDescendants: 0 });
+    ops.apply(marked, { type: "no-effects", observed: "canceled" });
+    const refused = ops.start("commit", crypto.randomUUID()).operationId;
+    ops.cancel(refused);
+    ops.apply(refused, { type: "marker-refused", code: "BUSY" });
+    const ends = timeline.filter((t) => t.kind !== "progress").map((t) => [t.kind, t.value.operationId, t.value.state]);
+    expect(ends).toEqual([
+      ["response", marked, "canceled"],
+      ["ended", marked, undefined],
+      ["response", refused, "rejected"],
+      ["closeJob", refused, undefined],
+    ]);
   });
 
   test("cancel during reconciling keeps the reads and sets endProcesses", () => {

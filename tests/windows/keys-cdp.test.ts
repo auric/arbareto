@@ -30,6 +30,8 @@ const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 const WORKING_ROW = "working-directory";
 // The `navButton` label in src/frontend/changes/HunkControls.tsx.
 const PREVIOUS_HUNK = "Previous hunk";
+// `FILTER_LABEL` in src/frontend/history/HistoryFilter.tsx.
+const FILTER_MESSAGES = "Filter commit messages";
 
 interface Active {
   tag: string | null;
@@ -243,6 +245,24 @@ describe.skipIf(process.platform !== "win32")("T124 packaged keys through CDP", 
       expect(shown).toBe(1);
       await c.evaluate(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent === 'Discard')?.click(); true`);
       expect(await c.poll<boolean>(`!!${field}`, (v) => !v, KEY_WAIT_MS)).toBe(false);
+    },
+    CASE_MS,
+  );
+
+  // Feature 002 T065: `filterTarget` in src/frontend/keyboard/shortcuts.ts sends Ctrl+F from the History commit list to the message filter.
+  test.skipIf(reason !== null)(
+    "Ctrl+F on the History commit list moves focus to Filter commit messages",
+    async () => {
+      const { cdp: c } = await open();
+      // The cases before this one leave the Commit view active, so the Views switch selects History.
+      await c.evaluate(`[...document.querySelectorAll('nav[aria-label="Views"] button')].find((b) => b.textContent === 'History')?.click(); true`);
+      const list = `document.querySelector('[data-history-list]')`;
+      expect(await c.poll<boolean>(`!!${list} && !${list}.closest('[hidden]')`, (v) => v, KEY_WAIT_MS)).toBe(true);
+      await c.evaluate(`${list}.focus(); true`);
+      expect(await c.evaluate<boolean>(`document.activeElement === ${list}`)).toBe(true);
+      const active = await press(c, "f", MOD.Ctrl);
+      const keys = await c.evaluate<string | null>(`document.activeElement?.getAttribute('aria-keyshortcuts') ?? null`);
+      expect({ tag: active.tag, label: active.label, keys }).toEqual({ tag: "INPUT", label: FILTER_MESSAGES, keys: "Control+F" });
     },
     CASE_MS,
   );

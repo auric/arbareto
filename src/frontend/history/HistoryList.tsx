@@ -665,7 +665,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   }
 
   const progress =
-    state.load !== null ? { text: state.load.kind === "end" ? "Loading all commits…" : state.load.kind === "oid" ? "Loading commits up to the selected commit…" : "Loading more commits…", count: `${fmt.format(state.load.rows)} loaded`, cancel: view.cancelLoad }
+    state.load !== null ? { text: state.load.kind === "end" ? "Loading all commits…" : state.load.kind === "oid" ? "Loading commits up to the selected commit…" : "Loading more commits…", count: `${fmt.format(state.load.rows)} loaded`, cancel: view.stopLoad }
     : search?.state === "running" ? { text: "Searching commit messages…", count: `${countText(search)!.replace(", more can follow", "")}, ${fmt.format(search.settled)} with final graph lines`, cancel: view.cancelSearch }
     : null;
 

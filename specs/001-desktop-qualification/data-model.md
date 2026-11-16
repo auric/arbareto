@@ -280,13 +280,16 @@ Compare actual commit scope through read-only Git inspection against that retain
 | Current state | Event | Next state and required behavior |
 | --- | --- | --- |
 | none | A read arrives while 8 reads wait for a slot | `rejected` with `BUSY` before admission. No `operationId` is issued (contract §5 "Pending reads"). |
-| `accepted` | Valid read | `running` when it takes its slot. The read deadline starts then (contract §5). |
-| `accepted` (read waiting for a slot) | Cancellation request | The read leaves the queue at once. `canceled`, with no re-read. |
+| `accepted` | Valid read | `running` when the service admits it. The read waits for its slot in `running`. The read deadline starts when it takes its slot (contract §5). |
+| `running` (read waiting for a slot) | Cancellation request | The `cancel` reply view is `cancel-requested`. Then the read leaves the queue and ends `canceled`, with no re-read. |
 | `accepted` | Mutation exclusion unavailable | `rejected`; do not queue an old approval. |
 | `accepted` | Invalid approval, trust, or state | `rejected`; no process starts. |
 | `accepted` (mutation) | The shell replies to `started` with the marker ID | `running`. The approval, trust, and state checks passed, and the mutation exclusion is held. The shell flushed the marker file before its reply. No lock and no Git process exist before this step. The rechecks under the canonical index lock run in `running` (contract §4, §6 "Recovery markers"). |
 | `accepted` (mutation) | The shell replies to `started` with `busy` or a failure class | `rejected` with `BUSY` or `RECOVERY_MARKER_FAILED`. Release the mutation exclusion. No lock and no Git process start (contract §6, §9). |
 | `accepted` (mutation) | The shell replies to `started` with `deadline` | `failed` with `DEADLINE` and reason `deadline`. Close the operation Job (`closeJob`). Release the mutation exclusion. No marker exists (contract §5 "Deadline outcomes"). |
+| `accepted` (mutation) | Cancellation request | `cancel-requested`; signal only owned processes. The `started` call has no abort (contract §6 "Walks"), so its reply still decides the next step. |
+| `cancel-requested` (mutation, before the marker) | The shell replies to `started` with the marker ID | Stay `cancel-requested`. The run takes no lock and starts no mutation process. The cancel then ends the run as in `running`, and the recovery marker is resolved. |
+| `cancel-requested` (mutation, before the marker) | Any other `started` reply, mutation exclusion unavailable, or invalid approval | The `accepted` row of that event applies. A cancel never hides a refusal. `applyFiles` stopped in its decision reads gives `rejected` with `CANCELED`. |
 | `running` | Cancellation request | `cancel-requested`; signal only owned processes. |
 | `running` | Read completes | `succeeded`, `limited`, or `failed`; check generation before display. Before `failed`, run the re-read; a refusal of the re-read replaces the result (contract §5 "Deadline outcomes"). |
 | `running` | Mutation finishes or fails | `reconciling`; keep further mutations blocked. |

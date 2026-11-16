@@ -442,6 +442,16 @@ Build: code `de82eccd` on branch `v0.1.1-rc2`, installer SHA-256 `c1ba28d0b2cf62
 - Skips in these files: none.
 - The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
 
+## R25 v0.1.2 records (T095, T096), 2026-11-16
+
+Build: full run f014 (the v0.1.2 full run, 2026-11-15 to 2026-11-16) on code `2d109fff`, branch `v0.1.2-rc`. Installer SHA-256 `065fedd6bf2b76387adfd0e2db0ed81c4c1f8572c5e6cc78d1457e616d09981f`. Every step exited 0. Every `ORIGIN` line named the checkout under test. The logs are in local scratch `f014-full`. The controls ran one at a time on 2026-11-16 in a clean `2d109fff` checkout (local scratch `v012-dom-controls`). The run script restored the files after each control. Each control log shows `ORIGIN` lines in that checkout. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0 (tasks.md older-build rule).
+
+- f014 green counts (pass, skip, fail): `tests/contracts/sync-rejected.test.tsx` 24, 0, 0. `tests/git/sync-rejected.test.ts` 18, 0, 0. `tests/git/remote-delete.test.ts` 16, 0, 0.
+- T095 control 1 (`t095-c1`), "always show the plain text": the 3 http(s) cases failed at `expect(shown).toEqual([warning])`. The received text lacked " Over a dumb HTTP server, Git cannot check this."
+- T095 control 2 (`t095-c2`), "always show the http(s) text": the 3 plain cases failed at the same line, with the extra http(s) sentence.
+- T096 control (`t096-c1`), "remove the check from the `force-push` block": the refusal case failed. All 8 refusal entries gave `"code": undefined` in place of `SYNC_UNAVAILABLE`, with `calls: []` expected.
+- T096 depends on 011 T027. 011 research.md R7 "v0.1.2 records (T027, T029, T030)" holds its record.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

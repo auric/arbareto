@@ -8,13 +8,14 @@
 // It leaves out the OS input path and the compositor, so it is not the 001 visible response of the capture source (001 plan.md "Capture source").
 // SC-009 takes each input duration from the W3C Event Timing API: the time from the event to the next paint after its handlers.
 // T108 (plan.md D19, O-11): the SC-012 local-edit marks at 100 and 256 initialized clean submodules. Spec FR-075, SC-012.
+// T124 (plan.md D19 "First mark", O-11): the same runs also time the first mark, on page 0 of the paged marks read.
 // The 001 capture check of the same steps needs the qualified 001 measurement tools. Until then it is a recorded capability skip, and the task stays open.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
-import { SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
+import { SUBMODULE_WORK_PAGE, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { buildPathsBound, faGit } from "../git/file-actions-fixtures";
 import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
@@ -35,6 +36,8 @@ const STEP_MS = MAX_WAIT_MS + MAX_CALL_MS;
 const caseTimeout = (steps: number, extraMs = 0) => steps * STEP_MS + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS + extraMs;
 // "Warm package, median of 10": one warm-up run, then the counted runs.
 const RUNS = 10;
+// Control for the T124 settle rule: each run waits for one more `read_workspace` reply before `idle`.
+const WAIT_POLL = process.env.T124_WAIT_POLL === "1";
 // The page waits for each step at most this long. A step past it fails the case.
 const STEP_LIMIT_MS = 60_000;
 const OPEN_WAIT_MS = 120_000;
@@ -68,6 +71,10 @@ const DELETE_PROBES = 20;
 const DELETE_PROBE_INTERVAL_MS = 50;
 // Spec SC-012: the last mark shows within this time per submodule after the Changes list. The T108 control sets it to 1.
 const MARK_MS_PER_SUBMODULE = 55;
+// Spec SC-012 and plan.md D19 "First mark" (provisional): at 100 submodules the first marks show within this time after the Changes list.
+// Only a user approval changes it (constitution VII). The T124 control sets it to 1.
+const FIRST_MARK_MS = 1_000;
+const FIRST_MARK_COUNT = 100;
 
 // ---- App texts (the source of each value is named) ----
 
@@ -801,24 +808,59 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
     if (!r.ok) throw new Error(`a timed step is not valid: ${js(r)}`);
     return r.times as number[];
   }
-  // Waits until no status read and no marks read has a pending IPC call, so a run starts with no read in flight.
-  async function idle(ipc: IpcLog): Promise<void> {
-    for (const end = performance.now() + STEP_LIMIT_MS; ipc.pending("read_workspace").length + ipc.pending("read_submodule_work").length > 0; await Bun.sleep(50)) {
-      if (performance.now() >= end) throw new Error(`a read still runs after ${STEP_LIMIT_MS} ms`);
+  // Waits until no read has a pending IPC call and the last marks replies end a page cycle, so the next cycle starts at page 0.
+  // A pending count alone does not prove the end: CDP can report the end of page k before the send of page k + 1 (unverified order).
+  // Contract Δ3 "Page cycle": a cycle starts only after a `readWorkspace` result or a refused start page, and it reads each page once.
+  // So the cycle ended when the last `pages` replies are succeeded pages of one snapshot in cyclic page order,
+  // and every `readWorkspace` reply arrived before the first of them was sent. `next` gives the page of a reply.
+  // A reply of the same snapshot during a page starts no cycle (SubmodulePreview.tsx `useSubmoduleWork`), so it counts when it arrived before the last page reply.
+  // That exception compares CDP reply times with the order of the renderer callbacks (unverified).
+  async function idle(ipc: IpcLog, pages: number): Promise<void> {
+    type Reply = { state?: string; result?: { snapshotId?: string; next?: number | null; readKind?: "full" | "retained"; recoveryState?: string } };
+    const quiet = () => ipc.pending("read_workspace").length + ipc.pending("read_submodule_work").length === 0;
+    for (const end = performance.now() + STEP_LIMIT_MS; ; await Bun.sleep(50)) {
+      if (quiet()) {
+        const done = ipc.finished("read_submodule_work");
+        const last = done.slice(-pages);
+        const replies = await Promise.all(last.map((call) => ipc.body<Reply>(call)));
+        const snapshot = replies[0]?.result?.snapshotId;
+        const order = replies.map((r) => (r.result?.next === null ? pages - 1 : (r.result?.next ?? 0) - 1));
+        const cycle = snapshot !== undefined && replies.length === pages && replies.every((r, i) => r.state === "succeeded" && r.result?.snapshotId === snapshot && order[i]! >= 0 && order[i]! < pages && (i === 0 || order[i] === (order[i - 1]! + 1) % pages));
+        const firstSent = ipc.calls().find((t) => t.requestId === last[0]?.requestId)?.sent;
+        const lastEnd = ipc.calls().find((t) => t.requestId === last.at(-1)?.requestId)?.end;
+        let settled = cycle && firstSent !== undefined && lastEnd !== undefined && lastEnd !== null;
+        // Arrival order is the order of the renderer callbacks, so the reply before a reply gives the shown `recoveryState`.
+        const ws = ipc.finished("read_workspace").map((call) => ipc.calls().find((t) => t.requestId === call.requestId)!);
+        const from = ws.findIndex((t) => t.end! > firstSent!);
+        let shown = settled && from > 0 ? (await ipc.body<Reply>(ws[from - 1]!)).result?.recoveryState : undefined;
+        for (const t of from < 0 ? [] : ws.slice(from)) {
+          if (!settled) break;
+          const r = (await ipc.body<Reply>(t)).result;
+          // requests.ts `onWorkspace`: a `retained` reply of the shown snapshot with the shown `recoveryState` keeps the state object, so it starts no cycle.
+          settled = r?.snapshotId === snapshot && (t.end! <= lastEnd! || (r?.readKind === "retained" && r.recoveryState !== undefined && r.recoveryState === shown));
+          shown = r?.recoveryState;
+        }
+        if (cycle && settled && quiet() && ipc.finished("read_submodule_work").length === done.length) return;
+      }
+      if (performance.now() >= end) throw new Error(`a read still runs or the marks cycle did not end after ${STEP_LIMIT_MS} ms`);
     }
   }
   const changesItem = (label: string) => `[...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].some((e) => e.getAttribute('aria-label') === ${js(label)})`;
 
-  // Plan D19 "Rows": MARKED has no status record, so its row with the untracked mark joins Changes when the marks read ends.
-  // Until T114, the renderer shows the marks of one read at once, so this row is the last shown mark. MARKED is the last of `count` targets.
+  // Plan D19 "Rows": a clean submodule has no status record, so its row with the untracked mark joins Changes when its page arrives.
+  // Plan D19 "Pages": the first gitlink in index order is on page 0, and MARKED, the last, is on the last page. So their rows are the first and the last shown marks.
   for (const count of [100, 256]) {
     test.skipIf(reason !== null)(
-      `T108 SC-012, FR-075: with ${count} initialized clean submodules, 8 at the same time, the last mark shows within ${MARK_MS_PER_SUBMODULE} ms per submodule after the Changes list (median of 10)`,
+      `T108 and T124 SC-012, FR-075: with ${count} initialized clean submodules, 8 at the same time, the last mark shows within ${MARK_MS_PER_SUBMODULE} ms per submodule after the Changes list${count === FIRST_MARK_COUNT ? `, and the first mark within ${FIRST_MARK_MS} ms` : ", and the first mark is recorded"} (median of 10)`,
       async () => {
-        // Contract Δ5: 8 at the same time and 256 targets per read, so every gitlink of the fixture gets a state.
-        expect({ parallel: SUBMODULE_WORK_PARALLEL, targets: SUBMODULE_WORK_TARGETS }).toEqual({ parallel: 8, targets: 256 });
+        // Contract Δ5: 8 at the same time, 256 targets per read, and pages of 16, so every gitlink of the fixture gets a state.
+        expect({ parallel: SUBMODULE_WORK_PARALLEL, targets: SUBMODULE_WORK_TARGETS, page: SUBMODULE_WORK_PAGE }).toEqual({ parallel: 8, targets: 256, page: 16 });
         const cached = submoduleWorld(GIT!, count);
         expect(cached.paths.length).toBe(count);
+        const FIRST = cached.paths[0]!;
+        const pages = Math.ceil(count / SUBMODULE_WORK_PAGE);
+        // The last mark is past position 16, so it comes from a later page than the first mark.
+        expect({ first: FIRST, marked: cached.paths.indexOf(MARKED), pages: pages > 1 }).toEqual({ first: "m/000", marked: count - 1, pages: true });
         const repo = join(fixtureDir(`t108-${count}`), "repo");
         cpSync(cached.repo, repo, { recursive: true });
         // The copy gives every file new stat data, so each index gets a refresh before the clean check.
@@ -829,37 +871,42 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         try {
           await uia(s.app.pid, COMMIT_VIEW, ControlType.Button, invoke);
           const listed = changesItem(PARENT_FILE);
+          const first = changesItem(`${FIRST}, submodule, modified, untracked content`);
           const marked = changesItem(`${MARKED}, submodule, modified, untracked content`);
-          const untracked = join(repo, MARKED, "t108.txt");
-          const runs: number[] = [];
-          // `watchIpc` misses the marks read of the open. At most one marks read runs, so the end of a recorded read proves that read ended.
-          writeFileSync(untracked, "u\n");
+          const untracked = [FIRST, MARKED].map((p) => join(repo, ...p.split("/"), "t108.txt"));
+          const runs = { first: [] as number[], last: [] as number[] };
+          // `watchIpc` misses the marks read of the open. At most one marks page runs, so the end of a recorded page proves that page ended.
+          for (const file of untracked) writeFileSync(file, "u\n");
           writeFileSync(join(repo, PARENT_FILE), "p warm-up\n");
           await press(s.c, "F5");
-          await until<boolean>(s.c, "the warm-up mark", marked, (v) => v);
+          await until<boolean>(s.c, "the warm-up marks", `(${first}) && (${marked})`, (v) => v);
           await s.ipc.wait("read_submodule_work", 1, STEP_LIMIT_MS);
           for (let run = 0; run <= RUNS; run++) {
-            // The start state: no parent record and no mark. The marks read of the clean snapshot removes the mark (plan.md D19 "Rows across snapshots").
-            rmSync(untracked, { force: true });
+            // The start state: no parent record and no mark. The marks pages of the clean snapshot remove the marks (plan.md D19 "Rows across snapshots").
+            for (const file of untracked) rmSync(file, { force: true });
             writeFileSync(join(repo, PARENT_FILE), PARENT_TEXT);
             await press(s.c, "F5");
-            await until<boolean>(s.c, "the start state", `!(${listed}) && !(${marked})`, (v) => v);
-            await idle(s.ipc);
+            await until<boolean>(s.c, "the start state", `!(${listed}) && !(${first}) && !(${marked})`, (v) => v);
+            if (WAIT_POLL) await s.ipc.wait("read_workspace", s.ipc.finished("read_workspace").length + 1, STEP_LIMIT_MS);
+            await idle(s.ipc, pages);
             const reads = s.ipc.finished("read_submodule_work").length;
-            // The submodule file comes first, so every snapshot with the parent record has the untracked file below MARKED.
-            const [list, mark] = await frames(s.c, [listed, marked], async () => {
-              writeFileSync(untracked, "u\n");
+            // The submodule files come first, so every snapshot with the parent record has the untracked files below FIRST and MARKED.
+            const [list, firstMark, lastMark] = await frames(s.c, [listed, first, marked], async () => {
+              for (const file of untracked) writeFileSync(file, "u\n");
               writeFileSync(join(repo, PARENT_FILE), `p ${run}\n`);
               await press(s.c, "F5");
             });
-            // No marks read was pending at `reads`, so the mark comes from a read of this run.
+            // No marks page was pending at `reads`, so the marks come from pages of this run.
             expect({ run, ended: s.ipc.finished("read_submodule_work").length - reads > 0 }).toEqual({ run, ended: true });
-            if (mark! < list!) throw new Error(`run ${run}: the mark showed ${list! - mark!} ms before the Changes list`);
-            if (run > 0) runs.push(mark! - list!);
+            if (firstMark! < list! || lastMark! < list!) throw new Error(`run ${run}: a mark showed before the Changes list: ${js({ list, firstMark, lastMark })}`);
+            if (run === 0) continue;
+            runs.first.push(firstMark! - list!);
+            runs.last.push(lastMark! - list!);
           }
           const bound = MARK_MS_PER_SUBMODULE * count;
-          const m = record(`T108 SC-012 ${count} submodules, the Changes list to the last mark`, runs, bound);
-          expect({ count, median: m <= bound }).toEqual({ count, median: true });
+          const firstBound = count === FIRST_MARK_COUNT ? FIRST_MARK_MS : undefined;
+          const m = { first: record(`T124 SC-012 ${count} submodules, the Changes list to the first mark (${FIRST})`, runs.first, firstBound), last: record(`T108 SC-012 ${count} submodules, the Changes list to the last mark`, runs.last, bound) };
+          expect({ count, first: firstBound === undefined || m.first <= firstBound, last: m.last <= bound }).toEqual({ count, first: true, last: true });
         } finally {
           await end(s);
         }

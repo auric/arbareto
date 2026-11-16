@@ -5,6 +5,7 @@ import { ArrowDown01Icon, ArrowUp01Icon, Cancel01Icon, FilterIcon, HighlighterIc
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState, type Ref } from "react";
 import { IconButton } from "../components/icon-button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import type { HistoryMode, SearchState } from "../state/history-view";
 
 // Feature 002 spec FR-027 to FR-042 and plan.md D5, D6. Texts follow the approved mockup canvas of plan.md D6.
@@ -56,33 +57,40 @@ export function HistoryFilter({ search, unavailable, describedBy, inputRef, onSe
     <div className="flex shrink-0 items-center gap-1">
       <div className="relative flex items-center">
         <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" className="pointer-events-none absolute left-1.5 size-(--icon-size) text-muted-text" />
-        <input
-          ref={inputRef}
-          type="text"
-          aria-label={FILTER_LABEL}
-          aria-keyshortcuts="Control+F"
-          aria-describedby={describedBy}
-          placeholder={FILTER_LABEL}
-          disabled={unavailable !== null}
-          spellCheck={false}
-          className="h-(--h-button) w-64 rounded-sm border border-control-border bg-surface pr-7 pl-7"
-          value={text}
-          onChange={(event) => {
-            setText(event.target.value);
-            // Spec FR-030: a changed or cleared text stops the search, and the full history returns.
-            if (search !== null) onClear();
-          }}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
-            if (event.key === "Enter") {
-              event.preventDefault();
-              onSearch(text, mode);
-            } else if (event.key === "Escape" && (text !== "" || search !== null)) {
-              event.preventDefault();
-              clear();
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <input
+                ref={inputRef}
+                type="text"
+                aria-label={FILTER_LABEL}
+                aria-keyshortcuts="Control+F"
+                aria-describedby={describedBy}
+                placeholder={FILTER_LABEL}
+                disabled={unavailable !== null}
+                spellCheck={false}
+                className="h-(--h-button) w-64 rounded-sm border border-control-border bg-surface pr-7 pl-7"
+                value={text}
+                onChange={(event) => {
+                  setText(event.target.value);
+                  // Spec FR-030: a changed or cleared text stops the search, and the full history returns. `search` is still null while Enter waits for a load (T069).
+                  onClear();
+                }}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    onSearch(text, mode);
+                  } else if (event.key === "Escape" && (text !== "" || search !== null)) {
+                    event.preventDefault();
+                    clear();
+                  }
+                }}
+              />
             }
-          }}
-        />
+          />
+          <TooltipContent>{`${FILTER_LABEL} (Ctrl+F)`}</TooltipContent>
+        </Tooltip>
         {text === "" ? null : (
           <span className="absolute right-0.5">
             <IconButton icon={Cancel01Icon} label="Clear filter" keys={{ aria: "Escape", text: "Esc" }} onClick={clear} />

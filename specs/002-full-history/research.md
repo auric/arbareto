@@ -501,6 +501,29 @@ T032 and T063, the 37aa8d4 run (R21), Windows Git 2.56.0.windows.2 and Ubuntu-26
 | T067 | `tests/contracts/references-sidebar.test.tsx` is green in run 7. | `ReferencesSidebar.tsx:379` drops `font-semibold` on the current row. | 33 pass, 1 fail ("the current branch name is bold with aria-current and no Current text", line 164). | 34 pass |
 | T068 | `tests/contracts/commit-details.test.tsx` is green in run 7. | `CommitDetails.tsx:141` makes the parent button copy the selected commit ID. | 14 pass, 1 fail ("each parent has its own Copy parent ID button, and it copies that parent", line 109). | 15 pass |
 
+## R24 T064 contract change, 2026-11-10
+
+- 1708ac0f (2026-11-10) changed contract Δ3 `readHistoryRows` in contracts/operations.md, data-model.md §7, plan.md, `src/contracts/envelope.ts`, the `read-history-rows-result` schema, `HistoryList.tsx`, `history-search.ts`, and `history-view.ts`. `readHistoryRows` sends `reducedParents` for each settled filter row with a cell. The renderer reads the skip and no-earlier facts from it, not from the drawn cell.
+- f5256ad0 (2026-11-10) changed the same files. A row sends at most 64 reduced parents, plus the full count and a skip fact (contracts/operations.md `reducedParentCount`, data-model.md §7).
+- Both commits changed `tests/git/history-search.test.ts` and `tests/contracts/history-filter.test.tsx`. Merge 73aed6c0 holds both commits, and de82eccd contains it.
+- Red output: both commit messages say "Tests are not run yet". No record holds a red run. The test-first red output is unverified.
+- Control mutation: no record holds one. It is unverified.
+- Green: the v0.1.1 full run on de82eccd exited 0 (007 research.md R7 "v0.1.1 full run (2026-11-13)"). `tests/groups.json` at de82eccd lists both test files: `history-search.test.ts` in `serial`, `history-filter.test.tsx` in `parallel`. No record gives the pass, skip, and fail counts of these two files. Their results in that run are unverified.
+- From de82eccd to cc149d7a, `src/contracts/envelope.ts` and `tests/contracts/history-filter.test.tsx` changed (`git diff --stat`).
+- T064 stays open. Its tick needs a green full run that verifies both test files.
+
+## R25 v0.1.2 records, 2026-11-16
+
+- Full run f014 (the v0.1.2 full run) ran on 2026-11-15 to 2026-11-16. Build: code `2d109fff` on branch `v0.1.2-rc`, installer SHA-256 `065fedd6bf2b76387adfd0e2db0ed81c4c1f8572c5e6cc78d1457e616d09981f`, installed `arbareto.exe` SHA-256 `478ac4cc1fedacdebe82be4fcdbfba03be719b1fcd0e36b0b17b59bd88ac225e`. OS: Windows NT 10.0.26300.0, UBR 9974, x64. Prerequisites: Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4.
+- Every step exited 0. Every `ORIGIN` line named the checkout under test. `bun run test:all` gave 10,384 pass, 56 skip, 0 fail. The logs are in local scratch `f014-full`.
+- T069 (ticked): `tests/contracts/history-filter.test.tsx` 25 pass, 0 skip, 0 fail. All seven T069 cases passed. `tests/contracts/history-view.test.tsx` 25, 0, 0. `tests/git/history-view.test.ts` 17, 0, 0. The red records and the controls are in the T069 row.
+- T065, green part: `tests/contracts/history-filter.test.tsx` 25, 0, 0. `tests/windows/keys-cdp.test.ts` 7, 0, 0 on the installed exe `478ac4cc…`.
+- T065, packaged control on 2026-11-16 (local scratch `v012-controls-f014`, control `t065-2`). The mutation made `filterTarget` in `src/frontend/keyboard/shortcuts.ts` send History Ctrl+F only to `historyFiles`. The control built and installed a package from `2d109fff` with this mutation, installed exe SHA-256 `3f43e6f08e1b23e4772d3b624d9363b346aae6b1d2b80d7700be3e93d92c8e02`. `keys-cdp.test.ts` gave 6 pass, 1 fail. The failed case is "Ctrl+F on the History commit list moves focus to Filter commit messages". It failed at the `toEqual` of `keys-cdp.test.ts:265`. The run then installed the f014 package again and checked its exe hash.
+- T065 DOM control on 2026-11-16 (local scratch `v012-dom-controls`, control `t065-c1`): change the tooltip text to "Filter commit messages". The control ran in a clean `2d109fff` checkout with `ORIGIN` lines there. The run script restored the file after the run. `history-filter.test.tsx` gave 24 pass, 1 fail, at `expect(tooltipText()).toBe("Filter commit messages (Ctrl+F)")`. It received `"Filter commit messages"`.
+- T065 tests-first step: no record keeps its red output, and local scratch holds none. Commit 7a001590 holds the tests and the fix together. So the red-before-fix step is unverified. The red proof is the DOM control `t065-c1` and the packaged control `t065-2`.
+- T065 (ticked): both controls ran red on code `2d109fff`. f014 also gave `tests/contracts/workbench-mount.test.tsx` 95, 0, 0 and `tests/contracts/workbench-commit.test.tsx` 109, 0, 0. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0.
+- T065 depends on T050, and T050 stays open. This record does not verify T050: its manual check and its batch 4 review stay unverified.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

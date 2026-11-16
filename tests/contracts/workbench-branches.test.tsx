@@ -954,14 +954,15 @@ describe("local Delete with the remote check box (feature 011 plan D3)", () => {
   const ORPHAN = local("orphan", { upstream: "refs/remotes/origin/orphan" });
   const ORIGIN_FEATURE = remote("origin/feature", { localName: "feature", oid: oid(2) });
   const DELETE_PLAN = { oid: oid(4), onlyHere: 0, reflogKeeps: true, heldBy: null, current: false };
-  const DESTINATION = { remote: "origin", ref: "refs/heads/feature", trackingRef: "refs/remotes/origin/feature", url: "https://example.test/r.git", setUpstream: false, upstreamRebase: false, source: "tracking-ref" };
-  const syncPlan = (count: number, reflogKeeps = true) => ({
+  // The `ssh://` URL gives X7, not X7h (feature 011 plan D13).
+  const DESTINATION = { remote: "origin", ref: "refs/heads/feature", trackingRef: "refs/remotes/origin/feature", url: "ssh://example.test/r.git", setUpstream: false, upstreamRebase: false, source: "tracking-ref" };
+  const syncPlan = (count: number, reflogKeeps = true, url = DESTINATION.url) => ({
     remotes: ["origin"],
-    destination: DESTINATION,
+    destination: { ...DESTINATION, url },
     lease: { trackingRef: "refs/remotes/origin/feature", expect: oid(2), count, commits: Array.from({ length: count }, (_, i) => ({ objectId: oid(0x100 + i), subject: `Login change ${i + 1}` })) },
     local: { ref: "refs/heads/feature", oid: oid(4), reflogKeeps },
   });
-  const syncReviewed = (count: number, reflogKeeps = true) => succeeded({ action: "delete-remote-branch", plan: syncPlan(count, reflogKeeps), syncReviewToken: SYNC_TOKEN });
+  const syncReviewed = (count: number, reflogKeeps = true, url?: string) => succeeded({ action: "delete-remote-branch", plan: syncPlan(count, reflogKeeps, url), syncReviewToken: SYNC_TOKEN });
   const X9 = "Also delete the remote branch origin/feature";
   const X16 = "origin/feature is no longer the upstream of feature. Close this dialog, then try again.";
   const X7 = "Other people can lose work. The delete stops if origin/feature changed since the last fetch.";
@@ -1094,4 +1095,22 @@ describe("local Delete with the remote check box (feature 011 plan D3)", () => {
     expect(double.calls.find((c) => c.operation === "runWorkbench")?.args[1]).toEqual({ workbenchToken: TOKEN, start: true });
     expect(double.count("sync")).toBe(0);
   });
+
+  // Feature 011 T027, spec FR-006, plan D13: X7h for an `http://` or `https://` push URL, else X7. The plan URL is the redacted push URL.
+  const X7H = `${X7} Over a dumb HTTP server, Git cannot check this.`;
+  for (const [label, url, expected] of [
+    ["an https:// URL", "https://example.test/r.git", X7H],
+    ["an http:// URL", "http://example.test/r.git", X7H],
+    ["an https:// URL with redacted user information", "https://<redacted>@example.test/r.git", X7H],
+    ["a file path URL", "C:\\repos\\r.git", X7],
+    ["an ssh:// URL", "ssh://example.test/r.git", X7],
+    ["an scp URL", "git@example.test:r.git", X7],
+  ] as const) {
+    test(`T027: the checked plan with ${label} shows ${expected === X7H ? "X7h" : "X7"}`, async () => {
+      const double = await openDelete();
+      await click(box()!);
+      await answer(double.pending("reviewSync"), syncReviewed(4, true, url));
+      expect([...dialog().querySelectorAll("p")].map(text).filter((t) => t.startsWith("Other people can lose work."))).toEqual([expected]);
+    });
+  }
 });

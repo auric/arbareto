@@ -27,6 +27,7 @@ import {
 } from "../../src/contracts/envelope";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { isObject } from "../../src/contracts/strict-json";
+import type { StartedReply, WalkDeadline } from "../../src/git-service/git-runner";
 import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
 import * as registrationModule from "../../src/git-service/registration";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
@@ -253,6 +254,63 @@ export function siblingDeadline(service: Service, target: CallMatch, sibling: Ca
 }
 
 // The `node:fs/promises` file calls of the in-process service while `body` runs, in call order. `onCall` runs before each call.
+function bounded<T>(promise: Promise<T>, timeoutMs: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`${what}: not within ${timeoutMs} ms`)), timeoutMs)));
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+// T417: holds the first `started` call of a session until `release`. Pass `onStarted` to `openService`.
+// `release()` lets the double reply. A reply replaces the double reply, and an Error rejects the call.
+export function holdStarted() {
+  let held = false;
+  let reached: (frame: MutationStarted) => void = () => {};
+  const frame = new Promise<MutationStarted>((resolve) => (reached = resolve));
+  let release: (reply?: StartedReply | WalkDeadline | Error) => void = () => {};
+  const released = new Promise<StartedReply | WalkDeadline | Error | undefined>((resolve) => (release = resolve));
+  return {
+    onStarted(f: MutationStarted): Promise<StartedReply | WalkDeadline | void> | void {
+      if (held) return;
+      held = true;
+      reached(f);
+      return released.then((reply) => {
+        if (reply instanceof Error) throw reply;
+        return reply;
+      });
+    },
+    release,
+    frame: (timeoutMs = RESPONSE_WAIT_MS) => bounded(frame, timeoutMs, "the held started call"),
+  };
+}
+
+export type HeldStarted = ReturnType<typeof holdStarted>;
+
+// T417: sends `cancel` while `started` waits, then releases the call with `reply`. The release also comes after a failure, so the run can end.
+export async function cancelHeld(service: Service, hold: HeldStarted, reply?: StartedReply | WalkDeadline | Error): Promise<{ operationId: string; cancel: ServiceResponse }> {
+  try {
+    const { operationId } = await hold.frame();
+    return { operationId, cancel: await service.cancel(operationId) };
+  } finally {
+    hold.release(reply);
+  }
+}
+
+// T417: the state and the `phase` presence of a `cancel` reply view, and the `run` calls of `operationId` with a policy other than `read`.
+export function heldFacts(service: Service, operationId: string, cancel: ServiceResponse): { cancel: unknown; writes: string[][] } {
+  const view = isObject(cancel.result) ? cancel.result : null;
+  return {
+    cancel: { state: cancel.state, view: view?.state, phase: view?.phase !== undefined },
+    writes: service.runner.calls.filter((c) => c.operationId === operationId && c.environmentPolicy !== "read").map((c) => [c.environmentPolicy, ...c.arguments]),
+  };
+}
+
+// Resolves after the pending microtasks. `send` dispatches in the current turn, but the shell delivers each request in a later turn.
+// A run that a T417 case cancels frees its slot and its token after its last frame, with no I/O wait between.
+export const nextTurn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+// The `heldFacts` of a mutation that took `cancel` in `accepted` and started no process with a write policy.
+export const CANCELED_BEFORE_MARKER = { cancel: { state: "succeeded", view: "cancel-requested", phase: false }, writes: [] };
+
 export type FsCall = { name: "lstat" | "stat" | "access" | "open" | "readdir"; path: string };
 export async function withFsCalls<T>(body: () => Promise<T>, onCall: (call: FsCall) => void = () => {}): Promise<{ value: T; calls: FsCall[] }> {
   const calls: FsCall[] = [];
@@ -345,7 +403,8 @@ export interface OpenOptions extends ServiceSeams {
   markers?: Handshake["markers"];
   unloadedMarkers?: number;
   // Runs when the service sends a `started` mutation frame, before the double writes the marker and replies.
-  onStarted?: (frame: MutationStarted) => void;
+  // A promise holds the call: its reply replaces the double reply, nothing lets the double reply, and a rejection reaches the service.
+  onStarted?: (frame: MutationStarted) => void | Promise<StartedReply | WalkDeadline | void>;
   // The `BunRunnerOptions` fixture isolation of WSL processes: the Linux path of the owned global configuration.
   wslGlobalConfig?: string;
 }
@@ -641,8 +700,8 @@ export async function openService(options: OpenOptions): Promise<Service> {
       ...runner,
       receive: () => false,
       started: (frame: MutationStarted) => {
-        options.onStarted?.(frame);
-        return runner.started(frame);
+        const held = options.onStarted?.(frame);
+        return held instanceof Promise ? held.then((reply) => reply ?? runner.started(frame)) : runner.started(frame);
       },
     },
     fail: () => {

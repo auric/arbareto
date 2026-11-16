@@ -333,6 +333,18 @@ mod tests {
     }
 
     #[test]
+    fn every_policy_removes_git_smart_http() {
+        let input = base(&[("GIT_SMART_HTTP", "0"), ("git_smart_http", "0")]);
+        for id in policy_ids() {
+            let output = build(&id, &input);
+            assert!(
+                values(&output, "GIT_SMART_HTTP").is_empty(),
+                "{id}: GIT_SMART_HTTP reaches the child"
+            );
+        }
+    }
+
+    #[test]
     fn every_policy_sets_git_terminal_prompt_to_zero() {
         for input in [
             base(&[]),

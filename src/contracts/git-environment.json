@@ -15,7 +15,8 @@
         "GIT_DEFAULT_HASH",
         "GIT_DEFAULT_REF_FORMAT",
         "GIT_REFERENCE_BACKEND",
-        "GIT_CONFIG"
+        "GIT_CONFIG",
+        "GIT_SMART_HTTP"
       ],
       "removePrefixes": ["GIT_TEST_"],
       "set": { "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C" },
@@ -37,7 +38,8 @@
         "GIT_DEFAULT_HASH",
         "GIT_DEFAULT_REF_FORMAT",
         "GIT_REFERENCE_BACKEND",
-        "GIT_CONFIG"
+        "GIT_CONFIG",
+        "GIT_SMART_HTTP"
       ],
       "removePrefixes": ["GIT_TEST_"],
       "set": { "GIT_TERMINAL_PROMPT": "0" },
@@ -59,7 +61,8 @@
         "GIT_DEFAULT_HASH",
         "GIT_DEFAULT_REF_FORMAT",
         "GIT_REFERENCE_BACKEND",
-        "GIT_CONFIG"
+        "GIT_CONFIG",
+        "GIT_SMART_HTTP"
       ],
       "removePrefixes": ["GIT_TEST_"],
       "set": { "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C.UTF-8" },
@@ -80,7 +83,8 @@
         "GIT_COMMON_DIR",
         "GIT_DEFAULT_HASH",
         "GIT_DEFAULT_REF_FORMAT",
-        "GIT_REFERENCE_BACKEND"
+        "GIT_REFERENCE_BACKEND",
+        "GIT_SMART_HTTP"
       ],
       "removePrefixes": ["GIT_TEST_"],
       "set": { "GIT_TERMINAL_PROMPT": "0" },
@@ -101,7 +105,8 @@
         "GIT_COMMON_DIR",
         "GIT_DEFAULT_HASH",
         "GIT_DEFAULT_REF_FORMAT",
-        "GIT_REFERENCE_BACKEND"
+        "GIT_REFERENCE_BACKEND",
+        "GIT_SMART_HTTP"
       ],
       "removePrefixes": ["GIT_TEST_"],
       "set": { "GIT_TERMINAL_PROMPT": "0", "GIT_PROTOCOL_FROM_USER": "0" },
@@ -122,7 +127,8 @@
         "GIT_COMMON_DIR",
         "GIT_DEFAULT_HASH",
         "GIT_DEFAULT_REF_FORMAT",
-        "GIT_REFERENCE_BACKEND"
+        "GIT_REFERENCE_BACKEND",
+        "GIT_SMART_HTTP"
       ],
       "removePrefixes": ["GIT_TEST_"],
       "set": { "GIT_TERMINAL_PROMPT": "0" },
@@ -143,7 +149,8 @@
         "GIT_COMMON_DIR",
         "GIT_DEFAULT_HASH",
         "GIT_DEFAULT_REF_FORMAT",
-        "GIT_REFERENCE_BACKEND"
+        "GIT_REFERENCE_BACKEND",
+        "GIT_SMART_HTTP"
       ],
       "removePrefixes": ["GIT_TEST_"],
       "set": { "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": ":" },
@@ -164,7 +171,8 @@
         "GIT_COMMON_DIR",
         "GIT_DEFAULT_HASH",
         "GIT_DEFAULT_REF_FORMAT",
-        "GIT_REFERENCE_BACKEND"
+        "GIT_REFERENCE_BACKEND",
+        "GIT_SMART_HTTP"
       ],
       "removePrefixes": ["GIT_TEST_"],
       "set": { "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": ":" },

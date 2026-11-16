@@ -29,6 +29,10 @@
 
 - Q: How does the references sidebar mark the current branch, and where do the copy buttons of the commit details sit? → A: The user asked for the current branch in bold. The user also asked for each copy button next to the value that it copies. T067 and T068 built both requests. FR-056 and FR-057 encode this.
 
+### Session 2026-11-13
+
+- Q: How does a text box show its keyboard shortcut? The 001 FR-005 rule names only buttons and menu items. → A: User decision 2026-11-13: the user asked for the orchestrator's recommendations ("do everything with your own recommendations"). The decision follows the house form of the Filter files box (004) and the Find a setting box: the house Tooltip on the box names the box and the key, as in "Filter commit messages (Ctrl+F)", and the box carries `aria-keyshortcuts`. FR-031 encodes this. T065 builds it in v0.1.2.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows one history page of at most 100 commits. This feature replaces that limit with the full history of a captured ref set. The default set covers all branches. The order of the journeys follows the reading flow: scroll, filter, then highlight.
@@ -180,7 +184,7 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 - **FR-028**: Filter text with a line break, a NUL character, or a backslash followed by "E" MUST get a typed refusal. No search MUST start. The refusal MUST name the found character. A line break is U+000A or U+000D.
 - **FR-029**: The search MUST start only at Enter. A pause in typing MUST NOT start a search.
 - **FR-030**: A changed text, a cleared text, Escape, and closing the repository MUST stop the running search. A stopped search MUST NOT show a count as final.
-- **FR-031**: The filter MUST have an accessible name and a keyboard shortcut. The shortcut MUST show as the 001 rules require.
+- **FR-031**: The filter MUST have an accessible name and a keyboard shortcut. The box MUST carry the shortcut in `aria-keyshortcuts`. The house Tooltip of the box MUST name the box and the shortcut, as an icon button does under the 001 FR-005 rule (Clarifications, Session 2026-11-13).
 
 #### Filter mode
 
@@ -283,6 +287,7 @@ These outcomes are qualification targets, not measured results. Only recorded pa
 - Known limit: the topology of each loaded row stays for the life of the view, at about 46 to 90 bytes per commit (unverified). Only the row text and the graph cells leave memory (FR-011). A return to the top does not free the topology. This is a reviewer default, not a user decision.
 - Known limit: the changes list creates elements only for the visible rows, but it holds up to 100,000 entries of the status listing in memory (`STATUS_LISTING_RECORDS`). The references sidebar holds up to 10,000 refs. A larger ref set gets the FR-047 refusal. These are feature 001 bounds. Keeping these bounds is a reviewer default, not a user decision. Lists other than the history view and the references sidebar keep their feature 001 behavior in this feature: the changes list (already virtual, up to 100,000 entries in memory) and the diff lines. A diff holds up to 20,000 lines and 4 MiB (`CANONICAL_DIFF_LINES`, `CANONICAL_DIFF_BYTES`).
 - A history view holds at most 4,000,000 commits (FR-003). That bound costs about 185 to 360 MB (about 46 B per commit when the typed arrays are nearly full, about 90 B just after a doubling) of service memory (unverified, plan.md D3). A larger bound needs a measured memory design. This is a reviewer default, not a user decision.
+- The references sidebar creates an element for every row up to 200 rows (`VIRTUAL_MIN`). Above 200 rows, it creates elements only for the rows near the visible area (FR-055). 004 FR-086 uses the same 200-row value for the Submodules group. This is a reviewer default, not a user decision.
 - The plan review set these rules: the FR-003 view bound and parent exception, the FR-008 Cancel selection, the FR-016 column growth, the FR-028 line-break characters, the FR-047 ref bound, the FR-048 labels, the FR-050 symbolic refs, the SC-011 statistic, the SC-012 WSL timing, the FR-026 byte bound, the FR-038 no-wrap rule, the FR-042 selection move, and the SC-010 values. These are reviewer defaults, not user decisions.
 - The user confirmed the SC-011 ratio. The SC-002 first-screen bound, the SC-006 target, and the SC-010 values are proposed, and the plan confirms them before measurement. Feature 001 speed targets stay in force on the moderate fixture.
 - SC-014 reuses the feature 001 SC-005 response targets. It adds no new values.

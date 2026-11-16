@@ -9,7 +9,7 @@ import { printOrigin } from "../origin";
 import { fixtureId } from "./bridge-contract";
 import { b64, contextMenu, describedBy, entry, item, menuLabels, openCommitView, pressKey, statusBar } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { answer, button, buttons, click, createWorld, hoverTooltip, mountWorkbench, oid, press, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, hoverTooltip, mountWorkbench, oid, press, settle, snapshot, succeeded, text, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T109 and T110 (feature 005, WP9). Story US10. Spec FR-069 to FR-076, FR-010, FR-047. Plan D19, data-model §15 and §16, contract Δ3 `readSubmoduleChange` and `readSubmoduleWork`.
 
@@ -47,9 +47,9 @@ type State = Record<string, unknown>;
 const change = (path: string, state: State, fields: Record<string, unknown> = {}) => ({ pathBytes: b64(path), path, kind: "submodule", old: OLD, new: NEW, state, limited: false, ...fields });
 const commitState = (added: number, removed: number) => ({ state: "commits", added, removed, addedCommits: commits(Math.min(added, 50), 0x100), removedCommits: commits(Math.min(removed, 50), 0x200) });
 const checked = (path: string, modified: boolean, untracked: boolean) => ({ pathBytes: b64(path), path, state: "checked", modified, untracked });
-type Work = { entries?: unknown[]; extraRows?: string[]; limited?: number };
-const work = ({ entries = [], extraRows = [], limited = 0 }: Work) => (args: unknown[]) =>
-  succeeded({ snapshotId: (args[1] as { snapshotId: string }).snapshotId, entries, extraRows: extraRows.map((p) => ({ pathBytes: b64(p), path: p })), limited });
+type Work = { entries?: unknown[]; extraRows?: string[]; limited?: number; next?: number | null };
+const work = ({ entries = [], extraRows = [], limited = 0, next = null }: Work) => (args: unknown[]) =>
+  succeeded({ snapshotId: (args[1] as { snapshotId: string }).snapshotId, entries, extraRows: extraRows.map((p) => ({ pathBytes: b64(p), path: p })), limited, next });
 const rejected = (code: string, result?: unknown) => ({ requestId: fixtureId(0x9e2), state: "rejected", code, ...(result === undefined ? {} : { result }) });
 // A submodule comparison: the service gives the support reason `submodule` (001 plan "Limitation text").
 const submoduleComparison = (args: unknown[]) => {
@@ -126,7 +126,23 @@ describe("Commit view preview layout (T109 case 1, FR-069 to FR-071, FR-074)", (
     expect(await hoverTooltip(subject)).toEqual(["Subject 256"]);
     expect(preview()!.querySelector("[title]")).toBeNull();
   });
+
+  test("T174: the preview root is the select-text region of all its texts, and Open submodule is select-none", async () => {
+    await setup({ entries: [LIB()], change: () => succeeded(change("lib", commitState(1, 1))), work: work({ entries: [checked("lib", true, false)] }) });
+    await click(item("Changes", "lib"));
+    expectSelectablePreview(preview()!);
+  });
 });
+
+/** 004 plan D15 "Text selection": the `[data-slot="submodule-preview"]` root opts in, so each text of the preview is inside it. */
+function expectSelectablePreview(region: HTMLElement) {
+  expect(region.getAttribute("data-slot")).toBe("submodule-preview");
+  expect(region.classList.contains("select-text")).toBe(true);
+  const texts = [region.querySelector("h2")!, ...region.querySelectorAll("dt, dd, dd code, h3, li code, li span")];
+  expect(texts.length).toBeGreaterThan(8);
+  for (const element of texts) expect(element.closest(".select-text")).toBe(region);
+  expect(button("Open submodule", region).classList.contains("select-none")).toBe(true);
+}
 
 describe("Commit view preview states (T109 case 2, FR-072 to FR-074)", () => {
   type Case = [string, Partial<Setup>, (region: HTMLElement) => void];
@@ -332,6 +348,13 @@ describe("History preview (T110, FR-010, FR-069 to FR-073)", () => {
     expect(double.count("readCommitFile")).toBe(0);
     const call = double.calls.findLast((c) => c.operation === "readSubmoduleChange")!;
     expect((call.args[1] as { source: unknown }).source).toMatchObject({ kind: "commit", oid: world.oids[0], parent: 0, record: 0 });
+  });
+
+  test("T174: the History preview root is the select-text region of all its texts, and Open submodule is select-none", async () => {
+    const world = createWorld();
+    history(world, [P1]);
+    await selectCommit(world);
+    expectSelectablePreview(preview()!);
   });
 
   test("a merge commit with another parent sends the new parent", async () => {
@@ -642,5 +665,236 @@ describe("T119 Stage file of a moved submodule (FR-078 to FR-082, plan D20)", ()
     expect(disabled(stage)).toBe(true);
     expect(describedBy(stage)).toBe("The submodule branch has no commit yet. Commit inside the submodule first");
     expect(text(document.body)).not.toContain(LIMITATION);
+  });
+});
+
+// --- T123: the pages in cycles ---------------------------------------------------------------------------------------
+
+describe("T123 page cycle (FR-075, plan D19 \"Page cycle\", \"Rows across snapshots\", \"Page failures\", contract Δ3 \"Page cycle\", data-model §16 \"Join\")", () => {
+  /** Answers the `readSubmoduleWork` calls in call order from `script`. `next()` answers the oldest open call. */
+  const paged = (script: ((args: unknown[]) => unknown)[]) => slow((args) => script.shift()!(args));
+  async function mountPaged(reads: ReturnType<typeof paged>, entries: World["entries"] = [entry("unstaged", "a.ts")], snapshotId?: string) {
+    const world = createWorld({ entries });
+    world.answers.readComparison = submoduleComparison;
+    world.answers.listRecentRepositories = recent;
+    world.answers.readSubmoduleWork = reads.answer;
+    // Contract §8 "Equal full read": every read gives the same `snapshotId`.
+    if (snapshotId !== undefined) world.answers.readWorkspace = () => succeeded({ ...snapshot(world), snapshotId });
+    return openCommitView(workbench, world);
+  }
+  /** The `readSubmoduleWork` calls as "S<n>:<page>". S1 is the first `snapshotId` sent, S2 the second. */
+  const sent = (double: Awaited<ReturnType<typeof mountPaged>>) => {
+    const ids: string[] = [];
+    return double.calls
+      .filter((c) => c.operation === "readSubmoduleWork")
+      .map((c) => {
+        const p = c.args[1] as { snapshotId: string; page: number };
+        if (!ids.includes(p.snapshotId)) ids.push(p.snapshotId);
+        return `S${ids.indexOf(p.snapshotId) + 1}:${p.page}`;
+      });
+  };
+  const rowOf = (path: string) => [...document.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((i) => i.getAttribute("aria-label") === path || i.getAttribute("aria-label")?.startsWith(`${path}, `)) ?? null;
+  /** The marks of the Changes row `path`, "" without marks, null without a row. */
+  const marks = (path: string) => {
+    const row = rowOf(path);
+    return row === null ? null : text(row.querySelector('[data-slot="submodule-marks"]') ?? document.createElement("span"));
+  };
+  const changesCount = () => text(document.querySelector('[data-list-heading="Changes"] .num')!);
+  const workingTree = (path: string) => value(preview(path)!, "Working tree");
+  const refresh = async () => {
+    await pressKey(document.body, "F5");
+    await settle();
+  };
+
+  test("case 1: each page shows its marks when it arrives, and the next request names the same snapshot and the next page", async () => {
+    const reads = paged([work({ entries: [checked("dep0", true, false)], extraRows: ["dep0"], next: 1 }), work({ entries: [checked("dep1", false, true)], extraRows: ["dep1"] })]);
+    const double = await mountPaged(reads);
+    expect(sent(double)).toEqual(["S1:0"]);
+    expect(changesCount()).toBe("1");
+    await reads.next();
+    expect(marks("dep0")).toBe("modified content");
+    expect(marks("dep1")).toBeNull();
+    expect(changesCount()).toBe("2");
+    expect(sent(double)).toEqual(["S1:0", "S1:1"]);
+    await reads.next();
+    expect(marks("dep0")).toBe("modified content");
+    expect(marks("dep1")).toBe("untracked content");
+    expect(changesCount()).toBe("3");
+    await settle();
+    expect(sent(double)).toEqual(["S1:0", "S1:1"]);
+  });
+
+  test("case 2: a newer snapshot resumes at the page that was due next, wraps to page 0, and ends before its start page", async () => {
+    const reads = paged([
+      work({ entries: [checked("dep0", true, false)], extraRows: ["dep0"], next: 1 }),
+      work({ entries: [checked("dep1", true, false)], extraRows: ["dep1"], next: 2 }),
+      work({ entries: [checked("dep2", false, false)], next: null }),
+      work({ entries: [checked("dep0", false, false)], next: 1 }),
+      work({ entries: [checked("dep1", false, true)], extraRows: ["dep1"], next: 2 }),
+    ]);
+    const double = await mountPaged(reads);
+    await reads.next();
+    expect(sent(double)).toEqual(["S1:0", "S1:1"]);
+    await refresh();
+    expect(sent(double)).toEqual(["S1:0", "S1:1"]);
+    await reads.next();
+    // Page 1 of S1 ended after S2 arrived: its marks show as older entries.
+    expect(marks("dep1")).toBe("modified content");
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:2"]);
+    await click(item("Changes", "dep1"));
+    expect(workingTree("dep1")).toBe("Arbareto reads the Git facts.");
+    await reads.next();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:2", "S2:0"]);
+    expect(marks("dep1")).toBe("modified content");
+    await reads.next();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:2", "S2:0", "S2:1"]);
+    expect(marks("dep0")).toBeNull();
+    expect(marks("dep1")).toBe("modified content");
+    expect(workingTree("dep1")).toBe("Arbareto reads the Git facts.");
+    await reads.next();
+    // (S2, 1) replaces the older entry of dep1.
+    expect(marks("dep1")).toBe("untracked content");
+    expect(workingTree("dep1")).toBe("untracked content");
+    await settle();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:2", "S2:0", "S2:1"]);
+  });
+
+  test("case 3: no starvation, each page index is read although each snapshot replaced the one before", async () => {
+    const page = (p: number, next: number | null) => work({ entries: [checked(`dep${p}`, true, false)], extraRows: [`dep${p}`], next });
+    const reads = paged([page(0, 1), page(1, 2), page(2, null), page(0, 1), page(1, 2), page(2, null)]);
+    const double = await mountPaged(reads);
+    for (let i = 0; i < 3; i++) {
+      await refresh();
+      await reads.next();
+    }
+    expect(sent(double).slice(0, 3)).toEqual(["S1:0", "S2:1", "S3:2"]);
+    // (S3, 2) gave `next` null, so the cycle of S4 starts at page 0.
+    expect(sent(double)).toEqual(["S1:0", "S2:1", "S3:2", "S4:0"]);
+    await reads.next();
+    await reads.next();
+    expect(sent(double)).toEqual(["S1:0", "S2:1", "S3:2", "S4:0", "S4:1", "S4:2"]);
+    await reads.next();
+    await settle();
+    expect(sent(double)).toHaveLength(6);
+    expect([0, 1, 2].map((p) => marks(`dep${p}`))).toEqual(["modified content", "modified content", "modified content"]);
+  });
+
+  test("case 4: a resumed start page past the new page count gives INVALID_REQUEST, then page 0 follows once, and the older marks stay until then", async () => {
+    const reads = paged([
+      work({ entries: [checked("dep0", true, false)], extraRows: ["dep0"], next: 1 }),
+      work({ entries: [checked("dep1", true, false)], extraRows: ["dep1"], next: 2 }),
+      () => rejected("INVALID_REQUEST"),
+      work({ entries: [checked("dep0", false, false), checked("dep1", false, false)] }),
+    ]);
+    const double = await mountPaged(reads);
+    await reads.next();
+    await refresh();
+    await reads.next();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:2"]);
+    await click(item("Changes", "dep1"));
+    await reads.next();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:2", "S2:0"]);
+    expect(marks("dep0")).toBe("modified content");
+    expect(marks("dep1")).toBe("modified content");
+    expect(workingTree("dep1")).toBe("Arbareto reads the Git facts.");
+    expect(text(document.body)).not.toContain("Working tree is unavailable");
+    await reads.next();
+    expect(marks("dep0")).toBeNull();
+    expect(marks("dep1")).toBeNull();
+    await settle();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:2", "S2:0"]);
+  });
+
+  test("case 4: INVALID_REQUEST on the restarted page 0 is a failed page, so the restart runs once", async () => {
+    const reads = paged([work({ entries: [checked("lib", true, false)], next: 1 }), work({ entries: [], next: 2 }), () => rejected("INVALID_REQUEST"), () => rejected("INVALID_REQUEST")]);
+    const double = await mountPaged(reads, [LIB()]);
+    await click(item("Changes", "lib"));
+    await reads.next();
+    await refresh();
+    await reads.next();
+    await reads.next();
+    await reads.next();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:2", "S2:0"]);
+    expect(workingTree("lib")).toBe("Working tree is unavailable: INVALID_REQUEST");
+    expect(marks("lib")).toBe("");
+  });
+
+  test("case 5: an older mark stays until the page of its path arrives, and the end of the cycle drops the older entries that no page replaced", async () => {
+    const reads = paged([
+      work({ entries: [checked("dep0", true, false)], extraRows: ["dep0"], next: 1 }),
+      work({ entries: [checked("dep1", true, false), checked("dep2", true, false)], extraRows: ["dep1", "dep2"] }),
+      work({ entries: [checked("dep0", false, false)], next: 1 }),
+      work({ entries: [checked("dep1", false, true)], extraRows: ["dep1"] }),
+    ]);
+    const double = await mountPaged(reads);
+    await reads.next();
+    await reads.next();
+    await click(item("Changes", "dep1"));
+    expect(workingTree("dep1")).toBe("modified content");
+    await refresh();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:0"]);
+    expect(marks("dep1")).toBe("modified content");
+    expect(workingTree("dep1")).toBe("Arbareto reads the Git facts.");
+    await reads.next();
+    expect(marks("dep0")).toBeNull();
+    expect(marks("dep1")).toBe("modified content");
+    expect(marks("dep2")).toBe("modified content");
+    expect(workingTree("dep1")).toBe("Arbareto reads the Git facts.");
+    await reads.next();
+    expect(marks("dep1")).toBe("untracked content");
+    expect(workingTree("dep1")).toBe("untracked content");
+    expect(marks("dep2")).toBeNull();
+    expect(changesCount()).toBe("2");
+  });
+
+  test("case 6: a later page with TRUST_REQUIRED ends the cycle, the marks go, and the Working tree row states the failure", async () => {
+    const reads = paged([work({ entries: [checked("lib", true, false), checked("dep0", true, false)], extraRows: ["dep0"], next: 1 }), () => rejected("TRUST_REQUIRED")]);
+    const double = await mountPaged(reads, [LIB()]);
+    await click(item("Changes", "lib"));
+    await reads.next();
+    expect(workingTree("lib")).toBe("modified content");
+    expect(marks("dep0")).toBe("modified content");
+    await reads.next();
+    expect(marks("dep0")).toBeNull();
+    expect(marks("lib")).toBe("");
+    expect(workingTree("lib")).toBe("Working tree is unavailable: TRUST_REQUIRED");
+    await settle();
+    expect(sent(double)).toEqual(["S1:0", "S1:1"]);
+  });
+
+  test.each(["UNKNOWN_TARGET", "REPOSITORY_CHANGED"])("case 6: a later page with %s keeps the marks and sends no later page", async (code) => {
+    const reads = paged([work({ entries: [checked("dep0", true, false)], extraRows: ["dep0"], next: 1 }), () => rejected(code)]);
+    const double = await mountPaged(reads);
+    await reads.next();
+    await reads.next();
+    expect(marks("dep0")).toBe("modified content");
+    expect(text(document.body)).not.toContain("Working tree is unavailable");
+    await settle();
+    expect(sent(double)).toEqual(["S1:0", "S1:1"]);
+    // Contract Δ3 "Page cycle": without a succeeded page, the next cycle starts at the start page of the stopped cycle.
+    await refresh();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S2:1"]);
+  });
+
+  test("case 7: a new cycle of the same snapshotId keeps the Working tree text of the selected row on a later page", async () => {
+    const reads = paged([
+      work({ entries: [checked("dep0", true, false)], extraRows: ["dep0"], next: 1 }),
+      work({ entries: [checked("dep1", true, false)], extraRows: ["dep1"] }),
+      work({ entries: [checked("dep0", true, false)], extraRows: ["dep0"], next: 1 }),
+      work({ entries: [checked("dep1", true, false)], extraRows: ["dep1"] }),
+    ]);
+    const double = await mountPaged(reads, undefined, fixtureId(0x5a7));
+    await reads.next();
+    await reads.next();
+    await click(item("Changes", "dep1"));
+    expect(workingTree("dep1")).toBe("modified content");
+    await refresh();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S1:0"]);
+    expect(workingTree("dep1")).toBe("modified content");
+    await reads.next();
+    expect(sent(double)).toEqual(["S1:0", "S1:1", "S1:0", "S1:1"]);
+    expect(workingTree("dep1")).toBe("modified content");
+    await reads.next();
+    expect(workingTree("dep1")).toBe("modified content");
   });
 });

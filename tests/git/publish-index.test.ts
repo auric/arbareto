@@ -200,7 +200,7 @@ describe("publishIndex (T017, plan.md D7)", () => {
 
   caseTest(
     TASK,
-    "a Cancel before the lock consumes the claim and ends canceled without a lock",
+    "a Cancel before the lock keeps the claim unused and ends canceled without a lock",
     [],
     async () => {
       const abort = new AbortController();
@@ -210,7 +210,7 @@ describe("publishIndex (T017, plan.md D7)", () => {
         const seen = { calls: 0 };
         const ending = await publishIndex({ runner: s.runner }, s.session, { prepare: hunkPrepare(s.repo, s.workspace, s.before.rawIndex, seen) });
         expect(ending).toEqual({ stop: "canceled" });
-        expect({ calls: seen.calls, claims: s.claims, lockFile: existsSync(`${s.workspace.indexPath}.lock`) }).toEqual({ calls: 0, claims: [s.operationId], lockFile: false });
+        expect({ calls: seen.calls, claims: s.claims, lockFile: existsSync(`${s.workspace.indexPath}.lock`) }).toEqual({ calls: 0, claims: [], lockFile: false });
         expect(repoState(s.repo)).toEqual(s.before);
       } finally {
         await s.runner.dispose();

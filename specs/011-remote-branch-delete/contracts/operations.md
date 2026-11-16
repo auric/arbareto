@@ -34,7 +34,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   5. `listRefs` of `ref` (`UNKNOWN_TARGET`).
   6. `[L, "symbolic-ref", "-q", "refs/remotes/<R>/HEAD"]`. Exit 0 with one `refs/` line and a target equal to `ref` gives `default-branch`. Exit 1 gives `default-unknown`. Another exit gives `GIT_FAILED`. A broken line gives `MALFORMED_GIT_OUTPUT`.
   7. With `local`: the current branch, the worktrees, `%(upstream)`, and `deleteFacts` (`current-branch`, `other-worktree`, `head-unresolved`, `not-upstream`, `config-in-include`).
-  8. `remote get-url --push --all -- R` (`push-urls`).
+  8. `remote get-url --push --all -- R` (`push-urls`). Then the plan D8 lease gap rule on that URL and the listing entries (`remote-helper`, user decision 2026-11-13).
   9. `remote get-url --all -- R` (`sameUrl`).
   10. `rev-list --count` and `rev-list --max-count=100` over the tips with the exclusions of plan D4 read 10.
 - No read contacts a remote (003 FR-041).
@@ -79,7 +79,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 ## Δ9 Error codes (001 §9)
 
-- New `SYNC_UNAVAILABLE_REASONS` (`errors.ts:71`): `default-branch`, `default-unknown`, `no-remote-branch`, and `not-upstream`.
+- New `SYNC_UNAVAILABLE_REASONS` (`errors.ts:71`): `default-branch`, `default-unknown`, `no-remote-branch`, and `not-upstream`. v0.1.2 (T027, user decision 2026-11-13) adds `remote-helper` (plan D4 read 8). It carries no `remote`.
 - `SyncRefused` carries the four workbench reasons and `worktree` for the combined review.
 - `SyncRefused` carries `remote` with `default-branch` and `default-unknown` only.
 - Reused codes: `UNKNOWN_TARGET`, `OPERATION_IN_PROGRESS`, `STALE_REVIEW`, `APPROVAL_EXPIRED`, `PUSH_REJECTED`, `GIT_FAILED`, `MALFORMED_GIT_OUTPUT`, and `INVALID_REQUEST`.
@@ -90,6 +90,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - `bun run export:schemas` regenerates `src/contracts/schemas/*.json`. `bun run export:schemas --check` decides the changed set (research R5 U7).
 - Valid vectors in `tests/vectors/valid/remote-delete-*.json`: the remote payload, the combined payload, a plan with `local`, and a result with status `deleted`, `remoteGone`, and `localNotDeleted`. Also a result with `remoteGone` and `localNotDeleted` together. Also the refusals `default-branch` and `default-unknown`, each with `remote`.
 - Invalid vectors in `tests/vectors/invalid/remote-delete-*.json`: `local` with action `push`, `remoteGone` with action `push`, and a plan of this action without `lease`. Also `default-branch` and `default-unknown` without `remote`, and `remote` with `no-remote-branch`.
+- T027 adds the valid vector `remote-delete-review-sync-result-remote-helper.json` and the invalid vector `remote-delete-review-sync-result-remote-helper-remote.json` (`remote-helper` with `remote`).
 
 ## Δ11 WSL repositories (001 §11)
 
@@ -100,3 +101,4 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - The gone fact and the stale-lease fact need a network read, so they stay in the run (plan D8). A probe finding of T001 changes this file first.
 - With `sameUrl` false, no re-read runs, so a stale lease gives `rejected` with no remedy (user decision 2026-11-11). The delete has no `urlReread` (003 plan D5).
+- Lease gap (user decision 2026-11-13, research R8): a remote helper can ignore the lease, and dumb HTTP push drops it. The review refuses a helper push with `remote-helper` (plan D8). An `http` or `https` push to a dumb server can still delete a moved remote branch. Git shows no such fact before the push.

@@ -738,6 +738,7 @@ export function createBunRunner(options: BunRunnerOptions) {
   const wslSaved = new Map<string, Omit<WslSavedGit, "guid">>();
   const startBarriers: Barriers = { every: null, matched: [] };
   const stdoutBarriers: Barriers = { every: null, matched: [] };
+  const exitBarriers: Barriers = { every: null, matched: [] };
   // The `run` calls that have no exit reply yet, and the activity input of each spawned one.
   const inflight = new Set<GitCall>();
   const samples = new Map<GitCall, (sum: number | null) => void>();
@@ -1905,6 +1906,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       inflight.add(call);
       try {
         recorded.exit = await start(call, recorded);
+        for (let held = holding(exitBarriers, call); held; held = holding(exitBarriers, call)) await held.promise;
         recorded.durationMs = performance.now() - recorded.at;
         recorded.stdoutLimited = call.stdout.limited;
         // Mirrors `watch` of `src-tauri/src/process_requests.rs`: the destination identity binds only after exit status 0. A failed read binds nothing.
@@ -2610,6 +2612,11 @@ export function createBunRunner(options: BunRunnerOptions) {
     pauseStdout(match?: CallMatch): () => void {
       return hold(stdoutBarriers, match);
     },
+    // Test barrier: the exit reply of each matching call waits after its process ended, with its exit recorded, until the returned function runs.
+    // A Cancel in that time does not change the reply, as the shell replies the exit of a process that ended before the Cancel. Without `match`, it holds every call.
+    holdExit(match?: CallMatch): () => void {
+      return hold(exitBarriers, match);
+    },
     // Ends every recorded live process by PID and every running process, then waits a bounded time for their exits and the drains.
     async dispose(): Promise<void> {
       closing = true;
@@ -2629,7 +2636,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       for (const proc of procs) proc.kill();
       await Promise.race([Promise.all(procs.map((proc) => proc.exited)), Bun.sleep(DISPOSE_WAIT_MS)]);
       wslAnchors.clear();
-      for (const barriers of [startBarriers, stdoutBarriers]) {
+      for (const barriers of [startBarriers, stdoutBarriers, exitBarriers]) {
         barriers.every?.open();
         barriers.every = null;
         for (const barrier of barriers.matched.splice(0)) barrier.open();

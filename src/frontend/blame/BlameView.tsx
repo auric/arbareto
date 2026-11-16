@@ -271,11 +271,17 @@ function Lines({ result, line, inspection, headingId, now, onSelectCommit, focus
     select(to);
   }
 
-  const latest = useRef({ select, commitOf, onSelectCommit });
-  latest.current = { select, commitOf, onSelectCommit };
+  const latest = useRef({ select, commitOf, onSelectCommit, line });
+  latest.current = { select, commitOf, onSelectCommit, line };
   const [events] = useState<LineEvents>(() => ({
     ref: (n, element) => void (element ? elements.current.set(n, element) : elements.current.delete(n)),
-    click: (n) => {
+    click: (n, row) => {
+      // Plan.md D15 "Text selection": a text selection inside this row keeps the line, and the focus returns to the selected line.
+      const selection = window.getSelection();
+      if (selection !== null && !selection.isCollapsed && row.contains(selection.anchorNode) && row.contains(selection.focusNode)) {
+        elements.current.get(latest.current.line)?.focus();
+        return;
+      }
       latest.current.select(n);
       const oid = latest.current.commitOf(n);
       if (oid !== null) latest.current.onSelectCommit(oid);
@@ -295,7 +301,7 @@ function Lines({ result, line, inspection, headingId, now, onSelectCommit, focus
   );
 }
 
-type LineEvents = { ref(n: number, element: HTMLElement | null): void; click(n: number): void };
+type LineEvents = { ref(n: number, element: HTMLElement | null): void; click(n: number, row: HTMLElement): void };
 type LineProps = { n: number; group: Blame["groups"][number]; facts: CommitFacts; content: string; selected: boolean; top: number; events: LineEvents };
 
 const Line = memo(function Line({ n, group, facts, content, selected, top, events }: LineProps) {
@@ -337,7 +343,7 @@ const Line = memo(function Line({ n, group, facts, content, selected, top, event
       aria-description={description}
       className={`list-row grid items-center ${first ? "border-t border-divider" : ""}`}
       style={style}
-      onClick={(event: MouseEvent) => (event.preventDefault(), events.click(n))}
+      onClick={(event: MouseEvent<HTMLDivElement>) => (event.preventDefault(), events.click(n, event.currentTarget))}
     >
       <span aria-hidden="true" data-slot="age-bar" data-age={facts.age} className="age-bar h-full" style={{ background: `var(--age-${facts.age})` }} />
       {tip === null ? gutter : <TextTooltip text={tip}>{gutter}</TextTooltip>}
@@ -345,7 +351,7 @@ const Line = memo(function Line({ n, group, facts, content, selected, top, event
       <span aria-hidden="true" className={`num pr-2 ${selected ? "text-text" : "text-muted-text"}`}>
         {n}
       </span>
-      <span aria-hidden="true" className="min-w-0 truncate whitespace-pre">
+      <span aria-hidden="true" className="min-w-0 truncate whitespace-pre select-text">
         {content}
       </span>
     </div>

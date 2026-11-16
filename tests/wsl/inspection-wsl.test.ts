@@ -22,7 +22,7 @@ import { fixturePath, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { sha256 } from "../git/git-oracle";
 import { buildBlame, buildBranches, buildHistory, buildPartialClone, buildRenames, EMPTY_TREE, HISTORY_LABELS, RENAME_PAIRS, type Built, type ObjectFormat } from "../git/history-diff-fixtures";
-import { outcome, readOk, subcommand, SUCCEEDED, until } from "../git/hunk-harness";
+import { outcome, readOk, subcommand, SUCCEEDED, until, workPages } from "../git/hunk-harness";
 import { gitOut, gitRun, type GitHost, type RunOptions } from "../git/remote-fixtures";
 import { OPERATION_MARKERS } from "../../src/git-service/commands";
 import { PREVIEW_GROUP_PATHS } from "../../src/contracts/limits";
@@ -1329,9 +1329,8 @@ describe("T059 service rows through the shell test double and the distro Git (qu
       const change = await request<{ old: string; new: string; state: { state: string; added: number; removed: number; addedCommits: { oid: string; subject: string }[] } }>(s, "readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.snapshotId, entryId: entry.entryId } }, env);
       expect(outcome(change)).toEqual(SUCCEEDED);
       expect({ old: change.result!.old, new: change.result!.new, added: change.result!.state.added, removed: change.result!.state.removed, list: change.result!.state.addedCommits }).toEqual({ old, new: next, added, removed, list: [{ oid: subject[0]!, subject: subject[1]! }] });
-      const work = await request<{ entries: { path: string; state: string; modified?: boolean; untracked?: boolean }[] }>(s, "readSubmoduleWork", { snapshotId: read.snapshotId }, env);
-      expect(outcome(work)).toEqual(SUCCEEDED);
-      const shown = Object.fromEntries(work.result!.entries.filter((e) => e.state === "checked" && (e.modified || e.untracked)).map((e) => [e.path, { modified: e.modified!, untracked: e.untracked! }]));
+      const { work } = await workPages<WorkPage>(s, r.repositoryId, read, RESPONSE_MS);
+      const shown = Object.fromEntries(work.entries.filter((e) => e.state === "checked" && (e.modified || e.untracked)).map((e) => [e.path, { modified: e.modified!, untracked: e.untracked! }]));
       expect(shown).toEqual(Object.fromEntries(Object.entries(oracle).filter(([, v]) => v.modified || v.untracked)));
     });
   });
@@ -1347,6 +1346,7 @@ describe("T059 service rows through the shell test double and the distro Git (qu
     'G -C "$root/super" update-index --index-info < "$root/info"; G -C "$root/super" commit -q --no-verify -m submodules',
   ].join("\n");
   type WorkEntry = { path: string; state: string; modified?: boolean; untracked?: boolean; reason?: string; code?: string };
+  type WorkPage = { entries: WorkEntry[]; extraRows: unknown[]; limited: number; next: number | null };
   let cleanBuilds = 0;
   for (const count of [20, 100]) {
     W(`T108 SC-012: readSubmoduleWork time of ${count} initialized clean submodules through the current route, median of 10 warm runs, with the DEADLINE count and no bound`, async (w) => {
@@ -1363,13 +1363,12 @@ describe("T059 service rows through the shell test double and the distro Git (qu
         for (let run = 0; run <= 10; run++) {
           const read = await readOk(s, r.repositoryId);
           const started = performance.now();
-          const work = await request<{ entries: WorkEntry[]; limited: number }>(s, "readSubmoduleWork", { snapshotId: read.snapshotId }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
+          const { work } = await workPages<WorkPage>(s, r.repositoryId, read, RESPONSE_MS);
           const ms = performance.now() - started;
-          expect(outcome(work)).toEqual(SUCCEEDED);
-          expect({ entries: work.result!.entries.length, limited: work.result!.limited }).toEqual({ entries: count, limited: 0 });
-          // Contract Δ3: a target that the 30 s read deadline does not reach gives `unchecked` reason `failed` with DEADLINE (plan.md D19 "WSL").
-          const late = work.result!.entries.filter((e) => e.state === "unchecked" && e.reason === "failed" && e.code === "DEADLINE").length;
-          expect(work.result!.entries.filter((e) => !(e.state === "checked" && !e.modified && !e.untracked) && !(e.state === "unchecked" && e.reason === "failed" && e.code === "DEADLINE"))).toEqual([]);
+          expect({ entries: work.entries.length, limited: work.limited }).toEqual({ entries: count, limited: 0 });
+          // Contract Δ3: a target that the 30 s page deadline does not reach gives `unchecked` reason `failed` with DEADLINE (plan.md D19 "WSL").
+          const late = work.entries.filter((e) => e.state === "unchecked" && e.reason === "failed" && e.code === "DEADLINE").length;
+          expect(work.entries.filter((e) => !(e.state === "checked" && !e.modified && !e.untracked) && !(e.state === "unchecked" && e.reason === "failed" && e.code === "DEADLINE"))).toEqual([]);
           console.log(`OBSERVATION T108: WSL ${count} submodules run ${run}: ${ms.toFixed(0)} ms, DEADLINE ${late} (${w.distro})`);
           if (run === 0) continue;
           times.push(ms);
@@ -1409,9 +1408,8 @@ describe("T059 service rows through the shell test double and the distro Git (qu
       expect(crossing(changeCalls)).toEqual([]);
       expect(inDistro(locations(from))).toEqual({ distroForm: true, locs: [`${sup}/solo`] });
       from = s.runner.calls.length;
-      const { value: work, calls: workCalls } = await withFsCalls(() => request<{ entries: WorkEntry[] }>(s, "readSubmoduleWork", { snapshotId: read.snapshotId }, env));
-      expect(outcome(work)).toEqual(SUCCEEDED);
-      expect(work.result!.entries.find((e) => e.path === "mid")).toMatchObject({ state: "checked", untracked: true });
+      const { value: { work }, calls: workCalls } = await withFsCalls(() => workPages<WorkPage>(s, r.repositoryId, read, RESPONSE_MS));
+      expect(work.entries.find((e) => e.path === "mid")).toMatchObject({ state: "checked", untracked: true });
       expect(crossing(workCalls)).toEqual([]);
       const locs = locations(from);
       expect({ ...inDistro(locs), solo: locs.includes(`${sup}/solo`), mid: locs.includes(`${sup}/mid`) }).toEqual({ distroForm: true, locs, solo: true, mid: true });

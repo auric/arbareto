@@ -10,6 +10,7 @@ import { SearchHistoryResult } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { createFake, oid, operationIdOf, stubLayout, TARGET, viewIdOf, type FakeOptions } from "./history-fake";
+import { keyboardFocus, tooltipText } from "./sync-fake";
 
 printOrigin("../../src/frontend/history/HistoryFilter.tsx", import.meta.dir);
 registerDom();
@@ -68,6 +69,9 @@ describe("spec FR-027 to FR-031: the filter text", () => {
   test("the filter has its accessible name and the Ctrl+F shortcut; only Enter starts a search, and a pause starts none", async () => {
     const { fake, input } = await mount({ total: 100, loaded: 100, matches: (i) => i % 10 === 0 });
     expect(input.getAttribute("aria-keyshortcuts")).toBe("Control+F");
+    // T065, plan.md D6 "Shortcuts": the house Tooltip names the box and the key.
+    await keyboardFocus(input);
+    expect(tooltipText()).toBe("Filter commit messages (Ctrl+F)");
     await type(input, "Commit");
     await new Promise((resolve) => setTimeout(resolve, 600));
     await settle();
@@ -115,6 +119,73 @@ describe("spec FR-027 to FR-031: the filter text", () => {
         expect(text(host)).not.toContain("search complete");
       }
     }
+  });
+
+  // T069, user decision 2026-11-14: a Cancel that the user selects always counts, also before the `accepted` event gives the ID.
+  for (const stop of ["Cancel", "Escape", "cleared text"] as const)
+    test(`T069: a search ${stop} before the first progress event sends one cancel with the ID of the accepted event`, async () => {
+      const { fake, input, host, view } = await mount({ total: 100, loaded: 100, matches: (i) => i % 10 === 0, hold: { search: true, accepted: true } });
+      await type(input, "Commit");
+      await key(input, "Enter");
+      expect(view.getState().search).toMatchObject({ state: "running", searchId: null });
+      if (stop === "Cancel") {
+        const cancel = [...host.querySelectorAll("button")].find((b) => text(b) === "Cancel")!;
+        await act(async () => cancel.click());
+        await settle();
+      } else if (stop === "Escape") await key(input, "Escape");
+      else await type(input, "");
+      expect(fake.of("cancel")).toHaveLength(0);
+      await act(async () => fake.accept());
+      await settle();
+      expect(fake.of("cancel").map((c) => c.operationId)).toEqual([operationIdOf(2)]);
+      expect(fake.held()).toBe(0);
+      if (stop === "Cancel") expect(view.getState().search?.state).toBe("stopped");
+      else expect(view.getState().search).toBeNull();
+    });
+
+  // T069: Enter first cancels a running load and waits for its end (plan.md D6). A stop in that wait must also count.
+  for (const stop of ["Escape", "cleared text"] as const)
+    test(`T069: ${stop} while Enter waits for the running load to end starts no search`, async () => {
+      const { fake, input, view } = await mount({ total: 1_000_000, hold: { load: true } });
+      expect(view.getState().load).not.toBeNull();
+      await type(input, "Commit");
+      await act(async () => {
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+        if (stop === "Escape") input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        else {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "");
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      });
+      await settle();
+      expect(fake.of("searchHistory")).toHaveLength(0);
+      // Only the cancel of the load that Enter ends.
+      expect(fake.of("cancel").map((c) => c.operationId)).toEqual([operationIdOf(1)]);
+      expect(view.getState().search).toBeNull();
+    });
+
+  test("T069: the visible load Cancel while Enter waits for that load ends the load and starts no search", async () => {
+    const { fake, input, host, view } = await mount({ total: 1_000_000, hold: { load: true } });
+    await type(input, "Commit");
+    const cancel = [...host.querySelectorAll("button")].find((b) => text(b) === "Cancel")!;
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      cancel.click();
+    });
+    await settle();
+    expect(fake.of("searchHistory")).toHaveLength(0);
+    expect([...new Set(fake.of("cancel").map((c) => c.operationId))]).toEqual([operationIdOf(1)]);
+    expect(view.getState().load).toBeNull();
+    expect(view.getState().search).toBeNull();
+  });
+
+  test("T069, plan.md D6: Enter during a running load cancels the load itself and still starts its search", async () => {
+    const { fake, input, view } = await mount({ total: 1_000_000, hold: { load: true } });
+    await type(input, "Commit");
+    await key(input, "Enter");
+    expect(fake.of("cancel").map((c) => c.operationId)).toEqual([operationIdOf(1)]);
+    expect(fake.of("searchHistory")).toEqual([{ viewId: viewIdOf(1), text: "Commit" }]);
+    expect(view.getState().search?.state).toBe("finished");
   });
 });
 

@@ -286,6 +286,16 @@ describe("lists (FR-030, FR-031, FR-086)", () => {
     expect(document.activeElement).toBe(item("Changes", "src/auth"));
     expect(items("Changes").filter((i) => i.tabIndex === 0)).toEqual([item("Changes", "src/auth")]);
   });
+
+  test("T174: a Changes file row is not selectable: no select-text on the row, inside it, or on an ancestor", async () => {
+    await openCommitView(createWorld({ entries: board().all }));
+    const rows = items("Changes");
+    expect(rows.length).toBeGreaterThan(2);
+    for (const row of rows) {
+      expect(row.closest(".select-text")).toBeNull();
+      expect(row.querySelector(".select-text")).toBeNull();
+    }
+  });
 });
 
 // --- Row buttons ----------------------------------------------------------------------------------------------------

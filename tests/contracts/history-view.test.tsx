@@ -73,6 +73,16 @@ describe("History list", () => {
     expect(host.querySelector("svg [tabindex], svg[tabindex]")).toBeNull();
   });
 
+  test("T174: a History row is not selectable: no select-text on the row, inside it, or on an ancestor", async () => {
+    const { host } = await mount();
+    const rows = options(host);
+    expect(rows.length).toBeGreaterThan(2);
+    for (const row of rows) {
+      expect(row.closest(".select-text")).toBeNull();
+      expect(row.querySelector(".select-text")).toBeNull();
+    }
+  });
+
   test("the accessible name starts with the HEAD labels and holds the parents and boundary texts, and the labels sit outside the graph cell", async () => {
     const { host } = await mount();
     const [head, , root] = commits(host).map((o) => o.getAttribute("aria-label")!);

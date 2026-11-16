@@ -51,7 +51,7 @@ import type { Fact } from "./hunk-publish";
 import { readIgnoreFile } from "./ignore";
 import { createIgnorePreview } from "./ignore-preview";
 import { checkSubmodule, submoduleOutcome, type SubmoduleRefusal } from "./submodule-open";
-import { createSubmoduleReads, sideId, workspaceIds } from "./submodule-change";
+import { createSubmoduleReads, sideId, workPlan, workspaceIds } from "./submodule-change";
 import "./file-delete";
 import "./revert";
 import "./switch";
@@ -1030,7 +1030,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     scheduleRead(request, (t) => submoduleReads.readSubmoduleChange({ ...t, workspace, installation }, target), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleChange");
   };
 
-  // Feature 005 contract Δ3 `readSubmoduleWork`: the snapshot decides at acceptance. The read keeps its own 001 read deadline, so the finished targets stay.
+  // Feature 005 contract Δ3 `readSubmoduleWork`: the snapshot and the page decide at acceptance. Each page keeps its own 001 read deadline, so the finished targets stay.
   const readSubmoduleWork: Handler<"readSubmoduleWork"> = (request) => {
     const workspace = workspaceOf(request.repositoryId);
     const installation = installationOf(workspace);
@@ -1044,7 +1044,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     const moved = new Set(
       found.snapshot.entries.filter((e) => e.category === "unstaged" && e.modes?.includes("160000") && movedGitlink(e.category, rawRecord(e, Buffer.from(e.pathBytes, "base64")))).map((e) => e.pathBytes),
     );
-    scheduleRead(request, (t) => submoduleReads.readSubmoduleWork({ ...t, workspace, installation }, found.snapshot, moved), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleWork");
+    // Contract Δ3 "Pages": a page at or above the page count starts no Git process.
+    const { page } = request.payload;
+    if (page >= workPlan(found.snapshot, moved).pages) return reject(request.requestId, "INVALID_REQUEST");
+    scheduleRead(request, (t) => submoduleReads.readSubmoduleWork({ ...t, workspace, installation }, found.snapshot, moved, page), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleWork");
   };
 
   // Feature 005 contract Δ3 `openSubmodule`, plan.md D11: the checks in the parent, then the 001 registration of the bound folder.

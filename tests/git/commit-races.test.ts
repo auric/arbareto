@@ -9,8 +9,10 @@ import { join } from "node:path";
 import { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { APPROVAL_LIFETIME_MS, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { batchCommandArgs, headTargetArgs, reflogArgs } from "../../src/git-service/commands";
+import { CROSS_INSTANCE_REMEDY, MARKER_FAILED_REMEDY } from "../../src/git-service/exclusion";
+import { RunnerRefusal, type StartedReply, type WalkDeadline } from "../../src/git-service/git-runner";
 import type { RecordedCall } from "./bun-runner";
-import { useFixtureRoot } from "./fixture-root";
+import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { buildChanged, buildF11, buildF20, CapabilitySkip, inflateHeadReflog, type F20Variant, type RefFormat } from "./fixtures";
 import { refState } from "./git-oracle";
 import {
@@ -27,11 +29,13 @@ import {
   gitText,
   indexTree,
   isCommitCall,
+  mutationFrames,
   one,
   outcome,
   putHook,
   readOk,
   repoOf,
+  repoState,
   reviewOk,
   selectHunks,
   subcommand,
@@ -44,7 +48,7 @@ import {
   withService,
 } from "./hunk-harness";
 import type { Built } from "./fixtures";
-import { caseTest, siblingDeadline, type Capability, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { cancelHeld, CANCELED_BEFORE_MARKER, caseTest, heldFacts, holdStarted, nextTurn, siblingDeadline, type Capability, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 const TASK = "T099";
 const SHELL: Capability[] = ["shell-double"];
@@ -250,6 +254,78 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
       expect({ other: again.operationId !== canceled.operationId, state: again.state, commits: commitCalls(service).length }).toEqual({ other: true, state: "succeeded", commits: 1 });
     });
   }, TIMEOUT_MS);
+});
+
+// T417, data-model §7: a commit takes `cancel` while the shell holds its `started` reply. The reply then decides the next step.
+describe("cancel while started waits (T417)", () => {
+  caseTest("T417", `T417: a cancel while started waits gives cancel-requested, and the marker reply ends the commit canceled with no commit process, no index.lock, the same index and working bytes, and the frames started, ended, and resolved; the same token then commits once`, SHELL, () => {
+    const hold = holdStarted();
+    return withService({ name: "t417-commit", onStarted: hold.onStarted }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t417-commit", "F09"));
+      await underTest("commit");
+      const { repositoryId } = await service.register(repo);
+      const r = await reviewOk(service, repositoryId);
+      const before = repoState(repo);
+      const requestId = service.send("commit", commitPayload(r, "held\n"), { repositoryId, repositoryGeneration: r.read.generation });
+      const { operationId, cancel } = await cancelHeld(service, hold);
+      const canceled = await service.response(requestId);
+      await until(() => mutationFrames(service, operationId).includes("resolved"), "resolved frame");
+      expect({ ...outcome(canceled), ...heldFacts(service, operationId, cancel), frames: mutationFrames(service, operationId), runs: service.runner.calls.filter((c) => c.operationId === operationId).length, commits: commitCalls(service).length, lock: existsSync(gitPathOf(repo, "index.lock")), repo: repoState(repo) }).toEqual({
+        state: "canceled",
+        code: "CANCELED",
+        ...CANCELED_BEFORE_MARKER,
+        frames: ["started", "ended", "resolved"],
+        runs: 0,
+        commits: 0,
+        lock: false,
+        repo: before,
+      });
+      await nextTurn();
+      const again = await commit(service, repositoryId, r, "held\n");
+      expect({ other: again.operationId !== operationId, state: again.state, commits: commitCalls(service).length }).toEqual({ other: true, state: "succeeded", commits: 1 });
+    });
+  }, TIMEOUT_MS);
+
+  // A cancel never hides a refusal: each `started` result without a marker keeps its `accepted` outcome, and no marker frame follows.
+  // `undefined` lets the double reply, and the marker failure comes from `inject.markerFailure`.
+  const REFUSALS: [string, StartedReply | WalkDeadline | Error | undefined, string, (name: string) => { state: string; code: string; result: unknown }][] = [
+    ["busy", { busy: true }, "rejected BUSY with the cross-instance remedy", () => ({ state: "rejected", code: "BUSY", result: { remedy: { text: CROSS_INSTANCE_REMEDY } } })],
+    ["marker-failure", undefined, "rejected RECOVERY_MARKER_FAILED", (name) => ({ state: "rejected", code: "RECOVERY_MARKER_FAILED", result: { failure: "disk-full", path: join(fixtureDir(name), "recovery"), remedy: { text: MARKER_FAILED_REMEDY } } })],
+    ["deadline", { stop: "deadline" }, "failed DEADLINE", () => ({ state: "failed", code: "DEADLINE", result: undefined })],
+    ["refusal", new RunnerRefusal("UNKNOWN_TARGET"), "rejected with the RunnerRefusal code", () => ({ state: "rejected", code: "UNKNOWN_TARGET", result: undefined })],
+    ["error", new Error("started broke"), "rejected GIT_FAILED for a thrown error", () => ({ state: "rejected", code: "GIT_FAILED", result: undefined })],
+  ];
+  for (const [reply, value, gives, expected] of REFUSALS) {
+    caseTest("T417", `T417: after a cancel while started waits, the ${reply} reply gives ${gives} and closeJob, no marker frame, and no Git process; the token then commits once`, SHELL, () => {
+      const name = `t417-commit-${reply}`;
+      const hold = holdStarted();
+      return withService({ name, onStarted: hold.onStarted }, async (service) => {
+        const repo = repoOf(buildChanged(gitPath(), name, "F09"));
+        await underTest("commit");
+        const { repositoryId } = await service.register(repo);
+        const r = await reviewOk(service, repositoryId);
+        const before = repoState(repo);
+        service.runner.inject.markerFailure = reply === "marker-failure" ? "disk-full" : undefined;
+        const requestId = service.send("commit", commitPayload(r, "refused\n"), { repositoryId, repositoryGeneration: r.read.generation });
+        const { operationId, cancel } = await cancelHeld(service, hold, value);
+        const response = await service.response(requestId);
+        service.runner.inject.markerFailure = undefined;
+        const frames = mutationFrames(service, operationId);
+        expect({ state: response.state, code: response.code, result: response.result, ...heldFacts(service, operationId, cancel), runs: service.runner.calls.filter((c) => c.operationId === operationId).length, marker: frames.includes("resolved") || frames.includes("ended"), last: frames.at(-1), repo: repoState(repo), lock: existsSync(gitPathOf(repo, "index.lock")) }).toEqual({
+          ...expected(name),
+          ...CANCELED_BEFORE_MARKER,
+          runs: 0,
+          marker: false,
+          last: "closeJob",
+          repo: before,
+          lock: false,
+        });
+        await nextTurn();
+        const again = await commit(service, repositoryId, r, "refused\n");
+        expect({ state: again.state, commits: commitCalls(service).length }).toEqual({ state: "succeeded", commits: 1 });
+      });
+    }, TIMEOUT_MS);
+  }
 });
 
 describe("changes after handoff (contract §4, §8)", () => {

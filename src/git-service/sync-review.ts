@@ -24,7 +24,7 @@ import type { Head, OperationState } from "./snapshot";
 import { fetchUrlArgs, gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, lsRemoteUrlArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
 import { autoSetupRemote, decidePull, defaultRemote, decidePushDestination, holdsExec, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRebaseHead, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
 import type { WorkspaceReader } from "./status";
-import { parseMaybeBool, type ConfigEntry, type ListingOutcome } from "./trust";
+import { parseMaybeBool, urlHelper, type ConfigEntry, type ListingOutcome } from "./trust";
 import { indexMatchArgs } from "./workbench-commands";
 
 // Feature 010 plan.md D6: the sync reads also take the marker facts of the reader, for the `sequence` refusal.
@@ -130,6 +130,11 @@ export const mirrored = (entries: readonly ConfigEntry[], remote: string) => {
   const value = lastValue(entries, `remote.${remote}.mirror`);
   return value !== undefined && parseMaybeBool(value) === 1;
 };
+
+// Feature 011 plan.md D8 "Lease gap" (research.md R8): transport-helper.c ignores an unsupported `option cas`, and remote-curl.c pushes
+// `ftp://` and `ftps://` through dumb HTTP without the lease. `url` is the `remote get-url --push` output, so the URL rewrites apply.
+export const pushesThroughHelper = (entries: readonly ConfigEntry[], remote: string, url: string): boolean =>
+  urlHelper(url) !== null || url.startsWith("ftp://") || url.startsWith("ftps://") || entries.some((e) => e.key === `remote.${remote}.vcs`);
 
 // `for-each-ref --format=%(refname)%00%(objectname)`: keys are byte strings (`latin1`), so equal keys mean equal bytes.
 export function parseRefListing(bytes: Uint8Array, objectFormat: ObjectFormat): Map<string, string> | null {
@@ -545,6 +550,7 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
 
   let lease: Lease | null = null;
   if (payload.action === "force-push") {
+    if (pushesThroughHelper(entries, destination.remote, urls.url)) return unavailable("remote-helper");
     // Plan.md D5: a destination without a tracking ref, such as a triangular one, has no lease.
     if (destination.trackingRef === null) return unavailable("no-lease");
     const read = await leaseOf(ctx, destination.trackingRef, head.oid);
@@ -556,7 +562,7 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
     if (!("value" in fetchOut)) return fetchOut;
     const sameUrl = Buffer.from(fetchOut.value).equals(Buffer.from(urlOut.value));
     if (sameUrl) return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease, sameUrl });
-    const urlReread = await pushUrlReread(ctx, entries, destination.remote, urls.url, urlOut.value);
+    const urlReread = await pushUrlReread(ctx, entries, urls.url, urlOut.value);
     if (typeof urlReread !== "boolean") return urlReread;
     return bound({ remotes: [destination.remote], destination: { ...destination, url: urls.url }, lease, sameUrl, urlReread });
   }
@@ -564,12 +570,12 @@ export async function observeSync(ctx: SyncContext, payload: ReviewPayload, list
 }
 
 // Plan.md D5 and contract Δ3 "Lease re-read": true when `ls-remote <push URL>` reads the URL that the push used.
-// `remote.<name>.vcs` selects a remote helper that a bare URL does not select. `ls-remote` applies the `insteadOf` rules to a URL argument again.
+// `ls-remote` applies the `insteadOf` rules to a URL argument again.
 // `pushUrls` is the `remote get-url --push --all` output of the one URL `url`.
 // A URL with user information never goes into process arguments: other processes and diagnostics can read them.
 // remote.c `remotes_remote_get_1`: a configured remote named as the URL gives `ls-remote <url>` its `remote.<url>.*` settings.
-async function pushUrlReread(ctx: ObserveContext, entries: readonly ConfigEntry[], remote: string, url: string, pushUrls: Uint8Array): Promise<boolean | Observation> {
-  if (redactUrlUserInfo(url) !== url || entries.some((e) => e.key === `remote.${remote}.vcs` || e.key.startsWith(`remote.${url}.`))) return false;
+async function pushUrlReread(ctx: ObserveContext, entries: readonly ConfigEntry[], url: string, pushUrls: Uint8Array): Promise<boolean | Observation> {
+  if (redactUrlUserInfo(url) !== url || entries.some((e) => e.key.startsWith(`remote.${url}.`))) return false;
   const out = await readOut(ctx, lsRemoteUrlArgs(url), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("limited" in out) return { code: "OUTPUT_LIMIT" };
   if (!("value" in out)) return out;

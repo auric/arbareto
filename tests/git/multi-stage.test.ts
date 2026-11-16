@@ -14,8 +14,8 @@ import { cachedF16Status } from "../windows/fixture-cache";
 import { useFixtureRoot } from "./fixture-root";
 import { buildF04Stage, put } from "./fixtures";
 import { indexEntries, rawIndexDigest, workingFileDigests } from "./git-oracle";
-import { candidateFiles, copyRepo, git, gitPath, gitText, outcome, readOk, repoOf, review, subcommand, SUCCEEDED, valuesOf, withService as hunkService } from "./hunk-harness";
-import { caseTest, keepConfigs, siblingDeadline, type Capability, type ChangeEntry, type HunkCheckpoint, type Service, type WorkspaceResult } from "./service-harness";
+import { candidateFiles, copyRepo, git, gitPath, gitText, outcome, readOk, repoOf, review, subcommand, SUCCEEDED, until, valuesOf, withService as hunkService } from "./hunk-harness";
+import { CANCELED_BEFORE_MARKER, caseTest, heldFacts, keepConfigs, once, siblingDeadline, type Capability, type ChangeEntry, type HunkCheckpoint, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 import { buildWorkbench } from "./workbench-fixtures";
 
 // SC-009 (T096): each case keeps the bytes of every configuration file of the repositories that it registers.
@@ -408,5 +408,48 @@ describe("parallel proof deadline (T399)", () => {
       expect({ exits, ...outcome(response), index: rawIndexDigest(gitPath(), repo), candidates: candidateFiles(repo) }).toEqual({ exits: ["deadline", "closed"], state: "failed", code: "DEADLINE", index: before, candidates: [] });
     }),
     120_000,
+  );
+});
+
+// T417, data-model §7: `applyFiles` runs its decision reads in `accepted`. A cancel there stops the reads, and the set does not start (decision 2026-11-14).
+describe("cancel during the decision reads (T417)", () => {
+  caseTest("T417", `T417: a cancel during the held first decision read gives cancel-requested and ends applyFiles rejected CANCELED with no started frame and the same index and working bytes; the same set then stages once`, SHELL, () =>
+    withService({ name: "t417-files" }, async (service) => {
+      const repo = tree();
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const ids = pick(await allEntries(service, repositoryId, read), "unstaged", "src/a.txt", "docs/d.txt").map((e) => e.entryId);
+      const before = { index: rawIndexDigest(gitPath(), repo), files: workingFileDigests(repo) };
+      const requestId = crypto.randomUUID();
+      const accepted = () => (service.progress as { requestId?: string; operationId?: string }[]).find((p) => p.requestId === requestId)?.operationId;
+      let held = false;
+      const release = service.runner.holdStart(
+        once((call) => {
+          held ||= call.operationId === accepted();
+          return held;
+        }),
+      );
+      let operationId = "";
+      let cancel: ServiceResponse;
+      try {
+        service.send("applyFiles", { snapshotId: read.snapshotId, entryIds: ids, direction: "stage", kind: "selected" }, { repositoryId, requestId });
+        await until(() => held, "the held decision read");
+        operationId = accepted()!;
+        cancel = await service.cancel(operationId);
+      } finally {
+        release();
+      }
+      const response = await service.response(requestId, TIMEOUT_MS);
+      expect({ ...outcome(response), ...heldFacts(service, operationId, cancel), started: service.runner.frames.some((f) => f.type === "started" && f.operationId === operationId), index: rawIndexDigest(gitPath(), repo), files: workingFileDigests(repo) }).toEqual({
+        state: "rejected",
+        code: "CANCELED",
+        ...CANCELED_BEFORE_MARKER,
+        started: false,
+        ...before,
+      });
+      const again = await applyFiles(service, repositoryId, read, ids, "stage", "selected");
+      expect({ ...outcome(again), updates: callsOf(service, again.operationId!).filter((c) => subcommand(c.arguments) === "update-index").length }).toEqual({ ...SUCCEEDED, updates: 1 });
+    }),
+    TIMEOUT_MS,
   );
 });

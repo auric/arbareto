@@ -44,16 +44,18 @@ const respond = (op: Operation, state: string, result: Record<string, unknown> =
   ({ ...op, response: { requestId: op.requestId, operationId: OPERATION_ID, state, ...(code === undefined ? {} : { code }), result } }) as Operation;
 const OPERATION_ID = "6f9619ff-8b86-4011-b42d-00cf4fc964ff";
 
+// `replies` holds one resolver for each `cancel` call. A reply arrives only when a case calls its resolver.
 function bridgeDouble(stallRemedy: unknown = STALL_REMEDY) {
   const calls: { name: string; payload: unknown }[] = [];
+  const replies: ((reply: unknown) => void)[] = [];
   const bridge = {
-    cancel: (payload: unknown) => (calls.push({ name: "cancel", payload }), new Promise(() => {})),
+    cancel: (payload: unknown) => (calls.push({ name: "cancel", payload }), new Promise((resolve) => replies.push(resolve))),
     getOperation: (payload: unknown) => (
       calls.push({ name: "getOperation", payload }),
       Promise.resolve({ requestId: id(), state: "succeeded", result: { operationId: OPERATION_ID, operation: "commit", state: "running", stalled: true, stallRemedy } })
     ),
   };
-  return { bridge: contractChecked(bridge) as never, calls };
+  return { bridge: contractChecked(bridge) as never, calls, replies };
 }
 
 const unmounts: (() => Promise<void>)[] = [];
@@ -112,6 +114,8 @@ async function mount(fields: Partial<Fields> = {}, stallRemedy?: unknown) {
   });
   return {
     calls: double.calls,
+    /** Sends the reply of `cancel` call `index`. */
+    reply: (index: number, response: unknown) => act(async () => double.replies[index]!(response)),
     handle,
     cleared,
     update: (next: Partial<Fields>) => act(async () => set((p) => ({ ...p, ...next }))),
@@ -120,6 +124,18 @@ async function mount(fields: Partial<Fields> = {}, stallRemedy?: unknown) {
 
 const text = (element: Element | null | undefined) => (element?.textContent ?? "").replace(/\s+/g, " ").trim();
 const buttons = (label: string) => [...document.querySelectorAll("button")].filter((b) => text(b) === label);
+/** 004 plan D15 "Text selection": each part sits in an element inside the select-text content block of the area. */
+function expectSelectableContent(parts: string[]) {
+  const content = area()!.querySelector<HTMLElement>('[tabindex="0"]')!;
+  expect(content.classList.contains("select-text")).toBe(true);
+  for (const part of parts) {
+    const holder = [...content.querySelectorAll("p, code, pre, span")].find((e) => (e.textContent ?? "").includes(part));
+    expect(holder).toBeDefined();
+    expect(holder!.closest(".select-none")).toBeNull();
+  }
+  expect(buttons("Copy command").length).toBeGreaterThan(0);
+  for (const b of [...area()!.querySelectorAll("button")]) expect(b.classList.contains("select-none")).toBe(true);
+}
 const button = (label: string) => {
   const found = buttons(label);
   expect(found).toHaveLength(1);
@@ -291,6 +307,11 @@ describe("stall notice", () => {
     expect(buttons("Cancel")).toHaveLength(1);
   });
 
+  test("T174: the stall notice texts and the command are inside the select-text content block; Copy command is select-none", async () => {
+    await stalled();
+    expectSelectableContent([STALL_NOTICE, STALL_REMEDY.command, STALL_REMEDY.text]);
+  });
+
   test("without a command, only the texts show", async () => {
     await stalled({ text: STALL_REMEDY.text });
     expect(text(area())).toContain(STALL_REMEDY.text);
@@ -458,6 +479,22 @@ describe("live-node counts", () => {
     expect(text(second)).toBe(REFUSAL);
   });
 
+  test("T174: the status bar message span carries select-text while an operation runs and at its outcome", () => {
+    const op = running();
+    for (const markup of [html({ operation: op }), html({ operation: respond(op, "succeeded", { commitOid: OID, lingeringDescendants: 0 }) })]) {
+      const message = visible(markup).querySelector('[role="status"][tabindex="-1"]')!;
+      expect(text(message)).not.toBe("");
+      expect(message.getAttribute("class")?.split(/\s+/)).toContain("select-text");
+    }
+  });
+
+  test("T174: the refusal span carries select-text while it shows a refusal", () => {
+    const op = respond(running({ kind: "applyHunk", direction: "stage" }), "succeeded", { lingeringDescendants: 0 });
+    const refusal = [...visible(html({ operation: op, refusal: REFUSAL })).querySelectorAll('[role="status"]')].find((e) => !e.hasAttribute("tabindex"))!;
+    expect(text(refusal)).toBe(REFUSAL);
+    expect(refusal.getAttribute("class")?.split(/\s+/)).toContain("select-text");
+  });
+
   test("the hunk and file outcomes read Hunk staged, Hunk unstaged, File staged, and File unstaged", () => {
     for (const [kind, direction, expected] of [
       ["applyHunk", "stage", "Hunk staged"],
@@ -573,6 +610,13 @@ describe("commit outcomes in the area", () => {
       expect(document.activeElement).toBe(double("history-row"));
     });
   }
+
+  test("T174: the outcome message, the output tail, the remedy text, and the remedy command are inside the select-text content block; Copy command is select-none", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: respond(op, "failed", { outputTail: TAIL, remedy: HOOK_REMEDY, lingeringDescendants: 0 }, "HOOK_FAILED") });
+    expectSelectableContent([TAIL.split("\n")[0]!, HOOK_REMEDY.text, HOOK_REMEDY.command, "HOOK_FAILED"]);
+  });
 
   test("a Git-reported lock failure shows each observed lock path with Copy path", async () => {
     const op = running();
@@ -756,5 +800,139 @@ describe("Cancel", () => {
     await view.update({ operation: { ...op, progress: progress(op) } });
     await click(button("Cancel"));
     expect(view.calls.filter((c) => c.name === "cancel")).toEqual([{ name: "cancel", payload: { operationId: OPERATION_ID } }]);
+  });
+
+  // plan.md "Status area", Early Cancel. The Cancel button shows before the first progress event. Only the `accepted` event names the operation (contract §2).
+  const SENT = { name: "cancel", payload: { operationId: OPERATION_ID } };
+  const cancels = (view: { calls: { name: string }[] }) => view.calls.filter((c) => c.name === "cancel");
+  const viewReply = (state: string, fields: Record<string, unknown> = {}) => ({ requestId: id(), state: "succeeded", result: { operationId: OPERATION_ID, operation: "commit", state, ...fields } });
+  const statusText = () => text(document.querySelector('footer [role="status"]'));
+
+  test("T418: a Cancel before the first progress event sends one cancel with the operation ID of the accepted event", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await click(button("Cancel"));
+    expect(cancels(view)).toEqual([]);
+    await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+    expect(cancels(view)).toEqual([SENT]);
+    await click(button("Cancel"));
+    expect(cancels(view)).toEqual([SENT]);
+  });
+
+  test("T418: a cancel reply without cancel-requested lets the next Cancel send again", async () => {
+    for (const answer of [{ requestId: null, state: "rejected", code: "SERVICE_UNAVAILABLE" }, viewReply("running")]) {
+      const op = running();
+      const view = await mount({ operation: op });
+      await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+      await click(button("Cancel"));
+      await view.reply(0, answer);
+      await click(button("Cancel"));
+      expect(cancels(view)).toEqual([SENT, SENT]);
+      await unmounts.pop()!();
+    }
+  });
+
+  test("T418: a cancel reply with cancel-requested keeps the guard", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+    await click(button("Cancel"));
+    await view.reply(0, viewReply("cancel-requested"));
+    await click(button("Cancel"));
+    expect(cancels(view)).toEqual([SENT]);
+  });
+
+  test("T418: a held Cancel whose request ends without a progress event sends nothing", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await click(button("Cancel"));
+    expect(statusText()).toBe("Cancel requested");
+    // The response carries the issued `operationId`. A held press must not use it: the run is over.
+    await view.update({ operation: respond(op, "rejected", {}, "BUSY") });
+    expect(cancels(view)).toEqual([]);
+    // Analyze R2: the outcome replaces the cue.
+    expect(statusText()).not.toBe("Cancel requested");
+  });
+
+  test("T418: the toolbar Cancel before the first event sends the same one cancel", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await act(async () => view.handle.current!.requestCancel());
+    await click(button("Cancel"));
+    await act(async () => view.handle.current!.requestCancel());
+    await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+    expect(cancels(view)).toEqual([SENT]);
+  });
+
+  // plan.md "Status area", Cancel sender: a `canceled` Update submodules outcome without a taken Cancel is a declined Run confirmation.
+  test("T418: a canceled Update submodules outcome after a taken Cancel focuses the area heading, and after a not-taken Cancel follows the declined rule", async () => {
+    for (const [answer, target] of [
+      ["cancel-requested", () => areaHeading()],
+      ["accepted", () => double("history-row")],
+    ] as const) {
+      const op = running({ kind: "updateSubmodules" });
+      const view = await mount({ operation: op, declinedFocus: () => double("history-row") });
+      await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+      await click(button("Cancel"));
+      await view.reply(0, viewReply(answer));
+      await view.update({ operation: respond(op, "canceled", { rows: [] }) });
+      expect(text(areaHeading())).toBe("Update submodules details");
+      expect(document.activeElement === target()).toBe(true);
+      await unmounts.pop()!();
+    }
+  });
+
+  // Data-model §7: `reconciling` takes `cancel`, stays `reconciling`, and sets `endProcesses` (`transition` in src/contracts/outcome.ts).
+  test("T418: a Cancel in reconciling whose reply has endProcesses keeps the guard, and a canceled Update submodules outcome focuses the area heading", async () => {
+    const op = running({ kind: "updateSubmodules" });
+    const view = await mount({ operation: op, declinedFocus: () => double("history-row") });
+    await view.update({ operation: { ...op, progress: progress(op, { state: "reconciling" }) } });
+    const reconciling = statusText();
+    await click(button("Cancel"));
+    await view.reply(0, viewReply("reconciling", { endProcesses: true }));
+    // The press cue covers only the time before the service reports a cancel state.
+    expect(statusText()).toBe(reconciling);
+    await click(button("Cancel"));
+    expect(cancels(view)).toEqual([SENT]);
+    await view.update({ operation: respond(op, "canceled", { rows: [] }) });
+    expect(document.activeElement === areaHeading()).toBe(true);
+  });
+
+  // 008 T071: a revert run sets `running` to "Checking the result…" for a `reconciling` event (Workbench.tsx `trackRevertRun`). SC-007 measures Cancel to that text.
+  test("T418: after a taken Cancel, a reconciling event shows its own text, not Cancel requested", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+    await click(button("Cancel"));
+    await view.reply(0, viewReply("cancel-requested"));
+    await view.update({ operation: { ...op, progress: progress(op, { state: "cancel-requested" }) } });
+    expect(statusText()).toBe("Cancel requested");
+    await view.update({ operation: { ...op, running: "Checking the result…", progress: progress(op, { state: "reconciling" }) } });
+    expect(statusText()).toBe("Checking the result…");
+    expect(cancels(view)).toEqual([SENT]);
+  });
+
+  test("T418: a held Cancel that is not sent before a canceled Update submodules outcome follows the declined rule", async () => {
+    const op = running({ kind: "updateSubmodules" });
+    const view = await mount({ operation: op, declinedFocus: () => double("history-row") });
+    await click(button("Cancel"));
+    await view.update({ operation: respond(op, "canceled", { rows: [] }) });
+    expect(cancels(view)).toEqual([]);
+    expect(text(areaHeading())).toBe("Update submodules details");
+    expect(document.activeElement === double("history-row")).toBe(true);
+  });
+
+  test("T418: a Cancel press shows Cancel requested before any reply, and a reply without cancel-requested removes it", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+    const before = statusText();
+    expect(before).toBe(`Committing in ${NAME}…`);
+    await click(button("Cancel"));
+    expect(cancels(view)).toEqual([SENT]);
+    expect(statusText()).toBe("Cancel requested");
+    expect(text(button("Cancel"))).toBe("Cancel");
+    await view.reply(0, viewReply("running"));
+    expect(statusText()).toBe(before);
   });
 });

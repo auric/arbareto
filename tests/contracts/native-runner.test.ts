@@ -1080,6 +1080,13 @@ test("the network policy is mutation without an index file plus GIT_PROTOCOL_FRO
   expect(run).toMatchObject({ environmentPolicy: "network", limits: PROCESS_LIMITS.network });
 });
 
+// T416, contract §7: a user value of GIT_SMART_HTTP=0 turns off the lease check of an HTTP push.
+test("every policy removes GIT_SMART_HTTP", () => {
+  for (const [id, policy] of Object.entries(policyFile.policies)) {
+    expect({ id, remove: policy.remove.includes("GIT_SMART_HTTP") }).toEqual({ id, remove: true });
+  }
+});
+
 // Feature 002 contract Δ3 "Matching probe" and Δ6: the `run` field `script`. `checkCall` makes the shell checks of `matching_probe_command`.
 describe("native runner matching probe script", () => {
   const dir = () => `${MATCHING_PROBE_WSL_FOLDER}${id()}`;

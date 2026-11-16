@@ -174,17 +174,19 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Refusal: `SUBMODULE_UNAVAILABLE` with `{reason: "path"}` replaces the result (contract Δ3).
 - Lifetime: none retained. A new selection cancels the read.
 
-## 16. Submodule work state (`readSubmoduleWork` result, 2026-10-31)
+## 16. Submodule work state (`readSubmoduleWork` result, 2026-10-31, pages T114)
 
-- Binding: `snapshotId` of the `readWorkspace` result that it extends. A newer snapshot drops it.
-- `entries`: at most 256. First, one entry per gitlink of the index, in index order. Then one entry per unlisted moved gitlink. Each holds the literal path bytes, the display path, and one state:
+- Binding: `snapshotId` of the `readWorkspace` result that it extends, and the `page` of the request. A result that ends after a newer snapshot arrived still shows its entries, as older entries. They stay until a page of a newer cycle replaces them, or until the end of that cycle drops them. This is a user decision of 2026-11-13 (plan D19 "Rows across snapshots").
+- `entries`: at most 16 (`SUBMODULE_WORK_PAGE`), the positions of the page (contract Δ3 "Pages"). All pages of one snapshot hold at most 256 positions. First, one entry per gitlink of the index, in index order. Then one entry per unlisted moved gitlink. Each holds the literal path bytes, the display path, and one state:
   - `not-initialized`: plan D11 check 4 or 5 failed. No submodule process ran after it.
   - `not-located`: the same failure for a moved gitlink (plan D20 rule 2). An unlisted moved gitlink also gets this state. It has no stage-0 gitlink entry in the snapshot index (check 3). Check 3 maps to `not-located` on purpose (orchestrator decision 2026-11-04). Then the status and the index of one snapshot disagree. Such a snapshot refuses the same way, and the next refresh reads again.
   - `checked`: `modified` (a `1`, `2`, or `u` record in the submodule status) and `untracked` (a `?` record).
   - `unchecked`: `reason` is `programs`, or `failed` with the error code.
-- `limited`: the count of gitlinks and unlisted moved gitlinks that have no entry.
-- `extraRows`: the entries with `checked`, `modified` or `untracked` true, and no record in the parent status. The renderer lists them in Changes (spec FR-075).
-- Counts: the Changes count, the folder counts, and the History Working directory count add the `extraRows` count once the result arrives.
+- `limited`: the count of gitlinks and unlisted moved gitlinks that have no entry on any page. Each page of one snapshot gives the same value.
+- `next`: the next page, an integer from 1 to 15, or null on the last page. The renderer follows only `next` and the page cycle rule (contract Δ3 "Page cycle"). It never infers a later page from the entry count.
+- `extraRows`: the entries of this page with `checked`, `modified` or `untracked` true, and no record in the parent status. The renderer lists them in Changes (spec FR-075).
+- Join (renderer): the pages of one cycle join in page order, not in arrival order. The joined `entries` and `extraRows` equal those of one read of all positions.
+- Counts: the Changes count, the folder counts, and the History Working directory count add the `extraRows` of each page when the page arrives.
 
 ## 17. Gitlink stage binding (2026-11-03)
 

@@ -16,7 +16,8 @@ import { useFixtureRoot } from "./fixture-root";
 import { describeGit, fixtureGitPath } from "./git-binary";
 import { operationMarkers, rawIndexDigest, workingFileDigests } from "./git-oracle";
 import { buildCredentialRemote, buildFetchAll, buildFetchFlags, buildSubmodule, configDigests, fc, FETCH_ALL_REMOTES, gitRun, HTTP_PASSWORD, HTTP_USER, importStream, nativeEnv, refMap, revParse, type GitHost } from "./remote-fixtures";
-import { caseTest, siblingDeadline, type Service } from "./service-harness";
+import { mutationFrames } from "./hunk-harness";
+import { cancelHeld, CANCELED_BEFORE_MARKER, caseTest, heldFacts, holdStarted, nextTurn, siblingDeadline, type Service } from "./service-harness";
 import { callsFrom, callsOf, gitExe, hostFor, native, register, remoteCalls, reviewed, reviewSync, run, sendSync, subcommandOf, sync, TIMEOUT_MS, withSync, type SyncResult, refusalOf, helperGlobal } from "./sync-harness";
 
 useFixtureRoot();
@@ -553,6 +554,38 @@ describeGit("sync fetch and fetch-all (T033)", () => {
       expect({ exits, ...outcome(response), cause: entry?.cause }).toEqual({ exits: ["deadline", "closed"], state: "unknown", code: "STATE_UNKNOWN", cause: "DEADLINE" });
     });
   }, 120_000);
+
+  // T417, 001 data-model §7: a fetch from a local remote takes `cancel` while the shell holds its `started` reply.
+  caseTest("T417", "T417: a fetch cancel while started waits gives cancel-requested, and the marker reply ends the sync canceled with no fetch process, the same refs, HEAD, index, and working bytes, and the frames started, ended, and resolved; the token then fetches as Git's own fetch", SHELL, async () => {
+    const h = hostFor("t417-fetch");
+    const { clone } = behindClone(h, "t417-fetch");
+    const oracle = oracleFetch(h, clone, "t417-fetch");
+    const hold = holdStarted();
+    await withSync(
+      "t417-fetch",
+      async (service) => {
+        const r = await register(service, clone);
+        const review = await reviewed(service, r, { action: "fetch" });
+        const before = { refs: refMap(h, clone), ...repoFacts(h, clone) };
+        const requestId = sendSync(service, r, review.syncReviewToken);
+        const { operationId, cancel } = await cancelHeld(service, hold);
+        const canceled = await service.response<SyncResult>(requestId);
+        await until(() => mutationFrames(service, operationId).includes("resolved"), "resolved frame");
+        expect({ ...outcome(canceled), ...heldFacts(service, operationId, cancel), fetches: callsOf(service, operationId).filter(isFetch).length, frames: mutationFrames(service, operationId), refs: refMap(h, clone), ...repoFacts(h, clone) }).toEqual({
+          state: "canceled",
+          code: "CANCELED",
+          ...CANCELED_BEFORE_MARKER,
+          fetches: 0,
+          frames: ["started", "ended", "resolved"],
+          ...before,
+        });
+        await nextTurn();
+        const again = await sync(service, r, review.syncReviewToken);
+        expect({ ...outcome(again), refs: refMap(h, clone) }).toEqual({ state: "succeeded", code: undefined, refs: oracle });
+      },
+      { onStarted: hold.onStarted },
+    );
+  }, TIMEOUT_MS);
 });
 
 // An empty `plink.exe` stand-in. The shell double checks only that it exists.

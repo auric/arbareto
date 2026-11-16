@@ -7,10 +7,10 @@
 import { expect } from "bun:test";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
-import { buildBase, copyOf, DELETE_ARGS, fileUrl, gitDelete, isLsRemote, isUpdateRef, LS_REMOTE_ARGS, logHook, moveRemote, NETWORK_LIMITS, outcome, payloadOf, phasesOf, stateOf, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
+import { buildBase, copyOf, DELETE_ARGS, fileUrl, gitDelete, isLsRemote, isPush, isUpdateRef, LS_REMOTE_ARGS, logHook, moveRemote, NETWORK_LIMITS, outcome, payloadOf, phasesOf, stateOf, SUCCEEDED, type Base, type Copy } from "./remote-delete-harness";
 import { gitOut, gitRun, revParse } from "./remote-fixtures";
 import { caseTest, type Service } from "./service-harness";
-import { callsFrom, register, remoteCalls, reviewed, sendSync, sync, TIMEOUT_MS, withSync, type SyncResult } from "./sync-harness";
+import { callsFrom, register, remoteCalls, reviewed, sendSync, sync, TIMEOUT_MS, until, withSync, type SyncResult } from "./sync-harness";
 
 useFixtureRoot();
 
@@ -72,6 +72,33 @@ describeGit("gone recovery (011 T012)", () => {
       expect({ ...outcome(response), reason: response.result!.reason, remoteGone: (response.result as DeleteResult).remoteGone }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "stale-lease", remoteGone: undefined });
       expect(callsFrom(service, from).filter(isLsRemote).map((c) => c.exit?.exitCode)).toEqual([0]);
       expect(callsFrom(service, from).filter(isUpdateRef)).toEqual([]);
+    });
+    expect(stateOf(a)).toEqual(before);
+  }, TIMEOUT_MS);
+
+  // Feature 011 T030: the push process ended with its `[rejected]` line before the Cancel, so the push is not canceled (`sync.ts:280`).
+// The fixture has no pushurl, so the review binds `sameUrl: true`, and without the Cancel the re-read runs (D8 case above).
+  caseTest("T030", "D8: Cancel after a [rejected] push exit starts no ls-remote and gives reason rejected; no ref and no config byte changes", SHELL, async () => {
+    const a = own();
+    moveRemote(a, "feature");
+    const before = stateOf(a);
+    await withSync("t030-cancel-reread", async (service) => {
+      const r = await register(service, a.repo);
+      const review = await reviewed(service, r, payloadOf(FEATURE));
+      const from = service.runner.calls.length;
+      const release = service.runner.holdExit(isPush);
+      const requestId = sendSync(service, r, review.syncReviewToken);
+      try {
+        await until(() => callsFrom(service, from).some((c) => isPush(c) && c.exit !== undefined), "the held push exit", 30_000);
+        await service.cancel(await service.operationId(requestId));
+      } finally {
+        release();
+      }
+      const response = await service.response<SyncResult>(requestId);
+      expect({ ...outcome(response), reason: response.result!.reason, remoteGone: (response.result as DeleteResult).remoteGone }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "rejected", remoteGone: undefined });
+      expect(response.result!.push).toMatchObject({ status: "rejected", lease: true, reasonText: "stale info" });
+      expect(callsFrom(service, from).filter(isPush).map((c) => c.exit?.exitCode)).toEqual([1]);
+      expect(callsFrom(service, from).filter(isLsRemote)).toEqual([]);
     });
     expect(stateOf(a)).toEqual(before);
   }, TIMEOUT_MS);

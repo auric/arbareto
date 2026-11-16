@@ -124,6 +124,27 @@ describe("force push with lease (FR-024, FR-025)", () => {
     expect(double.count("sync")).toBe(1);
   });
 
+  // Tasks.md T095, plan D5 "Warning text": the http(s) text for a push URL that starts with `http://` or `https://`.
+  const PLAIN = "Other people can lose work. The push stops if origin/main changed since the last fetch.";
+  const HTTP = `${PLAIN} Over a dumb HTTP server, Git cannot check this.`;
+  for (const [url, warning] of [
+    ["https://example.test/r.git", HTTP],
+    ["http://example.test/r.git", HTTP],
+    ["https://<redacted>@example.test/r.git", HTTP],
+    ["C:/repos/r.git", PLAIN],
+    ["ssh://<redacted>@example.test/r.git", PLAIN],
+    ["git@example.test:r.git", PLAIN],
+  ] as const) {
+    test(`the modal warning for the push URL ${url} is the ${warning === HTTP ? "http(s)" : "plain"} text`, async () => {
+      const { double } = await rejected();
+      await click(button("Force push with lease…", band()));
+      await answer(double.pending("reviewSync"), succeeded({ action: "force-push", plan: { remotes: ["origin"], destination: { ...DESTINATION, url }, lease: LEASE }, syncReviewToken: fixtureId(0x106) }));
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+      const shown = [...dialog.querySelectorAll("p")].map((p) => text(p)).filter((t) => t.startsWith("Other people can lose work."));
+      expect(shown).toEqual([warning]);
+    });
+  }
+
   test("the modal groups the digits of a large commit count", async () => {
     const { double } = await rejected();
     await click(button("Force push with lease…", band()));
@@ -163,6 +184,16 @@ describe("force push with lease (FR-024, FR-025)", () => {
     expect(text(document.querySelector("footer")!)).toContain("Force push with lease did not complete: PUSH_REJECTED rejected: non-fast-forward");
   });
 
+  test("a lease rejection with an empty Git reason shows no reason", async () => {
+    const { double, dialog } = await confirm();
+    await click(button("Force push with lease", dialog));
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x205), state: "failed", code: "PUSH_REJECTED", result: { action: "force-push", push: { ...pushResult("rejected", true), reasonText: "" }, reason: "rejected" } });
+    await settle();
+    const footer = text(document.querySelector("footer")!);
+    expect(footer).toContain("Force push with lease did not complete: PUSH_REJECTED rejected");
+    expect(footer).not.toContain("PUSH_REJECTED rejected:");
+  });
+
   for (const [label, plan] of [
     ["no lease", { remotes: ["origin"], destination: DESTINATION }],
     ["no destination", { remotes: ["origin"], lease: LEASE }],
@@ -176,6 +207,19 @@ describe("force push with lease (FR-024, FR-025)", () => {
       expect(text(document.querySelector("footer")!)).toContain("Force push with lease did not start: the review is incomplete.");
     });
   }
+
+  // Tasks.md T096, plan D5 "Helper refusal": the refusal text replaces the coded line.
+  test("a force-push review refused with remote-helper shows the D5 refusal text and opens no confirmation", async () => {
+    const { double } = await rejected();
+    await click(button("Force push with lease…", band()));
+    await answer(double.pending("reviewSync"), { requestId: "r", state: "failed", code: "SYNC_UNAVAILABLE", result: { reason: "remote-helper" } });
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(double.count("sync")).toBe(1);
+    const footer = text(document.querySelector("footer")!);
+    expect(footer).toContain("This branch pushes through a remote helper. Git cannot show that a remote helper keeps the lease, so Arbareto does not force push this branch.");
+    expect(footer).not.toContain("SYNC_UNAVAILABLE");
+  });
 
   test("a review without a sync token shows a refusal and starts nothing", async () => {
     const double = await mountWorkbench(workbench, createWorld());

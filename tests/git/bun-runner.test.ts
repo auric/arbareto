@@ -538,6 +538,24 @@ describeGit("bun runner", (git) => {
     expect(cat.stdout.bytes).toBe(BLOB_BYTES);
   });
 
+  test("the exit barrier holds the reply of an ended process, and an abort in that time keeps the recorded exit", async () => {
+    const release = runner.holdExit((c) => c.arguments.includes("--verify"));
+    const free = call();
+    expect(await runner.run(free)).toEqual({ exitCode: 0, activeDescendants: 0 });
+    const abort = new AbortController();
+    const failed = call({ arguments: ["--no-lazy-fetch", "rev-parse", "--verify", "--quiet", "refs/heads/absent"], signal: abort.signal });
+    let done = false;
+    const reply = runner.run(failed).then((exit) => ((done = true), exit));
+    const recorded = () => runner.calls.find((r) => r.operationId === failed.operationId)?.exit;
+    for (const end = performance.now() + 10_000; recorded() === undefined && performance.now() < end; ) await Bun.sleep(20);
+    expect(recorded()).toEqual({ exitCode: 1, activeDescendants: 0 });
+    abort.abort();
+    await Bun.sleep(200);
+    expect(done).toBe(false);
+    release();
+    expect(await reply).toEqual({ exitCode: 1, activeDescendants: 0 });
+  });
+
   test("the marker store keeps the started paths and the frame order, and a test can inject a failed write", async () => {
     const operationId = id();
     const frame = { operationId, repositoryId: id(), kind: "applyFile", direction: "stage", worktreeRoot: repo, commonDirectory } as const;

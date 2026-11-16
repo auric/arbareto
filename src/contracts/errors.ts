@@ -100,6 +100,8 @@ export const SYNC_UNAVAILABLE_REASONS = [
   "default-unknown",
   "no-remote-branch",
   "not-upstream",
+  // Feature 011 contract Δ9 (T027): the push runs through a remote helper, which can drop the lease.
+  "remote-helper",
 ] as const;
 export type SyncUnavailableReason = (typeof SYNC_UNAVAILABLE_REASONS)[number];
 export const PUSH_REJECTED_REASONS = ["rejected", "stale-lease", "remote-rejected", "remote-failure"] as const;

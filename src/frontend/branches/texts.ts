@@ -99,7 +99,9 @@ export const RD = {
   deletesTail: (remote: string, tracking: string) => ` on ${remote}, and the remote-tracking branch ${tracking} here.`,
   lost: (n: number) => (n === 1 ? "1 commit is on no other branch, tag, or remote-tracking branch here:" : `${n.toLocaleString("en-US")} commits are on no other branch, tag, or remote-tracking branch here:`),
   noneLost: (tracking: string) => `Another branch, tag, or remote-tracking branch here holds every commit of ${tracking}.`,
-  warning: (tracking: string) => `Other people can lose work. The delete stops if ${tracking} changed since the last fetch.`,
+  // X7, or X7h when the redacted plan URL `url` starts with the exact lowercase `http://` or `https://` (011 plan D13, T027).
+  warning: (tracking: string, url: string) =>
+    `Other people can lose work. The delete stops if ${tracking} changed since the last fetch.${url.startsWith("http://") || url.startsWith("https://") ? " Over a dumb HTTP server, Git cannot check this." : ""}`,
   button: "Delete remote branch",
   alsoDelete: (tracking: string) => `Also delete the remote branch ${tracking}`,
   bothLost: (branch: string, tracking: string, n: number) => `${branch} and ${tracking} have ${lost(n)} that no other branch, tag, or remote-tracking branch has. The delete loses them.`,
@@ -116,6 +118,7 @@ const REMOTE_REASONS: Record<string, (n: RemoteNames, remote: string | null) => 
   "default-unknown": (_, remote) => (remote === null ? null : `Arbareto cannot tell the default branch of ${remote}. Fetch ${remote}, or run git remote set-head ${remote} --auto, then try again.`),
   "no-remote-branch": (n) => `No fetch refspec of exactly one remote maps ${n.tracking} to a remote branch, so Arbareto cannot name it.`,
   "not-upstream": (n) => (n.branch === null ? null : `${n.tracking} is no longer the upstream of ${n.branch}. Close this dialog, then try again.`),
+  "remote-helper": (n) => `The remote of ${n.tracking} pushes through a remote helper. Git cannot show that a remote helper keeps the lease, so Arbareto does not delete this branch.`,
 };
 
 /** Feature 011 plan.md D4: the text of a refused `reviewSync` of `delete-remote-branch`. */

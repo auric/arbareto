@@ -99,7 +99,7 @@ export type ReferencesSidebarProps = {
   onExpandedChange?: (next: boolean) => void;
   /** The Show references toggle of a collapsible section. */
   toggleRef?: Ref<HTMLButtonElement>;
-  /** Feature 005 spec FR-066: the newest `readBranches` entries, for the worktree line of the branch card. Without them, the card leaves out that line. */
+  /** Feature 005 spec FR-066: the newest `readBranches` entries, for the worktree line of the branch card. Without them, the card leaves out that line. Null means that the read has not answered or failed: the branch menu then stays closed. */
   branches?: readonly BranchEntry[] | null;
 };
 
@@ -285,8 +285,9 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   }
 
   const isCurrent = (row: Row) => row.kind === "branch" && row.node.entry !== undefined && refs?.current?.name === row.node.entry.name;
-  // Feature 004: a branch row without a symbolic target has the branch actions.
-  const actionable = (row: Row) => onBranchAction !== undefined && (row.kind === "branch" || row.kind === "remote") && row.node.entry !== undefined && row.node.entry.symref === null;
+  // Feature 004: a branch row without a symbolic target has the branch actions. Before the branch entries load, its inputs get the reason (T176).
+  const branchRow = (row: Row) => onBranchAction !== undefined && (row.kind === "branch" || row.kind === "remote") && row.node.entry !== undefined && row.node.entry.symref === null;
+  const actionable = (row: Row) => branchRow(row) && branches !== null;
   const branchAction = (row: Row, action: "menu" | "confirm" | ScopedAction, byKey = false) => {
     const element = elements.current.get(row.node.key);
     if (element !== undefined) onBranchAction!(row.node.entry!, action, element, byKey);
@@ -295,6 +296,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   const openMenu = (row: Row, byKey = false) => {
     if (actionable(row)) branchAction(row, "menu", byKey);
     else if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu({ key: row.node.key, byKey });
+    else if (branchRow(row)) branchAction(row, "menu", byKey);
   };
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
@@ -305,7 +307,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
       return setCard(null);
     }
     // Feature 004 plan.md D15 keyboard map: the branch keys act only on the focused branch row.
-    const scoped = actionable(row) ? scopedAction(event.nativeEvent, row.kind === "branch" ? "localBranchRow" : "remoteBranchRow") : null;
+    const scoped = branchRow(row) ? scopedAction(event.nativeEvent, row.kind === "branch" ? "localBranchRow" : "remoteBranchRow") : null;
     if (scoped !== null) {
       event.preventDefault();
       return branchAction(row, scoped);
@@ -350,7 +352,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         openMenu(row);
       },
       onClick: () => activate(row),
-      onDoubleClick: actionable(row) ? () => branchAction(row, "confirm") : undefined,
+      onDoubleClick: branchRow(row) ? () => branchAction(row, "confirm") : undefined,
       style: { paddingLeft: 4 + (level - 1) * 12, ...style },
     };
     const entry = node.entry;

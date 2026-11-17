@@ -144,7 +144,9 @@ export interface BunRunnerOptions {
 
 // ---- Contract §11 process requests. The shell side is `src-tauri/src/wsl.rs`. ----
 
-const WSL_TEXTS = { wrapper: wslProcess.wrapper.join("\n"), anchor: wslProcess.anchor.join("\n"), probe: wslProcess.probe.join("\n"), matchingProbe: wslProcess.matchingProbe.join("\n") };
+const WSL_TEXTS = { wrapper: wslProcess.wrapper.join("\n"), anchor: wslProcess.anchor.join("\n"), probe: wslProcess.probe.join("\n"), matchingProbe: wslProcess.matchingProbe.join("\n"), submoduleWork: wslProcess.submoduleWork.join("\n") };
+// Feature 002 contract Δ6, feature 005 contract Δ6: the wrapper mode of each fixed script (`src-tauri/src/wsl.rs`).
+const SCRIPT_MODES = { matchingProbe: "search", submoduleWork: "read" } as const;
 // Contract §5: a WSL distro start probe has at most 60 seconds.
 const WSL_START_CAP_MS = 60_000;
 const WSL_PREFIX = /^\\\\(?:wsl\$|wsl\.localhost)\\([^\\/]+)(?:[\\/](.*))?$/i;
@@ -1864,7 +1866,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Feature 005 `src-tauri/src/wsl.rs:535` `shadow_command`: mode `read`, `--git-dir=.git` after `-C`, and the wrapper index `<dir>/.git/<index>`.
     const shadowIndex = call.context.contextKind === "ignorePreview" ? `${dir}/.git/${call.context.shadowIndex === "exclude" ? "exclude.index" : "index"}` : null;
     const args = call.script
-      ? wslWrapped(inst, call.operationId, "search", "", "/bin/sh", ["-c", WSL_TEXTS.matchingProbe, "sh", inst.git, ...call.arguments])
+      ? wslWrapped(inst, call.operationId, SCRIPT_MODES[call.script], "", "/bin/sh", ["-c", WSL_TEXTS[call.script], "sh", inst.git, ...call.arguments])
       : shadowIndex !== null
         ? wslWrapped(inst, call.operationId, "read", shadowIndex, inst.git, ["--no-lazy-fetch", "-C", dir, "--git-dir=.git", ...call.arguments.slice(1)])
         : wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir, ...call.arguments.slice(1)]);

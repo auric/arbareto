@@ -497,7 +497,8 @@ export const ProcessRequest = z.xor([
     z.strictObject({ ...run, ...GIT_PROBE }).refine(registeredCap(false)).meta({ title: "RunGitProbe" }),
     z.strictObject({ ...run, ...DISCOVERY }).refine(registeredCap(false)).meta({ title: "RunDiscovery" }),
     // Feature 002 contract Δ6: only a registered run takes `script`. Feature 008 contract Δ3: only a registered run takes the size rule.
-    z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).refine(registeredCap(true)).meta({ title: "RunRegistered" }),
+    // Feature 005 contract Δ6 (T115): `script` adds `submoduleWork`.
+    z.strictObject({ ...run, ...REGISTERED, script: z.enum(["matchingProbe", "submoduleWork"]).optional() }).refine(registeredCap(true)).meta({ title: "RunRegistered" }),
     // Feature 003 contract Δ6: the shell admits only the fixed clone array with the bound destination as the last item.
     z.strictObject({ ...run, ...CLONE }).refine(registeredCap(false)).meta({ title: "RunClone" }),
     // Feature 004 contract Δ6: the shell admits only the fixed arrays of each context.

@@ -8,9 +8,27 @@ import { describe, expect } from "bun:test";
 import { cpSync, existsSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ReadSubmoduleChangeResult } from "../../src/contracts/envelope";
-import { FILE_FACT_COMPONENT_UNITS, STATUS_LISTING_RECORDS, SUBMODULE_WORK_PAGE, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS } from "../../src/contracts/limits";
+import {
+  DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
+  FILE_FACT_COMPONENT_UNITS,
+  READ_DEADLINE_MS,
+  STATUS_LISTING_BYTES,
+  STATUS_LISTING_RECORDS,
+  SUBMODULE_WORK_PAGE,
+  SUBMODULE_WORK_PARALLEL,
+  SUBMODULE_WORK_TARGETS,
+  TRUST_INPUT_BYTES,
+  WINDOWS_COMMAND_LINE_UNITS,
+} from "../../src/contracts/limits";
+import { MATCHING_PROBE_WSL_FOLDER } from "../../src/contracts/matching-probe";
+import { isIdentifier } from "../../src/contracts/operations";
+import wslProcess from "../../src/contracts/wsl-process.json";
 import { statusArgs } from "../../src/git-service/commands";
-import { submoduleHead } from "../../src/git-service/submodule-change";
+import { checkCall, commandLineUnits, RunnerRefusal, type GitCall, type GitExit, type GitRunner } from "../../src/git-service/git-runner";
+import type { Workspace } from "../../src/git-service/registration";
+import type { IndexEntry } from "../../src/git-service/snapshot";
+import { createSubmoduleReads, submoduleHead } from "../../src/git-service/submodule-change";
+import type { Trust } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import type { CallMatch } from "./bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
@@ -20,7 +38,7 @@ import { caseTest, type Capability, type Service, type ServiceResponse, type Wor
 import { gitLocation } from "./submodule-harness";
 import { canary } from "./workbench-fixtures";
 
-for (const module of ["submodule-change", "session", "commands"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+for (const module of ["submodule-change", "session", "commands", "git-runner"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 useFixtureRoot();
 
 const SHELL: Capability[] = ["shell-double"];
@@ -849,6 +867,269 @@ describe("readSubmoduleWork pages (contract Δ3 \"Pages\", data-model §16)", ()
     }),
     TIMEOUT_MS,
   );
+});
+
+// ---- T115: the WSL route of the fixed script `submoduleWork` through a stub runner (contract Δ3 `readSubmoduleWork` "WSL route", Δ6, plan.md D19 "WSL") ----
+// The stub workspace names a distro that no case starts. Each case calls `createSubmoduleReads` directly, so no `wsl.exe` process starts.
+
+const WSL_DISTRO = "Arbareto-Test";
+const WSL_SUPER = "/home/u/super";
+const WSL_LAUNCH = { wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid", noexpand: true };
+const WSL_GIT = "/usr/bin/git";
+const uncOf = (linux: string) => `\\\\wsl.localhost\\${WSL_DISTRO}${linux.replaceAll("/", BACKSLASH)}`;
+const STUB_WORKSPACE = {
+  repositoryId: crypto.randomUUID(),
+  gitInstallationId: crypto.randomUUID(),
+  worktreeRoot: uncOf(WSL_SUPER),
+  gitDirectory: uncOf(`${WSL_SUPER}/.git`),
+  commonDirectory: uncOf(`${WSL_SUPER}/.git`),
+  worktreeIdentity: [{}, {}],
+  commonIdentity: {},
+  objectFormat: "sha1",
+  wsl: { distro: WSL_DISTRO, guid: "{00000000-0000-4000-8000-000000000000}", path: WSL_GIT, pathEnv: "/usr/bin:/bin", ...WSL_LAUNCH },
+} as unknown as Workspace;
+// The parent gate passes. The stub has no other trust fact.
+const STUB_TRUST = { listTrust: async () => ({ ok: true, listing: {} }), gate: () => null } as unknown as Trust;
+// Contract §5 "Native stdout/stderr chunk".
+const STUB_CHUNK = 64 * 1024;
+const STUB_HOLD_MS = 10_000;
+const STUB_DEADLINE_MS = 1_000;
+const OID = "1".repeat(40);
+const MODIFIED = `1 .M N... 100644 100644 100644 ${OID} ${OID} f.txt\0`;
+const UNTRACKED = "? new.txt\0";
+const CLEAN = { modified: false, untracked: false };
+const failedWith = (code: string) => ({ reason: "failed", code });
+const at = (path: string) => `${WSL_SUPER}/${path}`;
+
+// `<i> <exit> <n>\n` and the output, or `<i> limit <bound>\n` and the first `bound` bytes of the output.
+const frame = (i: number, exit: number, out: string | Buffer) => Buffer.concat([Buffer.from(`${i} ${exit} ${Buffer.byteLength(out)}\n`), Buffer.from(out)]);
+const limitFrame = (i: number, bound: number, out: Buffer) => Buffer.concat([Buffer.from(`${i} limit ${bound}\n`), out.subarray(0, bound)]);
+
+type StubRun = { phase: string; bound: string; folder: string; targets: string[]; call: GitCall };
+type StubReply = { out?: Buffer; exit?: Partial<GitExit>; refuse?: true; hold?: true };
+// The facts of one submodule by distro path. `top`: the check 5 output, by default the folder. `config` and `status`: the outputs, empty by default.
+type StubFacts = { top?: string; config?: string; status?: string };
+
+// Each command of a run exits 0 with the output of `facts`.
+const framesOf = (run: StubRun, facts: Record<string, StubFacts> = {}) =>
+  Buffer.concat(
+    run.targets.flatMap((target, i) => {
+      const f = facts[target] ?? {};
+      return run.phase === "a" ? [frame(i, 0, f.top ?? `${target}\n`), frame(i, 0, f.config ?? "")] : [frame(i, 0, f.status ?? "")];
+    }),
+  );
+
+// A runner that answers each `submoduleWork` run through `reply`. Any other Git run fails the case. `absent` names the folders that do not exist.
+function workStub(reply: (run: StubRun) => StubReply, absent: ReadonlySet<string> = new Set()) {
+  const runs: StubRun[] = [];
+  const runner = {
+    async run(call: GitCall): Promise<GitExit> {
+      if (call.script !== "submoduleWork") throw new Error(`a Git run without the script: ${call.arguments.join(" ")}`);
+      checkCall(call);
+      const [folder = "", phase = "", bound = "", ...targets] = call.arguments;
+      const run = { phase, bound, folder, targets, call };
+      runs.push(run);
+      const r = reply(run);
+      if (r.refuse) throw new RunnerRefusal("INVALID_REQUEST", "submoduleWork");
+      const out = r.out ?? Buffer.alloc(0);
+      // Contract §6 `stop`: a limited stdout collector of a read ends the run.
+      for (let i = 0; i < out.length && !call.stdout.limited; i += STUB_CHUNK) call.stdout.push(out.subarray(i, i + STUB_CHUNK));
+      if (r.hold) {
+        await new Promise((resolve) => {
+          call.signal.addEventListener("abort", resolve, { once: true });
+          setTimeout(resolve, STUB_HOLD_MS);
+        });
+      }
+      return { exitCode: call.signal.aborted || call.stdout.limited ? null : 0, activeDescendants: 0, ...r.exit };
+    },
+    async fileFacts(request: { files: { path: string[] }[] }) {
+      return request.files.map(({ path }) => {
+        const git = path.at(-1) === ".git";
+        return absent.has((git ? path.slice(0, -1) : path).join("/")) ? { kind: "absent" } : { kind: git ? "file" : "directory" };
+      });
+    },
+  };
+  return { runner: runner as unknown as GitRunner, runs };
+}
+
+const gitlinkOf = (path: string): IndexEntry => ({ path: Buffer.from(path), stage: 0, mode: "160000", oid: OID, intentToAdd: false, assumeUnchanged: false, skipWorktree: false });
+// One page on the stub workspace. The snapshot index holds `paths` as gitlinks in this order.
+async function stubPage(runner: GitRunner, paths: readonly string[], page = 0, readDeadlineMs = READ_DEADLINE_MS): Promise<Work> {
+  const reads = createSubmoduleReads({ runner, trust: STUB_TRUST, environment: {}, readDeadlineMs });
+  const snapshot = { snapshotId: crypto.randomUUID(), indexEntries: paths.map(gitlinkOf), indexCut: undefined, completeness: { state: "complete" }, entries: [] };
+  const t = { operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace: STUB_WORKSPACE, installation: { selectedPath: null } };
+  const r = await reads.readSubmoduleWork(t as never, snapshot as never, new Set(), page);
+  expect({ result: r.result, code: "code" in r ? r.code : undefined }).toEqual({ result: "succeeded", code: undefined });
+  return (r as { value: Work }).value;
+}
+const runsOf = (runs: StubRun[]) => runs.map((r) => `${r.phase} ${r.targets.map((t) => t.slice(WSL_SUPER.length + 1)).join(" ")}`);
+
+// The `wsl.exe` command line of a script run with the widest unit number, as `tests/git/bun-runner.ts` and src-tauri/src/wsl.rs `submodule_work_command` build it.
+const scriptUnits = (call: Pick<GitCall, "operationId" | "arguments">) =>
+  commandLineUnits(WSL_LAUNCH.wslExecutable, [
+    ...["--distribution", WSL_DISTRO, "--cd", "/", "--exec", "/bin/sh", "-c", wslProcess.wrapper.join("\n"), "sh", `arbareto-${call.operationId}-4294967295.scope`, "read", ""],
+    ...[WSL_LAUNCH.systemdRun, WSL_LAUNCH.systemctl, WSL_LAUNCH.setsid, "1", "/bin/sh", "-c", wslProcess.submoduleWork.join("\n"), "sh", WSL_GIT, ...call.arguments],
+  ]);
+
+describe("readSubmoduleWork WSL route through a stub runner (contract Δ3 \"WSL route\", Δ6)", () => {
+  caseTest("T115", "phase a runs once for the targets that pass check 4, phase b once for the located targets without programs, and each state follows its frames", [], async () => {
+    const facts: Record<string, StubFacts> = {
+      [at("both")]: { status: MODIFIED + UNTRACKED },
+      [at("modified")]: { status: MODIFIED },
+      [at("untracked")]: { status: UNTRACKED },
+      [at("elsewhere")]: { top: `${at("elsewhere")}/inner\n` },
+      [at("prog")]: { config: "local\0file:.git/config\0core.fsmonitor\n/usr/bin/false\0" },
+    };
+    const stub = workStub((run) => ({ out: framesOf(run, facts) }), new Set(["gone"]));
+    const work = await stubPage(stub.runner, ["both", "clean", "elsewhere", "gone", "modified", "prog", "untracked"]);
+    expect(states(work)).toEqual({
+      both: { modified: true, untracked: true },
+      clean: CLEAN,
+      elsewhere: { state: "not-initialized" },
+      gone: { state: "not-initialized" },
+      modified: { modified: true, untracked: false },
+      prog: { reason: "programs", code: undefined },
+      untracked: { modified: false, untracked: true },
+    });
+    expect(work.extraRows.map((r) => r.path)).toEqual(["both", "modified", "untracked"]);
+    expect(runsOf(stub.runs)).toEqual(["a both clean elsewhere modified prog untracked", "b both clean modified untracked"]);
+    expect(stub.runs.map((r) => r.bound)).toEqual([String(TRUST_INPUT_BYTES), String(STATUS_LISTING_BYTES)]);
+    // Each run takes its own `/tmp/arbareto-probe-<uuid>` folder, the policy `read`, and the registered context.
+    const folders = stub.runs.map((r) => r.folder);
+    expect({ owned: folders.map((f) => f.startsWith(MATCHING_PROBE_WSL_FOLDER) && isIdentifier(f.slice(MATCHING_PROBE_WSL_FOLDER.length))), distinct: new Set(folders).size }).toEqual({ owned: [true, true], distinct: 2 });
+    const context = { contextKind: "registeredOperation" as const, gitInstallationId: STUB_WORKSPACE.gitInstallationId, repositoryId: STUB_WORKSPACE.repositoryId };
+    expect(stub.runs.map((r) => ({ policy: r.call.environmentPolicy, context: r.call.context, transaction: r.call.transaction, input: r.call.input }))).toEqual([0, 1].map(() => ({ policy: "read", context, transaction: undefined, input: undefined })));
+  });
+
+  caseTest("T115", "a config limit frame and a check 5 output above 64 KiB give OUTPUT_LIMIT; a failed check 5 gives not-initialized before its config limit frame", [], async () => {
+    const config = Buffer.alloc(TRUST_INPUT_BYTES, "x");
+    const stub = workStub((run) => {
+      if (run.phase === "b") return { out: framesOf(run) };
+      const t = run.targets;
+      return {
+        out: Buffer.concat([
+          frame(0, 0, `${t[0]}\n`),
+          limitFrame(0, TRUST_INPUT_BYTES, config),
+          frame(1, 0, `/${"x".repeat(DIAGNOSTIC_RETAINED_BYTES_PER_STREAM)}\n`),
+          frame(1, 0, ""),
+          frame(2, 0, `${t[2]}/inner\n`),
+          limitFrame(2, TRUST_INPUT_BYTES, config),
+          frame(3, 0, `${t[3]}\n`),
+          frame(3, 0, ""),
+        ]),
+      };
+    });
+    const work = await stubPage(stub.runner, ["a", "b", "c", "d"]);
+    expect(states(work)).toEqual({ a: failedWith("OUTPUT_LIMIT"), b: failedWith("OUTPUT_LIMIT"), c: { state: "not-initialized" }, d: CLEAN });
+    expect(runsOf(stub.runs)).toEqual(["a a b c d", "b d"]);
+  });
+
+  caseTest("T115", "a status limit frame gives checked when its bytes set both facts; without both facts it gives OUTPUT_LIMIT, also when the bytes end on a record boundary", [], async () => {
+    // Records of 512 bytes: the first STATUS_LISTING_BYTES bytes end on a record boundary and hold fewer records than STATUS_LISTING_RECORDS.
+    const size = 512;
+    const record = (head: string) => Buffer.from(`${head}${"p".repeat(size - head.length - 1)}\0`);
+    const modified = record(`1 .M N... 100644 100644 100644 ${OID} ${OID} `);
+    expect({ records: STATUS_LISTING_BYTES / size < STATUS_LISTING_RECORDS, whole: STATUS_LISTING_BYTES % size }).toEqual({ records: true, whole: 0 });
+    const only = Buffer.alloc(STATUS_LISTING_BYTES, modified);
+    const both = Buffer.alloc(STATUS_LISTING_BYTES, modified);
+    record("? ").copy(both, size);
+    const stub = workStub((run) => ({ out: run.phase === "a" ? framesOf(run) : Buffer.concat([limitFrame(0, STATUS_LISTING_BYTES, both), limitFrame(1, STATUS_LISTING_BYTES, only)]) }));
+    const work = await stubPage(stub.runner, ["both", "one"]);
+    expect(states(work)).toEqual({ both: { modified: true, untracked: true }, one: failedWith("OUTPUT_LIMIT") });
+  });
+
+  // Target `a` has whole frames in phase a. The output breaks after them.
+  for (const [name, broken] of [
+    ["a leading zero in n", "1 0 01\nx"],
+    ["an index out of order", "2 0 0\n"],
+    ["an exit above 255", "1 256 0\n"],
+    ["an n above the bound", `1 0 ${TRUST_INPUT_BYTES + 1}\n`],
+    ["a limit head with another bound", "1 limit 1\nx"],
+    ["a head longer than the longest head", `1 0 ${"9".repeat(40)}`],
+    ["an output that ends inside a frame", "1 0 9\n/x"],
+    ["an output without the later frames", ""],
+  ] as const) {
+    caseTest("T115", `${name} gives MALFORMED_GIT_OUTPUT to each target of the run without whole frames; the target before it keeps its state`, [], async () => {
+      const stub = workStub((run) => ({ out: run.phase === "a" ? Buffer.concat([frame(0, 0, `${run.targets[0]}\n`), frame(0, 0, ""), Buffer.from(broken)]) : framesOf(run) }));
+      const work = await stubPage(stub.runner, ["a", "b", "c"]);
+      expect(states(work)).toEqual({ a: CLEAN, b: failedWith("MALFORMED_GIT_OUTPUT"), c: failedWith("MALFORMED_GIT_OUTPUT") });
+      expect(runsOf(stub.runs)).toEqual(["a a b c", "b a"]);
+    });
+  }
+
+  caseTest("T115", "bytes after the last frame stop the run, and each target keeps the state of its whole frames", [], async () => {
+    const stub = workStub((run) => ({ out: Buffer.concat([framesOf(run, { [at("b")]: { status: MODIFIED } }), Buffer.from("0 0 0\n")]) }));
+    const work = await stubPage(stub.runner, ["a", "b"]);
+    expect(states(work)).toEqual({ a: CLEAN, b: { modified: true, untracked: false } });
+    expect(stub.runs.map((r) => r.call.stdout.limited)).toEqual([true, true]);
+  });
+
+  caseTest("T115", "a script exit 125, an exit 1 after whole frames, a refusal, and the diagnostic bound give each target of the run without whole frames its failure", [], async () => {
+    const page = async (reply: (run: StubRun) => StubReply) => {
+      const stub = workStub(reply);
+      return { states: states(await stubPage(stub.runner, ["a", "b", "c"])), runs: runsOf(stub.runs) };
+    };
+    const each = (code: string) => ({ a: failedWith(code), b: failedWith(code), c: failedWith(code) });
+    const firstOnly = (run: StubRun) => framesOf({ ...run, targets: run.targets.slice(0, 1) });
+    expect(await page((run) => (run.phase === "a" ? { exit: { exitCode: 125 } } : { out: framesOf(run) }))).toEqual({ states: each("GIT_FAILED"), runs: ["a a b c"] });
+    expect(await page((run) => (run.phase === "a" ? { out: firstOnly(run), exit: { exitCode: 1 } } : { out: framesOf(run) }))).toEqual({
+      states: { a: CLEAN, b: failedWith("GIT_FAILED"), c: failedWith("GIT_FAILED") },
+      runs: ["a a b c", "b a"],
+    });
+    expect(await page((run) => (run.phase === "a" ? { refuse: true } : { out: framesOf(run) }))).toEqual({ states: each("INVALID_REQUEST"), runs: ["a a b c"] });
+    expect(await page((run) => (run.phase === "b" ? { refuse: true } : { out: framesOf(run) }))).toEqual({ states: each("INVALID_REQUEST"), runs: ["a a b c", "b a b c"] });
+    expect(await page((run) => (run.phase === "b" ? { out: firstOnly(run), exit: { exitCode: null, diagnosticLimit: true } } : { out: framesOf(run) }))).toEqual({
+      states: { a: CLEAN, b: failedWith("OUTPUT_LIMIT"), c: failedWith("OUTPUT_LIMIT") },
+      runs: ["a a b c", "b a b c"],
+    });
+  });
+
+  caseTest("T115", "a deadline in the middle of phase b keeps the states of whole frames and of phase a, and gives DEADLINE to each other target of the page", [], async () => {
+    const DEADLINE = failedWith("DEADLINE");
+    for (const ending of [{ hold: true } as const, { exit: { exitCode: null, deadline: "deadline" } } as const]) {
+      const stub = workStub(
+        (run) => (run.phase === "a" ? { out: framesOf(run, { [at("elsewhere")]: { top: "/elsewhere\n" } }) } : { out: Buffer.concat([frame(0, 0, MODIFIED), Buffer.from("1 0 100\n1 .M")]), ...ending }),
+        new Set(["gone"]),
+      );
+      const work = await stubPage(stub.runner, ["a", "b", "c", "elsewhere", "gone"], 0, "hold" in ending ? STUB_DEADLINE_MS : READ_DEADLINE_MS);
+      expect({ ending, states: states(work), runs: runsOf(stub.runs) }).toEqual({
+        ending,
+        states: { a: { modified: true, untracked: false }, b: DEADLINE, c: DEADLINE, elsewhere: { state: "not-initialized" }, gone: { state: "not-initialized" } },
+        runs: ["a a b c elsewhere", "b a b c"],
+      });
+    }
+  });
+
+  caseTest("T115", "a phase whose targets pass the command-line bound splits into runs in page order; a target that fits no run alone gives INVALID_REQUEST and no run", [], async () => {
+    const long = (components: number) => Array.from({ length: components }, () => "x".repeat(FILE_FACT_COMPONENT_UNITS)).join("/");
+    const paths = Array.from({ length: SUBMODULE_WORK_PAGE }, (_, i) => `t${String(i).padStart(2, "0")}/${long(i === 3 ? 130 : 11)}`);
+    const stub = workStub((run) => ({ out: framesOf(run) }));
+    const work = await stubPage(stub.runner, paths);
+    expect(work.entries.map((e) => (e.state === "unchecked" ? e.code : e.state))).toEqual(paths.map((_, i) => (i === 3 ? "INVALID_REQUEST" : "checked")));
+    const fitting = paths.filter((_, i) => i !== 3).map(at);
+    for (const phase of ["a", "b"]) {
+      const runs = stub.runs.filter((r) => r.phase === phase);
+      expect({ phase, runs: runs.length, targets: runs.flatMap((r) => r.targets) }).toEqual({ phase, runs: 2, targets: fitting });
+      for (const [k, r] of runs.entries()) {
+        expect({ phase, k, fits: scriptUnits(r.call) <= WINDOWS_COMMAND_LINE_UNITS }).toEqual({ phase, k, fits: true });
+        // Each run takes the next targets in page order that fit, so the first target of the next run does not fit this run.
+        const next = runs[k + 1]?.targets[0];
+        if (next !== undefined) expect({ phase, k, fits: scriptUnits({ ...r.call, arguments: [...r.call.arguments, next] }) <= WINDOWS_COMMAND_LINE_UNITS }).toEqual({ phase, k, fits: false });
+      }
+    }
+  });
+
+  caseTest("T115", "33 gitlinks give 3 pages, and each page runs phase a once and phase b once on its own targets", [], async () => {
+    const paths = mPaths(33);
+    const stub = workStub((run) => ({ out: framesOf(run) }));
+    for (let page = 0; page < 3; page++) {
+      const from = stub.runs.length;
+      const work = await stubPage(stub.runner, paths, page);
+      const own = paths.slice(page * SUBMODULE_WORK_PAGE, (page + 1) * SUBMODULE_WORK_PAGE);
+      expect({ page, next: work.next, entries: work.entries.map((e) => `${e.path} ${e.state}`) }).toEqual({ page, next: page < 2 ? page + 1 : null, entries: own.map((p) => `${p} checked`) });
+      expect(runsOf(stub.runs.slice(from))).toEqual([`a ${own.join(" ")}`, `b ${own.join(" ")}`]);
+    }
+  });
 });
 
 // T121 analyze finding U1: `workingParts` passes a path that is no valid UTF-8 (WSL), so rule 2 refuses it with reason `path`.

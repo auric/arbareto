@@ -245,6 +245,12 @@ export function probeScriptArgs(dir: string, tip: string, greps: readonly (reado
   return [pathItem(dir), treeItem(tip, "sha1"), String(runs[0]!.length), ...runs.flat()];
 }
 
+// Feature 005 contract Δ3 `readSubmoduleWork` "WSL route": the `submoduleWork` script arguments `[dir, phase, bound, ...targets]`.
+export function submoduleWorkArgs(dir: string, phase: "a" | "b", bound: number, targets: readonly string[]): string[] {
+  if (!(Number.isSafeInteger(bound) && bound > 0)) throw new TypeError("bound refused");
+  return [pathItem(dir), phase, String(bound), ...targets.map(pathItem)];
+}
+
 // A path is relative to the worktree root, where Git runs (research R3). An argv item cannot hold NUL, and an empty pathspec matches every path.
 function pathItem(path: string): string {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) throw new TypeError("path refused");

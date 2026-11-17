@@ -3,11 +3,25 @@
 
 // Feature 005 contract Δ3 `readSubmoduleChange` and `readSubmoduleWork`, Δ5 bounds, Δ12, data-model §15 and §16, plan.md D19, research.md R18.
 // Inside a submodule, these reads start only the `submodule*Args` commands of `commands.ts`, in the form `-C <worktree> --git-dir=.git`.
+// In WSL, `readSubmoduleWork` runs its three commands through the fixed script `submoduleWork` (contract Δ3 "WSL route").
 
 import type { FileFact } from "../contracts/channel";
 import type { ErrorCode } from "../contracts/errors";
 import type { GitlinkFact } from "../contracts/file-action";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_CHANGE_COMMITS, SUBMODULE_CHANGE_OUTPUT_BYTES, SUBMODULE_GITMODULES_BYTES, SUBMODULE_WORK_PAGE, SUBMODULE_WORK_PARALLEL, SUBMODULE_WORK_TARGETS, TRUST_INPUT_BYTES } from "../contracts/limits";
+import {
+  DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
+  GIT_PROCESS_DEADLINE_MS,
+  STATUS_LISTING_BYTES,
+  SUBMODULE_CHANGE_COMMITS,
+  SUBMODULE_CHANGE_OUTPUT_BYTES,
+  SUBMODULE_GITMODULES_BYTES,
+  SUBMODULE_WORK_PAGE,
+  SUBMODULE_WORK_PARALLEL,
+  SUBMODULE_WORK_TARGETS,
+  TRUST_INPUT_BYTES,
+  WINDOWS_COMMAND_LINE_UNITS,
+} from "../contracts/limits";
+import { MATCHING_PROBE_WSL_FOLDER } from "../contracts/matching-probe";
 import { both, fail, Stop, CLOSED, type InspectionOutcome, type InspectionTarget } from "./commit-changes";
 import {
   isObjectId,
@@ -22,11 +36,13 @@ import {
   submoduleRefExistsArgs,
   submoduleStatusArgs,
   submoduleToplevelArgs,
+  submoduleWorkArgs,
   OID_HEX,
+  type ObjectFormat,
   type SubmoduleLocation,
 } from "./commands";
-import { createCollector, exitKind, type Collector, type GitExit, type GitRunner } from "./git-runner";
-import { latin1, runRead, strictUtf8, type ReadTarget } from "./read-steps";
+import { createCollector, exitKind, RunnerRefusal, workScriptUnits, type Collector, type GitExit, type GitRunner } from "./git-runner";
+import { contextOf, latin1, runRead, strictUtf8, type ReadStep, type ReadTarget } from "./read-steps";
 import type { ChangeSnapshot, IndexEntry, ReadInstallation } from "./snapshot";
 import { createStatusParser, displayPath } from "./status-parser";
 import { submoduleStageArgs } from "./submodule-open";
@@ -123,9 +139,132 @@ async function lineOf(runner: GitRunner, t: ReadTarget, args: string[]): Promise
 }
 
 // Plan.md D11 check 5: the worktree root that Git prints for `--git-dir=.git` is the folder.
+const locatedFrom = (exitCode: number | null, line: string | null, worktree: string): boolean => exitCode === 0 && line === worktree;
+
 async function locatedFact(runner: GitRunner, t: ReadTarget, location: { worktree: string }): Promise<boolean | ReadFailure> {
   const top = await lineOf(runner, t, submoduleToplevelArgs(location));
-  return "exit" in top ? top.exit.exitCode === 0 && top.line === location.worktree : top;
+  return "exit" in top ? locatedFrom(top.exit.exitCode, top.line, location.worktree) : top;
+}
+
+// Contract Δ3 `readSubmoduleWork` step 2: the entries of the status program keys. `limited`: the output passed TRUST_INPUT_BYTES.
+function configFrom(limited: boolean, exitCode: number | null, bytes: Uint8Array): ConfigEntry[] | ErrorCode {
+  if (limited) return "OUTPUT_LIMIT";
+  if (exitCode !== 0) return "GIT_FAILED";
+  const entries = parseConfigListing(bytes, false);
+  return entries === null ? "MALFORMED_GIT_OUTPUT" : statusProgramEntries(entries);
+}
+
+type WorkFacts = { modified: boolean; untracked: boolean };
+
+// Contract Δ3 `readSubmoduleWork` step 3. `out` is `limited` when both facts are set or a status bound is reached, so the read can stop there.
+function statusFrom(objectFormat: ObjectFormat) {
+  let modified = false;
+  let untracked = false;
+  let size = 0;
+  const parser = createStatusParser(objectFormat, false, (record) => {
+    if (record.kind === "untracked") untracked = true;
+    else if (record.kind !== "ignored") modified = true;
+  });
+  const out: Collector = {
+    push(chunk) {
+      size += chunk.length;
+      parser.push(chunk);
+    },
+    get bytes() {
+      return size;
+    },
+    records: 0,
+    get limited() {
+      return parser.limited || (modified && untracked);
+    },
+  };
+  // `cut`: the output passed its bound, so only the facts of its first bytes count.
+  const end = (exitCode: number | null, cut: boolean): WorkFacts | ErrorCode => {
+    if (modified && untracked) return { modified, untracked };
+    if (parser.limited || cut) return "OUTPUT_LIMIT";
+    if (exitCode !== 0) return "GIT_FAILED";
+    if (parser.end().state !== "complete") return "MALFORMED_GIT_OUTPUT";
+    return { modified, untracked };
+  };
+  return { out, end };
+}
+
+// ---- Contract Δ3 `readSubmoduleWork` "WSL route": the frames of the `submoduleWork` script ----
+
+// One command output. `end` gets the Git exit code, or `limit` when the output passed the bound.
+interface FrameSink {
+  out: Pick<Collector, "push" | "limited">;
+  end(exit: number | "limit"): void;
+}
+
+// `<i> <exit> <n>` or `<i> limit <bound>`. The script prints each number in decimal without a leading zero.
+const FRAME_HEAD = /^(0|[1-9][0-9]*) (?:limit (0|[1-9][0-9]*)|(0|[1-9][0-9]*) (0|[1-9][0-9]*))$/;
+// The shell gives an exit status from 0 to 255.
+const EXIT_STATUS_MAX = 255;
+
+// The frames of one run in argument order: `perTarget` frames per target, and `sinks[k]` takes frame k.
+// Output in another form sets `malformed`, and `limited` then stops the run.
+function frameReader(bound: number, perTarget: number, sinks: readonly FrameSink[]) {
+  // The `limit` head of the last target is the longest valid head, because an exit has at most 3 digits and `n` is at most `bound`.
+  const longest = `${sinks.length / perTarget - 1} limit ${bound}\n`.length;
+  let head = "";
+  // The output bytes that the current frame still holds. -1: the next bytes are a head.
+  let left = -1;
+  let exit: number | "limit" = "limit";
+  let done = 0;
+  let malformed = false;
+  let size = 0;
+  const finish = () => {
+    sinks[done]!.end(exit);
+    done++;
+    left = -1;
+  };
+  const start = (line: string): boolean => {
+    const m = FRAME_HEAD.exec(line);
+    if (m === null || Number(m[1]) !== Math.floor(done / perTarget)) return false;
+    const limit = m[2] !== undefined;
+    const n = Number(limit ? m[2] : m[4]);
+    if (limit ? n !== bound : Number(m[3]) > EXIT_STATUS_MAX || n > bound) return false;
+    exit = limit ? "limit" : Number(m[3]);
+    left = n;
+    if (left === 0) finish();
+    return true;
+  };
+  return {
+    push(chunk: Uint8Array): void {
+      size += chunk.length;
+      for (let at = 0; at < chunk.length && !malformed; ) {
+        if (left < 0) {
+          const lf = chunk.indexOf(LF, at);
+          head += latin1(chunk.subarray(at, lf < 0 ? chunk.length : lf));
+          at = lf < 0 ? chunk.length : lf + 1;
+          if (done === sinks.length || head.length >= longest) malformed = true;
+          else if (lf >= 0) {
+            malformed = !start(head);
+            head = "";
+          }
+          continue;
+        }
+        const take = Math.min(left, chunk.length - at);
+        const sink = sinks[done]!;
+        if (!sink.out.limited) sink.out.push(chunk.subarray(at, at + take));
+        at += take;
+        left -= take;
+        if (left === 0) finish();
+      }
+    },
+    get bytes() {
+      return size;
+    },
+    records: 0,
+    get limited() {
+      return malformed;
+    },
+    // The count of whole frames.
+    get done() {
+      return done;
+    },
+  };
 }
 
 // `rev-parse --verify -q HEAD`: exit 0 with one object ID line names the HEAD commit. Null: no such line.
@@ -160,9 +299,11 @@ export interface SubmoduleReadsOptions {
   environment: ServiceEnvironment;
   // Contract Δ3 `readSubmoduleWork`: the 001 read deadline of each page.
   readDeadlineMs: number;
+  // Test seam (T115): a WSL page takes the per-target route of v0.1.0, the reference of the script route. No frame sets it.
+  wslPerTarget?: true;
 }
 
-export function createSubmoduleReads({ runner, trust, environment, readDeadlineMs }: SubmoduleReadsOptions) {
+export function createSubmoduleReads({ runner, trust, environment, readDeadlineMs, wslPerTarget }: SubmoduleReadsOptions) {
   async function step(t: InspectionTarget, args: string[], out: Collector, input?: Uint8Array): Promise<GitExit> {
     const s = await runRead(runner, t, args, out, input);
     if (t.signal.aborted) throw new Stop({ result: "canceled" });
@@ -363,49 +504,146 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
     | { state: "unchecked"; reason: "failed"; code: ErrorCode }
   );
 
+  // 001 §12 "Submodule programs": every local and worktree entry of a submodule is repository-controlled. The 001 §7 rule decides the other scopes.
+  async function programsIn(t: InspectionTarget, root: string, entries: ConfigEntry[]): Promise<boolean> {
+    const listing = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: t.workspace }, environment, entries, null, { root, gitDirectory: null });
+    if (t.signal.aborted) throw new Stop({ result: "canceled" });
+    if (!listing.ok) throw new Stop("stop" in listing ? { result: listing.stop } : { result: "failed", code: listing.code });
+    return listing.listing.integrations.some((i) => i.repositoryControlled && statusProgram(i.key));
+  }
+
   // Contract Δ3 `readSubmoduleWork` step 1 check 5 and steps 2 and 3 for one target. Null: the target is not initialized.
-  async function workOf(t: InspectionTarget, location: { worktree: string }): Promise<{ modified: boolean; untracked: boolean } | "programs" | null> {
+  async function workOf(t: InspectionTarget, location: { worktree: string }): Promise<WorkFacts | "programs" | null> {
     const config = createCollector({ maxBytes: TRUST_INPUT_BYTES });
     // Both commands load no index and run no program, so the listing runs beside the location check.
     const [here, listedExit] = await both(located(t, location), step(t, submoduleConfigListArgs(location), config));
     if (!here) return null;
-    if (config.limited) throw fail("OUTPUT_LIMIT");
-    if (listedExit.exitCode !== 0) throw fail("GIT_FAILED");
-    const entries = parseConfigListing(config.take(), false);
-    if (entries === null) throw fail("MALFORMED_GIT_OUTPUT");
-    // 001 §12 "Submodule programs": every local and worktree entry of a submodule is repository-controlled. The 001 §7 rule decides the other scopes.
-    const listing = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: t.workspace }, environment, statusProgramEntries(entries), null, { root: location.worktree, gitDirectory: null });
-    if (t.signal.aborted) throw new Stop({ result: "canceled" });
-    if (!listing.ok) throw new Stop("stop" in listing ? { result: listing.stop } : { result: "failed", code: listing.code });
-    if (listing.listing.integrations.some((i) => i.repositoryControlled && statusProgram(i.key))) return "programs";
-
-    let modified = false;
-    let untracked = false;
-    const parser = createStatusParser(t.workspace.objectFormat, false, (record) => {
-      if (record.kind === "untracked") untracked = true;
-      else if (record.kind !== "ignored") modified = true;
-    });
-    let size = 0;
+    const entries = configFrom(config.limited, listedExit.exitCode, config.take());
+    if (typeof entries === "string") throw fail(entries);
+    if (await programsIn(t, location.worktree, entries)) return "programs";
     // A `limited` collector stops its process (contract §6 "Byte caps"). Both facts, or a status bound, end the status.
-    const out: Collector = {
-      push(chunk) {
-        size += chunk.length;
-        parser.push(chunk);
+    const status = statusFrom(t.workspace.objectFormat);
+    const exit = await step(t, submoduleStatusArgs(location), status.out);
+    const facts = status.end(exit.exitCode, false);
+    if (typeof facts === "string") throw fail(facts);
+    return facts;
+  }
+
+  // One run of the fixed script. A runner refusal gives its code.
+  async function runScript(t: InspectionTarget, args: string[], stdout: Collector): Promise<ReadStep> {
+    const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+    try {
+      const exit = await runner.run({ operationId: t.operationId, context: contextOf(t.workspace), arguments: args, script: "submoduleWork", environmentPolicy: "read", limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS }, stdout, stderr, signal: t.signal });
+      return { exit, stderrBytes: stderr.bytes };
+    } catch (error) {
+      if (error instanceof RunnerRefusal) return { refused: error.code };
+      throw error;
+    }
+  }
+
+  // Contract Δ3 "WSL route" "Command lines" and "Failures": the runs of one phase. Each run takes the next targets in page order that fit.
+  // `sinksOf(j)` gives the frame sinks of target j. `failed(j, code)` ends a target without whole frames. False: a deadline ended the page.
+  async function phaseRuns(t: InspectionTarget, outer: AbortSignal, deadline: AbortSignal, phase: "a" | "b", targets: readonly string[], sinksOf: (j: number) => FrameSink[], failed: (j: number, code: ErrorCode) => void): Promise<boolean> {
+    const bound = phase === "a" ? TRUST_INPUT_BYTES : STATUS_LISTING_BYTES;
+    const perTarget = phase === "a" ? 2 : 1;
+    const folder = () => `${MATCHING_PROBE_WSL_FOLDER}${crypto.randomUUID()}`;
+    const sample = folder();
+    const fits = (run: readonly number[]) => workScriptUnits(t, submoduleWorkArgs(sample, phase, bound, run.map((j) => targets[j]!))) <= WINDOWS_COMMAND_LINE_UNITS;
+    const runs: number[][] = [];
+    targets.forEach((_, j) => {
+      const last = runs.at(-1);
+      if (last !== undefined && fits([...last, j])) last.push(j);
+      else if (fits([j])) runs.push([j]);
+      else failed(j, "INVALID_REQUEST");
+    });
+    for (const run of runs) {
+      if (deadline.aborted) return false;
+      const reader = frameReader(bound, perTarget, run.flatMap(sinksOf));
+      const s = await runScript(t, submoduleWorkArgs(folder(), phase, bound, run.map((j) => targets[j]!)), reader);
+      if (outer.aborted) throw new Stop({ result: "canceled" });
+      if ("refused" in s) {
+        run.forEach((j) => failed(j, s.refused));
+        continue;
+      }
+      if (s.exit.deadline !== undefined || deadline.aborted) return false;
+      const open = run.slice(Math.floor(reader.done / perTarget));
+      // Contract §5: the stderr bound ends the run with OUTPUT_LIMIT, as `step` ends a Windows command.
+      const code: ErrorCode | null = s.exit.diagnosticLimit ? "OUTPUT_LIMIT" : reader.limited ? "MALFORMED_GIT_OUTPUT" : s.exit.exitCode !== 0 ? "GIT_FAILED" : open.length > 0 ? "MALFORMED_GIT_OUTPUT" : null;
+      if (code !== null) open.forEach((j) => failed(j, code));
+    }
+    return true;
+  }
+
+  // Contract Δ3 `readSubmoduleWork` "WSL route": phase a, the step 2 trust check of each target, then phase b. `set` gives a target its result.
+  // A target without a result after a deadline gives DEADLINE.
+  async function scriptWork(t: InspectionTarget, outer: AbortSignal, deadline: AbortSignal, jobs: readonly { i: number; worktree: string }[], set: (i: number, r: WorkFacts | "programs" | null | { code: ErrorCode }) => void): Promise<void> {
+    const listed: { i: number; worktree: string; entries: ConfigEntry[] }[] = [];
+    const phaseA = await phaseRuns(
+      t,
+      outer,
+      deadline,
+      "a",
+      jobs.map((job) => job.worktree),
+      (j) => {
+        const job = jobs[j]!;
+        const top = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+        const config = createCollector({ maxBytes: TRUST_INPUT_BYTES });
+        let topExit: number | "limit" = "limit";
+        const decide = (exit: number | "limit") => {
+          if (topExit === "limit" || top.limited) return set(job.i, { code: "OUTPUT_LIMIT" });
+          if (!locatedFrom(topExit, oneLine(top.take()), job.worktree)) return set(job.i, null);
+          const entries = configFrom(exit === "limit" || config.limited, exit === "limit" ? null : exit, config.take());
+          if (typeof entries === "string") set(job.i, { code: entries });
+          else listed.push({ ...job, entries });
+        };
+        return [
+          { out: top, end: (exit) => void (topExit = exit) },
+          { out: config, end: decide },
+        ];
       },
-      get bytes() {
-        return size;
-      },
-      records: 0,
-      get limited() {
-        return parser.limited || (modified && untracked);
-      },
+      (j, code) => set(jobs[j]!.i, { code }),
+    );
+    if (!phaseA) return;
+    const passed: typeof listed = [];
+    const queue = [...listed];
+    const worker = async () => {
+      for (let job = queue.shift(); job !== undefined && !t.signal.aborted; job = queue.shift()) {
+        try {
+          if (await programsIn(t, job.worktree, job.entries)) set(job.i, "programs");
+          else passed.push(job);
+        } catch (error) {
+          if (!(error instanceof Stop)) throw error;
+          if (outer.aborted) throw new Stop({ result: "canceled" });
+          const o = error.outcome;
+          if (deadline.aborted || o.result === "deadline") continue;
+          set(job.i, { code: o.result === "failed" && o.code !== undefined ? o.code : "GIT_FAILED" });
+        }
+      }
     };
-    const exit = await step(t, submoduleStatusArgs(location), out);
-    if (modified && untracked) return { modified, untracked };
-    if (parser.limited) throw fail("OUTPUT_LIMIT");
-    if (exit.exitCode !== 0) throw fail("GIT_FAILED");
-    if (parser.end().state !== "complete") throw fail("MALFORMED_GIT_OUTPUT");
-    return { modified, untracked };
+    await Promise.all(Array.from({ length: SUBMODULE_WORK_PARALLEL }, worker));
+    if (deadline.aborted || passed.length === 0) return;
+    // The workers finish out of order. Phase b takes the targets in page order.
+    passed.sort((x, y) => x.i - y.i);
+    await phaseRuns(
+      t,
+      outer,
+      deadline,
+      "b",
+      passed.map((job) => job.worktree),
+      (j) => {
+        const status = statusFrom(t.workspace.objectFormat);
+        return [
+          {
+            out: status.out,
+            end: (exit) => {
+              const facts = status.end(exit === "limit" ? null : exit, exit === "limit");
+              set(passed[j]!.i, typeof facts === "string" ? { code: facts } : facts);
+            },
+          },
+        ];
+      },
+      (j, code) => set(passed[j]!.i, { code }),
+    );
   }
 
   async function readSubmoduleWork(
@@ -452,13 +690,17 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
           if (!ok) results[i] = null;
           return ok;
         });
+        const entryOf = (i: number, r: WorkFacts | "programs" | null | { code: ErrorCode }): WorkEntry | null => {
+          const base = named(targets[i]!);
+          if (r === null) return null;
+          if (r === "programs") return { ...base, state: "unchecked", reason: "programs" };
+          return "code" in r ? { ...base, state: "unchecked", reason: "failed", code: r.code } : { ...base, state: "checked", ...r };
+        };
         const worker = async () => {
           for (let job = queue.shift(); job !== undefined && !signal.aborted; job = queue.shift()) {
             const { i, p } = job;
-            const base = named(targets[i]!);
             try {
-              const work = await workOf(inner, { worktree: root + p.join("/") });
-              results[i] = work === null ? null : work === "programs" ? { ...base, state: "unchecked", reason: "programs" } : { ...base, state: "checked", ...work };
+              results[i] = entryOf(i, await workOf(inner, { worktree: root + p.join("/") }));
             } catch (error) {
               // Any other error ends the read. The abort stops the other workers before they start more Git processes.
               if (!(error instanceof Stop)) {
@@ -468,11 +710,13 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
               if (t.signal.aborted) throw new Stop({ result: "canceled" });
               const o = error.outcome;
               const code: ErrorCode = deadline.signal.aborted || o.result === "deadline" ? "DEADLINE" : o.result === "failed" && o.code !== undefined ? o.code : "GIT_FAILED";
-              results[i] = { ...base, state: "unchecked", reason: "failed", code };
+              results[i] = entryOf(i, { code });
             }
           }
         };
-        await Promise.all(Array.from({ length: SUBMODULE_WORK_PARALLEL }, worker));
+        if (w.wsl !== undefined && wslPerTarget !== true) {
+          await scriptWork(inner, t.signal, deadline.signal, queue.map(({ i, p }) => ({ i, worktree: root + p.join("/") })), (i, r) => void (results[i] = entryOf(i, r)));
+        } else await Promise.all(Array.from({ length: SUBMODULE_WORK_PARALLEL }, worker));
       } catch (error) {
         // A read deadline during the gate or the file facts leaves every target without a result, so each gives DEADLINE below.
         if (!(error instanceof Stop) || t.signal.aborted || !deadline.signal.aborted) throw error;

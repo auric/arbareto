@@ -354,13 +354,21 @@ export interface WslLaunch {
 // The shell keeps `<n>` as a `u32` (src-tauri/src/process_requests.rs `next_unit`), so this is its widest form.
 const WIDEST_UNIT = 4_294_967_295;
 const WRAPPER = wslProcess.wrapper.join("\n");
+const WORK_SCRIPT = wslProcess.submoduleWork.join("\n");
+
+// The units of the `wsl.exe` command line that runs `program` through the wrapper (src-tauri/src/wsl.rs `wrapped`).
+function wrappedUnits(launch: WslLaunch, operationId: string, mode: string, index: string, program: string, args: readonly string[]): number {
+  const head = ["--distribution", launch.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", wslUnitName(operationId, WIDEST_UNIT), mode, index];
+  return commandLineUnits(launch.wslExecutable, [...head, launch.systemdRun, launch.systemctl, launch.setsid, launch.noexpand ? "1" : "", program, ...args]);
+}
 
 // Contract §6 "Process fields": the units of the `wsl.exe` command line that the shell builds (src-tauri/src/wsl.rs `git_command` and `wrapped`).
 // `args` start with `--no-lazy-fetch`. The shell puts `-C <directory>` right after it.
 export function wslCommandLineUnits(launch: WslLaunch, operationId: string, mode: string, index: string, directory: string, args: readonly string[]): number {
-  const head = ["--distribution", launch.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", wslUnitName(operationId, WIDEST_UNIT), mode, index];
-  return commandLineUnits(launch.wslExecutable, [...head, launch.systemdRun, launch.systemctl, launch.setsid, launch.noexpand ? "1" : "", launch.git, "--no-lazy-fetch", "-C", directory, ...args.slice(1)]);
+  return wrappedUnits(launch, operationId, mode, index, launch.git, ["--no-lazy-fetch", "-C", directory, ...args.slice(1)]);
 }
+
+const launchOf = (w: NonNullable<Workspace["wsl"]>): WslLaunch => ({ wslExecutable: w.wslExecutable, distro: w.distro, git: w.path, systemdRun: w.systemdRun, systemctl: w.systemctl, setsid: w.setsid, noexpand: w.noexpand });
 
 // Contract §6 "Process fields": the units of the command line that the shell starts for one call under `policy`.
 // The shell starts a Windows Git as `executablePath`, the Git file in the `--exec-path` folder, and a WSL Git through `wsl.exe`.
@@ -369,8 +377,14 @@ export function stepUnits(ctx: { operationId: string; workspace: Pick<Workspace,
   if (w === undefined) return commandLineUnits(ctx.installation.executablePath, args);
   const route = routeWslPath(ctx.workspace.worktreeRoot, { listed: [w.distro], registry: [{ name: w.distro, guid: w.guid, version: 2 }] });
   if (route.kind !== "wsl") throw new TypeError("a WSL workspace needs a Linux worktree root");
-  const launch = { wslExecutable: w.wslExecutable, distro: w.distro, git: w.path, systemdRun: w.systemdRun, systemctl: w.systemctl, setsid: w.setsid, noexpand: w.noexpand };
-  return wslCommandLineUnits(launch, ctx.operationId, policy, "", route.linuxPath, args);
+  return wslCommandLineUnits(launchOf(w), ctx.operationId, policy, "", route.linuxPath, args);
+}
+
+// Feature 005 contract Δ3 `readSubmoduleWork` "WSL route": the units of one `submoduleWork` run, with the script text (src-tauri/src/wsl.rs `submodule_work_command`).
+export function workScriptUnits(ctx: { operationId: string; workspace: Pick<Workspace, "wsl"> }, args: readonly string[]): number {
+  const w = ctx.workspace.wsl;
+  if (w === undefined) throw new TypeError("the submoduleWork script needs a WSL workspace");
+  return wrappedUnits(launchOf(w), ctx.operationId, "read", "", "/bin/sh", ["-c", WORK_SCRIPT, "sh", w.path, ...args]);
 }
 
 // The policies of each context kind, as src-tauri/src/process_requests.rs `policy_fits` admits them (feature 004 contract Δ6).

@@ -13,7 +13,7 @@
 // The WSL cases are records without a budget (spec SC-010 "WSL times"). They run only when `ARBARETO_WSL_DISTRO` names `Ubuntu-26.04`. `Local: WSL`, alone.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { FIXED_IDENTITY, fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
@@ -444,12 +444,11 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     digest(args: string[]): string;
     exists(path: string): boolean;
     write(path: string, text: string): void;
-    copy(from: string, to: string): void;
   };
   function winRepo(dir: string): Repo {
     if (!under(FIXTURE_ROOT, dir)) throw new Error(`the repository is outside the fixture root: ${dir}`);
     const git = (args: string[], allowExit = [0], input?: Uint8Array) => ownedGit(GIT!, FIXTURE_ROOT, dir, args, { allowExit, ...(input === undefined ? {} : { input }) }).toString("utf8");
-    return { folder: dir, wsl: false, git, digest: (args) => sha256(Buffer.from(git(args), "utf8")), exists: existsSync, write: (path, text) => writeFileSync(join(dir, ...path.split("/")), text), copy: copyFileSync };
+    return { folder: dir, wsl: false, git, digest: (args) => sha256(Buffer.from(git(args), "utf8")), exists: existsSync, write: (path, text) => writeFileSync(join(dir, ...path.split("/")), text) };
   }
   const rev = (repo: Repo, name: string) => repo.git(["rev-parse", "--verify", "--end-of-options", `${name}^{commit}`]).trim();
   const tree = (repo: Repo, name: string) => repo.git(["rev-parse", "--verify", "--end-of-options", `${name}^{tree}`]).trim();
@@ -489,7 +488,7 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
       if (m === null) throw new Error(`sha256sum output refused: ${js(r.stdout)}`);
       return m[1]!;
     };
-    const repo: Repo = { folder: uncPath(w, dir), wsl: true, git, digest, exists: (path) => h.existing([path]).length === 1, write: (path, text) => h.write(`${dir}/${path}`, text), copy: (from, to) => h.copy(from, to) };
+    const repo: Repo = { folder: uncPath(w, dir), wsl: true, git, digest, exists: (path) => h.existing([path]).length === 1, write: (path, text) => h.write(`${dir}/${path}`, text) };
     // Git for Windows writes these keys at `init`, so the distro copy drops them (as revert-perf.test.ts).
     for (const key of ["core.symlinks", "core.ignorecase", "core.filemode"]) git(["config", "--local", "--unset", key], [0, 5]);
     // The app's distro Git gets no fixture environment (empty WSLENV), so its commits read the identity from the repository config.
@@ -867,16 +866,14 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     const git = repo.git;
     const tip = rev(repo, "HEAD");
     const target = rev(repo, "HEAD~1");
-    const indexPath = git(["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim();
-    const saved = `${indexPath}.t018`;
-    repo.copy(indexPath, saved);
+    // The restore is a Mixed reset to `tip`. It gives the start index only when that index equals the `tip` tree.
+    expect(git(["diff-index", "--cached", "--name-only", "-z", "HEAD", "--"])).toBe("");
     const indexHash = () => repo.digest(["ls-files", "-s", "-z"]);
     const indexBefore = indexHash();
     const s = await session(label, repo);
-    // The reset moves main only. The restore moves it back and writes the saved index; the refresh then gives fresh stat data.
+    // Do not copy over the index: the app's `git status` maps it, and CopyFileW then fails. Git writes `index.lock` and renames it.
     const restoreReset = async () => {
-      git(["update-ref", "refs/heads/main", tip]);
-      repo.copy(saved, indexPath);
+      git(["reset", "-q", tip]);
       git(["update-index", "-q", "--refresh"], [0, 1]);
       expect({ tip: rev(repo, "HEAD"), index: indexHash() }).toEqual({ tip, index: indexBefore });
       await refreshed(s, tip);

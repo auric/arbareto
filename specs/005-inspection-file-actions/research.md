@@ -611,7 +611,17 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - heapCapacity right after the read fell from 234.2 to 234.7 MiB to 168.1 to 169.0 MiB. heapSize right after the read fell from 101.6 MiB to 56.7 MiB. The objects fell from 1.62 million to 0.45 million.
 - After a forced collection, heapSize is 31.1 MiB in both, against 19.1 MiB before the read. The mimalloc peak commit grew 273.3 to 275.3 MiB with the v0.1.2 code. With stage 1, it grew 179.4 to 185.1 MiB.
 - These in-process values include two costs of the test service: the schema parse of the result and the frame check. Both codes have the same costs.
-- The packaged Q6 record of stage 1 is not measured yet. Stage 2 pages the changed-files list in the renderer.
+- Packaged Q6 record of stage 1, 2026-11-17 (local scratch `v013-session/logs/S2.log`). Build: code `9fef4a7c`, installed exe SHA-256 prefix `ca72da37`, service prefix `9b7ea1db`.
+- `inspection-perf.test.ts -t "Q6 SC-002"` gave 2 pass, 0 fail. The list showed 100,000 files and the limit text.
+- Tree: before 810,053,632 bytes, peak growth 363.2 MiB, growth 277.9 MiB at the limit-text sample. The P0 record on v0.1.2 had 379.9 MiB at the peak.
+- Service: peak growth 295.1 MiB, against 309.2 MiB in P0. Renderer: peak growth 86.4 MiB. GPU process: peak growth 5.1 MiB.
+- `git.exe` showed in 1 of 5 samples, with 21.9 MiB.
+- Samples after the limit text, growth in MiB (tree, service, renderer): 754 ms: 277.9, 187.1, 86.3. 15,000 ms: 264.2, 183.1, 75.9.
+- 30,001 ms: 194.9, 184.7, 3.5. 60,000 ms: 142.0, 142.6, -4.2.
+- The renderer growth fell to 3.5 MiB at 30 s. The service growth stayed near 185 MiB up to 30 s and fell to 142.6 MiB at 60 s.
+- The `git diff-tree` of the 100,001-file commit had a peak commit of 38.3 MiB (40,198,144 bytes) in its own Job. The Job peak was 41,705,472 bytes, with 2 processes and exit 0.
+- Decision of 2026-11-17 (user, constitution VII): v0.1.3 ships with stage 1 only. Stage 2 moves to v0.1.4 (tasks.md T125).
+- The same decision sets the SC-002 bound to 427 MiB. That is the 363.2 MiB peak growth plus 64 MiB, in whole MiB. It replaces 624 MiB.
 
 ## Plan review 2026-10-21
 
@@ -698,6 +708,16 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
   - 100 submodules: first mark 521.7 ms (bound `FIRST_MARK_MS` 1,000 ms), last mark 3,346.0 ms (bound 5,500 ms).
   - 256 submodules: first mark 533.4 ms (recorded only), last mark 8,488.1 ms (bound 14,080 ms).
 - T124 (ticked): the green record and the three controls ran on code `2d109fff`. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0 (tasks.md:43). Control 1 and `T124_WAIT_POLL` ran on the f014 installer. The f014 `tests/windows` steps cover every file of `tests/windows`, and each step exited 0.
+- T115 WSL record, 2026-11-17 (local scratch `v013-session/logs/S4a.log`). Code `9fef4a7c` with the T115 script route, `Ubuntu-26.04`, Git 2.55.0.
+  - `tests/wsl/inspection-wsl.test.ts -t "T115|T108 SC-012|T111"` ran alone: 5 pass, 42 filtered out, 0 fail.
+  - T108 SC-012, 20 submodules: median 2,825 ms (min 2,776 ms, max 2,893 ms). 100 submodules: median 11,261 ms (min 11,174 ms, max 11,349 ms).
+  - `DEADLINE` states: 0 in 10 runs at each size.
+  - The case runs the service in process with the shell test double, not the package.
+  - The f014 run on `2d109fff` used the route before T115. f014 ran these cases inside `bun run test:all`, not alone.
+  - f014, 20 submodules: median 3,904 ms (min 3,810 ms, max 4,076 ms).
+  - f014, 100 submodules: median 17,080 ms (min 16,778 ms, max 17,359 ms).
+  - The script route took 28% less time at 20 submodules and 34% less at 100.
+  - The S4a log prints no case names. The JUnit report of the next full run gives the per-case proof of the T115 (A) and (B) cases.
 
 **v0.1.2 records (T114, T123), 2026-11-16**
 

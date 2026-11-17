@@ -279,6 +279,20 @@ Build: full run f014 on code `2d109fff`, as in the T031 record above. The contro
   - "force push with lease (FR-024, FR-025) > a lease rejection with an empty Git reason shows no reason"
 - T030 control (`t030-c1`), "remove `&& !signal.aborted`": the case failed at `remote-delete-gone.test.ts:101`. An `ls-remote --exit-code -- origin` call reached the runner.
 
+### v0.1.3 records (T026), 2026-11-17
+
+Build: code `9fef4a7c` on branch `v0.1.3`. It holds `b2006241` (`git merge-base --is-ancestor` exits 0). Installed `arbareto.exe` SHA-256 `ca72da37179240de8023b55647f32ddafd2bbad6cf26b6dd8bccb0add177c167`. The exe hash was equal before and after each step. Git 2.56.0.windows.2, Bun 1.4.4. The logs are in local scratch `v013-session/logs`.
+
+- S5 ran the SC-009b, SC-009c, and SC-009d cases of `tests/windows/remote-delete-perf.test.ts` on fixture M-D: 3 pass, 0 fail.
+- SC-009b remote: cold 268.8 ms (budget 1,000 ms). Median 240.7 ms (budget 500 ms), every-run max 246.3 ms (budget 1,000 ms).
+- SC-009b combined: median 280 ms (budget 500 ms), every-run max 285 ms (budget 1,000 ms).
+- SC-009c remote only: cold 754.2 ms (budget 3,000 ms). Median 644.6 ms (budget 1,500 ms), every-run max 752.4 ms (budget 3,000 ms).
+- SC-009d combined: cold 781.5 ms (budget 4,000 ms). Median 810.4 ms (budget 2,000 ms), every-run max 996.5 ms (budget 4,000 ms).
+- SC-009e, remote only: each run had at least 65 inputs. The highest p95 was 24 ms, and the slowest input took 32 ms (cold run).
+- SC-009e, combined: each run had at least 81 inputs. The highest p95 was 32 ms (cold run), and the slowest input took 48 ms.
+- S4c ran `tests/wsl/remote-delete-wsl.test.ts` in `Ubuntu-26.04` (Git 2.55.0) on the same code: 6 pass, 0 fail.
+- Every budget held. T026 stays open until the full run.
+
 ## R8 Lease gap of remote helpers and dumb HTTP (T027, user decision 2026-11-13)
 
 Git source, tag `v2.55.0`. This batch read remote-curl.c on 2026-11-13. The transport-helper.c and transport.c lines come from the T027 finding of 2026-11-10 and from 003 contract Δ7.

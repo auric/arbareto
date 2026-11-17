@@ -112,7 +112,7 @@ The 005 `wslFiles` mode `replace` (`src/contracts/wsl-process.json` `replace_one
 
 ## R12 Performance budgets and the measurement method
 
-- Budgets: spec SC-007. The busy, confirmation, 1 GiB, and Cancel budgets were fixed before the measurement. On 2026-11-15, the user moved the end point of the Cancel budget (R15 "SC-007 Cancel decision"). The refreshed-diff, multi-file, and 10,000-file memory budgets come from the batch 4 measurements, as a product trade-off under constitution VII. R15 "Batch 4 budget decisions" holds their approval state.
+- Budgets: spec SC-007. The busy, confirmation, 1 GiB, and Cancel budgets were fixed before the measurement. On 2026-11-15, the user moved the end point of the Cancel budget (R15 "SC-007 Cancel decision"). On 2026-11-17, the user restored the 001 5 s target from Cancel to the outcome (R15 "v0.1.3 packaged result"). The refreshed-diff, multi-file, and 10,000-file memory budgets come from the batch 4 measurements, as a product trade-off under constitution VII. R15 "Batch 4 budget decisions" holds their approval state.
 - Fixture: the 001 moderate fixture plus a generated revert fixture: 1,000 tracked files of 4 KiB with unstaged changes, 100 files with staged and unstaged changes, one 1 MiB text file with a 2,000-line diff, and one 8 MiB binary file. `tests/windows/perf-fixtures.ts` builds it into the fixture cache.
 - Method: the packaged build, warm, median of 10 runs on the reference PC with Windows Defender on, as 005 SC-001 measured. The times run from the key or click input to the visible state through UI Automation events and the CDP marks of `tests/windows/inspection-perf.test.ts`. Memory: the `PrivateMemorySize64` sum through `scripts/windows/measure-ram.ps1 -Json`. The 1 GiB case measures the service process subtree (`arbareto-git.exe` and its children). The limit case at 10,000 files measures the whole `arbareto.exe` tree. Amended 2026-11-03 (user decision): the "before" value of the limit case and of the 1 GiB case is the median of the 250 ms samples in the 5 s window before the run starts (at the limit, before the confirmation click). The peak growth is the highest sample up to the run end minus that median. The retained growth is the median of the 5 s window that ends 30 s after the run end minus that median. A window with less than 5 s of samples fails the run. The single-sample values and the 5 s minimum stay as `OBSERVATION` lines. R15 "Memory baseline decision, 2026-11-03" records the cause.
 - WSL: the same fixture copied into the owned distro folder, measured from the Windows package.
@@ -729,3 +729,54 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - After the packaged result of the fix, the user decides on the 5 s target for a revert run (contracts Δ5). Until then, Δ5 and spec SC-007 stay as they are.
 - T084 limits the `revert-files` events to 4 per second (contracts Δ2). T085 makes the result small: `counts` and the first 20 files that did not revert (data-model §9).
 - Known limit of T085: the result lists at most 20 files. So the packaged W9 detection of `tests/windows/revert-perf.test.ts` is exact only up to 20 missed files.
+
+### v0.1.3 packaged result, 2026-11-17
+
+- User decision of 2026-11-17: the 001 5 s Cancel/reconciliation target applies to a revert run again. It replaces the second decision of 2026-11-15.
+- Each counted run must reach the outcome within 5,000 ms after Cancel. The known limit left spec Assumptions.
+- Build: code `9fef4a7c` on branch `v0.1.3`, with T083, T084, and T085. Installer SHA-256 `f192990f6609ac35ecfe32cea81164cc6128dc65f1f582b10ff245e93f5a7c92`.
+- Installed `arbareto.exe` SHA-256 `ca72da37179240de8023b55647f32ddafd2bbad6cf26b6dd8bccb0add177c167`. Service SHA-256 `9b7ea1db0781830865ae6609182b1a5db2e86df3cba8e6bde19166392a335f16`. The exe hash was equal before and after each step.
+- Git 2.56.0.windows.2, Bun 1.4.4. The logs are in local scratch `v013-session/logs`.
+- S1 ran `tests/windows/revert-perf.test.ts` as a whole file from the `9fef4a7c` checkout: 6 pass, 0 fail. The CDP buffers were 512 MiB and 256 MiB (arm A).
+- S3 ran only the 10,000-file limit case from a second `9fef4a7c` checkout: 1 pass, 0 fail. Its test patch set the CDP buffers to 32 MiB and 16 MiB (arm B).
+- The arm B patch also printed one `MEMARM` line per run. The committed test has no such line.
+- T083, runs 1 to 10, Cancel to "Checking the result…": median 158.5 ms (129.1 to 178.3 ms) in S1. The budget is 1,000 ms. S3 gave a median of 147.6 ms (132.8 to 168.6 ms). The text showed first in 10 of 10 runs in both.
+- T083, Cancel to the outcome: median 2,765.3 ms, min 2,713.5 ms, max 2,839.8 ms in S1. S3 gave a median of 2,855.2 ms, min 2,821.1 ms, max 2,900.9 ms.
+- The f014 run of v0.1.2 gave a median of 7,776.0 ms for the same series (T082 above).
+- `cancel` sent to the end of the `run_workbench` reply: median 2,735.0 ms in S1, 2,820.3 ms in S3.
+- Reply bytes: 1,844 in each run of both series. The T083 split had a reply of 750 KB.
+- Renderer share (the outcome time minus the reply end): median 33.9 ms (27.5 to 38.0 ms) in S1. S3 gave 33.8 ms (32.3 to 36.7 ms).
+- The session test printed the outcome series with no budget. The 5,000 ms check came after the session (user decision 2026-11-17). Every recorded run is below 5,000 ms.
+- 10,000-file Revert all unstaged changes, the revert button to the end: median 214,200.0 ms in S1, 214,391.9 ms in S3. The budget is 330,000 ms. f014 gave 284,624.7 ms.
+- Limit memory, S1: first run peak 263.4 MiB (budget 400 MiB), retained 46.0 MiB (budget 80 MiB). Later runs: peak max 116.1 MiB (budget 320 MiB), retained max -35.4 MiB (budget 32 MiB).
+- Limit memory, S3: first run peak 294.1 MiB, retained 54.0 MiB. Later runs: peak max 197.1 MiB, retained max 19.6 MiB. Each arm ran once, so these margins are single records.
+- SC-011 in S1: 18 records with 4,768 inputs. The highest p95 was 88 ms, and the slowest input took 88 ms.
+- SC-011 at the limit in S1: the review had 89 inputs (p95 16 ms, max 48 ms). The run had 1,976 inputs (p95 16 ms, max 40 ms).
+- SC-011 in S3: 2 records with 2,063 inputs. The highest p95 was 16 ms, and the slowest input took 48 ms.
+- Memory arms A and B, 10,000-file limit case. The table gives the private bytes in MiB by run. The renderer and service values are 30 s after the run end: the "before" split plus the retained split. The tree value is the median of the 5 s window before the run.
+- Arm B values come from its `MEMARM` lines. Arm A values use the same sum from the "single samples" lines of S1.
+
+  | Run | Renderer A | Renderer B | Service A | Service B | Tree before A | Tree before B |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 0 | 181.8 | 182.5 | 392.0 | 389.8 | 765.3 | 749.5 |
+  | 1 | 168.6 | 200.0 | 502.6 | 499.0 | 958.3 | 912.0 |
+  | 2 | 182.0 | 178.1 | 504.1 | 488.3 | 1,020.5 | 1,010.5 |
+  | 3 | 196.2 | 171.6 | 510.8 | 505.2 | 1,030.3 | 1,011.9 |
+  | 4 | 254.5 | 172.6 | 512.1 | 516.4 | 1,049.8 | 1,008.3 |
+  | 5 | 230.2 | 226.0 | 526.1 | 519.8 | 1,091.6 | 1,004.5 |
+  | 6 | 293.5 | 222.0 | 530.8 | 514.1 | 1,118.2 | 1,052.4 |
+  | 7 | 260.3 | 220.9 | 530.8 | 532.0 | 1,141.8 | 1,040.1 |
+  | 8 | 318.8 | 174.6 | 544.1 | 523.6 | 1,184.5 | 1,039.4 |
+  | 9 | 338.4 | 223.9 | 548.9 | 528.8 | 1,164.5 | 1,043.0 |
+  | 10 | 318.2 | 225.8 | 550.4 | 531.4 | 1,195.4 | 1,046.6 |
+  | 11 | 318.9 | 167.2 | 535.1 | 529.4 | 1,240.0 | 1,051.9 |
+
+- Arm A: the renderer climbed from 181.8 MiB after run 0 to 338.4 MiB after run 9.
+- Arm B: the renderer stayed flat, between 167.2 and 226.0 MiB.
+- The service rose from about 390 MiB after run 0 to about 500 MiB after run 1. Then it levelled off in both arms.
+- From run 0 to run 11, the tree "before" median rose about 43.2 MiB per cycle in arm A. In arm B, it rose about 27.5 MiB per cycle.
+- From run 2 to run 11, it rose about 24.4 MiB per cycle in arm A. In arm B, it rose about 4.6 MiB.
+- So the large CDP buffers keep the IPC reply bodies in the renderer and inflate its memory.
+- Arm B covered only the limit case. The other five cases of the file ran only with the old buffers.
+- The harness keeps 512 MiB and 256 MiB in v0.1.3, because the SC-007 memory budgets were calibrated with them.
+- A switch to 32 MiB and 16 MiB needs a calibration run of the SC-007 memory budgets first (target v0.1.4).

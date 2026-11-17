@@ -58,8 +58,8 @@ const PREVIEW_MS = 5_000;
 const DIRECTORY_PATTERN_MS = 3_550;
 const FIRST_PROGRESS_MS = 500;
 const CANCEL_MS = 1_000;
-// Spec SC-002 for v0.1.0: the highest recorded peak growth (559.8 MiB) plus a 64 MiB margin, rounded up to whole MiB.
-const MEMORY_BYTES = 624 * 1024 * 1024;
+// Spec SC-002 (user decision 2026-11-17): the T104 stage 1 peak growth of 363 MiB plus a 64 MiB margin.
+const MEMORY_BYTES = 427 * 1024 * 1024;
 // T104 stage 1: process samples after the limit text. A later fall shows garbage, and a level value shows retention. They have no bound.
 const LATE_SAMPLES_MS = [15_000, 30_000, 60_000];
 const INPUT_P95_MS = 100;

@@ -114,7 +114,7 @@ const STAGE_RECORDS = 3;
 // ---- Plan.md D11 checks 3 to 5 and the submodule HEAD read. D19 `locate` throws a failure, and D20 rule 2 returns it. ----
 
 type ReadFailure = { code: ErrorCode } | { stop: "canceled" | "deadline" };
-type LineRead = { exit: GitExit; line: string | null };
+type LineRead = { exit: GitExit; line: string | null; limited: boolean };
 // 001 contract §6 "Process replies": a Job close. `both` takes it last, so D19 throws the `CLOSED` value for it.
 const JOB_CLOSED: ReadFailure = { code: "GIT_FAILED" };
 
@@ -126,7 +126,7 @@ const oneGitlink = (at: readonly { path: Uint8Array; stage: number; mode: string
 const initializedFacts = (folder: FileFact, git: FileFact): boolean | null =>
   folder.kind === "error" || git.kind === "error" ? null : folder.kind === "directory" && (git.kind === "file" || git.kind === "directory");
 
-// One small read inside the submodule. A process stopped at the output bound gives a null line.
+// One small read inside the submodule. A process stopped at the output bound gives a null line and `limited`.
 async function lineOf(runner: GitRunner, t: ReadTarget, args: string[]): Promise<LineRead | ReadFailure> {
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   const s = await runRead(runner, t, args, out);
@@ -135,7 +135,7 @@ async function lineOf(runner: GitRunner, t: ReadTarget, args: string[]): Promise
   if (s.exit.deadline !== undefined) return { stop: "deadline" };
   if (s.exit.diagnosticLimit) return { code: "OUTPUT_LIMIT" };
   if (exitKind(s.exit, "read", out) === "jobClosed") return JOB_CLOSED;
-  return { exit: s.exit, line: out.limited ? null : oneLine(out.take()) };
+  return { exit: s.exit, line: out.limited ? null : oneLine(out.take()), limited: out.limited };
 }
 
 // Plan.md D11 check 5: the worktree root that Git prints for `--git-dir=.git` is the folder.
@@ -515,8 +515,14 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
   // Contract Δ3 `readSubmoduleWork` step 1 check 5 and steps 2 and 3 for one target. Null: the target is not initialized.
   async function workOf(t: InspectionTarget, location: { worktree: string }): Promise<WorkFacts | "programs" | null> {
     const config = createCollector({ maxBytes: TRUST_INPUT_BYTES });
+    // Contract Δ3 "WSL route": a check 5 output above the bound gives OUTPUT_LIMIT on both routes.
+    const checkFive = async () => {
+      const top = orThrow(await lineOf(runner, t, submoduleToplevelArgs(location)));
+      if (top.limited) throw fail("OUTPUT_LIMIT");
+      return locatedFrom(top.exit.exitCode, top.line, location.worktree);
+    };
     // Both commands load no index and run no program, so the listing runs beside the location check.
-    const [here, listedExit] = await both(located(t, location), step(t, submoduleConfigListArgs(location), config));
+    const [here, listedExit] = await both(checkFive(), step(t, submoduleConfigListArgs(location), config));
     if (!here) return null;
     const entries = configFrom(config.limited, listedExit.exitCode, config.take());
     if (typeof entries === "string") throw fail(entries);

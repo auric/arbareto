@@ -1132,6 +1132,36 @@ describe("readSubmoduleWork WSL route through a stub runner (contract Δ3 \"WSL 
   });
 });
 
+// T115 analyze finding A1: a check 5 output above 64 KiB gives the WSL route state.
+describe("readSubmoduleWork Windows route through a stub runner (contract Δ3 \"WSL route\")", () => {
+  caseTest("T115", "a check 5 output above 64 KiB gives OUTPUT_LIMIT; a failed check 5 without output gives not-initialized", [], async () => {
+    const { wsl: _, ...windows } = { ...STUB_WORKSPACE, worktreeRoot: "C:/stub/super" };
+    const runner = {
+      async run(call: GitCall): Promise<GitExit> {
+        const capped = call.arguments.some((a) => a.endsWith("/capped"));
+        if (call.arguments.includes("--show-toplevel")) {
+          if (!capped) return { exitCode: 128, activeDescendants: 0 };
+          const out = Buffer.from(`C:/stub/super/capped${"x".repeat(DIAGNOSTIC_RETAINED_BYTES_PER_STREAM)}\n`);
+          for (let i = 0; i < out.length && !call.stdout.limited; i += STUB_CHUNK) call.stdout.push(out.subarray(i, i + STUB_CHUNK));
+          // Contract §6 `stop`: a limited stdout collector of a read ends the run.
+          return { exitCode: call.stdout.limited ? null : 0, activeDescendants: 0 };
+        }
+        if (call.arguments.includes("config")) return { exitCode: 0, activeDescendants: 0 };
+        throw new Error(`no other Git run may start: ${call.arguments.join(" ")}`);
+      },
+      async fileFacts(request: { files: { path: string[] }[] }) {
+        return request.files.map(({ path }) => ({ kind: path.at(-1) === ".git" ? "file" : "directory" }));
+      },
+    };
+    const reads = createSubmoduleReads({ runner: runner as unknown as GitRunner, trust: STUB_TRUST, environment: {}, readDeadlineMs: READ_DEADLINE_MS });
+    const snapshot = { snapshotId: crypto.randomUUID(), indexEntries: ["capped", "failing"].map(gitlinkOf), indexCut: undefined, completeness: { state: "complete" }, entries: [] };
+    const t = { operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace: windows, installation: { selectedPath: null } };
+    const r = await reads.readSubmoduleWork(t as never, snapshot as never, new Set(), 0);
+    expect({ result: r.result, code: "code" in r ? r.code : undefined }).toEqual({ result: "succeeded", code: undefined });
+    expect(states((r as { value: Work }).value)).toEqual({ capped: failedWith("OUTPUT_LIMIT"), failing: { state: "not-initialized" } });
+  });
+});
+
 // T121 analyze finding U1: `workingParts` passes a path that is no valid UTF-8 (WSL), so rule 2 refuses it with reason `path`.
 describe("submoduleHead of a path without components (contract §6 \"File facts\", plan.md D20 rule 2)", () => {
   caseTest("T121", "a path that is no valid UTF-8 gives {refused: path} before any Git process", [], async () => {

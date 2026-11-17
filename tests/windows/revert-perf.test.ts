@@ -59,8 +59,10 @@ const UNSTAGED_1000_MS = 30_000;
 // SC-007 (session 3 decision): on WSL a multi-file revert ends within 2 s plus 320 ms per file.
 const UNSTAGED_1000_WSL_MS = 2_000 + 320 * 1_000;
 const GIB_MS = 30_000;
-// Spec SC-007 (user decision 2026-11-15): the 1 s runs from Cancel to "Checking the result…". The time to the outcome has no budget.
+// Spec SC-007 (user decision 2026-11-15): the 1 s runs from Cancel to "Checking the result…".
 const CANCEL_MS = 1_000;
+// Spec SC-007 and 001 SC-008 (user decision 2026-11-17): each counted run reaches the outcome within 5 s of Cancel.
+const CANCEL_OUTCOME_MS = 5_000;
 const MEMORY_BYTES = 64 * MIB;
 // SC-007 (session 3 decision) at the 10,000-file limit: the process-tree peak growth and the growth RETAIN_MS after the run end.
 const LIMIT_PEAK_BYTES = 320 * MIB;
@@ -1025,7 +1027,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         }
         const shown = toStop.filter((t, i) => t < toEnd[i]!).length;
         const cancel = record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to ${js(RECONCILING)} or the outcome, the text showed first in ${shown} runs`, toStop, CANCEL_MS);
-        record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to the outcome, no budget, min ${Math.min(...toEnd).toFixed(1)} ms, max ${Math.max(...toEnd).toFixed(1)} ms`, toEnd);
+        record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to the outcome, budget for every run, min ${Math.min(...toEnd).toFixed(1)} ms, max ${Math.max(...toEnd).toFixed(1)} ms`, toEnd, CANCEL_OUTCOME_MS);
         // Run 0 is the first revert after the app start. It has the first-run bounds; runs 1 to RUNS have the later-run bounds. A W9 run leaves its series.
         const firstRuns = bounded.filter((b) => b.run === 0);
         const laterRuns = bounded.filter((b) => b.run > 0);
@@ -1037,7 +1039,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           later: laterRuns.length > 0 && laterRuns.every((b) => b.peak <= LIMIT_PEAK_BYTES && b.retained <= LIMIT_RETAINED_BYTES),
           end: limitEnd <= LIMIT_END_MS,
           cancel: cancel <= CANCEL_MS,
-        }).toEqual({ first: true, later: true, end: true, cancel: true });
+          outcome: Math.max(...toEnd) <= CANCEL_OUTCOME_MS,
+        }).toEqual({ first: true, later: true, end: true, cancel: true, outcome: true });
       } finally {
         await sampler.stop();
         await end(s);

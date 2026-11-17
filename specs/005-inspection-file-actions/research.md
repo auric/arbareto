@@ -621,7 +621,35 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - The renderer growth fell to 3.5 MiB at 30 s. The service growth stayed near 185 MiB up to 30 s and fell to 142.6 MiB at 60 s.
 - The `git diff-tree` of the 100,001-file commit had a peak commit of 38.3 MiB (40,198,144 bytes) in its own Job. The Job peak was 41,705,472 bytes, with 2 processes and exit 0.
 - Decision of 2026-11-17 (user, constitution VII): v0.1.3 ships with stage 1 only. Stage 2 moves to v0.1.4 (tasks.md T125).
-- The same decision sets the SC-002 bound to 427 MiB. That is the 363.2 MiB peak growth plus 64 MiB, in whole MiB. It replaces 624 MiB.
+- In the same decision, the user chose the SC-002 bound of 427 MiB. That is the 363.2 MiB peak growth plus 64 MiB, rounded down to whole MiB. It replaces 624 MiB.
+
+*T104 stage 2 design (T125), 2026-11-16.* The Plan agent wrote this design on 2026-11-16. The full record is in local scratch.
+- Design A follows the feature 002 History window model. The service keeps the listing and a compact row model.
+- The row model holds the tree order in a `Uint32Array`, a byte-range comparator, and the folder table.
+- It also holds the rows for each layout, set of collapsed folders, and filter.
+- The renderer keeps a page cache. The file tree reads `rowCount` and the row at an index.
+- `fileId` stays the ordinal of the Git record.
+- Design B lowers the list bound, for example to 10,000 files. It changes FR-012 and needs a user decision.
+- Design C pages only the transfer. The plan rejects it.
+- Contract outline: the `readCommitChanges` payload adds `layout` and `filter`, with `filter` up to FILTER_TEXT_BYTES.
+- Its result drops `files`. It adds `count`, `first`, `rowCount`, and `rows`, with at most 128 rows in the first window.
+- A new read `readCommitRows` takes `changesId`, `layout`, `filter`, `collapsed`, `at`, and `count`. `collapsed` holds folder IDs.
+- `at` is `{row}` or `{fileId}`. `count` is 1 to 512.
+- The result holds `changesId`, `rowCount`, `target` (`found` or `none`), `start`, and `rows`.
+- `readCommitRows` takes no slot and starts no Git process. It refuses with `UNKNOWN_TARGET` or `INVALID_REQUEST`.
+- One reply holds at most 512 rows and at most 8 MiB.
+- The contract change touches Δ1, Δ2, Δ5, Δ8, and Δ10, data-model §1 and §14, and a new data-model §18.
+- Model: feature 002 `readHistoryRows` takes `at` and `count` 1 to 512. Its renderer keeps an LRU cache of 128-row pages.
+- That renderer keeps one read in flight and shows "Loading…" for a row without data.
+- Step P1 updates the documents.
+- Step P2 builds the shared order in `src/contracts/tree-order.ts` and the row model in a new `src/git-service/commit-rows.ts`.
+- Step P3 changes the service, the contract, the session, and the shell. Step P4 changes the renderer.
+- Step P5 removes `files` and adds a packaged keyboard case and the controls.
+- Step P5 also sets the SC-002 bound that the user chooses after the Q6 measurement.
+- Agents: implementer-xhigh for P2 and P3, frontend-implementer for P4, implementer and then scout for P5.
+- Size: about 2,000 lines and about 15 test files.
+- Main risk: the memory of `git.exe` can make a 64 MiB bound unreachable.
+- Open decisions: U3 (the reuse of "Loading…"), U4 (the filter in JSC), and the renderer cache size.
 
 ## Plan review 2026-10-21
 

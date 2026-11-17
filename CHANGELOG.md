@@ -2,6 +2,21 @@
 
 Each section lists the changes that a user of Arbareto sees in that release.
 
+## [0.1.3]
+
+A preview release for Windows 11 x64.
+
+### Changed
+
+- Cancel of a large revert now ends faster. At 10,000 files, the result shows in about 2.8 s instead of about 8 s.
+- A revert of many files sends its progress at most 4 times per second. So it uses less CPU and memory.
+- The result of a large revert is much smaller. The status bar still names the first 20 files that did not revert.
+- Opening a commit with very many changed files uses less memory in the Git service.
+- In WSL repositories, the submodule marks of the Commit view load faster. Arbareto now starts one WSL call per step, not one per Git command. In our tests, the marks of 100 submodules loaded in about 11 s instead of about 17 s.
+- A Cancel press while Arbareto shows "Checking the result…" now shows "Cancel requested".
+- A click on selected text in Blame keeps the selection, the scroll position and the focus on the selected line.
+- Before the branch list loads, a branch key or a right-click on a branch shows "The branches are still loading." Arbareto then loads the branches again.
+
 ## [0.1.2] - 2026-11-16
 
 A preview release for Windows 11 x64.

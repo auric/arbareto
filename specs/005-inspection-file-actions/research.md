@@ -605,12 +605,12 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Defect 1: a cut listing kept a subarray of the `take()` buffer. So the retained listing kept the whole buffer, up to STATUS_LISTING_BYTES (32 MiB).
 - Defect 2: `entryOf` gave `path` and `oldPath` as subarrays of `Listing.raw`, and blame keeps the path in its target. So a blame kept the whole listing buffer after a new listing replaced it. arrayBuffers stayed at 10.7 MiB, against 0.1 MiB without the blame.
 - Stage 1 (user decision 2026-11-16) changes only the service. `rawListingOffsets` checks the grammar in one pass and writes only the record offsets. `readCommitChanges` builds the reply entries one at a time and stops at the result bound.
-- Stage 1 also fixes both defects: a cut listing keeps a copy of its kept bytes, and `entryOf` copies the record. The read drops its collector after `take()`. The contract does not change.
+- Stage 1 also fixes both defects. A cut listing keeps a copy of its kept bytes, and `entryOf` copies the record. The read drops its collector after `take()`. The contract does not change.
 - Stage 1 equality: `tests/git/commit-changes-listing.test.ts` compares the reply, the entries, and the retained listing with the v0.1.2 parse and reply. The inputs are the fixture commits, seeded listings, damaged listings, the three cuts, and each prefix length.
 - Stage 1 in-process record: `tests/git/commit-changes-memory.test.ts`, two runs on each code, the v0.1.2 code first. The live parse fell from 47.1 MiB to 0.4 MiB (0.8 MiB with extra memory). The 47.1 MiB is the control run with the v0.1.2 parse.
 - heapCapacity right after the read fell from 234.2 to 234.7 MiB to 168.1 to 169.0 MiB. heapSize right after the read fell from 101.6 MiB to 56.7 MiB. The objects fell from 1.62 million to 0.45 million.
 - After a forced collection, heapSize is 31.1 MiB in both, against 19.1 MiB before the read. The mimalloc peak commit grew 273.3 to 275.3 MiB with the v0.1.2 code. With stage 1, it grew 179.4 to 185.1 MiB.
-- These in-process values include the costs of the test service, the same for both codes: the schema parse of the result and the frame check.
+- These in-process values include two costs of the test service: the schema parse of the result and the frame check. Both codes have the same costs.
 - The packaged Q6 record of stage 1 is not measured yet. Stage 2 pages the changed-files list in the renderer.
 
 ## Plan review 2026-10-21

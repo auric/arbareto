@@ -150,11 +150,12 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - Commands: the arrays of `submoduleToplevelArgs`, `submoduleConfigListArgs`, and `submoduleStatusArgs` with the target as the worktree: `--no-lazy-fetch --no-optional-locks -C <target> --git-dir=.git <args>`.
   - Output: one frame per command, in argument order. Phase a gives two frames per target (check 5, then step 2). Phase b gives one frame per target. `<i>` is the zero-based target index in the run arguments.
   - Frame: `<i> <exit> <n>\n` and then the `n` output bytes, with `<exit>` the Git exit code. An output above `bound` gives `<i> limit <bound>\n` and then the first `bound` bytes of the output (orchestrator decision E4, 2026-11-16).
-  - The service reads the check 5 frame with the 64 KiB bound of the Windows route (`DIAGNOSTIC_RETAINED_BYTES_PER_STREAM`). A longer check 5 output or a step 2 `limit` frame gives `failed` with `OUTPUT_LIMIT`.
+  - The service reads the check 5 frame with the 64 KiB bound of the Windows route (`DIAGNOSTIC_RETAINED_BYTES_PER_STREAM`). A longer check 5 output or a step 2 `limit` frame gives `failed` with `OUTPUT_LIMIT`. The Windows route also gives `failed` with `OUTPUT_LIMIT` for a check 5 output above 64 KiB. So the states of both routes stay equal.
   - A step 3 `limit` frame keeps the early stop of step 3. When its bytes set both `modified` and `untracked`, the state is `checked`. Otherwise it is `failed` with `OUTPUT_LIMIT`.
   - Command lines (orchestrator decision E3, 2026-11-16): a phase whose targets do not fit `WINDOWS_COMMAND_LINE_UNITS` splits into more runs. Each run takes the next targets in page order that fit. The units are those of the `wsl.exe` command line that the shell builds, with the script text. A target that does not fit a run alone gives `failed` with `INVALID_REQUEST`, as the Windows route does.
-  - Failures: a script exit other than 0 gives each target of the run without a frame `failed` with `GIT_FAILED`. Output in another form gives each such target `MALFORMED_GIT_OUTPUT`. A shell refusal gives each target of the run `INVALID_REQUEST`.
-  - Deadline: a target with its frames complete keeps its state. Each other target of the page gives `failed` with `DEADLINE`.
+  - Failures: a script exit other than 0 gives each target of the run without all its frames `failed` with `GIT_FAILED`. Output in another form gives each such target `MALFORMED_GIT_OUTPUT`. A run that reaches the 001 §5 stderr bound gives each such target `OUTPUT_LIMIT`, as the Windows `step` does. The stderr rule applies before the other two rules.
+  - A refused run gives each target of the run `failed` with the refusal code. The code is `INVALID_REQUEST`, `UNKNOWN_TARGET`, or `PROCESS_OWNERSHIP_FAILED`. A WSL run reads no Git identity, so `GIT_CHANGED` cannot occur.
+  - Deadline: a target with its frames complete keeps its state. Each other target of the page gives `failed` with `DEADLINE`. A process deadline of a script run also ends the page. Each open target of the page then gives `failed` with `DEADLINE`. On the Windows route, a process deadline fails only its own target with `DEADLINE`.
   - Cleanup: the script makes `dir` with `umask 077` and `mkdir` without `-p`, so an existing folder fails. An `EXIT` trap set after `mkdir` removes the folder. A cancel or a deadline leaves the folder (contract gaps).
 - Errors of a page: `TRUST_REQUIRED`, `TRUST_CHANGED` (parent gate); `UNKNOWN_TARGET` (an old snapshot, `src/git-service/snapshot.ts` `lookup`); `REPOSITORY_CHANGED` (a new repository generation, the same `lookup` through `reader.selection` in `src/git-service/status.ts`); `INVALID_REQUEST` (a page at or above the page count); `OUTPUT_LIMIT` (index cut); `CANCELED`. No new error code.
 - Result: data-model §16, one page.
@@ -270,8 +271,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - Policy: the 001 `read` policy with the shadow cwd. The shell never runs a repository context command in an `ignorePreview` context.
 - The 002 Δ6 `run` field `script` adds the value `submoduleWork` (T115, Δ3 `readSubmoduleWork` "WSL route"). The shell runs it through the wrapper in mode `read`, with `/bin/sh`, the script text, and the approved Git path.
   - Policy per script: `matchingProbe` takes only `search`, and `submoduleWork` takes only `read`.
-  - The shell refuses a `submoduleWork` run with `INVALID_REQUEST` and starts nothing for: another policy, a transaction or an index file, or a Windows Git.
-  - It also refuses: a folder other than `/tmp/arbareto-probe-<uuid>`, a phase other than `a` or `b`, and a bound that is not a decimal number from 1 to `STATUS_LISTING_BYTES` without a leading zero.
+  - The shell refuses each `submoduleWork` run below with `INVALID_REQUEST` and starts nothing. It refuses another policy, a transaction or an index file, and a Windows Git.
+  - It also refuses a folder other than `/tmp/arbareto-probe-<uuid>` and a phase other than `a` or `b`. It refuses a bound that is not a decimal number from 1 to `STATUS_LISTING_BYTES` without a leading zero.
   - It also refuses: no target, more than 16 targets (`SUBMODULE_WORK_PAGE`), and a target that does not start with `/`.
   - Otherwise a `submoduleWork` run follows every `run` rule: Job, deadline, cancel, output bounds, and the `exit` reply.
 - `reveal` reply adds `absent` for a walk that finds no entry. The service maps it to `UNKNOWN_TARGET` with reason `absent`.
@@ -346,7 +347,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - 002 spec Scope Boundaries: historical diffs and blame are in feature 005. The Files tab and branch filtering stay out.
 - 002 Δ3 views: `readCommitChanges` and `readBlame` take the view topology and shallow set. A view release drops their retained results.
 - The 001 commit details line "Changed files are not shown in this version." goes.
-- 002 Δ6 `run` field `script` (T115): "Its only value is `matchingProbe`." becomes "Its values are `matchingProbe` and `submoduleWork`." Only the `registeredOperation` context takes it.
+- 002 Δ6 `run` field `script` (T115): only the `registeredOperation` context takes it. The old text is "Its only value is `matchingProbe`". The new text is "Its values are `matchingProbe` and `submoduleWork`".
 - 002 Δ6 refusals (T115): "a policy other than `search`" applies to `matchingProbe` only. A `submoduleWork` run takes only `read` and has its own refusals (Δ6).
 - 002 Δ11 "New fixed script `matchingProbe`" (T115): `src/contracts/wsl-process.json` also holds the fixed script `submoduleWork` (Δ11).
 
@@ -380,6 +381,6 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - `blame.ignoreRevsFile` values that the shell `below` rule refuses, such as a value outside the worktree or with a `..` component, pass to Git unchecked. A missing file there gives `GIT_FAILED` with the output tail. `config --type=path` removes the prefix rules but not this gap, because `fileFacts` checks only paths below the worktree root.
 - Stage file of a moved gitlink reads the submodule HEAD again at step 7. A commit inside the submodule between that read and the publication goes unseen. The index then records the commit of the step 7 read, and the next status shows the submodule as moved again.
 - `readSubmoduleWork` checks the submodule settings in step 2 and runs status in step 3. A settings change between the two steps is not seen. The next snapshot checks again.
-- A cancel or a deadline of a WSL `submoduleWork` run ends its scope with SIGKILL, so the `EXIT` trap does not run. The `/tmp/arbareto-probe-<uuid>` folder then stays, as for the 002 matching probe. Nothing removes it. It holds the bounded output of the last commands: config listings or status records of the submodules. Mode 0700 keeps it private to the distro user.
+- A cancel or a deadline of a WSL `submoduleWork` run ends its scope with SIGKILL. The `EXIT` trap then does not run. The `/tmp/arbareto-probe-<uuid>` folder then stays, as for the 002 matching probe. Nothing removes it. It holds the bounded output of the last commands: config listings or status records of the submodules. Mode 0700 keeps it private to the distro user.
 - A submodule with a repository-controlled status program gets no local-edit check. No approval path exists for it in the parent window. Open submodule gives it its own trust (spec FR-050). A later feature can reuse that approval.
 - `FileDispositionInfoEx` and `FileRenameInfoEx` need a file system with POSIX delete and rename support. Another file system gives `error`, and the file stays (plan O-4).

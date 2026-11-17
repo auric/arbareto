@@ -466,7 +466,7 @@ This feature changes these requirements for builds that include it. The earlier 
 #### Visible controls and keyboard
 
 - **FR-067**: Every new control MUST follow 004 FR-085 and 004 FR-087. It MUST have an icon or a label, a tooltip with its shortcut, and an accessible name. It MUST show visible focus and a stated reason when unavailable. Single-key shortcuts MUST act only while their region has focus. Destructive items MUST stay apart from routine items.
-- **FR-068**: The History file list, the blame lines, and the preview lists MUST create elements only for rows near the visible area. This follows 002 FR-055. Amended by feature 004 (T175, user decision 2026-11-16): a virtual list MAY also mount its selected or focused row. This one row MAY lie outside the rows near the visible area. So the list keeps one Tab stop. This applies to the blame lines, the History file list, Changes, and the references sidebar.
+- **FR-068**: The History file list, the blame lines, and the preview lists MUST create elements only for rows near the visible area. This follows 002 FR-055. Amended by feature 004 (T175, user decision 2026-11-16): a virtual list MAY also mount its selected or focused row. This one row MAY lie outside the rows near the visible area. So the list keeps one Tab stop. This applies to the blame lines and the History file list.
 
 #### Submodule change preview (2026-10-31, v0.1.0)
 

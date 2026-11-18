@@ -29,8 +29,9 @@ export function realGlobalConfigDigests(git: string): string[] {
   return paths.map((p) => `${p} ${digest(p)}`);
 }
 
-// The removal of two T164 M copies takes longer than the 5-second default of Bun hooks.
-const REMOVE_TIMEOUT_MS = 120_000;
+// The root can hold two T164 M copies, the 1,024-submodule twins, and the folder sets. Their removal took 121 s in f015.
+// The driver step cap still bounds the run, so this limit only stops a false hook timeout.
+const REMOVE_TIMEOUT_MS = 600_000;
 
 // The non-recursive `mkdirSync` fails when another process holds the name.
 export function createFixtureRoot(): void {
@@ -180,6 +181,8 @@ export function removeTree(path: string): void {
 
 export function removeFixtureRoot(): void {
   if (!existsSync(FIXTURE_ROOT)) return;
+  const started = performance.now();
   removeTree(FIXTURE_ROOT);
-  console.log(`FIXTURE_ROOT_REMOVED ${FIXTURE_ROOT} exists=${existsSync(FIXTURE_ROOT)}`);
+  const elapsedMs = Math.round(performance.now() - started);
+  console.log(`FIXTURE_ROOT_REMOVED ${FIXTURE_ROOT} exists=${existsSync(FIXTURE_ROOT)} ms=${elapsedMs}`);
 }

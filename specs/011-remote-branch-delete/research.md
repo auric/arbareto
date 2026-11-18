@@ -293,6 +293,22 @@ Build: code `9fef4a7c` on branch `v0.1.3`. It holds `b2006241` (`git merge-base 
 - S4c ran `tests/wsl/remote-delete-wsl.test.ts` in `Ubuntu-26.04` (Git 2.55.0) on the same code: 6 pass, 0 fail.
 - Every budget held. T026 stays open until the full run.
 
+### v0.1.3 full run f015 (T026), 2026-11-18
+
+- Build: full run f015 on code `e2fa367a`, branch `v0.1.3`. Installer SHA-256 `08706d55…`, installed exe `9ed79992…`.
+- `e2fa367a` holds `b2006241` (`git merge-base --is-ancestor` exits 0). The full record is 007 research.md R7 "v0.1.3 records".
+- Every `ORIGIN` line named the checkout under test. The logs are in local scratch `f015-full`.
+- Step `s5-remote-delete-perf` on fixture M-D: 7 pass, 0 fail. It holds the SC-009b, SC-009c, and SC-009d cases.
+- SC-009b remote: cold 256.4 ms (budget 1,000 ms). Median 238.8 ms (budget 500 ms), every-run max 248.1 ms (budget 1,000 ms).
+- SC-009b combined: median 279 ms (budget 500 ms), every-run max 287.1 ms (budget 1,000 ms).
+- SC-009c remote only: cold 726.8 ms (budget 3,000 ms). Median 660.2 ms (budget 1,500 ms), every-run max 707.5 ms (budget 3,000 ms).
+- SC-009d combined: cold 829.5 ms (budget 4,000 ms). Median 806.1 ms (budget 2,000 ms), every-run max 871.3 ms (budget 4,000 ms).
+- The SC-009c and SC-009d cases also assert SC-009e. Both cases passed.
+- Step `s5-remote-delete-packaged`: 7 pass, 0 fail.
+- `tests/wsl/remote-delete-wsl.test.ts` in `Ubuntu-26.04`, inside the f015 `test:all`: 6 pass, 0 fail (JUnit report).
+- T026 (ticked): the 011 rule needs a green Windows run with `ORIGIN` lines. f015 gives both parts on one commit.
+- The green `test:windows` clause holds through the user decisions of 2026-11-17 and 2026-11-18 (007 R7).
+
 ## R8 Lease gap of remote helpers and dumb HTTP (T027, user decision 2026-11-13)
 
 Git source, tag `v2.55.0`. This batch read remote-curl.c on 2026-11-13. The transport-helper.c and transport.c lines come from the T027 finding of 2026-11-10 and from 003 contract Δ7.

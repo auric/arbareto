@@ -643,6 +643,16 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - The bound of 576 MiB replaces the bound of 427 MiB of 2026-11-17. That bound came from one run and did not include the known variance.
 - The packaged service peak of v0.1.3 is not measurably lower than the 309.2 MiB of v0.1.2 (P0).
 - Stage 1 cut the in-process parse work. But the packaged service peak varies from 226.7 to 378.9 MiB across these runs.
+- Rerun R2, 2026-11-18 (local scratch `v013-rerun/R/R2.log`): `inspection-perf.test.ts` at 9a88708d, with the 576 MiB bound.
+- R2 used the f015 build: installed exe `9ed79992…`, product code of `e2fa367a`. Every `ORIGIN` line names the checkout under test.
+- R2 result: 10 pass, 1 skip, 0 fail. The skip is the T061 capture case, capability `live-input`.
+- R2 Q6: tree peak growth 232.7 MiB, bound 576 MiB, 100,000 files shown. The settled growth was 146.3 MiB.
+- Each recorded Q6 growth on this code is below 576 MiB. Only R2 asserts that bound.
+- f015 green counts of the stage 1 files (pass, skip, fail): `tests/git/commit-changes-listing.test.ts` 9, 0, 0. `tests/git/commit-changes-memory.test.ts` 2, 0, 0.
+- T104 (not ticked, 2026-11-18): the f015 record is on `e2fa367a`, so the older-build rule (tasks.md:43) applies.
+- `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1. Three test files changed.
+- The files are `tests/git/fixture-root.ts`, `tests/windows/commit-menu-perf.test.ts`, and `tests/windows/inspection-perf.test.ts`.
+- R2 meets the rule, but no `bun run test:all` and no full `tests/windows` set ran on the tick build.
 
 *T104 stage 2 design (T125), 2026-11-16.* The Plan agent wrote this design on 2026-11-16. The full record is in local scratch.
 - Design A follows the feature 002 History window model. The service keeps the listing and a compact row model.
@@ -767,6 +777,15 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
   - f014, 100 submodules: median 17,080 ms (min 16,778 ms, max 17,359 ms).
   - The script route took 28% less time at 20 submodules and 34% less at 100.
   - The S4a log prints no case names. The JUnit report of the next full run gives the per-case proof of the T115 (A) and (B) cases.
+- T115 JUnit record, full run f015 on code `e2fa367a` (007 research.md R7 "v0.1.3 records"). Source: `serial.xml` of the f015 `test:all` run, in the temp folder `arbareto-test-run-d1944422-fde6-4168-bd6d-e739d6193e03`.
+  - `tests/wsl/inspection-wsl.test.ts` in `Ubuntu-26.04`: 46 pass, 1 skip, 0 fail. The skip is F15, class `windows-path-rules`.
+  - Case (A) passed in 13.0 s. Its name starts "T115 (A) FR-076: the submoduleWork script route gives the states …".
+  - Case (B) passed in 11.8 s. Its name starts "T115 (B) FR-076: 33 gitlinks give 3 pages …".
+  - Every `ORIGIN` line of f015 named the checkout under test.
+  - T115 (not ticked, 2026-11-18): the JUnit proof of (A) and (B) holds. The older-build rule (tasks.md:43) blocks the tick.
+  - `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1. See the T104 record above.
+- Reviewer finding MEDIUM 1 of the v0.1.3 review: `scriptWork` rethrows a non-`Stop` error without an abort.
+  - The other trust workers then keep running. User decision of 2026-11-18: v0.1.3 ships as tested. T127 holds the fix, target v0.1.4.
 
 **v0.1.2 records (T114, T123), 2026-11-16**
 

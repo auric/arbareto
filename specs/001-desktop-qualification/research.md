@@ -2458,6 +2458,22 @@ Fixes: T389.
   - Cargo half (`t416-c2-cargo`): `cargo test --locked --manifest-path src-tauri/Cargo.toml every_policy_removes_git_smart_http` gave 0 passed, 1 failed. Red line: `panicked at src\git_env.rs:340:13: probe: GIT_SMART_HTTP reaches the child`. The unmutated rerun gave 1 passed.
   - The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0.
 
+**v0.1.3 full run f015, 2026-11-17 to 2026-11-18.** Build: code `e2fa367a` on branch `v0.1.3`. Installer SHA-256 `08706d55…`, installed exe `9ed79992…`. The full record and the step table are in 007 research.md R7 "v0.1.3 records". The logs are in local scratch `f015-full`.
+
+- `bun run test:all` exited 0: 10,445 pass, 56 skip, 0 fail (JUnit reports). `bun run typecheck` exited 0.
+- Every `ORIGIN` line named the checkout under test (`bad` count 0 in each step).
+- T419: `tests/contracts/status-area.test.tsx` 116, 0, 0 (pass, skip, fail). Both T419 cases passed.
+- The two cases: "T419: a Cancel press in reconciling shows Cancel requested before any reply".
+- And: "T419: after a taken Cancel, a Cancel in reconciling shows Cancel requested and sends no second cancel".
+- Red record (T419 row): before the code, both T419 cases and the changed T418 `reconciling` case failed. The run gave 113 pass, 3 fail.
+- Source of the next three bullets: implementer report 2026-11-16, branch `v013-ui`.
+- Red before the code, `tests/contracts/status-area.test.tsx`: 113 pass, 3 fail. Case A and case B expected "Cancel requested".
+- Both received "Checking the result…". The changed T418 case received "Updating submodules in my repo…".
+- Control: without the `setReconcilePress(...)` line, the same 3 cases failed with the same received texts. Restored: 116 pass.
+- T419 (ticked): the 001 rule needs a green Windows run with `ORIGIN` lines in the checkout under test. f015 is that run.
+- The test files that changed after `e2fa367a` do not include `status-area.test.tsx`. They are `tests/git/fixture-root.ts` and two `tests/windows` files.
+- Four `tests/windows` steps of f015 were red. The user decisions of 2026-11-17 and 2026-11-18 accept f015 plus the reruns (007 R7).
+
 ### Dependency reviews
 
 After T003 and T006, each dependency change gets one record here (plan.md, Tool and runtime boundaries). A record names the task and each added, removed, or changed package. It gives the old and new resolved versions, the licence, the reason, the reviewer, and the findings. It also lists the qualification checks that ran again.

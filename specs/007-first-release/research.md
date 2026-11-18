@@ -1137,3 +1137,158 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
 - The Sandbox install of the downloaded installer passes as T030. See the same section.
 - The user approved the README update on 2026-11-16. README.md Status and Download now name v0.1.2.
 - `OBSERVATION v0.1.2 release: v0.1.2 at deb54088 (tag object afed9a8f), prerelease, immutable, not latest, four files; build 8 min 31 s, approval to publish 32 s; downloads equal API digests; sums verify exit 0, 3 OK lines; attestation exit 0 for each file with the release.yml signer, exit 1 for a changed byte and for other.yml; notices file carries three attestations; GH_TOKEN only in "Publish the release"; both About URLs HTTP 200; upload refusal not run`
+
+### v0.1.3 records (2026-11-17 to 2026-11-18)
+
+- Source: the driver logs in local scratch `f015-full`, the rerun logs in `v013-rerun`, and the control log in `v013-final`.
+- User decision of 2026-11-17: the v0.1.3 release evidence is the full run f015 plus targeted reruns on its build.
+
+#### Build identity
+
+- Code: `e2fa367a` (e2fa367ae0e1085e5e1d100470892da7fef6102b) on branch `v0.1.3`, version 0.1.3. Porcelain was empty at the start.
+- f015 built `Arbareto_0.1.3_x64-setup.exe` with SHA-256 `08706d55736f3beae6c2a600f32ca61ef34fce7756b521e8c879d17bb4069180`.
+- The exe after the NSIS marker patch has SHA-256 `9ed79992f96240b6e6dd5b530e251017b5661090fdab7168eafebdbd12ec5d49`. The raw exe has `5683e0fe…`.
+- The installed `arbareto.exe` equals the patched build, before and after the f015 install.
+- The installed `arbareto-git.exe` has SHA-256 `737c6c18882ab362a7dc08a8444d962c144250260b041aaae8fa03d055ccfaf9`. It equals the service binary of the checkout.
+- An earlier package in local scratch `v013-final` has the installer SHA-256 `9e09eeb136bc3f875ce7bdb09ac907d75127f9badf3bc5a354d3bedd982319e9`.
+- The exe installed before f015 already had SHA-256 `9ed79992…`. The f015 driver names it the e2fa367a candidate.
+- The two installer files differ in their bytes. f015 installed its own installer `08706d55…`.
+- OS: Windows NT 10.0.26300.0, UBR 9974, x64. Git 2.56.0.windows.2, WebView2 157.0.4341.46, Bun 1.4.4, rustc and cargo 1.99.0.
+- WSL: `Ubuntu-26.04` with Git 2.55.0.
+- The calibration hash log reads both installed hashes during run 1 and after run 5. They were equal.
+- Each rerun log prints the installed exe `9ed79992…`.
+
+#### f015 steps
+
+- Time: 2026-11-17 12:49 to 2026-11-18 04:01, local time. 42 steps exit 0, and 4 steps exit 1.
+- Each of the 40 steps with an `ORIGIN` count printed `bad=0`.
+- `bun run test:all`: 10,501 tests, 10,445 pass, 56 skip, 0 fail. The counts come from the JUnit reports `parallel.xml` and `serial.xml`.
+- The driver count 1,049 of `s4-test-all` covers only the serial part.
+- `cargo test --locked`: 672 passed, 0 failed, 16 ignored. s6 `bun test ./tests/gate`: 175 pass, 0 fail.
+- `s5-history-git-memory` ran 0 tests: 2 skip, capability `history-fixture-h1m`. `s5-no-network` ran 0 tests: 1 skip, capability `live-input`. These steps prove nothing.
+- The 33 `s5` steps cover every file of `tests/windows`.
+- The f015 driver adds `ARBARETO_TREE_SHOTS_DIR` for the submodule tree step to the f014 driver (`driver.diff`).
+
+  | # | Step | Exit | Pass | Fail | Minutes |
+  | --- | --- | --- | --- | --- | --- |
+  | 1 | `s0a-install` | 0 | - | - | 0.0 |
+  | 2 | `s0b-build` | 0 | - | - | 0.1 |
+  | 3 | `s0c-typecheck` | 0 | - | - | 0.1 |
+  | 4 | `s0d-schemas` | 0 | - | - | 0.0 |
+  | 5 | `s0e-cargo-test` | 0 | 672 | 0 | 2.5 |
+  | 6 | `s4-test-all` | 0 | 10,445 | 0 | 308.3 |
+  | 7 | `s4w-workbench-wsl-facts` | 0 | 27 | 0 | 5.2 |
+  | 8 | `s4w-workbench-wsl-branches` | 0 | 12 | 0 | 11.8 |
+  | 9 | `s4w-workbench-wsl-staging` | 0 | 12 | 0 | 9.2 |
+  | 10 | `s4w-workbench-wsl-settings` | 0 | 14 | 0 | 12.3 |
+  | 11 | `s1-package` | 0 | - | - | 3.3 |
+  | 12 | `s2-install` | 0 | - | - | 0.1 |
+  | 13 | `s5-capture` | 0 | 17 | 0 | 0.0 |
+  | 14 | `s5-cdp` | 0 | 14 | 0 | 0.1 |
+  | 15 | `s5-commit-menu-packaged` | 0 | 5 | 0 | 0.8 |
+  | 16 | `s5-commit-menu-perf` | 1 | 7 | 1 | 49.7 |
+  | 17 | `s5-contrast` | 0 | 16 | 0 | 0.0 |
+  | 18 | `s5-delete-facts` | 0 | 3 | 0 | 0.0 |
+  | 19 | `s5-external-change` | 0 | 10 | 0 | 0.4 |
+  | 20 | `s5-history-git-memory` | 0 | 0 | 0 | 0.0 |
+  | 21 | `s5-inject` | 0 | 8 | 0 | 0.0 |
+  | 22 | `s5-inspection-packaged` | 0 | 11 | 0 | 2.8 |
+  | 23 | `s5-inspection-perf` | 1 | 9 | 1 | 14.5 |
+  | 24 | `s5-installed-app` | 0 | 14 | 0 | 0.2 |
+  | 25 | `s5-keys-cdp` | 0 | 7 | 0 | 0.1 |
+  | 26 | `s5-native-facts` | 0 | 4 | 0 | 0.3 |
+  | 27 | `s5-no-network` | 0 | 0 | 0 | 0.0 |
+  | 28 | `s5-perf-fixtures` | 0 | 10 | 0 | 5.6 |
+  | 29 | `s5-process-poller` | 0 | 4 | 0 | 0.0 |
+  | 30 | `s5-ratio` | 0 | 29 | 0 | 0.0 |
+  | 31 | `s5-remote-delete-packaged` | 0 | 7 | 0 | 1.2 |
+  | 32 | `s5-remote-delete-perf` | 0 | 7 | 0 | 13.5 |
+  | 33 | `s5-revert-facts` | 0 | 12 | 0 | 0.2 |
+  | 34 | `s5-revert-packaged` | 0 | 7 | 0 | 1.3 |
+  | 35 | `s5-revert-perf` | 1 | 5 | 1 | 135.1 |
+  | 36 | `s5-service-hardening` | 0 | 2 | 0 | 0.0 |
+  | 37 | `s5-spelling-packaged` | 0 | 6 | 0 | 0.7 |
+  | 38 | `s5-spelling-perf` | 0 | 89 | 0 | 115.8 |
+  | 39 | `s5-submodule-perf-fixture` | 0 | 1 | 0 | 0.1 |
+  | 40 | `s5-submodule-tree-packaged` | 1 | 15 | 1 | 62.9 |
+  | 41 | `s5-submodule-update-packaged` | 0 | 5 | 0 | 105.3 |
+  | 42 | `s5-sync-packaged` | 0 | 1 | 0 | 0.0 |
+  | 43 | `s5-sync-perf` | 0 | 5 | 0 | 0.0 |
+  | 44 | `s5-uia` | 0 | 12 | 0 | 0.3 |
+  | 45 | `s5-workbench-packaged` | 0 | 8 | 0 | 1.4 |
+  | 46 | `s6-gate` | 0 | 175 | 0 | 3.3 |
+
+- Rows 5 and 6 give the cargo and JUnit counts. The driver printed `-` and 1,049 there.
+
+#### f015 red steps
+
+- `s5-commit-menu-perf`: the SC-010d case on M failed in the test restore, not at a budget.
+  - `copyfile` of the saved index over `.git/index` gave `EUNKNOWN` (errno -4094) at `commit-menu-perf.test.ts:879`.
+  - Commit 21ce63e7 names the cause. The app's 1 s poll can start `git status`, which maps `.git/index`.
+  - The fix is test-only: 21ce63e7 and 9a88708d. Rerun R1 passed (010 research.md R7 "v0.1.3 test fixes").
+  - User decision of 2026-11-17: a targeted rerun on the f015 build counts for this step.
+- `s5-inspection-perf`: Q6 SC-002 grew 475.7 MiB, above the bound of 427 MiB. The other 9 cases passed.
+  - The user rule of 2026-11-17 sets the bound by calibration. The 2026-11-18 data gave 576 MiB.
+  - Record: 005 research.md "SC-002 calibration". Rerun R2 passed at 576 MiB.
+- `s5-revert-perf`: the 10,000-file case failed only on `first`. The other 5 cases passed.
+  - Run 0 kept 98.2 MiB 30 s after its end. The budget is 80 MiB. Its peak was 297.0 MiB (budget 400 MiB).
+  - Later runs: peak max 186.8 MiB (budget 320 MiB), retained max 19.6 MiB (budget 32 MiB).
+  - Cancel to the outcome: median 2,875.6 ms, max 2,908.8 ms. The budget is 5,000 ms for each run.
+  - User decision of 2026-11-17: rerun the case. The first-run baseline window gets its fix in v0.1.4 (008 T089).
+- `s5-submodule-tree-packaged`: 15 pass, 1 skip, 1 fail. The fail is the fixture cleanup hook, not a case.
+  - The hook timed out after 121.1 s. Its limit was 120 s.
+  - The skip is "T164 (10) at 225%", capability `text-scale-225`.
+  - Commit 704581b2 sets the cleanup limit to 600 s and logs the removal time.
+  - User decision of 2026-11-18: the step counts with its 15 passing tests. The coming 225% session proves the cleanup fix.
+
+#### Targeted reruns (2026-11-18)
+
+- Source: local scratch `v013-rerun/R`. The checkout head was 9a88708d (9a88708d879ec9758be79e885e876d5675c85900).
+- `git diff e2fa367a 9a88708d -- src src-tauri scripts package.json bun.lock` is empty. So the product code equals f015.
+- The tests differ in three files: `tests/git/fixture-root.ts`, `tests/windows/commit-menu-perf.test.ts`, and `tests/windows/inspection-perf.test.ts`.
+- Every `ORIGIN` line names the checkout under test or the installed exe.
+- R1-attempt1, `commit-menu-perf.test.ts` with the `git reset` restore of 21ce63e7: 4 pass, 1 fail, exit 1, 13.3 min.
+  - The new precondition at `commit-menu-perf.test.ts:870` caught 11 staged paths in the M start index.
+  - A reset to the tip loses these paths. So 9a88708d restores the start index through `write-tree` and `read-tree`.
+- R1, `commit-menu-perf.test.ts`: 8 pass, 0 fail, exit 0, 50.3 min.
+- R2, `inspection-perf.test.ts`: 10 pass, 1 skip, 0 fail, exit 0, 13.7 min.
+  - SC-002: growth 232.7 MiB, bound 576 MiB, 100,000 files shown.
+  - The skip is the T061 capture case, capability `live-input`.
+- R3, `revert-perf.test.ts`, only the 10,000-file limit case: 1 pass, 0 fail, exit 0, 60.4 min.
+  - Run 0: peak growth 254.5 MiB (budget 400 MiB), retained 30.3 MiB (budget 80 MiB).
+  - Later runs: peak max 167.8 MiB (budget 320 MiB), retained max 26.7 MiB (budget 32 MiB).
+  - Cancel to the outcome: median 2,820.9 ms, min 2,792.5 ms, max 2,858.8 ms. The budget is 5,000 ms.
+  - Cancel to "Checking the result…": median 161.9 ms (budget 1,000 ms).
+  - Revert all unstaged changes of 10,000 files: median 212,513.4 ms (budget 330,000 ms).
+
+#### SC-002 calibration
+
+- The full record is 005 research.md "SC-002 calibration". Five Q6 runs on the f015 build gave these peak growths in MiB.
+- Runs 1 to 5: 435.7, 511.7, 463.7, 506.9, and 285.7. Runs 1 to 4 failed the old 427 MiB bound.
+- The bound is 511.7 + 64 MiB, rounded up: 576 MiB (commit 569ed80f).
+- Only R2 asserts the 576 MiB bound.
+
+#### Control of the 5 s Cancel budget
+
+- Source: local scratch `v013-final/control.log`, 2026-11-17, installed exe `9ed79992…`.
+- The control ran the 10,000-file case of `revert-perf.test.ts` from another local worktree. That test file kept the 1,000 ms outcome budget.
+- Its `ORIGIN` lines name that worktree, not the f015 checkout.
+- Cancel to the outcome: 10 runs, median 2,959.1 ms, min 2,931.4 ms, max 2,981.4 ms.
+- The assert gave `outcome: false`, and every other field was true. Result: 0 pass, 1 fail.
+- So the outcome check turns red at 1 s. At 5 s, f015 and R3 pass on the same build.
+
+#### CHANGELOG correction
+
+- Commit 4fa74ed5 (2026-11-18) corrects the 0.1.3 CHANGELOG. It states only measured gains.
+- It removes the bullet on less Git service memory for a commit with many files. The packaged runs show no measured drop.
+- The progress bullet now names the lower memory peak of the window. It no longer names less CPU.
+
+#### Ticks and reviewer findings
+
+- Ticked: 001 T419, 008 T083 to T085, and 011 T026. Each feature research.md holds the record.
+- Not ticked: 004 T175 and T176, and 005 T104 and T115. The older-build rule of 004 and 005 blocks them.
+- `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1. The three test files above differ.
+- 004 T145 and T164, and 006 T041 and T060, wait for the 225% session.
+- User decision of 2026-11-18: the reviewer findings ship as tested. Their fixes target v0.1.4.
+- New v0.1.4 rows: 001 T420, 004 T177, 005 T127, and 008 T086 to T089.
+- `OBSERVATION v0.1.3 full run f015: e2fa367a, installer 08706d55…, exe 9ed79992…; 42 of 46 steps exit 0; ORIGIN bad 0; test:all 10,445 pass 0 fail 56 skip; gate 175 pass; reruns R1 8/0, R2 10/0/1 (SC-002 232.7 of 576 MiB), R3 1/0 (Cancel outcome median 2,820.9 ms of 5 s)`

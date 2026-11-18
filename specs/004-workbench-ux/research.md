@@ -1249,3 +1249,29 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
   | `t174-c10-history-row` | add `select-text` to a History row | `history-view.test.tsx:81`: `row.closest(".select-text")` not null |
 
 - T174 (ticked): the ten DOM controls and the packaged control ran red on code `2d109fff`. The packaged control used the f014 installer above. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0 (tasks.md:44). The f014 `tests/windows` steps cover every file of `tests/windows` at `2d109fff`, and each step exited 0.
+
+## R34 v0.1.3 records (T175, T176), 2026-11-18
+
+- Build: full run f015 on code `e2fa367a`, branch `v0.1.3`. Installer SHA-256 `08706d55…`, installed exe `9ed79992…`.
+- The full record is 007 research.md R7 "v0.1.3 records". The logs are in local scratch `f015-full`.
+- `bun run test:all` exited 0: 10,445 pass, 56 skip, 0 fail (JUnit reports). Every `ORIGIN` line named the checkout under test.
+- f015 green counts (pass, skip, fail): `tests/contracts/inspection-blame.test.tsx` 38, 0, 0. `tests/contracts/workbench-branches.test.tsx` 74, 0, 0.
+- T175: the case "T175: a skipped click with the selected line outside the view …" passed.
+- T176: the case "Delete states that the branches are still loading and reads them again; …" passed.
+- T176: the case "after a failed readBranches, Delete states the failure text" passed.
+- T175 and T176 (not ticked): the older-build rule (tasks.md:44) blocks the tick.
+- `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1.
+- The changed files are `tests/git/fixture-root.ts`, `tests/windows/commit-menu-perf.test.ts`, and `tests/windows/inspection-perf.test.ts`.
+- No `bun run test:all` ran on a later commit. So the tick needs a run on the tick build.
+- Red output and control results: implementer report 2026-11-16, branch `v013-ui`. Each control was restored, and the case was then green.
+- T175 red before the code: `inspection-blame.test.tsx` 37 pass, 1 fail at (3). Green: 38 pass.
+- At (3), `document.activeElement` expected line 1. It received the DIV "Line 520, …".
+- T175 C1 (pin removed): red at (3), as before the code.
+- T175 C2 (pin removed, `select(line)` instead of the focus return): red at (2), expected 10000, received 0.
+- T175 C3 (`preventScroll` dropped): red at (2), expected 10000, received 0.
+- T176 red before the code: the new `workbench-branches.test.tsx` cases gave 0 pass, 2 fail. Green: 2 pass.
+- Both reason asserts received "".
+- T176 C1 (old gate back in `Workbench.tsx`): both cases red, received "".
+- T176 C2 (loading text only): case 2 red, received "The branches are still loading.".
+- T176 C3 (no loaded-entries check in `actionable`): case 1 red at the `aria-haspopup` null assert, received "menu".
+- The review of the v0.1.3 code found LOW 2 in T176. User decision of 2026-11-18: T177 holds the fix, target v0.1.4.

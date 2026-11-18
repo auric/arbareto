@@ -780,3 +780,35 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - Arm B covered only the limit case. The other five cases of the file ran only with the old buffers.
 - The harness keeps 512 MiB and 256 MiB in v0.1.3. The SC-007 memory budgets come from runs with these buffer sizes.
 - A switch to 32 MiB and 16 MiB needs a calibration run of the SC-007 memory budgets first (target v0.1.4).
+
+### v0.1.3 records (T083, T084, T085), 2026-11-18
+
+- Build: full run f015 on code `e2fa367a`, branch `v0.1.3`. Installer SHA-256 `08706d55…`, installed exe `9ed79992…`.
+- The full record is 007 research.md R7 "v0.1.3 records". The logs are in local scratch `f015-full` and `v013-rerun/R`.
+- `bun run test:all` exited 0: 10,445 pass, 56 skip, 0 fail (JUnit reports). Every `ORIGIN` line named the checkout under test.
+- f015 green counts (pass, skip, fail): `tests/git/revert-files.test.ts` 35, 0, 0. `tests/git/revert-unstaged.test.ts` 9, 0, 0.
+- More f015 counts: `tests/contracts/revert-contract.test.ts` 36, 0, 0. `tests/wsl/revert-wsl.test.ts` 13, 0, 0 in `Ubuntu-26.04`.
+- `cargo test --locked`: 672 passed, 0 failed, 16 ignored.
+- f015 packaged steps: `s5-revert-facts` 12 pass, 0 fail. `s5-revert-packaged` 7 pass, 0 fail. `s5-revert-perf` 5 pass, 1 fail.
+- `s5-revert-perf`, 10,000-file case: only `first` failed. Run 0 kept 98.2 MiB 30 s after its end (budget 80 MiB).
+- Same case in f015: Cancel to the outcome median 2,875.6 ms, max 2,908.8 ms (budget 5,000 ms). The other fields held.
+- User decision of 2026-11-17: rerun the case. T089 holds the baseline window fix, target v0.1.4.
+- Rerun R3, 2026-11-18: only the 10,000-file case, at 9a88708d on the f015 build. 1 pass, 0 fail, 60.4 min.
+  - R3 run 0: peak growth 254.5 MiB (budget 400 MiB), retained 30.3 MiB (budget 80 MiB).
+  - R3 later runs: peak max 167.8 MiB (budget 320 MiB), retained max 26.7 MiB (budget 32 MiB).
+  - R3 Cancel to the outcome: median 2,820.9 ms, max 2,858.8 ms (budget 5,000 ms).
+  - R3 Cancel to "Checking the result…": median 161.9 ms (budget 1,000 ms). The revert of 10,000 files: median 212,513.4 ms.
+  - Every `ORIGIN` line of R3 names the checkout under test or the installed exe.
+- The earlier session S1 above ran the whole file on code `9fef4a7c`: 6 pass, 0 fail. Its outcome median was 2,765.3 ms.
+- Control of the 5 s budget (local scratch `v013-final/control.log`, exe `9ed79992…`): the same case with the 1,000 ms outcome budget.
+  - Cancel to the outcome: median 2,959.1 ms, max 2,981.4 ms. The assert gave `outcome: false`. Result: 0 pass, 1 fail.
+  - The control ran from another local worktree. Its `ORIGIN` lines name that worktree.
+- T083, T084, T085 (ticked): the 008 rule needs a green Windows run with `ORIGIN` lines in the checkout under test.
+- f015 is that run: `test:all` for the Bun and WSL tests, and `s0e-cargo-test` for the Rust tests.
+- For `revert-perf.test.ts`, f015 plus R3 hold every budget of the 10,000-file case. The other five cases passed in f015.
+- The green `test:windows` clause holds only through the user decisions of 2026-11-17 and 2026-11-18 (007 R7).
+- T053 and T082 are ticked. T083 depends on T084 and T085, and T085 depends on T084. So the three tasks tick together.
+- Reviewer findings of the v0.1.3 review. User decision of 2026-11-18: they ship as tested, and the fixes target v0.1.4.
+  - LOW 3: `envelope.ts` and `revert.ts` each hold their own constant for the 20-file cap (T086).
+  - LOW 4: the whole-index read of `indexEntriesOf` also serves the D5a batch reads (T087).
+  - Suspicion: a canceled `fileFacts` frame may not wait for the shell walk of that frame (T088).

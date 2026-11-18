@@ -43,7 +43,7 @@ description: "Task list for the Discard (Revert) Changes feature"
 | 2. P1 stories | 3, 4 | T025–T033 | US1, US2 | WP4 (implementer-xhigh), then WP5 (frontend-implementer). |
 | 3. P2 stories, WSL, safety | 5, 6, 7, 8 | T034–T046, T055–T062, T065, T066 | US3, US4, US5, cross-cutting | WP4, then WP5, then WP6 (implementer, WSL alone), then WP4 safety suites. T059 to T062 are the batch 2 convergence (implementer-xhigh, frontend-implementer, implementer). T065 and T066 are the batch 3 convergence, after T046. |
 | 4. Qualification and docs | 9 | T047–T053, T073–T079 | Cross-cutting | WP7 (implementer writes, scout runs; local package), then WP8 (implementer). T073 (implementer) and T074 (implementer-xhigh) are the batch 4 budget fixes. T075 to T079 are the batch 4 convergence: T075 (implementer-xhigh, local Rust), T076 (implementer-xhigh, WSL alone), T077 and T078 (implementer), T079 (implementer, local package). |
-| After v0.1.0 | After v0.1.0 | T063, T064, T067 to T072, T080 to T085 | Cross-cutting | frontend-implementer (T063, T071), implementer-xhigh (T064, T067 to T070, T082, T085; T064 and T068 WSL alone), investigator then implementer-xhigh (T072, T083), scout (T080), implementer (T081, T084). |
+| After v0.1.0 | After v0.1.0 | T063, T064, T067 to T072, T080 to T089 | Cross-cutting | frontend-implementer (T063, T071), implementer-xhigh (T064, T067 to T070, T082, T085; T064 and T068 WSL alone), investigator then implementer-xhigh (T072, T083, T088), scout (T080), implementer (T081, T084, T086, T087), implementer then scout (T089). T086 to T089 target v0.1.4. T089 needs a user decision first. |
 
 ---
 
@@ -234,7 +234,7 @@ description: "Task list for the Discard (Revert) Changes feature"
 
 ## After v0.1.0
 
-**Agent**: frontend-implementer (T063, T071); implementer-xhigh (T064, T067 to T070); investigator, then implementer-xhigh (T072, T083); scout (T080); implementer (T081, T084); implementer-xhigh (T082, T085).
+**Agent**: frontend-implementer (T063, T071); implementer-xhigh (T064, T067 to T070); investigator, then implementer-xhigh (T072, T083, T088); scout (T080); implementer (T081, T084, T086, T087); implementer-xhigh (T082, T085); implementer, then scout (T089). T089 needs a user decision first.
 
 **Purpose**: Work that the v0.1.0 package does not need.
 
@@ -270,7 +270,7 @@ description: "Task list for the Discard (Revert) Changes feature"
 - Phase 7 runs alone on the host. T055 to T057 can start after T024. T042 runs after T041, T056, and T057.
 - Phase 8 runs after T041. T045 waits for T042 to T044. T059 to T062 can start after T033. T059 and T060 change `revert.ts` or `revert-bytes.ts`, so they run before or between the Phase 5 and 6 service tasks, never in parallel with them. T046 waits for T045 and T059 to T062. T065 and T066 run after T046, one after the other, because both change the refusal path. T049 waits for them.
 - Phase 9 runs after T046. T075 to T079 run after T052 and before the merge to main. T075 and T076 change the shell, so they run one after the other, and T076 runs alone on the host. The T049 record names their targeted rerun.
-- "After v0.1.0" (T063, T064, T067 to T072, T080 to T085) runs after T053. T067 to T070 can change `revert.ts`, so they run one after the other. T068 runs alone on the host. T081 and T082 change `tests/windows/revert-perf.test.ts`, so they run one after the other. T082 runs after T081 and after 001 T417 and T418. T083 runs after T082. T083 can change `revert.ts`, so it runs one after the other with T067 to T070. T084, T085, and the T083 fix change `revert.ts`, so they run in this order, one after the other.
+- "After v0.1.0" (T063, T064, T067 to T072, T080 to T089) runs after T053. T067 to T070 can change `revert.ts`, so they run one after the other. T068 runs alone on the host. T081 and T082 change `tests/windows/revert-perf.test.ts`, so they run one after the other. T082 runs after T081 and after 001 T417 and T418. T083 runs after T082. T083 can change `revert.ts`, so it runs one after the other with T067 to T070. T084, T085, and the T083 fix change `revert.ts`, so they run in this order, one after the other. T086 to T089 target v0.1.4. T086 runs after T085. T087, T088, and T089 run after T083. T086, T087, and T088 name `revert.ts`, so they run one after the other. T089 needs a user decision first, because it changes the measurement method of 2026-11-03.
 
 ### Story dependencies
 

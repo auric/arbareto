@@ -11,7 +11,7 @@ description: "Task list for the Remote Branch Delete feature"
 
 **Tests**: The spec (SC-001 to SC-011) and plan.md D16 require tests. A failing-test task comes before each implementation task, and the implementation task depends on it. Each test task names one control mutation that must turn its tests red. No test passes by default.
 
-**Organization**: Phase 1 holds the probe rerun (WP-F). Phase 2 holds the mockup (WP1). Phase 3 holds the contracts and the shell (WP2, WP3). Phases 4 and 5 hold the service and the frontend (WP4, WP5). Phase 6 holds WSL (WP6). Phase 7 holds the packaged qualification (WP7, WP7r). Phase 8 holds the final review. Phase 9 holds the doc pass (WP8). Tasks T001 to T024 are "Before v0.1.0" (user decision, 2026-11-06). T025 is after v0.1.0 (user decision, 2026-11-07) and has no release target. T026 has no release decision and no target. Tasks T027 to T031 name their own release.
+**Organization**: Phase 1 holds the probe rerun (WP-F). Phase 2 holds the mockup (WP1). Phase 3 holds the contracts and the shell (WP2, WP3). Phases 4 and 5 hold the service and the frontend (WP4, WP5). Phase 6 holds WSL (WP6). Phase 7 holds the packaged qualification (WP7, WP7r). Phase 8 holds the final review. Phase 9 holds the doc pass (WP8). Tasks T001 to T024 are "Before v0.1.0" (user decision, 2026-11-06). T025 is after v0.1.0 (user decision, 2026-11-07) and has no release target. T026 targets v0.1.3 and is ticked (research.md R7 "v0.1.3 full run f015 (T026)"). Tasks T027 to T031 name their own release.
 
 ## Format: `[ID] [P?] [Story] Description`
 

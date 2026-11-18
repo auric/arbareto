@@ -805,6 +805,7 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
   - The control ran from another local worktree. Its `ORIGIN` lines name that worktree.
 - T083, T084, T085 (ticked): the 008 rule needs a green Windows run with `ORIGIN` lines in the checkout under test.
 - f015 is that run: `test:all` for the Bun and WSL tests, and `s0e-cargo-test` for the Rust tests.
+- The tick tree differs from e2fa367a in CHANGELOG.md and 3 test files. The revert tests use only fixture-root.ts. That change raises the root removal timeout and adds the removal time to the log.
 - For `revert-perf.test.ts`, f015 plus R3 hold every budget of the 10,000-file case. The other five cases passed in f015.
 - The green `test:windows` clause holds only through the user decisions of 2026-11-17 and 2026-11-18 (007 R7).
 - T053 and T082 are ticked. T083 depends on T084 and T085, and T085 depends on T084. So the three tasks tick together.

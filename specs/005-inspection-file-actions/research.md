@@ -666,7 +666,7 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Packaged Q6: R2 above ran at `9a88708d` on the f015 installer, with tree peak growth 232.7 MiB against 576 MiB.
 - Q6 ran seven times on the f015 package: the f015 step, five calibration runs, and R2. Each growth is below 576 MiB.
 - Only R2 asserts the 576 MiB bound. So one run, not two, asserts the bound that the task row names.
-- T104 (ticked, 2026-11-18): stage 1 holds on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The exact-tree test:all clause is waived for T104 only.
+- T104 (ticked, 2026-11-18): stage 1 holds on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The user waives the exact-tree test:all clause for T104 only.
 - Gap: no `bun run test:all` and no full `tests/windows` set ran on the tick tree.
 - T125 holds stage 2: the renderer paging and the 64 MiB restore. Both stay unverified.
 
@@ -807,7 +807,7 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
   - The dispatch names the filtered cases: T115 (A), T115 (B), T111, and FR-071/074/076. The log prints no case names.
   - Every `ORIGIN` line names the l7 worktree.
   - T115 (ticked, 2026-11-18): the 4 filtered cases passed on the tick tree. The f015 JUnit record is the per-case proof of (A) and (B).
-  - User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The exact-tree test:all clause is waived for T115 only. Gap: no `bun run test:all` ran on the tick tree.
+  - User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The user waives the exact-tree test:all clause for T115 only. Gap: no `bun run test:all` ran on the tick tree.
 - Reviewer finding MEDIUM 1 of the v0.1.3 review: `scriptWork` rethrows a non-`Stop` error without an abort.
   - The other trust workers then keep running. User decision of 2026-11-18: v0.1.3 ships as tested. T127 holds the fix, target v0.1.4.
 

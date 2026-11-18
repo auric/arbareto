@@ -1294,4 +1294,4 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - The alone run gave 26 pass, 0 fail, and exit 0 in 1.3 s. The two files hold 26 cases in `parallel.xml`.
 - So both cases fail only under the parallel group load. 001 T421 holds the timeout fix.
 - T175 and T176 (ticked, 2026-11-18): the green f015 full run holds each case. The same-tree run repeats each case green.
-- Gap: no `bun run test:all` ran on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The exact-tree test:all clause is waived for T175 and T176 only.
+- Gap: no `bun run test:all` ran on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The user waives the exact-tree test:all clause for T175 and T176 only.

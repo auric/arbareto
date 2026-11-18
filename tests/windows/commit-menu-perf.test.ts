@@ -866,14 +866,15 @@ describe.skipIf(process.platform !== "win32")("T018 packaged commit menu budgets
     const git = repo.git;
     const tip = rev(repo, "HEAD");
     const target = rev(repo, "HEAD~1");
-    // The restore is a Mixed reset to `tip`. It gives the start index only when that index equals the `tip` tree.
-    expect(git(["diff-index", "--cached", "--name-only", "-z", "HEAD", "--"])).toBe("");
+    // The M start index has staged paths, so the restore reads back its tree. `write-tree` fails on unmerged entries.
+    const savedTree = git(["write-tree"]).trim();
     const indexHash = () => repo.digest(["ls-files", "-s", "-z"]);
     const indexBefore = indexHash();
     const s = await session(label, repo);
-    // Do not copy over the index: the app's `git status` maps it, and CopyFileW then fails. Git writes `index.lock` and renames it.
+    // Do not copy over the index: the app's `git status` maps it, and CopyFileW then fails. `read-tree` writes `index.lock` and renames it.
     const restoreReset = async () => {
-      git(["reset", "-q", tip]);
+      git(["update-ref", "refs/heads/main", tip]);
+      git(["read-tree", savedTree]);
       git(["update-index", "-q", "--refresh"], [0, 1]);
       expect({ tip: rev(repo, "HEAD"), index: indexHash() }).toEqual({ tip, index: indexBefore });
       await refreshed(s, tip);

@@ -58,8 +58,8 @@ const PREVIEW_MS = 5_000;
 const DIRECTORY_PATTERN_MS = 3_550;
 const FIRST_PROGRESS_MS = 500;
 const CANCEL_MS = 1_000;
-// Spec SC-002: the user chose 427 MiB on 2026-11-17. That is the T104 stage 1 peak growth of 363.2 MiB plus 64 MiB, rounded down to whole MiB.
-const MEMORY_BYTES = 427 * 1024 * 1024;
+// Spec SC-002: the highest measured v0.1.3 peak growth (511.7 MiB) plus 64 MiB, rounded up. User rule 2026-11-17, research.md "SC-002 calibration".
+const MEMORY_BYTES = 576 * 1024 * 1024;
 // T104 stage 1: process samples after the limit text. A later fall shows garbage, and a level value shows retention. They have no bound.
 const LATE_SAMPLES_MS = [15_000, 30_000, 60_000];
 const INPUT_P95_MS = 100;
@@ -465,7 +465,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
   );
 
   test.skipIf(reason !== null)(
-    "Q6 SC-002, FR-012: the 100,001-file commit shows exactly the first files up to the bound with the limit text, and the process tree uses at most 427 MiB more than before the selection",
+    "Q6 SC-002, FR-012: the 100,001-file commit shows exactly the first files up to the bound with the limit text, and the process tree uses at most 576 MiB more than before the selection",
     async () => {
       const cached = wideLarge(GIT!);
       const repo = join(fixtureDir("t061-wide-large"), "repo");

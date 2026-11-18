@@ -622,6 +622,27 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - The `git diff-tree` of the 100,001-file commit had a peak commit of 38.3 MiB (40,198,144 bytes) in its own Job. The Job peak was 41,705,472 bytes, with 2 processes and exit 0.
 - Decision of 2026-11-17 (user, constitution VII): v0.1.3 ships with stage 1 only. Stage 2 moves to v0.1.4 (tasks.md T125).
 - In the same decision, the user chose the SC-002 bound of 427 MiB. That is the 363.2 MiB peak growth plus 64 MiB, rounded down to whole MiB. It replaces 624 MiB.
+- SC-002 calibration, 2026-11-18. The user rule of 2026-11-17: run Q6 five times on this build after f015.
+- The new bound is the highest peak growth of all runs on this code plus 64 MiB, rounded up.
+- Build: v0.1.3, installed exe SHA-256 prefix `9ed79992`, product code of `e2fa367a`.
+- Logs: local scratch v013-rerun/calib/run<n>.log and local scratch f015-full/logs/s5-inspection-perf.log.
+
+| Run | Tree peak growth (MiB) | Service peak growth (MiB) | Renderer peak growth (MiB) |
+|---|---|---|---|
+| S2 session, 2026-11-17 | 363.2 | 295.1 | 86.4 |
+| f015 full run | 475.7 | 378.9 | 86.4 |
+| Calibration run 1 | 435.7 | 378.3 | 95.8 |
+| Calibration run 2 | 511.7 | 293.1 | 235.8 |
+| Calibration run 3 | 463.7 | 298.6 | 238.1 |
+| Calibration run 4 | 506.9 | 323.9 | 233.2 |
+| Calibration run 5 | 285.7 | 226.7 | 94.5 |
+
+- Run 5 started with the renderer at 311 MB, against about 162 MB in the other runs. So run 5 is not like-for-like, but it counts as a run.
+- The `git diff-tree` peak was 38.2 to 38.3 MiB in each run.
+- The highest tree peak growth is 511.7 MiB. 511.7 + 64 = 575.7 MiB, rounded up to 576 MiB.
+- The bound of 576 MiB replaces the bound of 427 MiB of 2026-11-17. That bound came from one run and did not include the known variance.
+- The packaged service peak of v0.1.3 is not measurably lower than the 309.2 MiB of v0.1.2 (P0).
+- Stage 1 cut the in-process parse work. But the packaged service peak varies from 226.7 to 378.9 MiB across these runs.
 
 *T104 stage 2 design (T125), 2026-11-16.* The Plan agent wrote this design on 2026-11-16. The full record is in local scratch.
 - Design A follows the feature 002 History window model. The service keeps the listing and a compact row model.

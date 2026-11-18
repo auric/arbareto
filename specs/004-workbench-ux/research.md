@@ -1259,7 +1259,7 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - T175: the case "T175: a skipped click with the selected line outside the view …" passed.
 - T176: the case "Delete states that the branches are still loading and reads them again; …" passed.
 - T176: the case "after a failed readBranches, Delete states the failure text" passed.
-- T175 and T176 (not ticked): the older-build rule (tasks.md:44) blocks the tick.
+- T175 and T176 (f015 record alone): the older-build rule (tasks.md:44) blocked the tick.
 - `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1.
 - The changed files are `tests/git/fixture-root.ts`, `tests/windows/commit-menu-perf.test.ts`, and `tests/windows/inspection-perf.test.ts`.
 - No `bun run test:all` ran on a later commit. So the tick needs a run on the tick build.
@@ -1275,3 +1275,23 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - T176 C2 (loading text only): case 2 red, received "The branches are still loading.".
 - T176 C3 (no loaded-entries check in `actionable`): case 1 red at the `aria-haspopup` null assert, received "menu".
 - The review of the v0.1.3 code found LOW 2 in T176. User decision of 2026-11-18: T177 holds the fix, target v0.1.4.
+
+**Same-tree record, 2026-11-18**
+
+- Code `9a88708d` in the l7 worktree. The logs are in local scratch `v013-sametree`. Every `ORIGIN` line names that worktree.
+- `git diff --quiet 9a88708d 36b3bec0 -- src src-tauri tests scripts package.json bun.lock` exits 0.
+- `36b3bec0` is the head of branch `v0.1.3` before the tick commit. The tick commit changes only `specs/`.
+- `bun run typecheck` exited 0 (`typecheck.log`).
+- `bun run test:fast` exited 1 (`fast.log`). Parallel group: 7,143 pass, 38 skip, 2 fail. Serial group: 109 pass, 0 fail.
+- Source of the case results: `parallel.xml` in the temp folder `arbareto-test-run-21965915-1d8c-4ed5-9b6c-8465e1b10408`.
+- T175: the case "T175: a skipped click with the selected line outside the view …" passed in 0.188 s.
+- T176: both cases of the suite "branch row inputs before the readBranches answer (T176, plan D15 Branch list)" passed.
+- The T176 case times were 0.739 s and 0.805 s.
+- The 2 fails are Bun `TimeoutError` results at the default timeout of 5,000 ms. Both are in other files.
+- Fail 1: `tests/contracts/hunk-controls.test.tsx`, "hunk selection > without a selection, Next hunk selects hunk 1 and Previous hunk selects hunk 3".
+- Fail 2: `tests/contracts/network-sites.test.ts`, "T020: src/git-service holds exactly one fetch call, in dictionaries.ts", after 7.6 s.
+- Alone run, 2026-11-18 (`timeouts-alone.log`): `bun test` of these two files, with no other test process.
+- The alone run gave 26 pass, 0 fail, and exit 0 in 1.3 s. The two files hold 26 cases in `parallel.xml`.
+- So both cases fail only under the parallel group load. 001 T421 holds the timeout fix.
+- T175 and T176 (ticked, 2026-11-18): the green f015 full run holds each case. The same-tree run repeats each case green.
+- Gap: no `bun run test:all` ran on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The exact-tree test:all clause is waived for T175 and T176 only.

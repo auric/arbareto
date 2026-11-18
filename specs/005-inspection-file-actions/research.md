@@ -649,10 +649,26 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - R2 Q6: tree peak growth 232.7 MiB, bound 576 MiB, 100,000 files shown. The settled growth was 146.3 MiB.
 - Each recorded Q6 growth on this code is below 576 MiB. Only R2 asserts that bound.
 - f015 green counts of the stage 1 files (pass, skip, fail): `tests/git/commit-changes-listing.test.ts` 9, 0, 0. `tests/git/commit-changes-memory.test.ts` 2, 0, 0.
-- T104 (not ticked, 2026-11-18): the f015 record is on `e2fa367a`, so the older-build rule (tasks.md:43) applies.
+- T104 (f015 record alone, 2026-11-18): the f015 record is on `e2fa367a`, so the older-build rule (tasks.md:43) applies.
 - `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1. Three test files changed.
 - The files are `tests/git/fixture-root.ts`, `tests/windows/commit-menu-perf.test.ts`, and `tests/windows/inspection-perf.test.ts`.
 - R2 meets the rule, but no `bun run test:all` and no full `tests/windows` set ran on the tick build.
+- Same-tree record, 2026-11-18 (local scratch `v013-sametree`). Code `9a88708d` in the l7 worktree. Every `ORIGIN` line names that worktree.
+- `git diff --quiet 9a88708d 36b3bec0 -- src src-tauri tests scripts package.json bun.lock` exits 0.
+- `36b3bec0` is the head of branch `v0.1.3` before the tick commit. The tick commit changes only `specs/`.
+- `git diff --quiet e2fa367a 9a88708d -- src src-tauri package.json bun.lock` exits 0. So the f015 installer holds the product code of the tick tree.
+- `bun run typecheck` exited 0.
+- `t104.log`: `bun test` of 7 files gave 160 pass, 0 fail.
+- The files are `tests/git/commit-changes.test.ts`, `commit-changes-listing.test.ts`, `commit-changes-memory.test.ts`, `history-diff-facts.test.ts`, `history-diff-cache.test.ts`, and `blame.test.ts`. The seventh is `tests/contracts/diff-parser.test.ts`.
+- `bun run test:fast` exited 1. Parallel group: 7,143 pass, 38 skip, 2 fail. Serial group: 109 pass, 0 fail.
+- The 2 fails are Bun timeouts at 5,000 ms in `tests/contracts/hunk-controls.test.tsx` and `tests/contracts/network-sites.test.ts`.
+- Alone, the two files gave 26 pass and 0 fail. 004 research.md R34 "Same-tree record" names the cases. 001 T421 holds the fix.
+- Packaged Q6: R2 above ran at `9a88708d` on the f015 installer, with tree peak growth 232.7 MiB against 576 MiB.
+- Q6 ran seven times on the f015 package: the f015 step, five calibration runs, and R2. Each growth is below 576 MiB.
+- Only R2 asserts the 576 MiB bound. So one run, not two, asserts the bound that the task row names.
+- T104 (ticked, 2026-11-18): stage 1 holds on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The exact-tree test:all clause is waived for T104 only.
+- Gap: no `bun run test:all` and no full `tests/windows` set ran on the tick tree.
+- T125 holds stage 2: the renderer paging and the 64 MiB restore. Both stay unverified.
 
 *T104 stage 2 design (T125), 2026-11-16.* The Plan agent wrote this design on 2026-11-16. The full record is in local scratch.
 - Design A follows the feature 002 History window model. The service keeps the listing and a compact row model.
@@ -782,8 +798,16 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
   - Case (A) passed in 13.0 s. Its name starts "T115 (A) FR-076: the submoduleWork script route gives the states …".
   - Case (B) passed in 11.8 s. Its name starts "T115 (B) FR-076: 33 gitlinks give 3 pages …".
   - Every `ORIGIN` line of f015 named the checkout under test.
-  - T115 (not ticked, 2026-11-18): the JUnit proof of (A) and (B) holds. The older-build rule (tasks.md:43) blocks the tick.
+  - T115 (f015 record alone, 2026-11-18): the JUnit proof of (A) and (B) holds. The older-build rule (tasks.md:43) blocked the tick.
   - `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1. See the T104 record above.
+- T115 same-tree record, 2026-11-18 (local scratch `v013-sametree`). Code `9a88708d` in the l7 worktree.
+  - The diff check, the type check, and `test:fast` are in R17 "T104 P0 and stage 1", same-tree record.
+  - `t115-unit.log`: `tests/git/submodule-change.test.ts` and `tests/contracts/native-runner.test.ts` gave 123 pass, 0 fail.
+  - `t115-wsl.log`: `tests/wsl/inspection-wsl.test.ts` in `Ubuntu-26.04` gave 4 pass, 43 filtered out, 0 fail.
+  - The dispatch names the filtered cases: T115 (A), T115 (B), T111, and FR-071/074/076. The log prints no case names.
+  - Every `ORIGIN` line names the l7 worktree.
+  - T115 (ticked, 2026-11-18): the 4 filtered cases passed on the tick tree. The f015 JUnit record is the per-case proof of (A) and (B).
+  - User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The exact-tree test:all clause is waived for T115 only. Gap: no `bun run test:all` ran on the tick tree.
 - Reviewer finding MEDIUM 1 of the v0.1.3 review: `scriptWork` rethrows a non-`Stop` error without an abort.
   - The other trust workers then keep running. User decision of 2026-11-18: v0.1.3 ships as tested. T127 holds the fix, target v0.1.4.
 

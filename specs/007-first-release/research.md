@@ -1286,7 +1286,9 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
 #### Ticks and reviewer findings
 
 - Ticked: 001 T419, 008 T083 to T085, and 011 T026. Each feature research.md holds the record.
-- Not ticked: 004 T175 and T176, and 005 T104 and T115. The older-build rule of 004 and 005 blocks them.
+- Ticked on 2026-11-18 by a user decision: 004 T175 and T176, and 005 T104 and T115.
+- The older-build rule of 004 and 005 blocked the f015 record alone. A same-tree record on `9a88708d` completes it.
+- The records are in 004 research.md R34 and 005 research.md R17 (T104) and R18 (T115).
 - `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1. The three test files above differ.
 - 004 T145 and T164, and 006 T041 and T060, wait for the 225% session.
 - User decision of 2026-11-18: the reviewer findings ship as tested. Their fixes target v0.1.4.

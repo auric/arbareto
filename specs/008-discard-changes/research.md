@@ -813,3 +813,23 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
   - LOW 3: `envelope.ts` and `revert.ts` each hold their own constant for the 20-file cap (T086).
   - LOW 4: the whole-index read of `indexEntriesOf` also serves the D5a batch reads (T087).
   - Suspicion: a canceled `fileFacts` frame may not wait for the shell walk of that frame (T088).
+
+### T088 canceled `fileFacts` walk, 2026-11-21
+
+- Result: the suspicion is true. The service ends a canceled `fileFacts` call before the shell walk of that frame ends.
+- 001 contract §6 "Walks" defines this behavior. The service does not wait for the shell after `cancel`, and no reply follows. The "Limit" bullet there covers an I/O that ignores the cancel.
+- Service: on an abort, `ask` in `src/git-service/native-runner.ts` resolves `canceled` and then sends `cancel`. It drops a later reply with that `callId`.
+- Test: `tests/contracts/native-runner.test.ts`, "an abort sends one cancel with the walk callId and ends the call at once, and a later reply is dropped". The "native runner walks" group gave 6 pass, 0 fail. Its `ORIGIN` lines named the checkout under test.
+- Control: without the immediate resolve in `ask`, the test timed out: 0 pass, 1 fail.
+- Shell: `cancel` sends `WalkEvent::Stop` (`src-tauri/src/process_requests.rs`). For a `Reply::Walk`, the watchdog sends no reply. It sets the stop flag and calls `CancelSynchronousIo` every 10 ms for at most 5 s (`cancel_io`, `CLOSE_WAIT`).
+- The walk checks the flag before each open, query, and 1 MiB read chunk (`src-tauri/src/file_facts.rs`, `check` and `pour`). So the walk ends after its current I/O.
+- The cargo test `a_canceled_walk_ends_without_a_reply` covers the shell stop. T088 did not run it.
+- The shell double `tests/git/bun-runner.ts` ends a held walk at the abort. It does not model a walk that outlives its call.
+- Which frames a stop reaches in `revert.ts`: the review reads use `ctx`, so a Cancel stops them. The review then ends, and no write follows.
+- The run reads use `q`, whose signal never aborts (`WorkbenchRun` in `workbench-review.ts`). A Cancel during the writes stops no `fileFacts` frame.
+- Only the fresh digest read of the reconcile has sibling frames in flight (up to `MULTI_FILE_PROOF_CONCURRENCY`). The first stop or failure of one frame stops its siblings. The outcome is then unknown, and no write follows.
+- Windows effect: each open of the walk shares read, write, and delete access. The walk asks only for read rights. It writes nothing, because `pour` gets no `out` handle.
+- Each production open in `src-tauri/src/file_replace.rs` shares read access. So a later write, rename, or `tempRemove` open stays compatible with a stopped walk that still reads.
+- A stopped walk sends no fact. So no stale fact enters an outcome.
+- Decision (reviewer default, T088): no fix. A fix needs a stop reply in 001 contract §6, and each stop then waits for the walk end. The behavior stays as a known limit in spec Assumptions. The user can still choose a fix.
+- Open: a WSL stop ends the `wsl.exe` process of the walk. T088 did not check in a distro when the Linux reader ends.

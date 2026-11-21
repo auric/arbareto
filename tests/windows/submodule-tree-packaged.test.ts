@@ -21,7 +21,7 @@ import { GIT } from "../git/git-binary";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import type { JobAccounting } from "../git/win32";
-import { appEnv, descendants, findInstalledApp, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
+import { appEnv, descendants, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, windowsTextSize, type OwnedProcess } from "./installed-app";
 import { BOARD_TOP, BOARD_TREE, boardWorld, folderCount, folderWorld, ICONS, markParts, marksShown, otherRepo, replyMarks, sameMarks, twinWorlds, VIRTUAL_MIN, wideWorld } from "./submodule-tree-fixture";
 import { close, closeWindow, ControlType, expand, find, findWindow, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 import { metrics, type Density } from "../../src/frontend/layout/profiles";
@@ -735,11 +735,7 @@ describe.skipIf(process.platform !== "win32")("T144 packaged Submodules tree and
   // Two animation frames: React commits, then the next frame paints.
   const FRAMES = `new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))`;
 
-  // Microsoft Learn "Make text bigger": HKCU\Software\Microsoft\Accessibility `TextScaleFactor` (DWORD, 100 to 225). An absent value is 100.
-  const textScale = () =>
-    powershellJson(`$v = (Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Accessibility' -Name TextScaleFactor -ErrorAction SilentlyContinue).TextScaleFactor
-ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v })`) as number;
-  const scale = reason === null ? textScale() : null;
+  const scale = reason === null ? windowsTextSize() : null;
   if (scale !== null) console.log(`OBSERVATION ${T164}: Windows text size ${scale}%`);
   const skip100 = reason ?? (scale === 100 ? null : "missing capability text-scale-100");
   const skip225 = reason ?? (scale === 225 ? null : "missing capability text-scale-225");

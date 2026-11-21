@@ -61,7 +61,12 @@ export function powershellJson(script: string): unknown {
   return JSON.parse(proc.stdout.toString());
 }
 
-const quoted = (text: string) => `'${text.replaceAll("'", "''")}'`;
+// Microsoft Learn "Make text bigger": HKCU\Software\Microsoft\Accessibility `TextScaleFactor` (DWORD, 100 to 225). An absent value is 100.
+export const windowsTextSize = () =>
+  powershellJson(`$v = (Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Accessibility' -Name TextScaleFactor -ErrorAction SilentlyContinue).TextScaleFactor
+ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v })`) as number;
+
+const quoted =(text: string) => `'${text.replaceAll("'", "''")}'`;
 
 // The HWND of each Explorer window that Shell.Application lists.
 export function explorerWindows(): number[] {

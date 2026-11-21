@@ -813,3 +813,43 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
   - LOW 3: `envelope.ts` and `revert.ts` each hold their own constant for the 20-file cap (T086).
   - LOW 4: the whole-index read of `indexEntriesOf` also serves the D5a batch reads (T087).
   - Suspicion: a canceled `fileFacts` frame may not wait for the shell walk of that frame (T088).
+
+### T088 canceled `fileFacts` walk, 2026-11-21
+
+- Result: the suspicion is true. The service ends a canceled `fileFacts` call before the shell walk of that frame ends.
+- 001 contract §6 "Walks" defines this behavior. The service does not wait for the shell after `cancel`, and no reply follows. The "Limit" bullet there covers an I/O that ignores the cancel.
+- Service: on an abort, `ask` in `src/git-service/native-runner.ts` resolves `canceled` and then sends `cancel`. It drops a later reply with that `callId`.
+- Test: `tests/contracts/native-runner.test.ts`, "an abort sends one cancel with the walk callId and ends the call at once, and a later reply is dropped". The "native runner walks" group gave 6 pass, 0 fail. Its `ORIGIN` lines named the checkout under test.
+- Control: without the immediate resolve in `ask`, the test timed out: 0 pass, 1 fail.
+- Shell: `cancel` sends `WalkEvent::Stop` (`src-tauri/src/process_requests.rs`). For a `Reply::Walk`, the watchdog sends no reply. It sets the stop flag and calls `CancelSynchronousIo` every 10 ms for at most 5 s (`cancel_io`, `CLOSE_WAIT`).
+- The walk checks the flag before each open, query, and 1 MiB read chunk (`src-tauri/src/file_facts.rs`, `check` and `pour`). So the walk ends after its current I/O.
+- The cargo test `a_canceled_walk_ends_without_a_reply` covers the shell stop. T088 did not run it.
+- The shell double `tests/git/bun-runner.ts` ends a held walk at the abort. It does not model a walk that outlives its call.
+- Which frames a stop reaches in `revert.ts`: the review reads use `ctx`, so a Cancel stops them. The review then ends, and no write follows.
+- The run reads use `q`, whose signal never aborts (`WorkbenchRun` in `workbench-review.ts`). A Cancel during the writes stops no `fileFacts` frame.
+- Only the fresh digest read of the reconcile has sibling frames in flight (up to `MULTI_FILE_PROOF_CONCURRENCY`). The first stop or failure of one frame stops its siblings. The outcome is then unknown, and no write follows.
+- Windows effect: each open of the walk shares read, write, and delete access. The walk asks only for read rights. It writes nothing, because `pour` gets no `out` handle.
+- Each production open in `src-tauri/src/file_replace.rs` shares read access. So a later write, rename, or `tempRemove` open stays compatible with a stopped walk that still reads.
+- A stopped walk sends no fact. So no stale fact enters an outcome.
+- Decision (reviewer default, T088): no fix. A fix needs a stop reply in 001 contract §6, and each stop then waits for the walk end. The behavior stays as a known limit in spec Assumptions. The user can still choose a fix.
+- Open: a WSL stop ends the `wsl.exe` process of the walk. T088 did not check in a distro when the Linux reader ends.
+- User decision 2026-11-21: "Accept no fix". The known limit stays in spec Assumptions.
+- Before the T088 tick: check in a distro when the Linux reader ends after `wsl.exe` is killed. Run the cargo test `a_canceled_walk_ends_without_a_reply`.
+
+### T089 first-run retained budget, 2026-11-21
+
+- Offline replay of the saved samples with the window rules of `tests/windows/revert-perf.test.ts`. The replay gives the recorded 98.2 MiB (f015) and 30.3 MiB (R3) exactly.
+- Sample files (local scratch): f015 `t048-limit-2026-11-17T18-55-45-333Z.jsonl`, R3 `t048-limit-2026-11-18T10-12-45-159Z.jsonl`, v013-final control `t048-limit-2026-11-17T09-44-10-649Z.jsonl`. Replay output: `t089-replay2.txt`.
+- A run 0 baseline window that ends before the review opens raises the retained growth. f015: 98.2 to 122.0 MiB. R3: 30.3 to 65.0 MiB. v013-final 5 s control run: 51.0 to 105.7 MiB.
+- With that window, the peak growth also rises by about 24 to 55 MiB.
+- The replay tried each 5 s window that ends between 5 s after the sampler start and the confirmation press. The lowest f015 retained growth is 98.2 MiB, at today's window end. No baseline window makes f015 pass.
+- No cause is on record. At 30 s after the run end, the renderer holds 185.8 MiB in f015 and 148.7 MiB in R3.
+- The service holds +30.3 MiB in f015 and +5.0 MiB in R3. The GPU process holds about +37 to 41 MiB in all three runs.
+- Why the runs differ is a hypothesis only.
+- User decision 2026-11-21: "Calibrate a first-run budget". The baseline window does not change. The 2026-11-03 method (medians of 5 s windows) stays.
+- Calibration: 5 packaged first runs of the 10,000-file case on the v0.1.4 candidate.
+- Rule: the run 0 retained budget is the highest run 0 retained growth of those runs plus 64 MiB, rounded up to whole MiB. This is the SC-002 rule (005 research.md "SC-002 calibration", 007 research.md).
+- Record for each run: the retained growth and its split over the renderer, the service, and the GPU process.
+- The calibrated value replaces only the run 0 retained budget (`LIMIT_FIRST_RETAINED_BYTES`, today 80 MiB). The other SC-007 budgets do not change.
+- Control: a run 0 retained budget of 1 MiB must fail on one of the runs (`first: false`).
+- Open: the calibration runs. The run 0 retained budget stays pending until this record holds them.

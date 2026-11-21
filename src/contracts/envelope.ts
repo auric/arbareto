@@ -1714,7 +1714,8 @@ const ConfigSavePlan = z
 // git-config(1) "EXIT STATUS" 1 to 6.
 export const CONFIG_EXIT_REASONS = ["invalid-key", "no-section-or-name", "invalid-file", "cannot-write", "nothing-set", "invalid-pattern"] as const;
 // Feature 005 contract Δ5 "Delete confirmation paths": 20 paths, plus a count. It is no output bound, so `limits.ts` does not list it.
-const DELETE_CONFIRMATION_PATHS = 20;
+// Feature 008 data-model §9 and contract Δ3 "Refusal value" use the same count. The revert service cuts its file lists to it.
+export const DELETE_CONFIRMATION_PATHS = 20;
 // Data-model §4 plan fields. `files.paths` holds the first confirmation paths in tree order, as base64 bytes. `tracked` counts the tracked files.
 const DeletePlan = z
   .strictObject({

@@ -5,7 +5,7 @@
 // No Git command writes a target file. Git writes only its own temporary file through `checkout-index --temp`, and the shell replaces each target.
 // A fresh read decides every outcome. Plan.md D3 and D4: the unstaged and the staged `revert-lines`. Plan.md D5 and D7: `revert-files` with its index part.
 
-import type { ChangeEntry } from "../contracts/envelope";
+import { DELETE_CONFIRMATION_PATHS, type ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
 import { filterReason } from "../contracts/file-action";
 import { GITLINK } from "../contracts/git-mode";
@@ -73,7 +73,7 @@ type FileReason = { pathBytes: string; reason: string };
 
 const SLASH = 0x2f;
 // Contract Δ3 "Refusal value": the first 20 refused files in tree order. Data-model §9: a run result lists as many files.
-const REFUSED_FILES = 20;
+const REFUSED_FILES = DELETE_CONFIRMATION_PATHS;
 // Data-model §5: the first confirmation paths in tree order.
 const CONFIRMATION_PATHS = 20;
 const SYMLINK = "120000";
@@ -160,7 +160,8 @@ function pathBatches(ctx: WorkbenchContext, paths: readonly Uint8Array[], args: 
 }
 
 // git-ls-files(1) `--stage -z`: `<mode> SP <object> SP <stage> TAB <file> NUL`. A literal pathspec also matches paths below a folder, so only exact paths count.
-async function indexEntriesOf(ctx: WorkbenchContext, paths: readonly Uint8Array[]): Promise<Fact<Map<string, Entry>>> {
+// `wholeIndex`: contracts Δ3 allows the whole-index read for the review and the reconcile reads only. The D5a batch reads stay batched.
+async function indexEntriesOf(ctx: WorkbenchContext, paths: readonly Uint8Array[], wholeIndex = false): Promise<Fact<Map<string, Entry>>> {
   const batches = pathBatches(ctx, paths, indexPathArgs);
   // A path above the command-line bound gives the reason `path` (as `applyFiles` does).
   if (batches === null) return { code: "WORKBENCH_UNAVAILABLE" };
@@ -168,7 +169,7 @@ async function indexEntriesOf(ctx: WorkbenchContext, paths: readonly Uint8Array[
   const header = new RegExp(`^([0-7]{6}) (${OID_HEX[ctx.workspace.objectFormat]}) ([0-3])$`);
   const entries = new Map<string, Entry>();
   // Contract Δ3 reads: paths of more than one batch take one whole-index read. Above MUTATION_RAW_INDEX_BYTES, the batches read them.
-  const reads: (string[] | "whole")[] = batches.length > 1 ? ["whole", ...batches] : batches;
+  const reads: (string[] | "whole")[] = wholeIndex && batches.length > 1 ? ["whole", ...batches] : batches;
   for (const read of reads) {
     const whole = read === "whole";
     const out = createCollector({ maxBytes: whole ? MUTATION_RAW_INDEX_BYTES : read.reduce((n, p) => n + Buffer.byteLength(p) * 2 + 128, 0) });
@@ -319,7 +320,7 @@ async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readon
   if (!("value" in workingAttributes)) return workingAttributes;
   const indexAttributes = paths.length === 0 ? { value: [] } : await attributesOf(ctx, paths, cachedAttributeArgs());
   if (!("value" in indexAttributes)) return indexAttributes;
-  const indexed = paths.length === 0 ? { value: new Map<string, Entry>() } : await indexEntriesOf(ctx, paths);
+  const indexed = paths.length === 0 ? { value: new Map<string, Entry>() } : await indexEntriesOf(ctx, paths, true);
   if (!("value" in indexed)) return "code" in indexed && indexed.code === "WORKBENCH_UNAVAILABLE" ? unavailable("path") : indexed;
 
   const reasons: FileReason[] = [];
@@ -1026,7 +1027,7 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
   if (settled_ === null || lost || indexUnknown) return r.unknown({ code: "GIT_FAILED" }, result);
   // Plan.md D10: the fresh index entries and the fresh digests. The renderer's contract §3 reconcile read is the status read.
   // Contract Δ3 `runWorkbench`: the index read runs beside at most MULTI_FILE_PROOF_CONCURRENCY digest frames.
-  const fresh = await settleSteps([indexEntriesOf(q, paths), factsOf(q, names.map((path) => ({ root: "worktreeRoot", path })), { digest: true, stream: true }, MULTI_FILE_PROOF_CONCURRENCY)], isDeadlineStop);
+  const fresh = await settleSteps([indexEntriesOf(q, paths, true), factsOf(q, names.map((path) => ({ root: "worktreeRoot", path })), { digest: true, stream: true }, MULTI_FILE_PROOF_CONCURRENCY)], isDeadlineStop);
   // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads, so a deadline decides first.
   const expired = fresh.find(isDeadlineStop);
   if (expired !== undefined) return r.unknown(expired as Stop, result);

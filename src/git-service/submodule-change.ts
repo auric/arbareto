@@ -582,7 +582,8 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
 
   // Contract Δ3 `readSubmoduleWork` "WSL route": phase a, the step 2 trust check of each target, then phase b. `set` gives a target its result.
   // A target without a result after a deadline gives DEADLINE.
-  async function scriptWork(t: InspectionTarget, outer: AbortSignal, deadline: AbortSignal, jobs: readonly { i: number; worktree: string }[], set: (i: number, r: WorkFacts | "programs" | null | { code: ErrorCode }) => void): Promise<void> {
+  async function scriptWork(t: InspectionTarget, outer: AbortSignal, page: AbortController, jobs: readonly { i: number; worktree: string }[], set: (i: number, r: WorkFacts | "programs" | null | { code: ErrorCode }) => void): Promise<void> {
+    const deadline = page.signal;
     const listed: { i: number; worktree: string; entries: ConfigEntry[] }[] = [];
     const phaseA = await phaseRuns(
       t,
@@ -618,7 +619,11 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
           if (await programsIn(t, job.worktree, job.entries)) set(job.i, "programs");
           else passed.push(job);
         } catch (error) {
-          if (!(error instanceof Stop)) throw error;
+          // Any other error ends the read. The abort stops the other workers before they start more trust checks.
+          if (!(error instanceof Stop)) {
+            page.abort();
+            throw error;
+          }
           if (outer.aborted) throw new Stop({ result: "canceled" });
           const o = error.outcome;
           if (deadline.aborted || o.result === "deadline") continue;
@@ -721,7 +726,7 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
           }
         };
         if (w.wsl !== undefined && wslPerTarget !== true) {
-          await scriptWork(inner, t.signal, deadline.signal, queue.map(({ i, p }) => ({ i, worktree: root + p.join("/") })), (i, r) => void (results[i] = entryOf(i, r)));
+          await scriptWork(inner, t.signal, deadline, queue.map(({ i, p }) => ({ i, worktree: root + p.join("/") })), (i, r) => void (results[i] = entryOf(i, r)));
         } else await Promise.all(Array.from({ length: SUBMODULE_WORK_PARALLEL }, worker));
       } catch (error) {
         // A read deadline during the gate or the file facts leaves every target without a result, so each gives DEADLINE below.

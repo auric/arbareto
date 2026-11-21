@@ -1383,12 +1383,15 @@ Question (2026-10-01): does WebView2 follow the Windows Text size setting (WCAG 
 - Windows scales only text there, from 100% to 225%. Microsoft Learn contrasts it with display scaling, "which resizes everything". WinUI text controls follow it by default. GDI and DirectWrite do not, and Win32 support covers only menus, icons, and toolbars ("Text scaling").
 - `UISettings.TextScaleFactor` returns the setting as a double from 1 to 2.25. `TextScaleFactorChanged` fires on each change ("UISettings.TextScaleFactor Property").
 - WebView2 `RasterizationScale` "is the combination of the monitor DPI scale and text scaling set by the user". The host should update it when the text scale factor changes. Microsoft's Win32 sample reads `UISettings.TextScaleFactorChanged` for that purpose ("ICoreWebView2Controller3").
-- With `ShouldDetectMonitorScaleChanges` true, WebView2 tracks monitor DPI changes only. Text scale stays the host's task (same page).
-- Pinned wry `v0.57.0` never sets `RasterizationScale`, `ShouldDetectMonitorScaleChanges`, or `BoundsMode` in `src/webview2/mod.rs`. It has no text-scale code. It sets only the zoom-control settings and a `zoom()` call (mod.rs:639, :660, :1462-1463; 2026-10-01 scan).
+- The same page describes `ShouldDetectMonitorScaleChanges` true as tracking of monitor DPI changes only. The measurement differs. With the default (true) and no host code, the rasterization scale also holds the text factor (record of 2026-11-20 below).
+- Pinned wry `v0.57.1` never sets `RasterizationScale`, `ShouldDetectMonitorScaleChanges`, or `BoundsMode` in `src/webview2/mod.rs`. It has no text-scale code. It sets only the zoom-control settings and a `zoom()` call (mod.rs:649, :670, :1548-1549; 2026-11-21 scan).
+- A search for these three names in wry 0.57.1, tauri-runtime-wry 2.12.3, tauri 2.12.5, and tao 0.37.2 finds 0 matches (2026-11-21).
+- The wry parent subclass handles `WM_SIZE` (`SetBounds` in physical pixels), `WM_SETFOCUS`, `WM_ENTERSIZEMOVE`, `WM_MOVE`, `WM_MOVING`, and `WM_DESTROY`. It has no `WM_DPICHANGED` case. tao 0.37.2 handles `WM_DPICHANGED` and sends `ScaleFactorChanged` (`src/platform_impl/windows/event_loop.rs:1837`).
+- The Microsoft sample `ViewComponent::SetRasterizationScale` first calls `put_ShouldDetectMonitorScaleChanges(FALSE)`. It then calls `put_RasterizationScale(additionalScale * GetDpiScale() * GetTextScale())` ("ICoreWebView2Controller3").
 - Edge 138 shipped the CSS variable `env(preferred-text-scale)`, and Edge 145 shipped `<meta name="text-scale" content="scale">` (Microsoft Edge web platform release notes). CSS Fonts 5 §2.3 defines the meta: `medium` then follows OS and UA text preferences.
 - The CSSWG explainer for `env(preferred-text-scale)` covers this setting. It states that Chrome, Edge, and Firefox on Windows 11 apply a full browser zoom for it. No source states that WebView2 does so without host code.
 
-Decision: Arbareto scales only text, as Windows defines the setting (plan.md "Windows text size"). The shell reads `UISettings.TextScaleFactor` and gives the factor to the page. The page scales font sizes, line heights, and text-holding heights. The rasterization scale stays the monitor scale.
+Decision: Arbareto scales only text, as Windows defines the setting (plan.md "Windows text size"). The shell reads `UISettings.TextScaleFactor` and gives the factor to the page. The page scales font sizes, line heights, and text-holding heights. The shell sets the rasterization scale to the monitor scale (T422).
 
 Rejected:
 
@@ -1406,14 +1409,25 @@ Measured (2026-11-20, v0.1.3 packaged session at Text size 225%): WebView2 scale
 - A CDP probe read `devicePixelRatio` 2.8125, which is 1.25 × 2.25. The computed `--text-scale` read 2.25, and the root font size read 16px.
 - So WebView2 puts the text factor into the rasterization scale without Arbareto shell code. The page then applies the factor a second time.
 - Microsoft Learn states the rule ("ICoreWebView2Controller3"). The rasterization scale "is the combination of the monitor DPI scale and text scaling set by the user".
-- The shell sets no rasterization scale. A case-insensitive search for "rasterization" in `src-tauri/src` finds nothing (2026-11-20). T247 left the scale to wry.
+- The shell sets no rasterization scale. A case-insensitive search for "rasterization" in `src-tauri/src` finds nothing (2026-11-20). T247 left the scale to wry. Superseded by T422 (2026-11-21): the shell now sets the scale.
 - Effect: a 1280×800 DIP window holds 569×356 CSS px. Text shows at about 5 times its normal size.
 - The workbench does not fit, and the FR-035 and SC-009 720×480 floor breaks. The defect exists since T247.
 - The measured state equals the first rejected alternative above, plus `--text-scale`. The decision above stays valid.
 - Fix: T422, the first v0.1.4 task (user decision 2026-11-20). v0.1.3 ships with the defect.
+- T422 fix: the shell sets `ShouldDetectMonitorScaleChanges` to false and `RasterizationScale` to the window scale factor. It does this when it creates the window and at each `ScaleFactorChanged` window event. The call order matches the sample above. Arbareto omits the text factor from the scale.
+- Known limit (user decision 2026-11-21, "Accept as a limit"): WebView2 built-in menus and scroll bars use the display scale only. They do not follow the Windows Text size. The text-field edit menu (Cut, Copy, Paste, Select all) is such a menu. Spec Assumptions records the limit against FR-035.
 - Logs: local scratch v013-225/diag/probe.log and probe.ts. Screenshots: local scratch v013-225/diag/1-default.png to 4-default-expanded.png.
 
-Sources: [Text scaling](https://learn.microsoft.com/windows/apps/develop/input/text-scaling), [Accessible text requirements](https://learn.microsoft.com/windows/apps/design/accessibility/accessible-text-requirements#text-font-size-and-scale), [UISettings.TextScaleFactor](https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uisettings.textscalefactor), [ICoreWebView2Controller3](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller3), [ShouldDetectMonitorScaleChanges](https://learn.microsoft.com/dotnet/api/microsoft.web.webview2.core.corewebview2controller.shoulddetectmonitorscalechanges), [wry webview2 module](https://github.com/tauri-apps/wry/blob/wry-v0.57.0/src/webview2/mod.rs), [Edge 138 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/138#web-platform-features), [Edge 145 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/145#web-apis), [CSS Fonts 5 text-scale meta](https://drafts.csswg.org/css-fonts-5/#text-scale-meta), [preferred-text-scale explainer](https://github.com/w3c/csswg-drafts/blob/main/css-env-1/explainers/env-preferred-text-scale.md#windows-11). Document review and a source scan only; no WebView2 run.
+T422 packaged result (2026-11-21, reference host): the fix removes the double scaling at Text size 225%.
+
+- Host: Windows Text size 225% (registry `TextScaleFactor` 225, set by the user), display DPI 120, OS 10.0.26300, WebView2 `Edg/157.0.4341.60`.
+- Control, red: the released v0.1.3 (installed exe sha256 `9ed79992f96240b6e6dd5b530e251017b5661090fdab7168eafebdbd12ec5d49`) has no rasterization call. The case printed `RECORD T422: … dpr=2.8125 inner=569x356 --text-scale=2.25`. The assertion expected 1.25 and received 2.8125.
+- Fix, green: the T422 package (commit `019bfbbc`, installer sha256 `E3F3A6D6C27B708F8E83A222D42007B8C2F884A9EE24A4BE45A5FAAA21CAEF67`, exe sha256 `CF553E58A319032C46BFC1305F7D86156D37AF51573C04FF3D8F793736B118EF`) printed `dpr=1.25 inner=1280x800 --text-scale=2.25`. The case gave 1 pass and 0 fail. The ORIGIN lines point into the T422 worktree.
+- This settles an open T422 question. With detection off, `devicePixelRatio` equals the window DPI / 96 exactly (225% text, 120 DPI).
+- Unverified: the 100% case and its ×2 control, a live Text size change, a display-scale change, and a second monitor (T157). Nobody ran them.
+- Evidence: local scratch v014-t422/run.
+
+Sources: [Text scaling](https://learn.microsoft.com/windows/apps/develop/input/text-scaling), [Accessible text requirements](https://learn.microsoft.com/windows/apps/design/accessibility/accessible-text-requirements#text-font-size-and-scale), [UISettings.TextScaleFactor](https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uisettings.textscalefactor), [ICoreWebView2Controller3](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller3), [ShouldDetectMonitorScaleChanges](https://learn.microsoft.com/dotnet/api/microsoft.web.webview2.core.corewebview2controller.shoulddetectmonitorscalechanges), [wry webview2 module](https://github.com/tauri-apps/wry/blob/wry-v0.57.1/src/webview2/mod.rs), [Edge 138 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/138#web-platform-features), [Edge 145 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/145#web-apis), [CSS Fonts 5 text-scale meta](https://drafts.csswg.org/css-fonts-5/#text-scale-meta), [preferred-text-scale explainer](https://github.com/w3c/csswg-drafts/blob/main/css-env-1/explainers/env-preferred-text-scale.md#windows-11). Document review and a source scan only; no WebView2 run.
 
 ### Signing and deferred authenticated updates
 
@@ -2270,7 +2284,7 @@ Column contents:
 | SC-006 | `unverified` | | | | | | | | | | | | | |
 | SC-007 | `unverified` | | | | | | | | | | | | | |
 | SC-008 | `unverified` | | | | | | | | | | | | | |
-| SC-009 | `fail` (225% text case, 2026-11-20) | Installed v0.1.3 exe `9ed79992…` | | OS 10.0.26300, display scale 125%, Windows Text size 225% | | A CDP probe reads `devicePixelRatio` and the computed `--text-scale` (T160 rule). | `devicePixelRatio` read 2.8125, not 1.25. `--text-scale` read 2.25. A 1280×800 DIP window held 569×356 CSS px. The other SC-009 checks stay `unverified`. | | R7 "Windows text size", record of 2026-11-20. Log: local scratch v013-225/diag/probe.log. | WebView2 puts the text scale into the rasterization scale, and the page applies it again. | | After T422 | T422 (v0.1.4 fix) | |
+| SC-009 | `fail` (225% text case, 2026-11-20) | Installed v0.1.3 exe `9ed79992…` | | OS 10.0.26300, display scale 125%, Windows Text size 225% | | A CDP probe reads `devicePixelRatio` and the computed `--text-scale` (T160 rule). | `devicePixelRatio` read 2.8125, not 1.25. `--text-scale` read 2.25. A 1280×800 DIP window held 569×356 CSS px. The other SC-009 checks stay `unverified`. | | R7 "Windows text size", record of 2026-11-20. Log: local scratch v013-225/diag/probe.log. | WebView2 puts the text scale into the rasterization scale, and the page applies it again. | | T422 package `019bfbbc`, 2026-11-21: `devicePixelRatio` read 1.25 at Text size 225% (R7 T422 record). The other SC-009 checks stay `unverified`. | T422 (v0.1.4 fix) | |
 | SC-010 | `unverified` | | | | | | | | | | | | | |
 | SC-011 | `unverified` | | | | | | | | | | | | | |
 | SC-012 | `unverified` | | | | | | | | | | | | | |

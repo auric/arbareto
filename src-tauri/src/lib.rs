@@ -177,6 +177,17 @@ pub fn run() {
                 // The close prompt blocks, so it never runs on the main thread.
                 std::thread::spawn(move || service.request_close(close::Request::Window));
             }
+            if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = *event
+                && window.label() == MAIN_WINDOW
+                && let Some(main) = window.get_webview_window(MAIN_WINDOW)
+                && let Err(error) = main.with_webview(move |webview| {
+                    if let Err(error) = webview::rasterize(&webview.controller(), scale_factor) {
+                        eprintln!("WebView2 rasterization scale: {error}");
+                    }
+                })
+            {
+                eprintln!("WebView2 rasterization scale: {error}");
+            }
         })
         .build(tauri::generate_context!())
         .expect("failed to build the Tauri application")
@@ -271,6 +282,14 @@ fn start(app: &mut App, root: Option<&Path>) -> Result<(), Box<dyn std::error::E
                 lifecycle::handle(&*service, lifecycle::Event::ProcessFailed(kind));
             }
         };
+        match shown.scale_factor() {
+            Ok(scale) => {
+                if let Err(error) = webview::rasterize(&webview.controller(), scale) {
+                    eprintln!("WebView2 rasterization scale: {error}");
+                }
+            }
+            Err(error) => eprintln!("window scale factor: {error}"),
+        }
         if let Err(error) = webview::attach(&webview.controller(), on_process_failed) {
             eprintln!("WebView2 handlers: {error}");
         }

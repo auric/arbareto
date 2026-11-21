@@ -22,7 +22,7 @@ Arbareto is a desktop Git client inspired by Git Extensions. It covers the full 
 - Windows 11 x64 is the first platform that the project qualifies.
 - Linux comes next. macOS comes later, because no Mac test hardware is available yet.
 - WSL repositories work from the Windows app.
-- The current installer release is [Arbareto Preview v0.1.2](https://github.com/auric/arbareto/releases/tag/v0.1.2). A preview is not a qualified release. See [Download](#download).
+- The current installer release is [Arbareto Preview v0.1.3](https://github.com/auric/arbareto/releases/tag/v0.1.3). A preview is not a qualified release. See [Download](#download).
 
 ## Features
 
@@ -55,7 +55,7 @@ These features work on the `main` branch today.
 
 ## Download
 
-The installer is on the [Arbareto Preview v0.1.2](https://github.com/auric/arbareto/releases/tag/v0.1.2) release page. All releases are on the [Releases](https://github.com/auric/arbareto/releases) page. The installer installs Arbareto for the current user and needs no administrator rights. Prerequisites (details in [Requirements](#requirements)):
+The installer is on the [Arbareto Preview v0.1.3](https://github.com/auric/arbareto/releases/tag/v0.1.3) release page. All releases are on the [Releases](https://github.com/auric/arbareto/releases) page. The installer installs Arbareto for the current user and needs no administrator rights. Prerequisites (details in [Requirements](#requirements)):
 
 - Windows 11 x64. Windows 10 x64 runs, but Arbareto shows it as an unqualified platform.
 - Git for Windows `2.55.0.windows.3` or later.
@@ -84,6 +84,10 @@ To check that the release workflow of this repository built the file, use the Gi
 ```sh
 gh attestation verify <file> -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml
 ```
+
+## Known issues
+
+- At a Windows text size above 100%, Arbareto applies the text size two times. The text is too large, and the window content does not fit. Version 0.1.4 will fix this problem.
 
 ## Requirements
 

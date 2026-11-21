@@ -1294,3 +1294,143 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
 - User decision of 2026-11-18: the reviewer findings ship as tested. Their fixes target v0.1.4.
 - New v0.1.4 rows: 001 T420, 004 T177, 005 T127, and 008 T086 to T089.
 - `OBSERVATION v0.1.3 full run f015: e2fa367a, installer 08706d55…, exe 9ed79992…; 42 of 46 steps exit 0; ORIGIN bad 0; test:all 10,445 pass 0 fail 56 skip; gate 175 pass; reruns R1 8/0, R2 10/0/1 (SC-002 232.7 of 576 MiB), R3 1/0 (Cancel outcome median 2,820.9 ms of 5 s)`
+
+### v0.1.3 pre-tag verification (2026-11-21, merge 87e4ea16)
+
+- Source: the check logs in local scratch (`v013-r3r4`, `v013-r5`), read-only Git commands, and the orchestrator's run summary.
+- The ticks and the analyze fixes are in "v0.1.3 records" and commits 36b3bec0, 0177bcbd, 1c1d01a2, and 10a7cf5b.
+- No scratch record holds a final analyze after 10a7cf5b. That analyze is not verified.
+- Merge 87e4ea16 (87e4ea1665d1ca6280c033490ac3dbbca25fff35) joins origin/main a7405f8b and 10a7cf5b in one merge commit.
+- The merge tree (72564ee5) equals the tree of 10a7cf5b.
+- `git diff --quiet e2fa367a 87e4ea16 -- src src-tauri scripts package.json bun.lock` exit 0. So the merge holds the f015 product code.
+- Outside `specs/`, the merge differs from e2fa367a only in `CHANGELOG.md` and three test files.
+- The three test files are `tests/git/fixture-root.ts`, `commit-menu-perf.test.ts`, and `inspection-perf.test.ts`. The targeted reruns cover them.
+- Post-merge check at 87e4ea16, porcelain empty at the start:
+  - `bun install --frozen-lockfile`, `bun run typecheck`, and `bun run export:schemas --check` exit 0.
+  - `tests/contracts/groups.test.ts`: 1 pass, 0 fail.
+  - `bun scripts/release/check.ts --mode dry-run --signing off` exit 0.
+  - The release tests (`release-pins`, `release-workflow`, `release-files`, and `tests/git/release-check`): 79 pass, 0 fail, exit 0.
+  - The `ORIGIN` lines name the checkout under test. Porcelain printed 0 lines at the end.
+- The release-date commit ee676db5 on top of 87e4ea16 changes only `CHANGELOG.md`. The heading becomes `## [0.1.3] - 2026-11-21`.
+- So the tag builds the code of 87e4ea16. Only the CHANGELOG date line differs.
+- `notes.ts --version 0.1.3` exit 0. The release notes hold the 7 CHANGELOG bullets.
+- From the orchestrator's run summary: main moved from a7405f8b to ee676db5. `check.ts --mode release` at the tag exit 0.
+- GitHub settings read-back, 2026-11-21 00:28:23Z to 00:28:29Z, each command exit 0:
+  - An unauthenticated `GET https://api.github.com/repos/auric/arbareto` gives `"private": false`.
+  - `environments/release`: required reviewer `auric`, `can_admins_bypass` false. The JSON is byte-equal to the v0.1.2 read-back.
+  - Deployment branch policies: one, `{"name":"v*","type":"tag"}`.
+  - `immutable-releases`: `enabled` true.
+  - `actions/variables`: none. So `ARBARETO_SIGNING` is absent, and signing stays off.
+  - The release list holds only `v0.1.2`, `v0.1.1`, and `v0.1.0`. The remote has no tag `v0.1.3`.
+  - The remote has no branch `v0.1.3`, `v0.1.3-main`, or `release-dry-run`.
+  - `main` on the remote is a7405f8b. The rulesets list holds one ruleset, `main`.
+- `OBSERVATION v0.1.3 pre-tag: 87e4ea16 tree equals 10a7cf5b; product code equals e2fa367a; post-merge check exit 0, release tests 79 pass 0 fail; ee676db5 changes only the CHANGELOG date line; settings read-back as v0.1.2; no v0.1.3 release or tag before the tag push; final analyze after 10a7cf5b not verified`
+
+### T026 Local rehearsal of the build job, sixth run (2026-11-21, clean clone at 87e4ea16)
+
+- Source: the driver summary in local scratch `v013-t026`. The clone HEAD is 87e4ea1665d1ca6280c033490ac3dbbca25fff35, and `package.json` holds version 0.1.3.
+- Exit 0: c0 to c11. Step times: install 1.3 min, `package:preview:exes` 3.5 min, `package:preview:bundle` 1.0 min.
+- The verified folder holds exactly four files:
+  - `Arbareto_0.1.3_x64-setup.exe` 46607714 bytes `02e86294046864cae97ba4600d3bc9d0aab117bc55fdcdb359190f57c3aee273`.
+  - `arbareto-0.1.3-hunspell-source.tar.gz` 2211105 bytes `7888d91c305f7410c87f4402c6847f0db464de962a99e28172f6d26350f49bc5`.
+  - `arbareto-0.1.3-third-party-notices.txt` 650568 bytes `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
+  - `SHA256SUMS.txt` 304 bytes `82944076a6648275b179b3da3585c7f8d1545f3ce1fe76554c4357c76af4ed0f`.
+- c9 `sums.ts verify` exit 0. The release notes file has 2569 bytes, `5edff8888371636eddcb92823095e5a0dd29541af4b70b0b5ade73db077de6a1`.
+- Archive content check by the T029 method:
+  - Top entries `hunspell`, `hunspell-wasm`, and `SOURCE.txt`. `SOURCE.txt` is equal.
+  - `hunspell` pin edb619100791110d3e34f09ec35392ad327c1135: 721 files in the tree and on disk, 1 symlink, 0 missing, 0 extra, 0 different.
+  - `hunspell-wasm` pin 8f755ef64e8b047b77b676f9698b3dfa5cb1887d: 51 files, 0 symlinks, 0 missing, 0 extra, 0 different.
+  - NTFS cannot show the executable mode, so the 11 executable entries of `hunspell` were not checked for mode.
+- `git status --porcelain` printed nothing after the install, after Q2, after the m1 restore, and at the end.
+- Q3: m1, m2a, m2b, m3, m4, m5, and m6 exit 1.
+  - m4 fails "every uses: names a full 40-hex commit ID".
+  - m5 fails "build runs on windows-2025 with exactly contents: read and actions: read, and no environment".
+  - m6 fails "an extra file gives RELEASE_SUMS extra".
+  - m7 gives 79 pass, 0 fail. m8 and m9 exit 0. The `ORIGIN` lines of m4 to m7 name the clone.
+- Tools: Bun 1.4.4, `rustc 1.99.0 (b940084d7 2026-09-28)`, `cargo 1.99.0 (5f94df478 2026-08-27)`, `git version 2.56.0.windows.2`, makensis `v3.11`.
+- `OBSERVATION T026: 87e4ea16 every Q2 step exit 0; four files; sums verify exit 0; archive content equals both pins; porcelain empty; m1 to m6 exit 1, m7 to m9 green`
+
+### v0.1.3 release dry run (2026-11-21, GitHub, build commit 87e4ea16)
+
+- Run: https://github.com/auric/arbareto/actions/runs/44845422832. The run head is 87e4ea1665d1ca6280c033490ac3dbbca25fff35.
+- Source: the job log and the `release-files` artifact in local scratch `v013-dryrun`, and the orchestrator's run summary.
+- Job `build` succeeded. The run took 9 min 21 s. The v0.1.2 dry run took 7 min 20 s. `publish` was skipped.
+- Image `windows-2025-vs2026` 20261116.315.1 (`ImageOS win25-vs2026`). v0.1.2 used 20261103.298.1.
+- Tools: rustc and cargo 1.99.0, tauri-cli 2.12.0, Bun 1.4.4, NSIS v3.11, Windows SDK 10.0.26100.0.
+- MSVC toolset 14.52.37025 (Visual Studio 18 Enterprise). v0.1.2 used 14.51.36231. The other tools equal v0.1.2.
+- Artifact files, size in bytes and SHA-256:
+  - `Arbareto_0.1.3_x64-setup.exe`: 46,619,746, `88a6844a2c5c125801cc14f5a5a40a21128b53530799fb73dd83f5e9a9a9a765`.
+  - `arbareto-0.1.3-hunspell-source.tar.gz`: 2,211,110, `7cdb9f017da03661c91a563dd0a9c9bc76851a8fa0c0cc4b7ebe8e125fcf1335`.
+  - `arbareto-0.1.3-third-party-notices.txt`: 650,568, `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
+  - `SHA256SUMS.txt`: 304, `55c4b8a3505a24575d306e51ca292561e317a7b808e4d3dee2dd890482a1b482`.
+- `sums.ts verify` on the artifact exit 0. The archive content equals both pins.
+- The installer and the archive bytes differ from the T026 rehearsal. The archive content is equal by the tree compare.
+- After the T039 dry run, the branch `release-dry-run` was deleted. Its branch API read-back gives HTTP 404.
+- `OBSERVATION v0.1.3 dry run: run 44845422832 at 87e4ea16; 9 min 21 s; publish skipped; four files; sums verify exit 0; archive content equals both pins; image 20261116.315.1, MSVC 14.52.37025`
+
+### v0.1.3 Sandbox runs (2026-11-21, reference host)
+
+- Source: `drive.log` of the run folders `v013-t030-dry`, `v013-t039-dry`, `v013-t030-rel`, and `v013-t039-rel`, in local scratch.
+- Each run compares the installer SHA-256 on the host with its source file. Each comparison is equal.
+- T030 on the dry-run installer (`88a6844a…`): 14 of 14 checks pass, driver exit 0.
+  - HKCU: `DisplayName=Arbareto`, `DisplayVersion=0.1.3`, `Publisher=Ihor Lifanov`.
+  - About: `Build: 0.1.3 87e4ea1665d1ca6280c033490ac3dbbca25fff35` and `Preview`.
+- T039 on the dry-run installer, networking on: 34 of 34 checks pass, driver exit 0.
+  - The About build line and the `(release 0.1.3)` Hunspell line are equal. The tag source gives HTTP 200.
+  - The Hunspell URL gives HTTP 404, because no v0.1.3 release existed yet. This is the red control of the HTTP check.
+- T030 on the release installer (`5448f6da…`): 14 of 14 checks pass, driver exit 0.
+  - Install exit 0. `DisplayVersion=0.1.3`. About: `Build: 0.1.3 ee676db587375ae2a7a79ccbbf2e8ad87326cdf4` and `Preview`. Uninstall exit 0.
+- T039 on the release installer (binding run), networking on: 34 of 34 checks pass, driver exit 0.
+  - About holds `Corresponding Source: https://github.com/auric/arbareto at commit ee676db587375ae2a7a79ccbbf2e8ad87326cdf4`.
+  - About holds `Hunspell source (LGPL-2.1): https://github.com/auric/arbareto/releases (release 0.1.3)`.
+  - "Source at this commit": a new Edge process starts, owner `arbstd`, parent the app.
+  - Its URL equals `https://github.com/auric/arbareto/tree/ee676db587375ae2a7a79ccbbf2e8ad87326cdf4`. HTTP 200.
+  - "Hunspell source": a new Edge process starts, owner `arbstd`, parent the app.
+  - Its URL equals `https://github.com/auric/arbareto/releases/download/v0.1.3/arbareto-0.1.3-hunspell-source.tar.gz`. HTTP 200.
+  - Control for each URL: a copy with a changed last character gives `mismatch`.
+  - Uninstall as `arbstd`: exit 0.
+- `OBSERVATION T030 v0.1.3: dry-run installer 88a6844a… and release installer 5448f6da…, 14 of 14 checks each; About Build: 0.1.3 with 87e4ea16 and ee676db5, Preview; DisplayVersion 0.1.3; uninstall exit 0`
+- `OBSERVATION T039 v0.1.3: 5448f6dab5fa52b183c38ef44f5e6805cbd1b02b891606cdfdb4be01234d17d0; 34 of 34; app and Edge owner arbstd; About source and Hunspell lines equal; tag-source URL equal, HTTP 200; hunspell-source URL equal, HTTP 200; uninstall exit 0`
+
+### v0.1.3 release (2026-11-21, GitHub, tag commit ee676db5)
+
+- Source: the release facts and logs in local scratch `v013-release`, and the orchestrator's run summary.
+- The annotated tag `v0.1.3` (tag object 0e9c04f891661b5de24493c3bd089cd38ae8d811, message "Arbareto Preview v0.1.3") points to ee676db587375ae2a7a79ccbbf2e8ad87326cdf4.
+- ee676db5 is the head of `origin/main`.
+- Run https://github.com/auric/arbareto/actions/runs/44847266396, attempt 1, created 00:58:16Z, conclusion success.
+- `build`: 00:58:19Z to 01:07:54Z, success, 9 min 35 s (budget 90 min). The artifact `release-files` has 48038916 bytes.
+- Image `windows-2025-vs2026` 20261116.315.1. The tools equal the dry run.
+- Approval: the approvals API gives `approved`, user `auric`, environment `release`. The API holds no approval time.
+- Deployment 7956294674 was created at 01:07:54Z. This fact comes from the orchestrator's run summary.
+- `publish`: 01:08:44Z to 01:09:15Z, success (`run.json`).
+- SC-006: publish start to published takes 27 s (01:08:44Z to 01:09:11Z). The budget is 15 min.
+- The approval falls between 01:07:54Z and 01:08:44Z. So approval to published takes at most 1 min 17 s.
+- Release "Arbareto Preview v0.1.3": prerelease, immutable, not a draft, published 2026-11-21T01:09:11Z, four files.
+- `releases/latest` gives HTTP 404. So the release is not latest.
+- The release body holds the `--signer-workflow` command (line 54). It also holds "Unsigned builds do not run when Smart App Control is on." (line 37).
+- Four files, downloaded. Each SHA-256 equals the API digest:
+  - `Arbareto_0.1.3_x64-setup.exe` 46608946 bytes `5448f6dab5fa52b183c38ef44f5e6805cbd1b02b891606cdfdb4be01234d17d0`.
+  - `arbareto-0.1.3-hunspell-source.tar.gz` 2211096 bytes `72591f6a1942032e354b496398471247e898e878843ece1be9836abebbc3e7f5`.
+  - `arbareto-0.1.3-third-party-notices.txt` 650568 bytes `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
+  - `SHA256SUMS.txt` 304 bytes `6bca4d59711f1ebb07d4fe0b216dfbe5210cc430b1c145fc34eba038afb33a83`.
+- `sums.ts verify` on the downloads exit 0.
+- SC-002, first sentence: `sha256sum --ignore-missing --check SHA256SUMS.txt` in `dl` exit 0, with 3 OK lines.
+- `gh attestation verify <file> -R auric/arbareto --signer-workflow auric/arbareto/.github/workflows/release.yml` exit 0 for each of the four files.
+- Its JSON output is in `attj-*.json`. The `att/*.log` files are empty.
+- The JSON output names the signer `release.yml@refs/tags/v0.1.3` and the source digest ee676db5 for each file.
+- SC-002, second sentence: the `SHA256SUMS.txt` attestation check exit 0.
+- The notices file is byte-equal to the v0.1.2, v0.1.1, and v0.1.0 notices files (`00971cc0…`). So its attestation JSON holds four attestations.
+- The other three attestations name the tags v0.1.2 (deb54088), v0.1.1 (a90e7ef9), and v0.1.0 (7545e5b8).
+- Attestation controls (`ctl1.log`, `ctl2.log`), each exit 1:
+  - An installer copy with byte 1001 changed: HTTP 404, no attestation for that digest.
+  - The real installer with `--signer-workflow auric/arbareto/.github/workflows/other.yml`: verification fails.
+- Upload refusal: not run for v0.1.3 (no user decision D8). The v0.1.0 record holds the HTTP 422 refusal.
+- The `publish` job log has 373 lines. Its six `RELEASE_CHECK` hits are all in the echoed script source.
+- `GH_TOKEN: ***` occurs once, in the step "Publish the release".
+- SC-007: the T039 release run gives HTTP 200 for `https://github.com/auric/arbareto/tree/ee676db587375ae2a7a79ccbbf2e8ad87326cdf4`.
+- SC-007: the same run gives HTTP 200 for `https://github.com/auric/arbareto/releases/download/v0.1.3/arbareto-0.1.3-hunspell-source.tar.gz`.
+- The About buttons open these URLs. See "v0.1.3 Sandbox runs (2026-11-21, reference host)".
+- Known defect, shipped by user decision of 2026-11-20: above 100% text size, the app scales the text two times.
+- The fix targets v0.1.4 (001 T422). README.md "Known issues" names the defect.
+- The user approved the README update on 2026-11-20 and 2026-11-21. README.md Status and Download now name v0.1.3.
+- `OBSERVATION v0.1.3 release: v0.1.3 at ee676db5 (tag object 0e9c04f8), prerelease, immutable, not latest, four files; build 9 min 35 s, approval to published at most 1 min 17 s; downloads equal API digests; sums verify exit 0, 3 OK lines; attestation exit 0 for each file with the release.yml signer, exit 1 for a changed byte and for other.yml; notices file carries four attestations; GH_TOKEN only in "Publish the release"; both About URLs HTTP 200; upload refusal not run; double text scaling above 100% shipped as a known issue`

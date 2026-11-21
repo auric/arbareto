@@ -876,3 +876,20 @@ Independent batch 3 review, reviewer agent, read-only. Verdict: passes after fix
 - The content of `src/contracts/dictionaries.json` stayed equal. The script writes LF line endings, and a content compare gave equal.
 - `bun test tests/contracts/dictionary-catalog.test.ts` gave 20 pass, 0 fail. Each `ORIGIN` line named the checkout under test.
 - With the gate runs of "v0.1.1 full run" above, this record completes T043.
+
+### v0.1.3 session at Windows Text size 225%, 2026-11-20, installed exe 9ed79992…
+
+- Tests at code `9a88708d` from the l7 worktree. Every `ORIGIN` line named that worktree and the installed v0.1.3 exe.
+- Host: Git 2.56.0.windows.2, display scale 125%, Windows Text size 225%.
+- `tests/windows/spelling-packaged.test.ts`: 0 pass, 4 skip, 6 fail, 24.84 s.
+- F14, N1, Q24 failed in `openRepository`: `TIMEOUT: no element named "References"` after 10,000 ms (`spelling-app.ts:242`).
+- The app process stayed alive. So the next five cases failed at their start with `ANOTHER_INSTANCE`.
+- These five cases are N2 and N3 by keyboard, both N4 cases, N8, and Q26.
+- The file printed `OBSERVATION T041: N4 text scale 225%`, but N4 never reached its check at 225%.
+- Cause 1, product defect: WebView2 scales the page twice, and `devicePixelRatio` read 2.8125. 001 research.md R7 "Windows text size" holds the record. Fix: 001 T422.
+- Cause 2, test gap: at 225%, a 1280×800 window is in the constrained profile. There, References starts collapsed.
+- So the UIA Tree "References" is absent until "Show references" opens it.
+- The probe (local scratch v013-225/diag/probe.log) found the Tree only after a click on "Show references".
+- The `session()` helper of the test file does not stop the app when `openRepository` throws. Fix: T068.
+- T041, T060, and T063 stay open. Their N4 part at 225% waits for 001 T422 and T068.
+- User decision 2026-11-20: v0.1.3 ships without this part. Log: local scratch v013-225/spelling.log.

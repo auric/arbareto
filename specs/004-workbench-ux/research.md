@@ -1217,6 +1217,38 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - The T144 file printed `SKIP T144 screenshots: ARBARETO_TREE_SHOTS_DIR is not set`. This is a log line, not a skipped case. The run wrote no T144 screenshot.
 - The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
 
+**v0.1.3 session at Windows Text size 225% (2026-11-20)**
+
+- Build: the installed v0.1.3 exe `9ed79992…` (f015 build, R34). Tests at code `9a88708d` from the l7 worktree.
+- Every `ORIGIN` line named that worktree and the installed exe.
+- Host: OS 10.0.26300, Git 2.56.0.windows.2, display scale 125%, Windows Text size 225%. The log holds no WebView2 version.
+- `tests/windows/submodule-tree-packaged.test.ts`: 1 pass, 8 skip, 7 fail, 5,057.49 s (84.3 min). The log holds no per-case pass or skip line.
+- The file printed `OBSERVATION T164: Windows text size 225%` and `SKIP T164: missing capability text-scale-100`.
+- Each fail is a wait of 600,000 ms that ran out. The case times follow:
+  - T144 Q30 board: "the board rows", 618,837 ms.
+  - SC-018 and SC-020, n = 20: the marks of the sc018-20 branch fixture, 618,257 ms.
+  - SC-018 and SC-020, n = 256: the marks of the sc018-256 branch fixture, 695,887 ms.
+  - SC-020, n = 1,024: the marks of the sc018-1024 branch fixture, 989,653 ms.
+  - SC-019, 256 submodule rows: "the tree rows", 609,122 ms.
+  - SC-019, 1,024 submodule rows: "the tree rows", 610,573 ms.
+  - T164 (10) at 225%: "the Keys in the tree panel", 624,999 ms.
+- The shots folder (local scratch v013-225/shots) stayed empty. So this session gave no T145 board shots.
+- The fixture root cleanup took 113,637 ms, and no hook timeout occurred (010 research.md R7 "v0.1.3 test fixes").
+- Diagnosis 1, product defect: WebView2 puts the text scale into its rasterization scale.
+- So `devicePixelRatio` read 2.8125 (1.25 × 2.25), and the app also applies `--text-scale: 2.25`.
+- A 1280×800 DIP window held 569×356 CSS px. 001 research.md R7 "Windows text size" holds the record. 001 T422 holds the fix.
+- Diagnosis 2, test gap: at 225%, the spec puts a 1280×800 window in the constrained profile (001 plan.md about :295).
+- There, References starts collapsed (001 plan.md about :258, `Workbench.tsx` about :1171). The Keys slot is null (`Workbench.tsx` about :2167).
+- The tests wait for the board rows, the tree rows, and the Keys panel. They do not set a wide viewport or open the section first. T178 holds the fix.
+- Probe (local scratch v013-225/diag/probe.ts, probe.log, and 1-default.png to 4-default-expanded.png), on its own repository:
+  - The default window was 569×356 CSS px in the constrained profile. UIA showed "Show references" but no "References" Tree.
+  - At 1280×1300, the profile was wide, and UIA showed the Tree.
+  - At 1280×800, the profile was constrained, and the Tree was absent again.
+  - After a click on "Show references", UIA showed the Tree.
+  - No state showed the Keys panel. At 1280×1300, its slot had a height of 0.
+- T145 and T164 stay open. Their 225% parts wait for 001 T422 and T178.
+- User decision 2026-11-20: v0.1.3 ships without these parts. Log: local scratch v013-225/tree.log.
+
 ## R32 Review finding M1: Blame focus after a skipped click (2026-11-13)
 
 - Source: the review of the v0.1.2 code (T174), 2026-11-13. Code read, not run.
@@ -1295,3 +1327,8 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - So both cases fail only under the parallel group load. 001 T421 holds the timeout fix.
 - T175 and T176 (ticked, 2026-11-18): the green f015 full run holds each case. The same-tree run repeats each case green.
 - Gap: no `bun run test:all` ran on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The user waives the exact-tree test:all clause for T175 and T176 only.
+
+**225% session, 2026-11-20**
+
+- R31 "v0.1.3 session at Windows Text size 225% (2026-11-20)" holds the T145 and T164 record.
+- 7 cases of `submodule-tree-packaged.test.ts` failed. T178 and 001 T422 hold the fixes, target v0.1.4.

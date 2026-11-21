@@ -260,6 +260,10 @@ The v0.1.3 full run f015 ran on code `e2fa367a`, installed exe `9ed79992…` (00
 - The f015 step `s5-submodule-tree-packaged` removed its fixture root in 121.1 s, and the hook timed out. Each case passed.
 - The cleanup now logs its time in milliseconds. The driver step cap still bounds the run.
 - Open: `restoreState` of `tests/windows/external-change.ts` renames `index.lock` over the index. 001 T420 checks it for the same race.
+- 225% session, 2026-11-20 (tests at `9a88708d`, installed exe `9ed79992…`): `submodule-tree-packaged.test.ts` ran for 84.3 min.
+- It removed its fixture root in 113,637 ms, and no hook timeout occurred. The new log line gave the time.
+- This time is also below the old 120 s limit. So this run does not show that the 600 s limit is necessary.
+- 004 research.md R31 holds the run. Log: local scratch v013-225/tree.log.
 
 ### Requirement-to-test map (T022)
 

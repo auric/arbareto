@@ -560,10 +560,10 @@ export function useBranchActions(options: BranchActionsOptions) {
     openMenu,
     /** Reads the branches again, such as when the list opens. */
     refresh: () => workbench.readBranches(),
-    /** A sidebar row or a history label by its 002 kind and short name. Without entries, it reads the branches again and states why it does nothing. A ref outside the newest `readBranches` result does nothing. */
+    /** A sidebar row or a history label by its 002 kind and short name. Without entries, it states why it does nothing. After a failed read, it also reads the branches again. A ref outside the newest `readBranches` result does nothing. */
     onRef(kind: "branch" | "remote", name: string, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement, byKey = false) {
       if (entries === null) {
-        workbench.readBranches();
+        if (failure !== null) workbench.readBranches();
         return onNotice(failure ?? T.branchesLoading);
       }
       const entry = entryOf(`${kind === "branch" ? "refs/heads/" : "refs/remotes/"}${name}`);

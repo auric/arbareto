@@ -1124,7 +1124,7 @@ describe("branch row inputs before the readBranches answer (T176, plan D15 Branc
     await settle();
   }
 
-  test("Delete states that the branches are still loading and reads them again; after the answer, Delete starts the review", async () => {
+  test("Delete states that the branches are still loading and starts no second read; after the answer, Delete starts the review", async () => {
     const world = branchWorld(() => reviewed("delete-branch", { ref: "refs/heads/login-form", oid: oid(4), onlyHere: 0, reflogKeeps: false, heldBy: null, current: false }));
     world.answers.readBranches = undefined;
     const double = await mountWorkbench(workbench, world);
@@ -1133,7 +1133,7 @@ describe("branch row inputs before the readBranches answer (T176, plan D15 Branc
     await pressDelete("login-form");
     expect(footerText()).toContain("The branches are still loading.");
     expect(reviews(double)).toEqual([]);
-    expect(double.count("readBranches")).toBe(reads + 1);
+    expect(double.count("readBranches")).toBe(reads);
     await contextMenu(await sidebarRow("main"));
     expect(openMenuItems().map(itemLabel)).toEqual(["Show only this branch's history"]);
     await press(document.activeElement!, "Escape");
@@ -1150,5 +1150,28 @@ describe("branch row inputs before the readBranches answer (T176, plan D15 Branc
     await pressDelete("login-form");
     expect(footerText()).toContain("Arbareto cannot read the branches: GIT_FAILED.");
     expect(reviews(double)).toEqual([]);
+  });
+
+  // T177: a held key repeats its press. Only a failed read starts a new read.
+  test("two Delete presses during one pending read start no second readBranches", async () => {
+    const world = branchWorld();
+    world.answers.readBranches = undefined;
+    const double = await mountWorkbench(workbench, world);
+    const reads = double.count("readBranches");
+    await pressDelete("login-form");
+    await pressDelete("login-form");
+    expect(double.count("readBranches")).toBe(reads);
+    expect(footerText()).toContain("The branches are still loading.");
+  });
+
+  test("after a failed readBranches, each Delete press starts one new read", async () => {
+    const world = branchWorld();
+    world.answers.readBranches = () => ({ requestId: fixtureId(0x532), state: "failed", code: "GIT_FAILED" });
+    const double = await mountWorkbench(workbench, world);
+    const reads = double.count("readBranches");
+    await pressDelete("login-form");
+    expect(double.count("readBranches")).toBe(reads + 1);
+    await pressDelete("login-form");
+    expect(double.count("readBranches")).toBe(reads + 2);
   });
 });

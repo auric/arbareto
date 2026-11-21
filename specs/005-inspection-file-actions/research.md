@@ -597,6 +597,107 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - T108: 256 clean submodules, the Changes list to the last mark, median 8,586.4 ms (bound 14,080 ms).
 - Three other steps failed: `s5-commit-menu-perf`, `s5-remote-delete-packaged`, and `s5-revert-perf`, one case each. These steps run other files and are not related to T108 and T111.
 
+*T104 P0 and stage 1, 2026-11-16.* The logs are in local scratch.
+- P0 packaged split of Q6, from the T104 P0 record of each process. The service grew 309.2 MiB at the peak. At the limit-text sample, it was 274.4 MiB. The renderer grew 75.5 MiB and the GPU process 13.3 MiB. `git.exe` used 35.8 MiB for a short time. The tree grew 379.9 MiB at the peak and 358.7 MiB at the limit-text sample. The bound is 624 MiB.
+- In-process facts on the v0.1.2 code, 100,001-file commit: after the read, the service keeps about 11 MiB. That is `Listing.raw` (the raw `-z` bytes) and `Listing.offsets`. A later read parses its one record again.
+- The peak is transient. `parseRawListing` built 100,001 entry objects: 47.0 MiB live, 493 bytes and 12 objects per entry. The reply `files` objects took 8.4 MiB. The frame encoding copied the 7.9 MB reply about three times. The collector chunks (11.2 MB) stayed alive until the read ended.
+- Peak heapCapacity was 145 to 275 MiB. The mimalloc peak commit grew 190 to 290 MiB. This agrees with the packaged service peak of 309.2 MiB.
+- Defect 1: a cut listing kept a subarray of the `take()` buffer. So the retained listing kept the whole buffer, up to STATUS_LISTING_BYTES (32 MiB).
+- Defect 2: `entryOf` gave `path` and `oldPath` as subarrays of `Listing.raw`, and blame keeps the path in its target. So a blame kept the whole listing buffer after a new listing replaced it. arrayBuffers stayed at 10.7 MiB, against 0.1 MiB without the blame.
+- Stage 1 (user decision 2026-11-16) changes only the service. `rawListingOffsets` checks the grammar in one pass and writes only the record offsets. `readCommitChanges` builds the reply entries one at a time and stops at the result bound.
+- Stage 1 also fixes both defects. A cut listing keeps a copy of its kept bytes, and `entryOf` copies the record. The read drops its collector after `take()`. The contract does not change.
+- Stage 1 equality: `tests/git/commit-changes-listing.test.ts` compares the reply, the entries, and the retained listing with the v0.1.2 parse and reply. The inputs are the fixture commits, seeded listings, damaged listings, the three cuts, and each prefix length.
+- Stage 1 in-process record: `tests/git/commit-changes-memory.test.ts`, two runs on each code, the v0.1.2 code first. The live parse fell from 47.1 MiB to 0.4 MiB (0.8 MiB with extra memory). The 47.1 MiB is the control run with the v0.1.2 parse.
+- heapCapacity right after the read fell from 234.2 to 234.7 MiB to 168.1 to 169.0 MiB. heapSize right after the read fell from 101.6 MiB to 56.7 MiB. The objects fell from 1.62 million to 0.45 million.
+- After a forced collection, heapSize is 31.1 MiB in both, against 19.1 MiB before the read. The mimalloc peak commit grew 273.3 to 275.3 MiB with the v0.1.2 code. With stage 1, it grew 179.4 to 185.1 MiB.
+- These in-process values include two costs of the test service: the schema parse of the result and the frame check. Both codes have the same costs.
+- Packaged Q6 record of stage 1, 2026-11-17 (local scratch `v013-session/logs/S2.log`). Build: code `9fef4a7c`, installed exe SHA-256 prefix `ca72da37`, service prefix `9b7ea1db`.
+- `inspection-perf.test.ts -t "Q6 SC-002"` gave 2 pass, 0 fail. The list showed 100,000 files and the limit text.
+- Tree: before 810,053,632 bytes, peak growth 363.2 MiB, growth 277.9 MiB at the limit-text sample. The P0 record on v0.1.2 had 379.9 MiB at the peak.
+- Service: peak growth 295.1 MiB, against 309.2 MiB in P0. Renderer: peak growth 86.4 MiB. GPU process: peak growth 5.1 MiB.
+- `git.exe` showed in 1 of 5 samples, with 21.9 MiB.
+- Samples after the limit text, growth in MiB (tree, service, renderer): 754 ms: 277.9, 187.1, 86.3. 15,000 ms: 264.2, 183.1, 75.9.
+- 30,001 ms: 194.9, 184.7, 3.5. 60,000 ms: 142.0, 142.6, -4.2.
+- The renderer growth fell to 3.5 MiB at 30 s. The service growth stayed near 185 MiB up to 30 s and fell to 142.6 MiB at 60 s.
+- The `git diff-tree` of the 100,001-file commit had a peak commit of 38.3 MiB (40,198,144 bytes) in its own Job. The Job peak was 41,705,472 bytes, with 2 processes and exit 0.
+- Decision of 2026-11-17 (user, constitution VII): v0.1.3 ships with stage 1 only. Stage 2 moves to v0.1.4 (tasks.md T125).
+- In the same decision, the user chose the SC-002 bound of 427 MiB. That is the 363.2 MiB peak growth plus 64 MiB, rounded down to whole MiB. It replaces 624 MiB.
+- SC-002 calibration, 2026-11-18. The user rule of 2026-11-17: run Q6 five times on this build after f015.
+- The new bound is the highest peak growth of all runs on this code plus 64 MiB, rounded up.
+- Build: v0.1.3, installed exe SHA-256 prefix `9ed79992`, product code of `e2fa367a`.
+- Logs: local scratch v013-rerun/calib/run<n>.log and local scratch f015-full/logs/s5-inspection-perf.log.
+
+| Run | Tree peak growth (MiB) | Service peak growth (MiB) | Renderer peak growth (MiB) |
+|---|---|---|---|
+| S2 session, 2026-11-17 | 363.2 | 295.1 | 86.4 |
+| f015 full run | 475.7 | 378.9 | 86.4 |
+| Calibration run 1 | 435.7 | 378.3 | 95.8 |
+| Calibration run 2 | 511.7 | 293.1 | 235.8 |
+| Calibration run 3 | 463.7 | 298.6 | 238.1 |
+| Calibration run 4 | 506.9 | 323.9 | 233.2 |
+| Calibration run 5 | 285.7 | 226.7 | 94.5 |
+
+- Run 5 started with the renderer at 311 MB, against about 162 MB in the other runs. So run 5 is not like-for-like, but it counts as a run.
+- The `git diff-tree` peak was 38.2 to 38.3 MiB in each run.
+- The highest tree peak growth is 511.7 MiB. 511.7 + 64 = 575.7 MiB, rounded up to 576 MiB.
+- The bound of 576 MiB replaces the bound of 427 MiB of 2026-11-17. That bound came from one run and did not include the known variance.
+- The packaged service peak of v0.1.3 is not measurably lower than the 309.2 MiB of v0.1.2 (P0).
+- Stage 1 cut the in-process parse work. But the packaged service peak varies from 226.7 to 378.9 MiB across these runs.
+- Rerun R2, 2026-11-18 (local scratch `v013-rerun/R/R2.log`): `inspection-perf.test.ts` at 9a88708d, with the 576 MiB bound.
+- R2 used the f015 build: installed exe `9ed79992…`, product code of `e2fa367a`. Every `ORIGIN` line names the checkout under test.
+- R2 result: 10 pass, 1 skip, 0 fail. The skip is the T061 capture case, capability `live-input`.
+- R2 Q6: tree peak growth 232.7 MiB, bound 576 MiB, 100,000 files shown. The settled growth was 146.3 MiB.
+- Each recorded Q6 growth on this code is below 576 MiB. Only R2 asserts that bound.
+- f015 green counts of the stage 1 files (pass, skip, fail): `tests/git/commit-changes-listing.test.ts` 9, 0, 0. `tests/git/commit-changes-memory.test.ts` 2, 0, 0.
+- T104 (f015 record alone, 2026-11-18): the f015 record is on `e2fa367a`, so the older-build rule (tasks.md:43) applies.
+- `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1. Three test files changed.
+- The files are `tests/git/fixture-root.ts`, `tests/windows/commit-menu-perf.test.ts`, and `tests/windows/inspection-perf.test.ts`.
+- R2 meets the rule, but no `bun run test:all` and no full `tests/windows` set ran on the tick build.
+- Same-tree record, 2026-11-18 (local scratch `v013-sametree`). Code `9a88708d` in the l7 worktree. Every `ORIGIN` line names that worktree.
+- `git diff --quiet 9a88708d 36b3bec0 -- src src-tauri tests scripts package.json bun.lock` exits 0.
+- `36b3bec0` is the head of branch `v0.1.3` before the tick commit. The tick commit changes only `specs/`.
+- `git diff --quiet e2fa367a 9a88708d -- src src-tauri package.json bun.lock` exits 0. So the f015 installer holds the product code of the tick tree.
+- `bun run typecheck` exited 0.
+- `t104.log`: `bun test` of 7 files gave 160 pass, 0 fail.
+- The files are `tests/git/commit-changes.test.ts`, `commit-changes-listing.test.ts`, `commit-changes-memory.test.ts`, `history-diff-facts.test.ts`, `history-diff-cache.test.ts`, and `blame.test.ts`. The seventh is `tests/contracts/diff-parser.test.ts`.
+- `bun run test:fast` exited 1. Parallel group: 7,143 pass, 38 skip, 2 fail. Serial group: 109 pass, 0 fail.
+- The 2 fails are Bun timeouts at 5,000 ms in `tests/contracts/hunk-controls.test.tsx` and `tests/contracts/network-sites.test.ts`.
+- Alone, the two files gave 26 pass and 0 fail. 004 research.md R34 "Same-tree record" names the cases. 001 T421 holds the fix.
+- Packaged Q6: R2 above ran at `9a88708d` on the f015 installer, with tree peak growth 232.7 MiB against 576 MiB.
+- Q6 ran seven times on the f015 package: the f015 step, five calibration runs, and R2. Each growth is below 576 MiB.
+- Only R2 asserts the 576 MiB bound. So one run, not two, asserts the bound that the task row names.
+- T104 (ticked, 2026-11-18): stage 1 holds on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The user waives the exact-tree test:all clause for T104 only.
+- Gap: no `bun run test:all` and no full `tests/windows` set ran on the tick tree.
+- T125 holds stage 2: the renderer paging and the 64 MiB restore. Both stay unverified.
+
+*T104 stage 2 design (T125), 2026-11-16.* The Plan agent wrote this design on 2026-11-16. The full record is in local scratch.
+- Design A follows the feature 002 History window model. The service keeps the listing and a compact row model.
+- The row model holds the tree order in a `Uint32Array`, a byte-range comparator, and the folder table.
+- It also holds the rows for each layout, set of collapsed folders, and filter.
+- The renderer keeps a page cache. The file tree reads `rowCount` and the row at an index.
+- `fileId` stays the ordinal of the Git record.
+- Design B lowers the list bound, for example to 10,000 files. It changes FR-012 and needs a user decision.
+- Design C pages only the transfer. The plan rejects it.
+- Contract outline: the `readCommitChanges` payload adds `layout` and `filter`, with `filter` up to FILTER_TEXT_BYTES.
+- Its result drops `files`. It adds `count`, `first`, `rowCount`, and `rows`, with at most 128 rows in the first window.
+- A new read `readCommitRows` takes `changesId`, `layout`, `filter`, `collapsed`, `at`, and `count`. `collapsed` holds folder IDs.
+- `at` is `{row}` or `{fileId}`. `count` is 1 to 512.
+- The result holds `changesId`, `rowCount`, `target` (`found` or `none`), `start`, and `rows`.
+- `readCommitRows` takes no slot and starts no Git process. It refuses with `UNKNOWN_TARGET` or `INVALID_REQUEST`.
+- One reply holds at most 512 rows and at most 8 MiB.
+- The contract change touches Δ1, Δ2, Δ5, Δ8, and Δ10, data-model §1 and §14, and a new data-model §18.
+- Model: feature 002 `readHistoryRows` takes `at` and `count` 1 to 512. Its renderer keeps an LRU cache of 128-row pages.
+- That renderer keeps one read in flight and shows "Loading…" for a row without data.
+- Step P1 updates the documents.
+- Step P2 builds the shared order in `src/contracts/tree-order.ts` and the row model in a new `src/git-service/commit-rows.ts`.
+- Step P3 changes the service, the contract, the session, and the shell. Step P4 changes the renderer.
+- Step P5 removes `files` and adds a packaged keyboard case and the controls.
+- Step P5 also sets the SC-002 bound that the user chooses after the Q6 measurement.
+- Agents: implementer-xhigh for P2 and P3, frontend-implementer for P4, implementer and then scout for P5.
+- Size: about 2,000 lines and about 15 test files.
+- Main risk: the memory of `git.exe` can make a 64 MiB bound unreachable.
+- Open decisions: U3 (the reuse of "Loading…"), U4 (the filter in JSC), and the renderer cache size.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.
@@ -682,6 +783,33 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
   - 100 submodules: first mark 521.7 ms (bound `FIRST_MARK_MS` 1,000 ms), last mark 3,346.0 ms (bound 5,500 ms).
   - 256 submodules: first mark 533.4 ms (recorded only), last mark 8,488.1 ms (bound 14,080 ms).
 - T124 (ticked): the green record and the three controls ran on code `2d109fff`. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0 (tasks.md:43). Control 1 and `T124_WAIT_POLL` ran on the f014 installer. The f014 `tests/windows` steps cover every file of `tests/windows`, and each step exited 0.
+- T115 WSL record, 2026-11-17 (local scratch `v013-session/logs/S4a.log`). Code `9fef4a7c` with the T115 script route, `Ubuntu-26.04`, Git 2.55.0.
+  - `tests/wsl/inspection-wsl.test.ts -t "T115|T108 SC-012|T111"` ran alone: 5 pass, 42 filtered out, 0 fail.
+  - T108 SC-012, 20 submodules: median 2,825 ms (min 2,776 ms, max 2,893 ms). 100 submodules: median 11,261 ms (min 11,174 ms, max 11,349 ms).
+  - `DEADLINE` states: 0 in 10 runs at each size.
+  - The case runs the service in process with the shell test double, not the package.
+  - The f014 run on `2d109fff` used the route before T115. f014 ran these cases inside `bun run test:all`, not alone.
+  - f014, 20 submodules: median 3,904 ms (min 3,810 ms, max 4,076 ms).
+  - f014, 100 submodules: median 17,080 ms (min 16,778 ms, max 17,359 ms).
+  - The script route took 28% less time at 20 submodules and 34% less at 100.
+  - The S4a log prints no case names. The JUnit report of the next full run gives the per-case proof of the T115 (A) and (B) cases.
+- T115 JUnit record, full run f015 on code `e2fa367a` (007 research.md R7 "v0.1.3 records"). Source: `serial.xml` of the f015 `test:all` run, in the temp folder `arbareto-test-run-d1944422-fde6-4168-bd6d-e739d6193e03`.
+  - `tests/wsl/inspection-wsl.test.ts` in `Ubuntu-26.04`: 46 pass, 1 skip, 0 fail. The skip is F15, class `windows-path-rules`.
+  - Case (A) passed in 13.0 s. Its name starts "T115 (A) FR-076: the submoduleWork script route gives the states …".
+  - Case (B) passed in 11.8 s. Its name starts "T115 (B) FR-076: 33 gitlinks give 3 pages …".
+  - Every `ORIGIN` line of f015 named the checkout under test.
+  - T115 (f015 record alone, 2026-11-18): the JUnit proof of (A) and (B) holds. The older-build rule (tasks.md:43) blocked the tick.
+  - `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1. See the T104 record above.
+- T115 same-tree record, 2026-11-18 (local scratch `v013-sametree`). Code `9a88708d` in the l7 worktree.
+  - The diff check, the type check, and `test:fast` are in R17 "T104 P0 and stage 1", same-tree record.
+  - `t115-unit.log`: `tests/git/submodule-change.test.ts` and `tests/contracts/native-runner.test.ts` gave 123 pass, 0 fail.
+  - `t115-wsl.log`: `tests/wsl/inspection-wsl.test.ts` in `Ubuntu-26.04` gave 4 pass, 43 filtered out, 0 fail.
+  - The dispatch names the filtered cases: T115 (A), T115 (B), T111, and FR-071/074/076. The log prints no case names.
+  - Every `ORIGIN` line names the l7 worktree.
+  - T115 (ticked, 2026-11-18): the 4 filtered cases passed on the tick tree. The f015 JUnit record is the per-case proof of (A) and (B).
+  - User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The user waives the exact-tree test:all clause for T115 only. Gap: no `bun run test:all` ran on the tick tree.
+- Reviewer finding MEDIUM 1 of the v0.1.3 review: `scriptWork` rethrows a non-`Stop` error without an abort.
+  - The other trust workers then keep running. User decision of 2026-11-18: v0.1.3 ships as tested. T127 holds the fix, target v0.1.4.
 
 **v0.1.2 records (T114, T123), 2026-11-16**
 

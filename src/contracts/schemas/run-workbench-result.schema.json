@@ -815,9 +815,47 @@
             "revert-unstaged"
           ]
         },
+        "counts": {
+          "type": "object",
+          "properties": {
+            "reverted": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "unstaged-only": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "not-changed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "changed-outside": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "not-started": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "reverted",
+            "unstaged-only",
+            "not-changed",
+            "changed-outside",
+            "not-started"
+          ],
+          "additionalProperties": false,
+          "title": "RevertCounts"
+        },
         "files": {
-          "minItems": 1,
-          "maxItems": 10000,
+          "maxItems": 20,
           "type": "array",
           "items": {
             "type": "object",
@@ -922,6 +960,7 @@
       },
       "required": [
         "action",
+        "counts",
         "files",
         "foldersCreated",
         "index"

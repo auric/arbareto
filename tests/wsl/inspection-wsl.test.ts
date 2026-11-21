@@ -9,12 +9,16 @@
 // T078: the Delete, preview, and Save rows run through the WSL file actions of the shell test double `tests/git/bun-runner.ts`.
 // T108 and T111 (plan.md D19, spec FR-076, SC-012): the marks cost at 20 and 100 submodules, and the preview and the marks through the distro Git. Run them on Ubuntu-26.04.
 // T118 (plan.md D20, spec FR-082, SC-013): Stage file, Unstage file, and Stage all changes of a moved gitlink through the distro Git. Run it on Ubuntu-26.04.
+// T115 (plan.md D19 "WSL", contract Δ3 `readSubmoduleWork` "WSL route"): the `submoduleWork` script route against the per-target route and the distro Git. Run it on Ubuntu-26.04.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import type { ProcessContext } from "../../src/contracts/channel";
+import { MATCHING_PROBE_WSL_FOLDER } from "../../src/contracts/matching-probe";
 import wslProcess from "../../src/contracts/wsl-process.json";
 import { parsePatch } from "../../src/git-service/diff-parser";
+import { createCollector, RunnerRefusal, type GitCall } from "../../src/git-service/git-runner";
 import { mapLine, parseHunks } from "../../src/git-service/line-map";
 import { printOrigin } from "../origin";
 import { buildCaseNames, buildConflicted, buildFiles, buildIgnoreForm, buildLinkedWorktree, buildReport, buildSubmodules, REPORT_ROOT_TEXT } from "../git/file-actions-fixtures";
@@ -25,14 +29,14 @@ import { buildBlame, buildBranches, buildHistory, buildPartialClone, buildRename
 import { outcome, readOk, subcommand, SUCCEEDED, until, workPages } from "../git/hunk-harness";
 import { gitOut, gitRun, type GitHost, type RunOptions } from "../git/remote-fixtures";
 import { OPERATION_MARKERS } from "../../src/git-service/commands";
-import { PREVIEW_GROUP_PATHS } from "../../src/contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, PREVIEW_GROUP_PATHS, STATUS_LISTING_BYTES, SUBMODULE_WORK_PAGE, TRUST_INPUT_BYTES } from "../../src/contracts/limits";
 import { comparePaths } from "../../src/contracts/tree-order";
 import { openService, withFsCalls, type Envelope, type FsCall, type RegistrationResult, type Service, type ServiceResponse } from "../git/service-harness";
 import { gitLocation } from "../git/submodule-harness";
 import { distroGitHost, globalConfig, sh } from "./fixtures";
 import { inDistro, listScopes, OWN_SCOPE_OPERATIONS, pgrep, uncPath, useWslFolder, WSL_ENV, WSL_EXE, WSL_FILES_TEXT, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
-for (const module of ["commit-changes", "blame", "ignore", "file-delete", "workbench-review", "submodule-open", "submodule-change", "session", "comparison", "file-publish", "multi-publish"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+for (const module of ["commit-changes", "blame", "ignore", "file-delete", "workbench-review", "submodule-open", "submodule-change", "session", "comparison", "file-publish", "multi-publish", "git-runner"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 printOrigin("../../src/git-service/diff-parser.ts", import.meta.dir);
 printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 printOrigin("../../src/git-service/line-map.ts", import.meta.dir);
@@ -1092,8 +1096,9 @@ describe("T059 wslFiles delete, replace, and scratch through the wrapper (quicks
 
 // ---- Service rows through the shell test double and the distro Git ----
 
-async function withWsl(w: WslHost, name: string, body: (s: Service) => Promise<void>): Promise<void> {
-  const s = await openService({ git: gitPath(), name, environment: serviceEnv(), wslGlobalConfig: globalConfig(w) });
+// `seams`: T115 takes the per-target route of `readSubmoduleWork` as its reference.
+async function withWsl(w: WslHost, name: string, body: (s: Service) => Promise<void>, seams: { submoduleWorkPerTarget?: true } = {}): Promise<void> {
+  const s = await openService({ git: gitPath(), name, environment: serviceEnv(), wslGlobalConfig: globalConfig(w), ...seams });
   try {
     await body(s);
   } finally {
@@ -1345,7 +1350,7 @@ describe("T059 service rows through the shell test double and the distro Git (qu
     ': > "$root/info"; i=0; while [ $i -lt "$n" ]; do p=$(printf "m/%03d" $i); cp -a "$root/lib" "$root/super/$p"; G -C "$root/super/$p" update-index -q --refresh; printf "160000 %s\t%s\n" "$oid" "$p" >> "$root/info"; i=$((i+1)); done',
     'G -C "$root/super" update-index --index-info < "$root/info"; G -C "$root/super" commit -q --no-verify -m submodules',
   ].join("\n");
-  type WorkEntry = { path: string; state: string; modified?: boolean; untracked?: boolean; reason?: string; code?: string };
+  type WorkEntry = { pathBytes: string; path: string; state: string; modified?: boolean; untracked?: boolean; reason?: string; code?: string };
   type WorkPage = { entries: WorkEntry[]; extraRows: unknown[]; limited: number; next: number | null };
   let cleanBuilds = 0;
   for (const count of [20, 100]) {
@@ -1380,6 +1385,150 @@ describe("T059 service rows through the shell test double and the distro Git (qu
     });
   }
 
+  // T115 (A): one distro superproject with each `readSubmoduleWork` state (plan.md D19 "WSL", contract Δ3 "WSL route").
+  // `lib` has two commits, and each gitlink records the first one. `moved` checks out the second one, and its `core.worktree` names a folder inside it.
+  // `prog` names a canary as its `core.fsmonitor`. The canary writes `canary.log` when it runs. `bad<FF>` is a gitlink path that is no valid UTF-8.
+  const STATES_BUILD = [
+    'set -e; git="$1"; home="$2"; cfg="$3"; root="$4"',
+    'G() { env -i HOME="$home" PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL="$cfg" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_AUTHOR_DATE=2026-01-01T00:00:00+0000 GIT_COMMITTER_DATE=2026-01-01T00:00:00+0000 "$git" "$@"; }',
+    'mkdir -p "$root/lib" "$root/super"; G -C "$root/lib" init -q -b main; printf "one\\n" > "$root/lib/f.txt"; G -C "$root/lib" add -- f.txt; G -C "$root/lib" commit -q --no-verify -m one',
+    'oid=$(G -C "$root/lib" rev-parse HEAD); printf "two\\n" > "$root/lib/g.txt"; G -C "$root/lib" add -- g.txt; G -C "$root/lib" commit -q --no-verify -m two; G -C "$root/lib" checkout -q --detach "$oid"',
+    'G -C "$root/super" init -q -b main; printf "p\\n" > "$root/super/p.txt"; G -C "$root/super" add -- p.txt; G -C "$root/super" commit -q --no-verify -m base',
+    'for p in both clean many modified moved prog untracked; do cp -a "$root/lib" "$root/super/$p"; G -C "$root/super/$p" update-index -q --refresh; printf "160000 %s\\t%s\\n" "$oid" "$p" >> "$root/info"; done',
+    'mkdir "$root/super/uninit" "$root/super/$(printf "bad\\377")"; printf "160000 %s\\tuninit\\n160000 %s\\tbad\\377\\n" "$oid" "$oid" >> "$root/info"',
+    'G -C "$root/super" update-index --add --index-info < "$root/info"; G -C "$root/super" commit -q --no-verify -m gitlinks',
+    'printf "edit\\n" > "$root/super/modified/f.txt"; printf "u\\n" > "$root/super/untracked/u.txt"; printf "edit\\n" > "$root/super/both/f.txt"; printf "u\\n" > "$root/super/both/u.txt"',
+    'printf "edit\\n" > "$root/super/many/f.txt"; i=0; while [ $i -lt 10000 ]; do : > "$root/super/many/u$i.txt"; i=$((i + 1)); done',
+    'G -C "$root/super/moved" checkout -q --detach main; mkdir "$root/super/moved/inner"; G -C "$root/super/moved" config core.worktree "$root/super/moved/inner"',
+    'printf "#!/bin/sh\\necho ran >> \\"%s\\"\\n" "$root/canary.log" > "$root/canary.sh"; chmod 755 "$root/canary.sh"; G -C "$root/super/prog" config core.fsmonitor "$root/canary.sh"',
+  ].join("\n");
+  const CHECKED = ["both", "clean", "many", "modified", "untracked"];
+  const stateOf = (e: WorkEntry) => (e.state === "checked" ? { modified: e.modified, untracked: e.untracked } : e.state === "unchecked" ? { reason: e.reason, code: e.code } : { state: e.state });
+  // Keys: the path bytes as Latin-1 text, so the path that is no valid UTF-8 keeps its byte.
+  const statesOf = (work: WorkPage) => Object.fromEntries(work.entries.map((e) => [Buffer.from(e.pathBytes, "base64").toString("latin1"), stateOf(e)]));
+  let stateBuilds = 0;
+  W("T115 (A) FR-076: the submoduleWork script route gives the states of the per-target route and of the distro Git: clean, modified, untracked, both, 10,000 untracked and one edit, not-initialized, not-located, programs, SUBMODULE_UNAVAILABLE", async (w) => {
+    const h = hostOf(w);
+    const root = `${h.root}/t115-a-${++stateBuilds}`;
+    sh(w, STATES_BUILD, [w.probe.paths.git!, `${w.folder}/home`, h.globalConfig, root]);
+    const sup = `${root}/super`;
+    // Plan.md D20 rule 2: the parent status with dirty gives a moved gitlink record for `moved`.
+    const dirty = records(g(h, sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=dirty"]));
+    expect(dirty.filter((r) => r.endsWith(" moved")).map((r) => r.split(" ").slice(0, 6).join(" "))).toEqual(["1 .M SC.. 160000 160000 160000"]);
+    // Git's own `<m>` and `<u>` fields of the parent status with none, on a copy, for the gitlinks that the read checks.
+    sh(w, 'cp -a "$1" "$1-oracle"', [sup]);
+    const git: Record<string, { modified: boolean; untracked: boolean }> = Object.fromEntries(CHECKED.map((p) => [p, { modified: false, untracked: false }]));
+    for (const record of records(g(h, `${sup}-oracle`, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", ...CHECKED]))) {
+      const m = /^1 \S\S S[C.]([M.])([U.]) \S+ \S+ \S+ \S+ \S+ (.*)$/.exec(record);
+      if (m) git[m[3]!] = { modified: m[1] === "M", untracked: m[2] === "U" };
+    }
+    expect(git).toEqual({ both: { modified: true, untracked: true }, clean: { modified: false, untracked: false }, many: { modified: true, untracked: true }, modified: { modified: true, untracked: false }, untracked: { modified: false, untracked: true } });
+    const expected = { ...git, "badÿ": { reason: "failed", code: "SUBMODULE_UNAVAILABLE" }, moved: { state: "not-located" }, prog: { reason: "programs", code: undefined }, uninit: { state: "not-initialized" } };
+    const route = async (name: string, seams: { submoduleWorkPerTarget?: true }) => {
+      let out: { states: Record<string, unknown>; extraRows: unknown[]; scripts: { phase: string; targets: string[]; folder: string; exit: number | null | undefined }[] } | undefined;
+      await withWsl(
+        w,
+        name,
+        async (s) => {
+          const r = await s.register(uncPath(w, sup));
+          const read = await readOk(s, r.repositoryId);
+          expect(read.location.kind).toBe("wsl");
+          const { work, responses } = await workPages<WorkPage>(s, r.repositoryId, read, RESPONSE_MS);
+          expect(responses.length).toBe(1);
+          const operationId = await s.operationId(responses[0]!.requestId!);
+          const scripts = s.runner.calls.filter((c) => c.operationId === operationId && c.script === "submoduleWork");
+          out = { states: statesOf(work), extraRows: work.extraRows, scripts: scripts.map((c) => ({ phase: c.arguments[1]!, targets: c.arguments.slice(3), folder: c.arguments[0]!, exit: c.exit?.exitCode })) };
+        },
+        seams,
+      );
+      return out!;
+    };
+    const script = await route("t115-a-script", {});
+    const perTarget = await route("t115-a-per-target", { submoduleWorkPerTarget: true });
+    // The T115 pass condition: the script route gives the states of the per-target route on the same fixture.
+    expect({ states: script.states, extraRows: script.extraRows }).toEqual({ states: perTarget.states, extraRows: perTarget.extraRows });
+    expect(script.states).toEqual(expected);
+    expect(script.scripts.map(({ phase, targets, exit }) => ({ phase, targets, exit }))).toEqual([
+      { phase: "a", targets: ["both", "clean", "many", "modified", "moved", "prog", "untracked"].map((p) => `${sup}/${p}`), exit: 0 },
+      { phase: "b", targets: CHECKED.map((p) => `${sup}/${p}`), exit: 0 },
+    ]);
+    expect(perTarget.scripts).toEqual([]);
+    // The script removes its folders, and no read runs the canary of `prog`.
+    expect(kinds(w, [...script.scripts.map((x) => x.folder), `${root}/canary.log`])).toEqual(["a", "a", "a"]);
+  });
+
+  // T115 (B): the page rule of the WSL route (plan.md D19 "Pages" and "WSL"), and the Δ6 refusals through the shell test double.
+  W("T115 (B) FR-076: 33 gitlinks give 3 pages, each page runs the submoduleWork script once per phase on its own targets and leaves no folder, and each refusal gives INVALID_REQUEST with no wsl.exe run", async (w) => {
+    const h = hostOf(w);
+    const root = `${h.root}/t115-b-${++cleanBuilds}`;
+    sh(w, CLEAN_BUILD, [w.probe.paths.git!, `${w.folder}/home`, h.globalConfig, root, "33"]);
+    const sup = `${root}/super`;
+    // A Windows repository of the same service: a `submoduleWork` run on its Git refuses.
+    const windows = buildFiles(gitPath(), "t115-b-windows").repo;
+    await withWsl(w, "t115-b", async (s) => {
+      // The registered context of each repository, from its first `run` call in that context.
+      const contextOf = async (path: string) => {
+        const r = await s.register(path);
+        let context: ProcessContext | undefined;
+        s.runner.inject.refuse = (call) => {
+          const c = (call as GitCall).context;
+          if (c.contextKind === "registeredOperation" && c.repositoryId === r.repositoryId) context ??= c;
+          return undefined;
+        };
+        const read = await readOk(s, r.repositoryId).finally(() => (s.runner.inject.refuse = undefined));
+        return { r, read, context: context! };
+      };
+      const wsl = await contextOf(uncPath(w, sup));
+      const { responses } = await workPages<WorkPage>(s, wsl.r.repositoryId, wsl.read, RESPONSE_MS);
+      expect(responses.map((p) => p.result!.entries.length)).toEqual([SUBMODULE_WORK_PAGE, SUBMODULE_WORK_PAGE, 1]);
+      const folders: string[] = [];
+      for (const [page, response] of responses.entries()) {
+        const operationId = await s.operationId(response.requestId!);
+        const runs = s.runner.calls.filter((c) => c.operationId === operationId && c.script === "submoduleWork");
+        const own = response.result!.entries.map((e) => `${sup}/${e.path}`);
+        expect({ page, runs: runs.map((c) => ({ phase: c.arguments[1], targets: c.arguments.slice(3), exit: c.exit?.exitCode })) }).toEqual({ page, runs: [{ phase: "a", targets: own, exit: 0 }, { phase: "b", targets: own, exit: 0 }] });
+        folders.push(...runs.map((c) => c.arguments[0]!));
+      }
+      expect(kinds(w, folders)).toEqual(folders.map(() => "a"));
+      // Contract Δ6: each refusal starts nothing.
+      const windowsContext = (await contextOf(windows)).context;
+      const folder = () => `${MATCHING_PROBE_WSL_FOLDER}${crypto.randomUUID()}`;
+      const target = `${sup}/m/000`;
+      const good = (): GitCall => ({
+        operationId: crypto.randomUUID(),
+        context: wsl.context,
+        arguments: [folder(), "a", String(TRUST_INPUT_BYTES), target],
+        script: "submoduleWork",
+        environmentPolicy: "read",
+        limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
+        stdout: createCollector({ maxBytes: TRUST_INPUT_BYTES }),
+        stderr: createCollector({ maxBytes: TRUST_INPUT_BYTES }),
+        signal: new AbortController().signal,
+      });
+      const refusals: [string, Partial<GitCall>][] = [
+        ["a folder outside /tmp/arbareto-probe-", { arguments: ["/tmp/arbareto-other", "a", "1", target] }],
+        ["phase c", { arguments: [folder(), "c", "1", target] }],
+        ["bound 01", { arguments: [folder(), "a", "01", target] }],
+        ["bound 0", { arguments: [folder(), "a", "0", target] }],
+        ["a bound above STATUS_LISTING_BYTES", { arguments: [folder(), "b", String(STATUS_LISTING_BYTES + 1), target] }],
+        ["no target", { arguments: [folder(), "a", "1"] }],
+        ["17 targets", { arguments: [folder(), "a", "1", ...Array.from({ length: SUBMODULE_WORK_PAGE + 1 }, () => target)] }],
+        ["a relative target", { arguments: [folder(), "a", "1", "m/000"] }],
+        ["the policy search", { environmentPolicy: "search" }],
+        ["a transaction", { environmentPolicy: "mutation", transaction: { transactionId: crypto.randomUUID(), indexFile: "arbareto-candidate-x" } }],
+        ["a Windows Git", { context: windowsContext }],
+      ];
+      for (const [name, fields] of refusals) {
+        const before = s.runner.spawned;
+        const refused = await s.runner.run({ ...good(), ...fields }).then(
+          () => "ran",
+          (error: unknown) => (error instanceof RunnerRefusal ? error.code : String(error)),
+        );
+        expect({ name, refused, spawned: s.runner.spawned - before }).toEqual({ name, refused: "INVALID_REQUEST", spawned: 0 });
+      }
+    });
+  });
+
   // T111: the preview and the marks run through the distro Git (spec FR-076). Only the operation-marker stat calls and the index open cross `\wsl.localhost`.
   W("T111 FR-076: readSubmoduleChange and readSubmoduleWork run each submodule command at the distro path of the submodule, with no \\wsl.localhost read besides the operation markers and the index", async (w) => {
     const h = hostOf(w);
@@ -1398,8 +1547,17 @@ describe("T059 service rows through the shell test double and the distro Git (qu
       expect(read.location.kind).toBe("wsl");
       const env = { repositoryId: r.repositoryId, repositoryGeneration: read.generation };
       const entry = read.entries.find((e) => e.path === "solo" && e.category === "unstaged")!;
-      // The location of each recorded call (`-C` or `--git-dir=`) other than the parent. Commands.ts `inSubmodule` gives `-C <Git form of the root>/<path>`.
-      const locations = (from: number) => [...new Set(s.runner.calls.slice(from).map((c) => gitLocation(c.arguments)).filter((l): l is string => l !== null && l !== sup && l !== r.worktreeRoot))].sort();
+      // The location of each recorded call other than the parent. Commands.ts `inSubmodule` gives `-C <Git form of the root>/<path>`.
+      // A `submoduleWork` run (T115) carries its targets as script arguments after the folder, the phase, and the bound.
+      const locations = (from: number) =>
+        [
+          ...new Set(
+            s.runner.calls
+              .slice(from)
+              .flatMap((c) => (c.script === "submoduleWork" ? c.arguments.slice(3) : [gitLocation(c.arguments)]))
+              .filter((l): l is string => l !== null && l !== sup && l !== r.worktreeRoot),
+          ),
+        ].sort();
       const inDistro = (locs: string[]) => ({ distroForm: locs.every((l) => l.startsWith(`${sup}/`)), locs });
       let from = s.runner.calls.length;
       const { value: change, calls: changeCalls } = await withFsCalls(() => request<{ old: string; new: string }>(s, "readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.snapshotId, entryId: entry.entryId } }, env));

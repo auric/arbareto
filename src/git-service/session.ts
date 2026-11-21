@@ -96,6 +96,8 @@ export interface SessionOptions {
   submoduleCheckpoint?: SubmoduleUpdaterOptions["submoduleCheckpoint"];
   // Test seam only. Production never sets it. The update observer then reads this many rows at once instead of SUBMODULE_WORK_PARALLEL.
   updateLanes?: SubmoduleUpdaterOptions["updateLanes"];
+  // Test seam only. Production never sets it. Feature 005 T115: a WSL `readSubmoduleWork` page takes the per-target route, the reference of the script route.
+  submoduleWorkPerTarget?: true;
   // Test seam only. Production never sets it. Feature 008 plan.md D13: the service awaits it before each working-file write of a revert run.
   revertCheckpoint?: WorkbenchOptions["revertCheckpoint"];
   // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`. Tests set a lower value.
@@ -132,7 +134,7 @@ function revealTarget(w: Workspace, bytes: Uint8Array): string | null {
   return NATIVE.path.join(w.worktreeRoot, ...(text.endsWith("/") ? text.slice(0, -1) : text).split("/"));
 }
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, updateLanes, revertCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, updateLanes, submoduleWorkPerTarget, revertCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -245,7 +247,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const workbench = createWorkbench({ runner, trust, reader, comparisons, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }), ...(revertCheckpoint === undefined ? {} : { revertCheckpoint }) });
   // Feature 005 data-model §7: one preview base per workspace and target, dropped at the workspace release.
   const previews = createIgnorePreview({ runner, trust });
-  const submoduleReads = createSubmoduleReads({ runner, trust, environment, readDeadlineMs: readDeadlineMs ?? READ_DEADLINE_MS });
+  const submoduleReads = createSubmoduleReads({ runner, trust, environment, readDeadlineMs: readDeadlineMs ?? READ_DEADLINE_MS, ...(submoduleWorkPerTarget === undefined ? {} : { wslPerTarget: submoduleWorkPerTarget }) });
   const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();

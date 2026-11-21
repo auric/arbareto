@@ -59,8 +59,10 @@ const UNSTAGED_1000_MS = 30_000;
 // SC-007 (session 3 decision): on WSL a multi-file revert ends within 2 s plus 320 ms per file.
 const UNSTAGED_1000_WSL_MS = 2_000 + 320 * 1_000;
 const GIB_MS = 30_000;
-// Spec SC-007 (user decision 2026-11-15): the 1 s runs from Cancel to "Checking the result…". The time to the outcome has no budget.
+// Spec SC-007 (user decision 2026-11-15): the 1 s runs from Cancel to "Checking the result…".
 const CANCEL_MS = 1_000;
+// Spec SC-007 and 001 SC-008 (user decision 2026-11-17): each counted run reaches the outcome within 5 s of Cancel.
+const CANCEL_OUTCOME_MS = 5_000;
 const MEMORY_BYTES = 64 * MIB;
 // SC-007 (session 3 decision) at the 10,000-file limit: the process-tree peak growth and the growth RETAIN_MS after the run end.
 const LIMIT_PEAK_BYTES = 320 * MIB;
@@ -436,7 +438,7 @@ function streamedCopyMiBps(dir: string, mib: number): { mib: number; ms: number;
 // ---- Run replies and the W9 outcome ----
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RunReply = { state: string; code?: string; operationId?: string; result?: { files?: FileOutcome[] } };
+type RunReply = { state: string; code?: string; operationId?: string; result?: { counts?: Record<string, number>; files?: FileOutcome[] } };
 // `old` is the SHA-256 of the working bytes before the run.
 type Target = { path: string; old: string };
 
@@ -444,22 +446,26 @@ async function runReply(ipc: IpcLog, before: number, ms = STEP_LIMIT_MS): Promis
   const calls = await ipc.wait("run_workbench", before + 1, ms);
   return ipc.body<RunReply>(calls[before]!);
 }
+// Data-model §9: the count of files that did not revert.
+const missedOf = (reply: RunReply) => Object.values(reply.result?.counts ?? {}).reduce((sum, n) => sum + n, 0) - (reply.result?.counts?.reverted ?? 0);
 // Probe W9 (research.md R15): `failed`, each missed file `error` with `access-denied`, and exactly that many targets keep their old bytes.
+// The result lists at most 20 missed files, so the case detects W9 only up to 20 missed files.
 // The reply names no step, so the case cannot assert that the rename failed. It asserts the code and the old bytes.
 function isW9(reply: RunReply, read: (path: string) => Buffer, targets: readonly Target[]): boolean {
-  const missed = (reply.result?.files ?? []).filter((o) => o.outcome !== "reverted");
-  if (reply.state !== "failed" || missed.length === 0 || !missed.every((o) => o.code === "error" && o.reason === "access-denied")) return false;
-  return targets.filter((t) => sha256(read(t.path)) === t.old).length === missed.length;
+  const files = reply.result?.files ?? [];
+  const missed = missedOf(reply);
+  if (reply.state !== "failed" || missed === 0 || missed !== files.length || !files.every((o) => o.code === "error" && o.reason === "access-denied")) return false;
+  return targets.filter((t) => sha256(read(t.path)) === t.old).length === missed;
 }
 // True for a counted run. A W9 run prints its OBSERVATION line and gives false. Any other reply fails the case.
 function counted(label: string, reply: RunReply, read: (path: string) => Buffer, targets: readonly Target[], expected = "succeeded"): boolean {
   if (reply.state === expected) return true;
+  const files = reply.result?.files ?? [];
   if (isW9(reply, read, targets)) {
-    const missed = (reply.result?.files ?? []).filter((o) => o.outcome !== "reverted");
-    console.log(`OBSERVATION ${TASK}: W9 ${label}: state=failed ${missed.length} files ${js(missed.map((o) => `${o.outcome}:${o.code}:${o.reason}`))}, old bytes kept; the run leaves the median (spec FR-037)`);
+    console.log(`OBSERVATION ${TASK}: W9 ${label}: state=failed ${files.length} files ${js(files.map((o) => `${o.outcome}:${o.code}:${o.reason}`))}, old bytes kept; the run leaves the median (spec FR-037)`);
     return false;
   }
-  throw new Error(`${label}: the run gave ${js({ state: reply.state, code: reply.code, files: (reply.result?.files ?? []).filter((o) => o.outcome !== "reverted").slice(0, 5) })}`);
+  throw new Error(`${label}: the run gave ${js({ state: reply.state, code: reply.code, counts: reply.result?.counts, files: files.slice(0, 5) })}`);
 }
 
 describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", () => {
@@ -877,6 +883,17 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     return { index: mine[0]!.index, phase: body.result.phase };
   }
 
+  // T083 (research.md R15 "T083 split"): the IPC part of Cancel to the outcome. CDP `sent` and `end` are seconds on one clock.
+  async function t083Line(s: Session, run: number, cancelIndex: number, before: number, toEnd: number): Promise<void> {
+    const cancel = s.ipc.calls()[cancelIndex]!;
+    const runCall = s.ipc.finished("run_workbench")[before]!;
+    const runTiming = s.ipc.calls().find((t) => t.requestId === runCall.requestId)!;
+    const ipcMs = (runTiming.end! - cancel.sent) * 1000;
+    const raw = (await s.c.send("Network.getResponseBody", { requestId: runCall.requestId })) as { body: string; base64Encoded: boolean };
+    const bytes = raw.base64Encoded ? Buffer.from(raw.body, "base64").length : Buffer.byteLength(raw.body, "utf8");
+    console.log(`OBSERVATION T083 run ${run}: cancel.sent→run_workbench.end ${ipcMs.toFixed(1)} ms, reply bytes ${bytes}, toEnd ${toEnd.toFixed(1)} ms, toEnd − ipc ${(toEnd - ipcMs).toFixed(1)} ms`);
+  }
+
   test.skipIf(reason !== null)(
     "SC-007, SC-011: Revert all unstaged changes of 1,000 files shows the confirmation within 3 s and ends within 30 s on Windows (median of 10)",
     async () => {
@@ -998,7 +1015,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             await focusOn(s.c, cancelButton, "Cancel");
             const [stopMs, endMs] = await timed(s.c, "cancel-to-stop-and-end", [stopped, ended], () => press(s.c, "Enter"));
             const reply = await runReply(s.ipc, before);
-            await cancelTaken(s, from, reply, label);
+            const taken = await cancelTaken(s, from, reply, label);
+            await t083Line(s, run, taken.index, before, endMs!);
             if (counted(label, reply, winRead(repo), targets, "failed-with-effects")) {
               toStop.push(stopMs!);
               toEnd.push(endMs!);
@@ -1009,7 +1027,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         }
         const shown = toStop.filter((t, i) => t < toEnd[i]!).length;
         const cancel = record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to ${js(RECONCILING)} or the outcome, the text showed first in ${shown} runs`, toStop, CANCEL_MS);
-        record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to the outcome, no budget, min ${Math.min(...toEnd).toFixed(1)} ms, max ${Math.max(...toEnd).toFixed(1)} ms`, toEnd);
+        record(`SC-007 Cancel of a 10,000-file run during the writes: Cancel to the outcome, budget for every run, min ${Math.min(...toEnd).toFixed(1)} ms, max ${Math.max(...toEnd).toFixed(1)} ms`, toEnd, CANCEL_OUTCOME_MS);
         // Run 0 is the first revert after the app start. It has the first-run bounds; runs 1 to RUNS have the later-run bounds. A W9 run leaves its series.
         const firstRuns = bounded.filter((b) => b.run === 0);
         const laterRuns = bounded.filter((b) => b.run > 0);
@@ -1021,7 +1039,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           later: laterRuns.length > 0 && laterRuns.every((b) => b.peak <= LIMIT_PEAK_BYTES && b.retained <= LIMIT_RETAINED_BYTES),
           end: limitEnd <= LIMIT_END_MS,
           cancel: cancel <= CANCEL_MS,
-        }).toEqual({ first: true, later: true, end: true, cancel: true });
+          outcome: Math.max(...toEnd) <= CANCEL_OUTCOME_MS,
+        }).toEqual({ first: true, later: true, end: true, cancel: true, outcome: true });
       } finally {
         await sampler.stop();
         await end(s);

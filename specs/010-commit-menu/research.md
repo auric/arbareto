@@ -242,6 +242,29 @@ Packaged NSIS build of `de82eccd`, warm, alone, under the test gate. Git 2.56.0.
 - The spec records the WSL times of SC-010b and SC-010d with no budget. The WSL SC-011 case is a record case too (see "WSL record" above). These WSL values are records, not failures.
 - The WSL SC-011 p95 of Cherry-pick, Revert, Abort, and Continue is above the earlier record of at most 40 ms. The cause is not known.
 
+#### v0.1.3 test fixes (2026-11-18)
+
+The v0.1.3 full run f015 ran on code `e2fa367a`, installed exe `9ed79992…` (007 research.md R7 "v0.1.3 records"). The logs are in local scratch `f015-full` and `v013-rerun/R`. The fixes change only test files. The product code stays `e2fa367a`.
+
+- f015 step `s5-commit-menu-perf`: 7 pass, 1 fail. The SC-010d case on M failed in its restore, not at a budget.
+- The restore copied the saved index file over `.git/index`. `copyfile` gave `EUNKNOWN` (errno -4094) at `commit-menu-perf.test.ts:879`.
+- Cause, from commit 21ce63e7: the app's 1 s poll can start `git status`, which maps `.git/index`. `CopyFileW` fails over a mapped file.
+- Fix 1, commit 21ce63e7: a Mixed reset to the tip restores the index. Git writes `index.lock` and renames it.
+- Fix 1 adds a precondition: the start index must equal the tip tree (`diff-index --cached` prints nothing).
+- Rerun R1-attempt1 with fix 1: 4 pass, 1 fail. The precondition at `commit-menu-perf.test.ts:870` caught 11 staged paths.
+- The M start index holds staged paths, so a reset to the tip loses them.
+- Fix 2, commit 9a88708d: `write-tree` saves the start index. `update-ref` and `read-tree` restore it. No file copy writes over the index.
+- Rerun R1 with fix 2 on the f015 build: 8 pass, 0 fail, exit 0, 50.3 min. Every `ORIGIN` line names the checkout under test.
+- R1, SC-010d medians on M: Soft 545.8 ms, Mixed 613.7 ms, Create tag 643.7 ms. The budgets are 1 s, 2 s, and 1 s.
+- Fixture cleanup, commit 704581b2 (`tests/git/fixture-root.ts`): the cleanup limit goes from 120 s to 600 s.
+- The f015 step `s5-submodule-tree-packaged` removed its fixture root in 121.1 s, and the hook timed out. Each case passed.
+- The cleanup now logs its time in milliseconds. The driver step cap still bounds the run.
+- Open: `restoreState` of `tests/windows/external-change.ts` renames `index.lock` over the index. 001 T420 checks it for the same race.
+- 225% session, 2026-11-20 (tests at `9a88708d`, installed exe `9ed79992…`): `submodule-tree-packaged.test.ts` ran for 84.3 min.
+- It removed its fixture root in 113,637 ms, and no hook timeout occurred. The new log line gave the time.
+- This time is also below the old 120 s limit. So this run does not show that the 600 s limit is necessary.
+- 004 research.md R31 holds the run. Log: local scratch v013-225/tree.log.
+
 ### Requirement-to-test map (T022)
 
 Review 2026-11-06 by the reviewer on `9c8dfe0e`. The map below adds the later fixes and tests up to `22cdcac9`. Test files are in `tests/git/`, `tests/contracts/`, `tests/wsl/`, and `tests/windows/`.

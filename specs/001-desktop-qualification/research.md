@@ -1400,6 +1400,19 @@ Rejected:
 
 Unverified: whether WebView2 applies any text zoom by itself. T160 records `devicePixelRatio` at text size 225% in its DevTools run. A value above the display scale means double scaling, and SC-009 then fails. The `windows` crate feature for `UISettings` is a dependency change under the test harness rules (T247).
 
+Measured (2026-11-20, v0.1.3 packaged session at Text size 225%): WebView2 scales the page twice. This record closes the "Unverified" question above.
+
+- Build: the installed v0.1.3 exe `9ed79992…`. Host: OS 10.0.26300, display scale 125%, Windows Text size 225%.
+- A CDP probe read `devicePixelRatio` 2.8125, which is 1.25 × 2.25. The computed `--text-scale` read 2.25, and the root font size read 16px.
+- So WebView2 puts the text factor into the rasterization scale without Arbareto shell code. The page then applies the factor a second time.
+- Microsoft Learn states the rule ("ICoreWebView2Controller3"). The rasterization scale "is the combination of the monitor DPI scale and text scaling set by the user".
+- The shell sets no rasterization scale. A case-insensitive search for "rasterization" in `src-tauri/src` finds nothing (2026-11-20). T247 left the scale to wry.
+- Effect: a 1280×800 DIP window holds 569×356 CSS px. Text shows at about 5 times its normal size.
+- The workbench does not fit, and the FR-035 and SC-009 720×480 floor breaks. The defect exists since T247.
+- The measured state equals the first rejected alternative above, plus `--text-scale`. The decision above stays valid.
+- Fix: T422, the first v0.1.4 task (user decision 2026-11-20). v0.1.3 ships with the defect.
+- Logs: local scratch v013-225/diag/probe.log and probe.ts. Screenshots: local scratch v013-225/diag/1-default.png to 4-default-expanded.png.
+
 Sources: [Text scaling](https://learn.microsoft.com/windows/apps/develop/input/text-scaling), [Accessible text requirements](https://learn.microsoft.com/windows/apps/design/accessibility/accessible-text-requirements#text-font-size-and-scale), [UISettings.TextScaleFactor](https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uisettings.textscalefactor), [ICoreWebView2Controller3](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller3), [ShouldDetectMonitorScaleChanges](https://learn.microsoft.com/dotnet/api/microsoft.web.webview2.core.corewebview2controller.shoulddetectmonitorscalechanges), [wry webview2 module](https://github.com/tauri-apps/wry/blob/wry-v0.57.0/src/webview2/mod.rs), [Edge 138 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/138#web-platform-features), [Edge 145 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/145#web-apis), [CSS Fonts 5 text-scale meta](https://drafts.csswg.org/css-fonts-5/#text-scale-meta), [preferred-text-scale explainer](https://github.com/w3c/csswg-drafts/blob/main/css-env-1/explainers/env-preferred-text-scale.md#windows-11). Document review and a source scan only; no WebView2 run.
 
 ### Signing and deferred authenticated updates
@@ -2257,7 +2270,7 @@ Column contents:
 | SC-006 | `unverified` | | | | | | | | | | | | | |
 | SC-007 | `unverified` | | | | | | | | | | | | | |
 | SC-008 | `unverified` | | | | | | | | | | | | | |
-| SC-009 | `unverified` | | | | | | | | | | | | | |
+| SC-009 | `fail` (225% text case, 2026-11-20) | Installed v0.1.3 exe `9ed79992…` | | OS 10.0.26300, display scale 125%, Windows Text size 225% | | A CDP probe reads `devicePixelRatio` and the computed `--text-scale` (T160 rule). | `devicePixelRatio` read 2.8125, not 1.25. `--text-scale` read 2.25. A 1280×800 DIP window held 569×356 CSS px. The other SC-009 checks stay `unverified`. | | R7 "Windows text size", record of 2026-11-20. Log: local scratch v013-225/diag/probe.log. | WebView2 puts the text scale into the rasterization scale, and the page applies it again. | | After T422 | T422 (v0.1.4 fix) | |
 | SC-010 | `unverified` | | | | | | | | | | | | | |
 | SC-011 | `unverified` | | | | | | | | | | | | | |
 | SC-012 | `unverified` | | | | | | | | | | | | | |
@@ -2457,6 +2470,22 @@ Fixes: T389.
   - Bun half (`t416-c1-bun`): `native-runner.test.ts` gave 1 fail in "every policy removes GIT_SMART_HTTP". `"remove": true` was expected, `false` was received.
   - Cargo half (`t416-c2-cargo`): `cargo test --locked --manifest-path src-tauri/Cargo.toml every_policy_removes_git_smart_http` gave 0 passed, 1 failed. Red line: `panicked at src\git_env.rs:340:13: probe: GIT_SMART_HTTP reaches the child`. The unmutated rerun gave 1 passed.
   - The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0.
+
+**v0.1.3 full run f015, 2026-11-17 to 2026-11-18.** Build: code `e2fa367a` on branch `v0.1.3`. Installer SHA-256 `08706d55…`, installed exe `9ed79992…`. The full record and the step table are in 007 research.md R7 "v0.1.3 records". The logs are in local scratch `f015-full`.
+
+- `bun run test:all` exited 0: 10,445 pass, 56 skip, 0 fail (JUnit reports). `bun run typecheck` exited 0.
+- Every `ORIGIN` line named the checkout under test (`bad` count 0 in each step).
+- T419: `tests/contracts/status-area.test.tsx` 116, 0, 0 (pass, skip, fail). Both T419 cases passed.
+- The two cases: "T419: a Cancel press in reconciling shows Cancel requested before any reply".
+- And: "T419: after a taken Cancel, a Cancel in reconciling shows Cancel requested and sends no second cancel".
+- Red record (T419 row): before the code, both T419 cases and the changed T418 `reconciling` case failed. The run gave 113 pass, 3 fail.
+- Source of the next three bullets: implementer report 2026-11-16, branch `v013-ui`.
+- Red before the code, `tests/contracts/status-area.test.tsx`: 113 pass, 3 fail. Case A and case B expected "Cancel requested".
+- Both received "Checking the result…". The changed T418 case received "Updating submodules in my repo…".
+- Control: without the `setReconcilePress(...)` line, the same 3 cases failed with the same received texts. Restored: 116 pass.
+- T419 (ticked): the 001 rule needs a green Windows run with `ORIGIN` lines in the checkout under test. f015 is that run.
+- The test files that changed after `e2fa367a` do not include `status-area.test.tsx`. They are `tests/git/fixture-root.ts` and two `tests/windows` files.
+- Four `tests/windows` steps of f015 were red. The user decisions of 2026-11-17 and 2026-11-18 accept f015 plus the reruns (007 R7).
 
 ### Dependency reviews
 

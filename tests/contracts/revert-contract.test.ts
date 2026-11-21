@@ -49,6 +49,10 @@ describe("contract Δ5 bounds", () => {
     expect(limits.MULTI_FILE_ACTION_FILES).toBe(10_000);
     expect(limits.FILE_FACT_ENTRIES).toBe(64);
   });
+
+  test("REVERT_PROGRESS_EVENTS_PER_SECOND is 4 (contract Δ2, T084)", () => {
+    expect(L.REVERT_PROGRESS_EVENTS_PER_SECOND).toBe(4);
+  });
 });
 
 describe("contract Δ1 and Δ2 operations, phases, and markers", () => {
@@ -198,12 +202,17 @@ describe("contract Δ3 plans (data-model §5) and Δ9 reasons", () => {
 
 describe("contract Δ3 run result (data-model §8, §9)", () => {
   const R = envelope.RunWorkbenchResult;
-  const run = (fields: Record<string, unknown> = {}) => ({ action: "revert-files", files: [{ entryId: id(), outcome: "reverted" }], foldersCreated: [], index: "published", ...fields });
+  const COUNTS = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+  type Outcome = keyof typeof COUNTS;
+  // The counts that fit the listed files, so each case has only its own fault. No listed file stands for one reverted file.
+  const countsOf = (files: { outcome: string }[]) => files.reduce((c, f) => ({ ...c, [f.outcome]: c[f.outcome as Outcome] + 1 }), { ...COUNTS, reverted: files.length === 0 ? 1 : 0 });
+  const run = (fields: Record<string, unknown> = {}) => ({ action: "revert-files", counts: countsOf((fields.files ?? []) as { outcome: string }[]), files: [], foldersCreated: [], index: "published", ...fields });
+  const listed = (n: number, outcome: Outcome = "not-changed") => Array.from({ length: n }, () => ({ entryId: id(), outcome }));
 
   // Spec FR-017: an unstaged-only file names why its write did not change it, with the reply code of not-changed.
-  test("each file states its outcome, and only not-changed and unstaged-only carry a reply code", () => {
+  test("each listed file states its outcome, and only not-changed and unstaged-only carry a reply code", () => {
     const files = [
-      ...["reverted", "unstaged-only", "changed-outside", "not-started", "not-changed"].map((outcome) => ({ entryId: id(), outcome })),
+      ...["unstaged-only", "changed-outside", "not-started", "not-changed"].map((outcome) => ({ entryId: id(), outcome })),
       ...["not-changed", "unstaged-only"].flatMap((outcome) => [
         { entryId: id(), outcome, code: "stale" },
         { entryId: id(), outcome, code: "refused", reason: "hard-link" },
@@ -214,22 +223,46 @@ describe("contract Δ3 run result (data-model §8, §9)", () => {
     for (const index of ["published", "none", "refused"]) expect(ok(R, run({ index }))).toBe(true);
     for (const action of ["revert-unstaged", "revert-lines"]) expect(ok(R, run({ action, index: "none" }))).toBe(true);
     expect(ok(R, run({ index: "written" }))).toBe(false);
-    expect(ok(R, run({ files: [{ entryId: id(), outcome: "kept" }] }))).toBe(false);
-    expect(ok(R, run({ files: [{ entryId: id(), outcome: "reverted", code: "stale" }] }))).toBe(false);
+    expect(ok(R, run({ counts: { ...COUNTS, "not-changed": 1 }, files: [{ entryId: id(), outcome: "kept" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "not-changed", code: "refused" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "not-changed", code: "stale", reason: "hard-link" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "not-changed", code: "refused", reason: "sharing-violation" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "not-changed", code: "error", reason: "hard-link" }] }))).toBe(false);
-    for (const outcome of ["reverted", "changed-outside", "not-started"]) expect(ok(R, run({ files: [{ entryId: id(), outcome, code: "stale" }] }))).toBe(false);
+    for (const outcome of ["changed-outside", "not-started"]) expect(ok(R, run({ files: [{ entryId: id(), outcome, code: "stale" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "unstaged-only", reason: "hard-link" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "unstaged-only", code: "refused" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "unstaged-only", code: "refused", reason: "disk-full" }] }))).toBe(false);
     expect(ok(R, run({ foldersCreated: [""] }))).toBe(false);
   });
 
-  test("a line revert names exactly one file", () => {
-    expect(ok(R, run({ action: "revert-lines", files: [] }))).toBe(false);
-    expect(ok(R, run({ action: "revert-lines", files: [{ entryId: id(), outcome: "reverted" }, { entryId: id(), outcome: "reverted" }] }))).toBe(false);
+  test("a line revert counts exactly one file", () => {
+    expect(ok(R, run({ action: "revert-lines" }))).toBe(true);
+    expect(ok(R, run({ action: "revert-lines", files: listed(1, "changed-outside") }))).toBe(true);
+    expect(ok(R, run({ action: "revert-lines", counts: { ...COUNTS, reverted: 2 } }))).toBe(false);
+    expect(ok(R, run({ action: "revert-lines", files: listed(2) }))).toBe(false);
+  });
+
+  // T085 (data-model §9, contract Δ10): `counts` holds each outcome, and `files` the first 20 files that did not revert.
+  test("the result counts each outcome and lists the first 20 files that did not revert, and no reverted file", () => {
+    const most = { ...COUNTS, reverted: 9975, "not-changed": 25 };
+    expect(ok(R, run({ counts: most, files: listed(20) }))).toBe(true);
+    expect(ok(R, run({ counts: { ...COUNTS, reverted: 10_000 } }))).toBe(true);
+    expect(ok(R, run({ counts: { ...COUNTS, "not-started": 3 }, files: listed(3, "not-started") }))).toBe(true);
+    // The `files` length is the smaller of 20 and the count of files that did not revert.
+    for (const n of [19, 21]) expect({ n, ok: ok(R, run({ counts: most, files: listed(n) })) }).toEqual({ n, ok: false });
+    expect(ok(R, run({ counts: { ...COUNTS, "not-changed": 2 }, files: listed(1) }))).toBe(false);
+    expect(ok(R, run({ counts: { ...COUNTS, reverted: 1, "not-changed": 1 } }))).toBe(false);
+    // The sum is 1 to 10,000.
+    expect(ok(R, run({ counts: COUNTS }))).toBe(false);
+    expect(ok(R, run({ counts: { ...COUNTS, reverted: 10_000, "not-started": 1 }, files: listed(1, "not-started") }))).toBe(false);
+    expect(ok(R, run({ counts: { ...COUNTS, reverted: 10_001 } }))).toBe(false);
+    // A listed file never reverted, and each outcome is listed at most as often as its count.
+    expect(ok(R, run({ counts: { ...COUNTS, reverted: 1, "not-changed": 1 }, files: listed(1, "reverted") }))).toBe(false);
+    expect(ok(R, run({ counts: { ...COUNTS, "not-changed": 1, "not-started": 1 }, files: listed(2, "not-started") }))).toBe(false);
+    // `counts` holds exactly the five outcomes.
+    const { "not-started": _, ...four } = COUNTS;
+    expect(ok(R, run({ counts: { ...four, reverted: 1 } }))).toBe(false);
+    expect(ok(R, run({ counts: { ...COUNTS, reverted: 1, kept: 0 } }))).toBe(false);
   });
 
   test("a stale run names revert-changed, and an unread run names the action only", () => {

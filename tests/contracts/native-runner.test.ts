@@ -9,14 +9,18 @@ import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
   INLINE_PROCESS_INPUT_BYTES,
   NATIVE_CHUNK_BYTES,
+  STATUS_LISTING_BYTES,
   SUBMODULE_UPDATE_CEILING_MS,
+  SUBMODULE_WORK_PAGE,
+  TRUST_INPUT_BYTES,
   UNACKNOWLEDGED_INPUT_CHUNKS,
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../../src/contracts/limits";
 import { MATCHING_PROBE_GREPS, MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP, MATCHING_PROBE_WSL_FOLDER } from "../../src/contracts/matching-probe";
 import { isWindows } from "../../src/contracts/native-path";
-import { probeScriptArgs } from "../../src/git-service/commands";
+import wslProcess from "../../src/contracts/wsl-process.json";
+import { probeScriptArgs, submoduleConfigListArgs, submoduleStatusArgs, submoduleToplevelArgs } from "../../src/git-service/commands";
 import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, RunnerRefusal, type GitCall, type IdentityReply, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
 import { createNativeRunner } from "../../src/git-service/native-runner";
 
@@ -24,6 +28,8 @@ printOrigin("../../src/contracts/channel.ts", import.meta.dir);
 printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
+printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
+printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 printOrigin("../../src/git-service/native-runner.ts", import.meta.dir);
 
@@ -1141,6 +1147,92 @@ describe("native runner matching probe script", () => {
     }
     void channel.runner.run(script({ arguments: length("1", 1) }));
     expect(channel.bodies("run").length).toBe(1);
+  });
+});
+
+// Feature 005 contract Δ3 `readSubmoduleWork` "WSL route", Δ6, Δ11: the `script` value `submoduleWork`. `checkCall` makes the shell checks of `submodule_work_command`.
+describe("native runner submoduleWork script", () => {
+  const dir = () => `${MATCHING_PROBE_WSL_FOLDER}${id()}`;
+  const targets = (count: number) => Array.from({ length: count }, (_, i) => `/home/u/r/m/${String(i).padStart(3, "0")}`);
+  const work = (fields: Partial<GitCall> = {}): GitCall => call({ script: "submoduleWork", arguments: [dir(), "a", String(TRUST_INPUT_BYTES), ...targets(2)], ...fields });
+  const edit = (at: number, value: string) => work().arguments.with(at, value);
+
+  test("a submoduleWork call sends a run frame with script submoduleWork in policy read that fits ProcessRequest", () => {
+    const channel = createChannelDouble();
+    const c = work();
+    void channel.runner.run(c);
+    const frame = channel.last("run");
+    expect(frame).toMatchObject({ script: "submoduleWork", contextKind: "registeredOperation", arguments: [...c.arguments], environmentPolicy: "read" });
+    expect(frame.input).toBeUndefined();
+    expect(ProcessRequest.safeParse(frame).success).toBe(true);
+  });
+
+  test("checkCall refuses each broken submoduleWork call and sends nothing", async () => {
+    const channel = createChannelDouble();
+    const transaction = { transactionId: id(), indexFile: isWindows ? "C:\repo\.git\arbareto-candidate-1" : "/repo/.git/arbareto-candidate-1" };
+    const refused: [string, GitCall][] = [
+      ["policy search", work({ environmentPolicy: "search" })],
+      ["policy mutation", work({ environmentPolicy: "mutation" })],
+      ["a transaction", work({ transaction })],
+      ["a repositoryDiscovery context", work({ context: { contextKind: "repositoryDiscovery", bootstrapId: id(), gitInstallationId: id() }, environmentPolicy: "probe" })],
+      ["matchingProbe arguments", work({ arguments: probeScriptArgs(dir(), MATCHING_PROBE_TIP, MATCHING_PROBE_GREPS) })],
+      ["no arguments", work({ arguments: [] })],
+      ["no targets", work({ arguments: [dir(), "a", "1"] })],
+      ["a folder outside /tmp", work({ arguments: edit(0, `/var/tmp/arbareto-probe-${id()}`) })],
+      ["a relative folder", work({ arguments: edit(0, `arbareto-probe-${id()}`) })],
+      ["a folder with an uppercase uuid", work({ arguments: edit(0, `${MATCHING_PROBE_WSL_FOLDER}${id().toUpperCase()}`) })],
+      ["a folder below the probe folder", work({ arguments: edit(0, `${dir()}/x`) })],
+      ["phase c", work({ arguments: edit(1, "c") })],
+      ["phase A", work({ arguments: edit(1, "A") })],
+      ["an empty phase", work({ arguments: edit(1, "") })],
+      ["bound 01", work({ arguments: edit(2, "01") })],
+      ["bound 0", work({ arguments: edit(2, "0") })],
+      ["bound +1", work({ arguments: edit(2, "+1") })],
+      ["an empty bound", work({ arguments: edit(2, "") })],
+      ["bound a[$(id)]", work({ arguments: edit(2, "a[$(id)]") })],
+      ["a bound above STATUS_LISTING_BYTES", work({ arguments: edit(2, String(STATUS_LISTING_BYTES + 1)) })],
+      ["a bound of 30 digits", work({ arguments: edit(2, "1".repeat(30)) })],
+      ["17 targets", work({ arguments: [dir(), "b", "1", ...targets(SUBMODULE_WORK_PAGE + 1)] })],
+      ["a relative target", work({ arguments: edit(3, "home/u/r/m/000") })],
+      ["a target that is an option", work({ arguments: edit(4, "-C") })],
+      ["an empty target", work({ arguments: edit(4, "") })],
+    ];
+    for (const [name, c] of refused) {
+      const result = channel.runner.run(c);
+      result.catch(() => {});
+      expect({ name, sent: channel.sent.length }).toEqual({ name, sent: 0 });
+      await expect(result).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    }
+    const admitted: [string, GitCall][] = [
+      ["bound 1", work({ arguments: edit(2, "1") })],
+      ["bound STATUS_LISTING_BYTES", work({ arguments: edit(2, String(STATUS_LISTING_BYTES)) })],
+      ["phase b", work({ arguments: edit(1, "b") })],
+      ["one target", work({ arguments: [dir(), "b", "1", ...targets(1)] })],
+      ["16 targets", work({ arguments: [dir(), "b", "1", ...targets(SUBMODULE_WORK_PAGE)] })],
+    ];
+    for (const [name, c] of admitted) {
+      void channel.runner.run(c);
+      expect({ name, runs: channel.bodies("run").length }).toEqual({ name, runs: admitted.findIndex(([n]) => n === name) + 1 });
+    }
+  });
+
+  // The script joins each Git array with spaces, so every item must be a shell word without quotes, except the quoted target.
+  test("the submoduleWork script runs the arrays of submoduleToplevelArgs, submoduleConfigListArgs, and submoduleStatusArgs", () => {
+    const lines = (wslProcess as Record<string, string[]>).submoduleWork;
+    expect(Array.isArray(lines)).toBe(true);
+    const location = { worktree: "$t" };
+    const line = (args: string[]) => {
+      for (const arg of args) if (arg !== "$t") expect(arg).toMatch(/^[A-Za-z0-9=._-]+$/);
+      return ['run "$git"', ...args.map((arg) => (arg === "$t" ? '"$t"' : arg))].join(" ");
+    };
+    const runs = lines.map((l) => l.trim()).filter((l) => l.startsWith('run "$git"'));
+    expect(runs).toEqual([line(submoduleToplevelArgs(location)), line(submoduleConfigListArgs(location)), line(submoduleStatusArgs(location))]);
+    expect(lines[0]).toBe("git=$1 dir=$2 phase=$3 bound=$4");
+    expect(lines).toContain("umask 077");
+    expect(lines).toContain('mkdir -- "$dir" || exit 1');
+    expect(lines).toContain(`trap 'rm -rf -- "$dir"' EXIT`);
+    expect(lines.indexOf("umask 077")).toBeLessThan(lines.indexOf('mkdir -- "$dir" || exit 1'));
+    expect(lines.indexOf('mkdir -- "$dir" || exit 1')).toBeLessThan(lines.indexOf(`trap 'rm -rf -- "$dir"' EXIT`));
   });
 });
 

@@ -320,13 +320,13 @@ const lineNode = (line: Line) => (
 const SUBMODULE_STEPS: Record<string, string> = { "fetch": "Fetching submodule", update: "Updating submodule" };
 
 // `requested`: the status bar holds a Cancel press for this operation (plan.md "Status area", Early Cancel).
-// The press cue covers only `accepted` and `running`, the states before the service reports a cancel state.
+// The press cue covers `accepted` and `running`, and `reconciling` only for a press made in that state (T419).
 function operationText(op: StatusOperation, worktreeRoot: string, head: Head | null, trusted: boolean, requested: boolean): Line {
   const [name, verb] = textsOf(op);
   const response = op.response;
   if (response === null) {
     const progress = op.progress;
-    const cue = requested && (progress === null || progress.state === "accepted" || progress.state === "running");
+    const cue = requested && (progress === null || progress.state === "accepted" || progress.state === "running" || progress.state === "reconciling");
     if (cue || progress?.state === "cancel-requested") return { lead: "Cancel requested", tail: "" };
     if (op.running !== undefined) return { lead: op.running, tail: "" };
     const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
@@ -489,13 +489,15 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   // The ref blocks a second send before the next render. The state renders the "Cancel requested" cue.
   const canceled = useRef<CancelGuard | null>(null);
   const [pressed, setPressed] = useState<CancelGuard | null>(null);
+  // The request ID of a Cancel press in `reconciling`. A press in an earlier state keeps the `reconciling` text.
+  const [reconcilePress, setReconcilePress] = useState<string | null>(null);
 
   const requestId = op?.requestId ?? null;
   const response = op?.response ?? null;
   const operationId = op?.progress?.operationId;
   const outcome = outcomeOf(response);
   const heading = op === null ? undefined : textsOf(op)[2];
-  const line = op === null ? null : operationText(op, worktreeRoot, head, trusted, pressed !== null && pressed.requestId === requestId);
+  const line = op === null ? null : operationText(op, worktreeRoot, head, trusted, pressed?.requestId === requestId && (op.progress?.state !== "reconciling" || reconcilePress === requestId));
   const liveText = line === null ? "" : plain(line);
   const running = op !== null && response === null;
   const stalled = running && op.progress?.stalled === true;
@@ -640,6 +642,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   }
 
   // plan.md "Status area", Early Cancel: only a reply view that took the cancel keeps the guard. A rejected reply has no view.
+  // A held guard sends no second `cancel`, also for a press in `reconciling` (T419).
   // Data-model §7: `reconciling` takes `cancel` as `reconciling` with `endProcesses` (`transition` in src/contracts/outcome.ts).
   function send(guard: CancelGuard, id: string) {
     guard.sent = true;
@@ -651,7 +654,9 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   }
 
   function cancel() {
-    if (op === null || op.response !== null || op.progress?.state === "cancel-requested" || canceled.current?.requestId === op.requestId) return;
+    if (op === null || op.response !== null || op.progress?.state === "cancel-requested") return;
+    if (op.progress?.state === "reconciling") setReconcilePress(op.requestId);
+    if (canceled.current?.requestId === op.requestId) return;
     const guard = { requestId: op.requestId, sent: false };
     hold(guard);
     if (operationId !== undefined) send(guard, operationId);

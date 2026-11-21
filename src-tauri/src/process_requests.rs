@@ -2204,17 +2204,20 @@ impl ProcessRequests {
             ),
             _ => (None, None, None),
         };
-        // Feature 002 contract Δ6. typify drops the `const` value of `script`.
+        // Feature 002 contract Δ6, feature 005 contract Δ6: each fixed script takes one policy.
         let script = match request {
-            RunGroup::RegisteredOperation {
-                script: Some(script),
-                ..
-            } if script != "matchingProbe" || !matches!(policy, EnvironmentPolicy::Search) => {
-                return Err(INVALID);
-            }
-            RunGroup::RegisteredOperation { script, .. } => script.is_some(),
-            _ => false,
+            RunGroup::RegisteredOperation { script, .. } => *script,
+            _ => None,
         };
+        let script_fits = match script {
+            None => true,
+            Some(frame::RunRegisteredScript::MatchingProbe) => policy == EnvironmentPolicy::Search,
+            Some(frame::RunRegisteredScript::SubmoduleWork) => policy == EnvironmentPolicy::Read,
+        };
+        if !script_fits {
+            return Err(INVALID);
+        }
+        let scripted = script.is_some();
         let mutation = matches!(policy, EnvironmentPolicy::Mutation);
         // Contract §12: `network` serves only the update processes of the `updateSubmodules` mutation.
         // Feature 003 contract Δ3: `remote` and `integrate` serve only the steps of the `sync` mutation.
@@ -2253,11 +2256,11 @@ impl ProcessRequests {
         if !policy_fits {
             return Err(INVALID);
         }
-        // `matching_probe_command` checks the script arguments.
+        // `matching_probe_command` and `submodule_work_command` check the script arguments.
         if matches!(
             kind,
             Kind::Registered | Kind::GlobalConfig | Kind::WorktreeAdd | Kind::IgnorePreview
-        ) && !script
+        ) && !scripted
             && arguments.first().map(String::as_str) != Some("--no-lazy-fetch")
         {
             return Err(INVALID);
@@ -2266,10 +2269,10 @@ impl ProcessRequests {
         if kind == Kind::GlobalConfig && !global_config_fits(&arguments, policy) {
             return Err(INVALID);
         }
-        if kind == Kind::Registered && !script && runs_bound_command(&arguments) {
+        if kind == Kind::Registered && !scripted && runs_bound_command(&arguments) {
             return Err(INVALID);
         }
-        let size_rule = kind == Kind::Registered && !script && arguments == CHECKOUT_TEMP;
+        let size_rule = kind == Kind::Registered && !scripted && arguments == CHECKOUT_TEMP;
         let limits = run_limits(limits, kind, policy, size_rule)?;
         let input = match (input, input_bytes) {
             (None, None) => RunInput::Closed,
@@ -2348,7 +2351,7 @@ impl ProcessRequests {
         {
             return Err(INVALID);
         }
-        if script && target.wsl.is_none() {
+        if scripted && target.wsl.is_none() {
             return Err(INVALID);
         }
         if let Some(file) = &index_file {
@@ -3592,7 +3595,7 @@ impl ProcessRequests {
         shadow_index: Option<&str>,
         arguments: &[String],
         input: &RunInput,
-        script: bool,
+        script: Option<frame::RunRegisteredScript>,
     ) -> Result<wsl::Command, Code> {
         let mode = match policy {
             EnvironmentPolicy::Probe => wsl::Mode::Probe,
@@ -3613,12 +3616,17 @@ impl ProcessRequests {
             RunInput::Bytes(bytes) => wsl::Stdin::Bytes(bytes.clone()),
             RunInput::Streamed(_) => wsl::Stdin::Open,
         };
-        if script {
-            let base = &self.config.base_environment;
-            return wsl::matching_probe_command(installation, &unit, arguments, base, stdin);
+        let base = &self.config.base_environment;
+        match script {
+            Some(frame::RunRegisteredScript::MatchingProbe) => {
+                return wsl::matching_probe_command(installation, &unit, arguments, base, stdin);
+            }
+            Some(frame::RunRegisteredScript::SubmoduleWork) => {
+                return wsl::submodule_work_command(installation, &unit, arguments, base, stdin);
+            }
+            None => {}
         }
         if let Some(index) = shadow_index {
-            let base = &self.config.base_environment;
             return wsl::shadow_command(
                 installation,
                 &unit,
@@ -3636,7 +3644,7 @@ impl ProcessRequests {
             index.as_deref(),
             directory,
             arguments,
-            &self.config.base_environment,
+            base,
             stdin,
         )
     }
@@ -9759,6 +9767,100 @@ pub(crate) mod tests {
         );
     }
 
+    /// Feature 005 contract Δ3 `readSubmoduleWork` "WSL route", Δ6: a `submoduleWork` run reaches the host as the work command in mode `read`.
+    #[test]
+    fn a_wsl_submodule_work_run_reaches_the_host_as_the_work_command_and_a_broken_one_starts_nothing()
+     {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let windows = wsl.harness.child_workspace("repo");
+        let installation = match wsl.harness.requests.state().gits.get(&git) {
+            Some(Git::Wsl(installation)) => installation.clone(),
+            _ => panic!("WSL Git"),
+        };
+        let operation = uuid();
+        let arguments = [
+            "/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa",
+            "a",
+            "4194304",
+            "/home/u/r/m/000",
+        ];
+        let body = |call: &str| {
+            json!({
+                "type": "run", "callId": call, "operationId": operation, "contextKind": "registeredOperation",
+                "gitInstallationId": git, "repositoryId": repository, "script": "submoduleWork",
+                "arguments": arguments, "environmentPolicy": "read",
+                "limits": { "deadlineMs": 30_000 },
+            })
+        };
+        let before = wsl.host.commands().len();
+        let call = uuid();
+        wsl.harness.send(body(&call));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            refused(&call, "PROCESS_OWNERSHIP_FAILED"),
+            "the script host starts nothing"
+        );
+        let launched = wsl.host.commands()[before..].to_vec();
+        let unit = wsl::unit_name(&operation, 1).expect("unit");
+        let base = wsl.harness.requests.config.base_environment.clone();
+        let expected = wsl::submodule_work_command(
+            &installation,
+            &unit,
+            &arguments.map(String::from),
+            &base,
+            wsl::Stdin::Closed,
+        )
+        .expect("work");
+        assert_eq!(launched.len(), 1, "no anchor");
+        assert_eq!(launched[0].arguments, expected.arguments);
+        assert!(matches!(launched[0].stdin, wsl::Stdin::Closed));
+
+        let mut bad_bound = arguments.map(Value::from);
+        bad_bound[2] = json!("01");
+        let mut many = arguments.map(Value::from).to_vec();
+        many.truncate(3);
+        many.extend((0..17).map(|i| json!(format!("/home/u/r/m/{i:03}"))));
+        let cases: Vec<(&str, Edit)> = vec![
+            ("policy search", set("environmentPolicy", json!("search"))),
+            (
+                "policy mutation",
+                set("environmentPolicy", json!("mutation")),
+            ),
+            (
+                "a transaction",
+                both(
+                    set("transactionId", json!(uuid())),
+                    set(
+                        "indexFile",
+                        json!(format!(r"{WSL_PATH}\.git\arbareto-candidate-1")),
+                    ),
+                ),
+            ),
+            ("bound 01", set("arguments", json!(bad_bound))),
+            ("17 targets", set("arguments", json!(many))),
+            ("another script", set("script", json!("submodulework"))),
+            (
+                "a Windows Git",
+                both(
+                    set("gitInstallationId", json!(windows.git)),
+                    set("repositoryId", json!(windows.repository)),
+                ),
+            ),
+        ];
+        expect_refusals(&wsl.harness, body, cases, "INVALID_REQUEST");
+        assert_eq!(
+            wsl.host.commands().len(),
+            before + 1,
+            "a refused script run reaches no host"
+        );
+        assert_eq!(
+            wsl.harness.jobs.active_processes(&operation).unwrap_or(0),
+            0,
+            "a refused script run starts no process"
+        );
+    }
+
     /// T377, contract §11 "Process launch": the shell strips the start byte of each WSL run, a `script` run too.
     /// A WSL process that ends by itself without the start byte never started in its scope, so its run ends `refused`.
     /// A Job close ends a run with `exit` and `exitCode` null, with or without the byte.
@@ -10476,6 +10578,38 @@ pub(crate) mod tests {
             harness.replies_for(&closed).is_empty() && harness.replies_for(&last).is_empty(),
             "a stopped walk gets no reply"
         );
+    }
+
+    /// Feature 008 contract Δ3 `runWorkbench`: the reconcile of one revert sends up to 8 `fileFacts` frames at once.
+    #[test]
+    fn two_walks_of_one_operation_run_at_once_and_both_reply() {
+        let harness = Harness::child();
+        let workspace = hooks_workspace(&harness, &["first", "second"]);
+        let (Some(first_lock), Some(second_lock)) = (
+            Oplock::request(&hook(&workspace, "first")),
+            Oplock::request(&hook(&workspace, "second")),
+        ) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let operation = uuid();
+        let first = blocked_walk(&harness, &workspace, &first_lock, "first", &operation);
+        let second = blocked_walk(&harness, &workspace, &second_lock, "second", &operation);
+        assert_eq!(
+            harness.requests.active_walks(),
+            2,
+            "both walks of the operation wait at once"
+        );
+        drop(first_lock);
+        drop(second_lock);
+        for call in [&first, &second] {
+            assert_eq!(
+                harness.reply(call)["facts"][0]["digest"],
+                crate::file_facts::tests::ABC,
+                "each walk replies its fact"
+            );
+        }
+        assert!(harness.settled(), "every thread of the shell side ended");
     }
 
     #[test]

@@ -34,7 +34,9 @@ const LINE_ENDINGS: [string, string][] = [
 
 type Category = ChangeEntry["category"];
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RevertRun = { action: string; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
+// Data-model §9: the count of each outcome.
+const NONE = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+type RevertRun = { action: string; counts: typeof NONE; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
 
 let builds = 0;
 const g = (repo: string, args: string[], input?: string) => faGit(gitPath(), repo, args, input === undefined ? {} : { input });
@@ -186,6 +188,16 @@ async function run(service: Service, r: RegistrationResult, token: string): Prom
   return response;
 }
 
+// The result of one outcome per target: the counts, and the path and outcome of each target that did not revert.
+const resultOf = (targets: readonly Target[], outcomes: string[]) => ({
+  counts: outcomes.reduce((c, o) => ({ ...c, [o]: c[o as keyof typeof NONE] + 1 }), NONE),
+  files: targets.flatMap((t, i) => (outcomes[i] === "reverted" ? [] : [[t.path, outcomes[i]]])),
+});
+const actual = (read: WorkspaceResult, done: ServiceResponse<RevertRun>) => ({
+  counts: done.result?.counts,
+  files: done.result?.files.map((f) => [read.entries.find((e) => e.entryId === f.entryId)?.path, f.outcome]),
+});
+
 // SC-003: the bound facts that a review binds. Each change comes after the review and before the run.
 const blob = (repo: string, content: string) => g(repo, ["hash-object", "-w", "--stdin"], content).toString("utf8").trim();
 const FACTS: { id: string; apply(repo: string, v: Variant): void }[] = [
@@ -241,7 +253,7 @@ describe("revert races: an external writer during the run gives changed-outside 
       let hook: ((c: RevertCheckpoint) => void) | null = null;
       await withService({ name: `t044-writer-${v.id}`, revertCheckpoint: (c: RevertCheckpoint) => hook?.(c) }, async (service) => {
         for (const seam of seams) {
-          const { repo, r, token } = await reviewed(service, v);
+          const { repo, r, read, token } = await reviewed(service, v);
           const first = v.targets[0]!;
           let wrote = false;
           const writer = () => {
@@ -259,13 +271,16 @@ describe("revert races: an external writer during the run gives changed-outside 
             hook = null;
           }
           const label = { variant: v.id, seam };
-          expect({ ...label, wrote, state: done.state, code: done.code, index: done.result?.index, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({
+          expect({ ...label, wrote, state: done.state, code: done.code, index: done.result?.index, ...actual(read, done) }).toEqual({
             ...label,
             wrote: true,
             state: "failed-with-effects",
             code: "FAILED_WITH_EFFECTS",
             index: seam === "before-index" ? "refused" : v.index,
-            outcomes: v.targets.map((_, i) => (i === 0 ? "changed-outside" : "reverted")),
+            ...resultOf(
+              v.targets,
+              v.targets.map((_, i) => (i === 0 ? "changed-outside" : "reverted")),
+            ),
           });
           expect({ ...label, bytes: v.targets.map((t) => bytesOf(repo, t.path)), temps: leftovers(repo) }).toEqual({ ...label, bytes: v.targets.map((t, i) => (i === 0 ? "outside\n" : t.new)), temps: { merge: 0, replace: 0 } });
         }
@@ -284,7 +299,7 @@ describe("revert interruptions: the double stops or ends at each write step (SC-
     caseTest(TASK, `${v.id}: a stop at checked keeps every old byte, and a stop at a later step gives the new bytes; no temporary file stays`, SHELL, () =>
       withService({ name: `t044-stop-${v.id}` }, async (service) => {
         for (const step of STEPS) {
-          const { repo, r, token } = await reviewed(service, v);
+          const { repo, r, read, token } = await reviewed(service, v);
           service.runner.inject.replaceStep = (s, path) => (s === step && path.endsWith(tail) ? "stop" : undefined);
           let done: ServiceResponse<RevertRun>;
           try {
@@ -294,12 +309,12 @@ describe("revert interruptions: the double stops or ends at each write step (SC-
           }
           const stopped = step === "checked";
           const expected = !stopped
-            ? { state: "succeeded", code: undefined, outcomes: v.targets.map(() => "reverted") }
+            ? { state: "succeeded", code: undefined, ...resultOf(v.targets, v.targets.map(() => "reverted")) }
             : v.index === "published"
-              ? { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", outcomes: v.targets.map(() => "unstaged-only") }
-              : { state: "failed", code: "DEADLINE", outcomes: v.targets.map((_, i) => (i === 0 ? "not-changed" : "not-started")) };
+              ? { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", ...resultOf(v.targets, v.targets.map(() => "unstaged-only")) }
+              : { state: "failed", code: "DEADLINE", ...resultOf(v.targets, v.targets.map((_, i) => (i === 0 ? "not-changed" : "not-started"))) };
           const label = { variant: v.id, step };
-          expect({ ...label, state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...label, ...expected });
+          expect({ ...label, state: done.state, code: done.code, ...actual(read, done) }).toEqual({ ...label, ...expected });
           expect({ ...label, bytes: v.targets.map((t) => bytesOf(repo, t.path)), temps: leftovers(repo) }).toEqual({ ...label, bytes: v.targets.map((t) => (stopped ? t.old : t.new)), temps: { merge: 0, replace: 0 } });
         }
       }),

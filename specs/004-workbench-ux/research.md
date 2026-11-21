@@ -1217,6 +1217,38 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 - The T144 file printed `SKIP T144 screenshots: ARBARETO_TREE_SHOTS_DIR is not set`. This is a log line, not a skipped case. The run wrote no T144 screenshot.
 - The full step table is in 007 research.md R7 "v0.1.1 full run (2026-11-13)".
 
+**v0.1.3 session at Windows Text size 225% (2026-11-20)**
+
+- Build: the installed v0.1.3 exe `9ed79992…` (f015 build, R34). Tests at code `9a88708d` from the l7 worktree.
+- Every `ORIGIN` line named that worktree and the installed exe.
+- Host: OS 10.0.26300, Git 2.56.0.windows.2, display scale 125%, Windows Text size 225%. The log holds no WebView2 version.
+- `tests/windows/submodule-tree-packaged.test.ts`: 1 pass, 8 skip, 7 fail, 5,057.49 s (84.3 min). The log holds no per-case pass or skip line.
+- The file printed `OBSERVATION T164: Windows text size 225%` and `SKIP T164: missing capability text-scale-100`.
+- Each fail is a wait of 600,000 ms that ran out. The case times follow:
+  - T144 Q30 board: "the board rows", 618,837 ms.
+  - SC-018 and SC-020, n = 20: the marks of the sc018-20 branch fixture, 618,257 ms.
+  - SC-018 and SC-020, n = 256: the marks of the sc018-256 branch fixture, 695,887 ms.
+  - SC-020, n = 1,024: the marks of the sc018-1024 branch fixture, 989,653 ms.
+  - SC-019, 256 submodule rows: "the tree rows", 609,122 ms.
+  - SC-019, 1,024 submodule rows: "the tree rows", 610,573 ms.
+  - T164 (10) at 225%: "the Keys in the tree panel", 624,999 ms.
+- The shots folder (local scratch v013-225/shots) stayed empty. So this session gave no T145 board shots.
+- The fixture root cleanup took 113,637 ms, and no hook timeout occurred (010 research.md R7 "v0.1.3 test fixes").
+- Diagnosis 1, product defect: WebView2 puts the text scale into its rasterization scale.
+- So `devicePixelRatio` read 2.8125 (1.25 × 2.25), and the app also applies `--text-scale: 2.25`.
+- A 1280×800 DIP window held 569×356 CSS px. 001 research.md R7 "Windows text size" holds the record. 001 T422 holds the fix.
+- Diagnosis 2, test gap: at 225%, the spec puts a 1280×800 window in the constrained profile (001 plan.md about :295).
+- There, References starts collapsed (001 plan.md about :258, `Workbench.tsx` about :1171). The Keys slot is null (`Workbench.tsx` about :2167).
+- The tests wait for the board rows, the tree rows, and the Keys panel. They do not set a wide viewport or open the section first. T178 holds the fix.
+- Probe (local scratch v013-225/diag/probe.ts, probe.log, and 1-default.png to 4-default-expanded.png), on its own repository:
+  - The default window was 569×356 CSS px in the constrained profile. UIA showed "Show references" but no "References" Tree.
+  - At 1280×1300, the profile was wide, and UIA showed the Tree.
+  - At 1280×800, the profile was constrained, and the Tree was absent again.
+  - After a click on "Show references", UIA showed the Tree.
+  - No state showed the Keys panel. At 1280×1300, its slot had a height of 0.
+- T145 and T164 stay open. Their 225% parts wait for 001 T422 and T178.
+- User decision 2026-11-20: v0.1.3 ships without these parts. Log: local scratch v013-225/tree.log.
+
 ## R32 Review finding M1: Blame focus after a skipped click (2026-11-13)
 
 - Source: the review of the v0.1.2 code (T174), 2026-11-13. Code read, not run.
@@ -1249,3 +1281,54 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
   | `t174-c10-history-row` | add `select-text` to a History row | `history-view.test.tsx:81`: `row.closest(".select-text")` not null |
 
 - T174 (ticked): the ten DOM controls and the packaged control ran red on code `2d109fff`. The packaged control used the f014 installer above. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0 (tasks.md:44). The f014 `tests/windows` steps cover every file of `tests/windows` at `2d109fff`, and each step exited 0.
+
+## R34 v0.1.3 records (T175, T176), 2026-11-18
+
+- Build: full run f015 on code `e2fa367a`, branch `v0.1.3`. Installer SHA-256 `08706d55…`, installed exe `9ed79992…`.
+- The full record is 007 research.md R7 "v0.1.3 records". The logs are in local scratch `f015-full`.
+- `bun run test:all` exited 0: 10,445 pass, 56 skip, 0 fail (JUnit reports). Every `ORIGIN` line named the checkout under test.
+- f015 green counts (pass, skip, fail): `tests/contracts/inspection-blame.test.tsx` 38, 0, 0. `tests/contracts/workbench-branches.test.tsx` 74, 0, 0.
+- T175: the case "T175: a skipped click with the selected line outside the view …" passed.
+- T176: the case "Delete states that the branches are still loading and reads them again; …" passed.
+- T176: the case "after a failed readBranches, Delete states the failure text" passed.
+- T175 and T176 (f015 record alone): the older-build rule (tasks.md:44) blocked the tick.
+- `git diff --quiet e2fa367a <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 1.
+- The changed files are `tests/git/fixture-root.ts`, `tests/windows/commit-menu-perf.test.ts`, and `tests/windows/inspection-perf.test.ts`.
+- No `bun run test:all` ran on a later commit. So the tick needs a run on the tick build.
+- Red output and control results: implementer report 2026-11-16, branch `v013-ui`. Each control was restored, and the case was then green.
+- T175 red before the code: `inspection-blame.test.tsx` 37 pass, 1 fail at (3). Green: 38 pass.
+- At (3), `document.activeElement` expected line 1. It received the DIV "Line 520, …".
+- T175 C1 (pin removed): red at (3), as before the code.
+- T175 C2 (pin removed, `select(line)` instead of the focus return): red at (2), expected 10000, received 0.
+- T175 C3 (`preventScroll` dropped): red at (2), expected 10000, received 0.
+- T176 red before the code: the new `workbench-branches.test.tsx` cases gave 0 pass, 2 fail. Green: 2 pass.
+- Both reason asserts received "".
+- T176 C1 (old gate back in `Workbench.tsx`): both cases red, received "".
+- T176 C2 (loading text only): case 2 red, received "The branches are still loading.".
+- T176 C3 (no loaded-entries check in `actionable`): case 1 red at the `aria-haspopup` null assert, received "menu".
+- The review of the v0.1.3 code found LOW 2 in T176. User decision of 2026-11-18: T177 holds the fix, target v0.1.4.
+
+**Same-tree record, 2026-11-18**
+
+- Code `9a88708d` in the l7 worktree. The logs are in local scratch `v013-sametree`. Every `ORIGIN` line names that worktree.
+- `git diff --quiet 9a88708d 36b3bec0 -- src src-tauri tests scripts package.json bun.lock` exits 0.
+- `36b3bec0` is the head of branch `v0.1.3` before the tick commit. The tick commit changes only `specs/`.
+- `bun run typecheck` exited 0 (`typecheck.log`).
+- `bun run test:fast` exited 1 (`fast.log`). Parallel group: 7,143 pass, 38 skip, 2 fail. Serial group: 109 pass, 0 fail.
+- Source of the case results: `parallel.xml` in the temp folder `arbareto-test-run-21965915-1d8c-4ed5-9b6c-8465e1b10408`.
+- T175: the case "T175: a skipped click with the selected line outside the view …" passed in 0.188 s.
+- T176: both cases of the suite "branch row inputs before the readBranches answer (T176, plan D15 Branch list)" passed.
+- The T176 case times were 0.739 s and 0.805 s.
+- The 2 fails are Bun `TimeoutError` results at the default timeout of 5,000 ms. Both are in other files.
+- Fail 1: `tests/contracts/hunk-controls.test.tsx`, "hunk selection > without a selection, Next hunk selects hunk 1 and Previous hunk selects hunk 3".
+- Fail 2: `tests/contracts/network-sites.test.ts`, "T020: src/git-service holds exactly one fetch call, in dictionaries.ts", after 7.6 s.
+- Alone run, 2026-11-18 (`timeouts-alone.log`): `bun test` of these two files, with no other test process.
+- The alone run gave 26 pass, 0 fail, and exit 0 in 1.3 s. The two files hold 26 cases in `parallel.xml`.
+- So both cases fail only under the parallel group load. 001 T421 holds the timeout fix.
+- T175 and T176 (ticked, 2026-11-18): the green f015 full run holds each case. The same-tree run repeats each case green.
+- Gap: no `bun run test:all` ran on the tick tree. User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The user waives the exact-tree test:all clause for T175 and T176 only.
+
+**225% session, 2026-11-20**
+
+- R31 "v0.1.3 session at Windows Text size 225% (2026-11-20)" holds the T145 and T164 record.
+- 7 cases of `submodule-tree-packaged.test.ts` failed. T178 and 001 T422 hold the fixes, target v0.1.4.

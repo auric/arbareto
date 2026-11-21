@@ -1114,3 +1114,41 @@ describe("local Delete with the remote check box (feature 011 plan D3)", () => {
     });
   }
 });
+
+describe("branch row inputs before the readBranches answer (T176, plan D15 Branch list)", () => {
+  const footerText = () => text(document.querySelector("footer")!);
+  async function pressDelete(name: string) {
+    const row = await sidebarRow(name);
+    await act(async () => row.focus());
+    await press(row, "Delete");
+    await settle();
+  }
+
+  test("Delete states that the branches are still loading and reads them again; after the answer, Delete starts the review", async () => {
+    const world = branchWorld(() => reviewed("delete-branch", { ref: "refs/heads/login-form", oid: oid(4), onlyHere: 0, reflogKeeps: false, heldBy: null, current: false }));
+    world.answers.readBranches = undefined;
+    const double = await mountWorkbench(workbench, world);
+    expect((await sidebarRow("login-form")).getAttribute("aria-haspopup")).toBeNull();
+    const reads = double.count("readBranches");
+    await pressDelete("login-form");
+    expect(footerText()).toContain("The branches are still loading.");
+    expect(reviews(double)).toEqual([]);
+    expect(double.count("readBranches")).toBe(reads + 1);
+    await contextMenu(await sidebarRow("main"));
+    expect(openMenuItems().map(itemLabel)).toEqual(["Show only this branch's history"]);
+    await press(document.activeElement!, "Escape");
+    world.answers.readBranches = () => succeeded({ entries: ENTRIES });
+    for (const call of double.calls.filter((c) => c.operation === "readBranches" && !c.done)) await answer(call, succeeded({ entries: ENTRIES }));
+    await pressDelete("login-form");
+    expect(reviews(double)).toEqual([{ action: "delete-branch", ref: "refs/heads/login-form" }]);
+  });
+
+  test("after a failed readBranches, Delete states the failure text", async () => {
+    const world = branchWorld();
+    world.answers.readBranches = () => ({ requestId: fixtureId(0x531), state: "failed", code: "GIT_FAILED" });
+    const double = await mountWorkbench(workbench, world);
+    await pressDelete("login-form");
+    expect(footerText()).toContain("Arbareto cannot read the branches: GIT_FAILED.");
+    expect(reviews(double)).toEqual([]);
+  });
+});

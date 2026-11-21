@@ -887,11 +887,10 @@ describe("Cancel", () => {
     const op = running({ kind: "updateSubmodules" });
     const view = await mount({ operation: op, declinedFocus: () => double("history-row") });
     await view.update({ operation: { ...op, progress: progress(op, { state: "reconciling" }) } });
-    const reconciling = statusText();
     await click(button("Cancel"));
     await view.reply(0, viewReply("reconciling", { endProcesses: true }));
-    // The press cue covers only the time before the service reports a cancel state.
-    expect(statusText()).toBe(reconciling);
+    // T419: a press in `reconciling` shows the cue while the guard holds.
+    expect(statusText()).toBe("Cancel requested");
     await click(button("Cancel"));
     expect(cancels(view)).toEqual([SENT]);
     await view.update({ operation: respond(op, "canceled", { rows: [] }) });
@@ -909,6 +908,35 @@ describe("Cancel", () => {
     expect(statusText()).toBe("Cancel requested");
     await view.update({ operation: { ...op, running: "Checking the result…", progress: progress(op, { state: "reconciling" }) } });
     expect(statusText()).toBe("Checking the result…");
+    expect(cancels(view)).toEqual([SENT]);
+  });
+
+  // T419 (user decision 2026-11-16): a Cancel press in `reconciling` shows "Cancel requested". Cancel stays enabled for the `endProcesses` request.
+  test("T419: a Cancel press in reconciling shows Cancel requested before any reply", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: { ...op, running: "Checking the result…", progress: progress(op, { state: "reconciling" }) } });
+    expect(statusText()).toBe("Checking the result…");
+    await click(button("Cancel"));
+    expect(statusText()).toBe("Cancel requested");
+    expect(cancels(view)).toEqual([SENT]);
+    await view.reply(0, viewReply("reconciling", { endProcesses: true }));
+    expect(statusText()).toBe("Cancel requested");
+    await view.update({ operation: respond(op, "canceled") });
+    expect(statusText()).toBe("Commit canceled");
+  });
+
+  test("T419: after a taken Cancel, a Cancel in reconciling shows Cancel requested and sends no second cancel", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: { ...op, progress: progress(op, { state: "accepted" }) } });
+    await click(button("Cancel"));
+    await view.reply(0, viewReply("cancel-requested"));
+    await view.update({ operation: { ...op, progress: progress(op, { state: "cancel-requested" }) } });
+    await view.update({ operation: { ...op, running: "Checking the result…", progress: progress(op, { state: "reconciling" }) } });
+    expect(statusText()).toBe("Checking the result…");
+    await click(button("Cancel"));
+    expect(statusText()).toBe("Cancel requested");
     expect(cancels(view)).toEqual([SENT]);
   });
 

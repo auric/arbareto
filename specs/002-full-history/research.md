@@ -413,7 +413,7 @@ Open items:
 
 ## R21 Verification run of f002-b3 37aa8d4
 
-Run of 2026-10-13, 06:21 to 07:40 local, in the worktree l4 at 37aa8d4, for T001 to T003, T006, T011, T030 to T037, T050, T061, and T063. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2 (`C:\Program Files\Git\ucrt64\bin\git.exe`). WSL: Ubuntu-26.04 with Git 2.55.0, and Ubuntu-24.04 with Git 2.43.0 for the registration file. The run built H1M. Each batch review of 002 is recorded ("Batch reviews").
+Run of 2026-10-13, 06:21 to 07:40 local, in the worktree l4 at 37aa8d4. It covered T001 to T003, T006, T011, T030 to T037, T050, T061, and T063. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2 (`C:\Program Files\Git\ucrt64\bin\git.exe`). WSL: Ubuntu-26.04 with Git 2.55.0, and Ubuntu-24.04 with Git 2.43.0 for the registration file. The run built H1M. Each batch review of 002 is recorded ("Batch reviews").
 
 | Step | Exit | Counts |
 |---|---|---|

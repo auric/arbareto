@@ -2198,7 +2198,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         repository={state.repository?.worktreeKey ?? ""}
         onShowBranchHistory={showBranchHistory}
         tracking={labels}
-        onBranchAction={branches.entries === null ? undefined : onBranchAction}
+        onBranchAction={onBranchAction}
         branches={branches.entries}
         after={SIDEBAR_AFTER}
       />

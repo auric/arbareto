@@ -7,7 +7,7 @@ Every record below lives in memory for one review or one run. Nothing is stored.
 | Action | Fields | Rules |
 | --- | --- | --- |
 | `revert-lines` | `snapshotId`, `comparisonId`, `hunkId`, `lines?` | `lines`: the 004 line selection (1-based ordinals of `+` and `-` lines of one hunk, ascending). Without `lines`, the whole hunk. The comparison scope is `index-to-worktree` (unstaged) or `head-to-index` (staged). |
-| `revert-files` | `snapshotId`, `entryIds` | 1 to 10,000 unique entry IDs of the Changes list or the Staged list of one snapshot. A partly staged file has a Changes row and a Staged row. Two picked rows of one file merge into one file plan, and the first picked row's `entryId` gets the outcome. |
+| `revert-files` | `snapshotId`, `entryIds` | 1 to 10,000 unique entry IDs of the Changes list or the Staged list of one snapshot. A partly staged file has a Changes row and a Staged row. Two picked rows of one file merge into one file plan, and the first picked row's `entryId` gets the outcome. The first picked row's `entryId` names the file in the result `files` (§9). |
 | `revert-unstaged` | `snapshotId` | The service takes the entries from the snapshot. |
 
 The renderer sends no path, no byte, and no count. The service derives everything from the retained snapshot and comparison.
@@ -120,6 +120,8 @@ The refusal value (contract Δ3): `{reason}` for a repository-level reason, with
 
 Phases: `revert-index` (no counters), then `revert-files` (`fileIndex`, `fileCount`), then `reconciling`.
 
+Event rate: at most `REVERT_PROGRESS_EVENTS_PER_SECOND` (4) `revert-files` events per second. The event with `fileIndex` 0 and the event with the final count always go, also above that rate (contract Δ2). The final count is the last count that the run reached. A canceled run sends its count at the stop.
+
 Per-file outcome from the fresh read (plan D10):
 
 | Fresh index entry | Fresh working digest | Outcome |
@@ -147,7 +149,12 @@ A fresh read that fails gives the unknown outcome of the whole run (001 FR-023).
 
 ## 9. Result (service to renderer)
 
-`{action, files: [{entryId, outcome, code?, reason?}], foldersCreated: [pathBytes], index: "published" | "none" | "refused", reason?, remedy?}`. `foldersCreated` also holds the folders that a failed write created (contract Δ6 `folders` of a failure reply). The response state follows plan D10.
+`{action, counts: {reverted, "unstaged-only", "not-changed", "changed-outside", "not-started"}, files: [{entryId, outcome, code?, reason?}], foldersCreated: [pathBytes], index: "published" | "none" | "refused", reason?, remedy?}`.
+
+- `counts` holds the count of each outcome. The sum is 1 to 10,000, and 1 for `revert-lines`.
+- `files` holds the first 0 to 20 files that did not revert, in tree order. It holds no `reverted` file. Its length is the smaller of 20 and the count of files that did not revert.
+
+`foldersCreated` also holds the folders that a failed write created (contract Δ6 `folders` of a failure reply). The response state follows plan D10.
 
 - `reason` `revert-changed`: a `STALE_REVIEW` result in which no file changed. `index` is `none` or `refused`, never `published`. The renderer shows the plan D11 multi-file stale text.
 - `reason` with an eligibility value (`sparse-index`, `split-index`, `index-change-hook`, `executable-monitor`, `unqualified-monitor`, `shared-repository`): the index part refused with `UNSUPPORTED_HUNK_PROFILE`. `index` is `refused`, and `remedy: {text}` carries the text of the review refusal (`PROFILE_TEXTS`). Only these reasons carry `remedy`.

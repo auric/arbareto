@@ -119,7 +119,7 @@ const stepDeadline = (files: number) => Math.min(GIT_PROCESS_DEADLINE_MS + files
 
 // Plan.md O-17: `work` for each index, with at most `lanes` calls at once. The first non-null result aborts `stop`, and no later index starts.
 // It returns after every started call ends, so no process of the set outlives it. A throw ends the run the same way and then propagates.
-async function firstOf<T>(count: number, stop: AbortController, work: (i: number) => Promise<T | null>, lanes = MULTI_FILE_PROOF_CONCURRENCY): Promise<T | null> {
+export async function firstOf<T>(count: number, stop: AbortController, work: (i: number) => Promise<T | null>, lanes = MULTI_FILE_PROOF_CONCURRENCY): Promise<T | null> {
   let next = 0;
   let first = null as T | null;
   let failure = null as { error: unknown } | null;

@@ -1,7 +1,7 @@
 {
   "schema": "run-workbench-result",
   "expected": "INVALID_REQUEST",
-  "text": "{\"action\":\"revert-files\",\"files\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000a\",\"outcome\":\"changed-outside\",\"code\":\"stale\"}],\"foldersCreated\":[],\"index\":\"published\"}",
+  "text": "{\"action\":\"revert-files\",\"counts\":{\"reverted\":0,\"unstaged-only\":0,\"not-changed\":0,\"changed-outside\":1,\"not-started\":0},\"files\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000a\",\"outcome\":\"changed-outside\",\"code\":\"stale\"}],\"foldersCreated\":[],\"index\":\"published\"}",
   "repair": {
     "files.0.code": null
   }

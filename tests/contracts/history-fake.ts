@@ -311,7 +311,7 @@ export function createFake(options: FakeOptions) {
 export const TARGET = () => ({ repositoryId: fixtureId(1), repositoryGeneration: 1 });
 
 /**
- * happy-dom has no layout. This stubs the viewport of the history list and the references scroller: `clientHeight` and `offsetHeight` give `height`,
+ * happy-dom has no layout. This stubs the viewport of the history list, the references scroller, and the Blame scroller: `clientHeight` and `offsetHeight` give `height`,
  * `scrollHeight` gives the height of the sized child, and `scrollTop` clamps as a browser does. `scrollTo` sends a scroll event. It returns the restore step.
  */
 export function stubLayout(height = 800): () => void {
@@ -319,7 +319,7 @@ export function stubLayout(height = 800): () => void {
   const keys = ["clientHeight", "offsetHeight", "scrollHeight", "scrollTop", "scrollTo"] as const;
   const saved = keys.map((key) => [key, Object.getOwnPropertyDescriptor(proto, key)] as const);
   const tops = new WeakMap<Element, number>();
-  const sized = (element: Element) => element.hasAttribute("data-history-list") || element.hasAttribute("data-references-scroll");
+  const sized = (element: Element) => element.hasAttribute("data-history-list") || element.hasAttribute("data-references-scroll") || element.matches('[data-slot="blame-view"] [role="listbox"]');
   const content = (element: Element) => parseFloat(element.querySelector<HTMLElement>('[role="presentation"]')?.style.height ?? "") || 0;
   Object.defineProperty(proto, "clientHeight", { configurable: true, get: function (this: Element) { return sized(this) ? height : 0; } });
   Object.defineProperty(proto, "offsetHeight", { configurable: true, get: function (this: Element) { return sized(this) ? height : 0; } });

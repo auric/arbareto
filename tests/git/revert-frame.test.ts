@@ -27,7 +27,9 @@ const SHELL: Capability[] = ["shell-double"];
 const WINDOWS = process.platform === "win32";
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RevertRun = { action: string; files: FileOutcome[]; foldersCreated: string[]; index: string };
+// Data-model §9: the count of each outcome.
+const NONE = { reverted: 0, "unstaged-only": 0, "not-changed": 0, "changed-outside": 0, "not-started": 0 };
+type RevertRun = { action: string; counts: typeof NONE; files: FileOutcome[]; foldersCreated: string[]; index: string };
 type Reviewed = { action: string; plan: { count: number; paths: string[]; submodules?: number }; workbenchToken: string };
 
 // Every argument array and stdin of every run of this file, for the spec FR-031 and FR-003 case.
@@ -125,7 +127,7 @@ describe("revert frame: registration and common refusals (plan.md D2, contract �
       const done = await run(service, r, reviewed.workbenchToken);
       expect({ ...outcome(done), result: done.result }).toEqual({
         ...SUCCEEDED,
-        result: { action: "revert-unstaged", files: [{ entryId: idOf(read, "sub/c.txt"), outcome: "reverted" }, { entryId: idOf(read, "a.txt"), outcome: "reverted" }], foldersCreated: [], index: "none" },
+        result: { action: "revert-unstaged", counts: { ...NONE, reverted: 2 }, files: [], foldersCreated: [], index: "none" },
       });
       expect(workingFileDigests(repo)).toEqual(oracle);
       expect({ index: indexOf(repo), raw: rawIndex(repo) }).toEqual({ index: before.index, raw: before.raw });
@@ -148,7 +150,7 @@ describe("revert frame: registration and common refusals (plan.md D2, contract �
       const oracle = restored(repo);
       const reviewed = await reviewOk(service, r, read);
       const done = await run(service, r, reviewed.workbenchToken);
-      expect({ ...outcome(done), folders: done.result?.foldersCreated, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, folders: [b64("deep"), b64("deep/er")], outcomes: ["reverted", "reverted", "reverted"] });
+      expect({ ...outcome(done), folders: done.result?.foldersCreated, counts: done.result?.counts, files: done.result?.files }).toEqual({ ...SUCCEEDED, folders: [b64("deep"), b64("deep/er")], counts: { ...NONE, reverted: 3 }, files: [] });
       expect(workingFileDigests(repo)).toEqual(oracle);
       // Contract Δ6 `gitMode`: exactly the absent target carries the mode of its index entry.
       const frames = service.runner.frames.filter((f) => f.type === "fileReplace") as { expected: unknown; gitMode?: string }[];
@@ -175,9 +177,10 @@ describe("revert frame: registration and common refusals (plan.md D2, contract �
       };
       try {
         const done = await run(service, r, reviewed.workbenchToken);
-        expect({ state: done.state, folders: done.result?.foldersCreated, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({
+        expect({ state: done.state, folders: done.result?.foldersCreated, counts: done.result?.counts, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({
           state: "failed-with-effects",
           folders: [b64("deep"), b64("deep/er")],
+          counts: { ...NONE, "not-changed": 3 },
           outcomes: [
             ["not-changed", "stale"],
             ["not-changed", "stale"],
@@ -204,7 +207,7 @@ describe("revert frame: registration and common refusals (plan.md D2, contract �
         try {
           const done = await run(service, r, reviewed.workbenchToken);
           const removes = service.runner.frames.filter((f) => f.type === "tempRemove").length;
-          if (interrupted) expect({ state: done.state, outcomes: done.result?.files.map((f) => f.outcome), removes }).toEqual({ state: "failed-with-effects", outcomes: ["reverted", "reverted"], removes: 1 });
+          if (interrupted) expect({ state: done.state, counts: done.result?.counts, files: done.result?.files, removes }).toEqual({ state: "failed-with-effects", counts: { ...NONE, reverted: 2 }, files: [], removes: 1 });
           else {
             expect({ ...outcome(done), removes }).toEqual({ ...SUCCEEDED, removes: 1 });
             expect(gitTemps(repo)).toEqual([]);
@@ -411,13 +414,11 @@ describe("revert frame: per-file outcomes and response states (data-model §8, p
       "t020-mixed",
       (path) => (isA(path) ? { result: "error", code: "sharing-violation" } : undefined),
       (done, repo, read, before) => {
-        expect({ state: done.state, code: done.code, files: done.result?.files }).toEqual({
+        expect({ state: done.state, code: done.code, counts: done.result?.counts, files: done.result?.files }).toEqual({
           state: "failed-with-effects",
           code: "FAILED_WITH_EFFECTS",
-          files: [
-            { entryId: idOf(read, "sub/c.txt"), outcome: "reverted" },
-            { entryId: idOf(read, "a.txt"), outcome: "not-changed", code: "error", reason: "sharing-violation" },
-          ],
+          counts: { ...NONE, reverted: 1, "not-changed": 1 },
+          files: [{ entryId: idOf(read, "a.txt"), outcome: "not-changed", code: "error", reason: "sharing-violation" }],
         });
         expect(workingFileDigests(repo)["a.txt"]).toBe(before.files["a.txt"]);
       },
@@ -430,7 +431,15 @@ describe("revert frame: per-file outcomes and response states (data-model §8, p
       "t020-stale-replies",
       () => ({ result: "stale" }),
       (done, repo, _read, before) => {
-        expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({ state: "failed", code: "STALE_REVIEW", outcomes: [["not-changed", "stale"], ["not-changed", "stale"]] });
+        expect({ state: done.state, code: done.code, counts: done.result?.counts, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({
+          state: "failed",
+          code: "STALE_REVIEW",
+          counts: { ...NONE, "not-changed": 2 },
+          outcomes: [
+            ["not-changed", "stale"],
+            ["not-changed", "stale"],
+          ],
+        });
         expect(state(repo)).toEqual(before);
       },
     );
@@ -438,9 +447,10 @@ describe("revert frame: per-file outcomes and response states (data-model §8, p
       "t020-refused-replies",
       () => ({ result: "refused", reason: "security" }),
       (done, repo, _read, before) => {
-        expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => [f.outcome, f.code, f.reason]) }).toEqual({
+        expect({ state: done.state, code: done.code, counts: done.result?.counts, outcomes: done.result?.files.map((f) => [f.outcome, f.code, f.reason]) }).toEqual({
           state: "failed",
           code: "WORKBENCH_UNAVAILABLE",
+          counts: { ...NONE, "not-changed": 2 },
           outcomes: [
             ["not-changed", "refused", "security"],
             ["not-changed", "refused", "security"],
@@ -461,8 +471,12 @@ describe("revert frame: per-file outcomes and response states (data-model §8, p
         for (const name of gitTemps(join(path, ".."))) rmSync(join(path, "..", name));
         return { result: "replaced" };
       },
-      (done) => {
-        expect({ state: done.state, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "failed-with-effects", outcomes: ["reverted", "changed-outside"] });
+      (done, _repo, read) => {
+        expect({ state: done.state, counts: done.result?.counts, files: done.result?.files }).toEqual({
+          state: "failed-with-effects",
+          counts: { ...NONE, reverted: 1, "changed-outside": 1 },
+          files: [{ entryId: idOf(read, "a.txt"), outcome: "changed-outside" }],
+        });
       },
     ),
     TIMEOUT_MS,
@@ -484,10 +498,19 @@ describe("revert frame: per-file outcomes and response states (data-model §8, p
           await until(() => service.runner.frames.filter((f) => f.type === "fileReplace").length === (late ? 2 : 1), "the held fileReplace frame");
           await service.cancel(await service.operationId(requestId));
           const done = await service.response<RevertRun>(requestId);
+          const files = done.result?.files.map((f) => [f.entryId, f.outcome]);
           if (late) {
-            expect({ state: done.state, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "failed-with-effects", outcomes: ["reverted", "not-changed"] });
+            expect({ state: done.state, counts: done.result?.counts, files }).toEqual({ state: "failed-with-effects", counts: { ...NONE, reverted: 1, "not-changed": 1 }, files: [[idOf(read, "a.txt"), "not-changed"]] });
           } else {
-            expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "canceled", code: "CANCELED", outcomes: ["not-changed", "not-started"] });
+            expect({ state: done.state, code: done.code, counts: done.result?.counts, files }).toEqual({
+              state: "canceled",
+              code: "CANCELED",
+              counts: { ...NONE, "not-changed": 1, "not-started": 1 },
+              files: [
+                [idOf(read, "sub/c.txt"), "not-changed"],
+                [idOf(read, "a.txt"), "not-started"],
+              ],
+            });
             expect(state(repo)).toEqual(before);
           }
           expect(gitTemps(repo)).toEqual([]);
@@ -586,14 +609,14 @@ describe("revert frame: per-file outcomes and response states (data-model §8, p
         return { result: "interrupted" };
       },
       (done) => {
-        expect({ ...outcome(done), outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, outcomes: ["reverted", "reverted"] });
+        expect({ ...outcome(done), counts: done.result?.counts, files: done.result?.files }).toEqual({ ...SUCCEEDED, counts: { ...NONE, reverted: 2 }, files: [] });
       },
     );
     await runWith(
       "t020-deadline",
       () => ({ result: "stopped" }),
       (done, repo, _read, before) => {
-        expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "failed", code: "DEADLINE", outcomes: ["not-changed", "not-started"] });
+        expect({ state: done.state, code: done.code, counts: done.result?.counts, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "failed", code: "DEADLINE", counts: { ...NONE, "not-changed": 1, "not-started": 1 }, outcomes: ["not-changed", "not-started"] });
         expect(state(repo)).toEqual(before);
       },
     );

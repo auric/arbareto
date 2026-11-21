@@ -5,7 +5,7 @@
 // No Git command writes a target file. Git writes only its own temporary file through `checkout-index --temp`, and the shell replaces each target.
 // A fresh read decides every outcome. Plan.md D3 and D4: the unstaged and the staged `revert-lines`. Plan.md D5 and D7: `revert-files` with its index part.
 
-import type { ChangeEntry } from "../contracts/envelope";
+import { DELETE_CONFIRMATION_PATHS, type ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
 import { filterReason } from "../contracts/file-action";
 import { GITLINK } from "../contracts/git-mode";
@@ -73,7 +73,7 @@ type FileReason = { pathBytes: string; reason: string };
 
 const SLASH = 0x2f;
 // Contract Δ3 "Refusal value": the first 20 refused files in tree order. Data-model §9: a run result lists as many files.
-const REFUSED_FILES = 20;
+const REFUSED_FILES = DELETE_CONFIRMATION_PATHS;
 // Data-model §5: the first confirmation paths in tree order.
 const CONFIRMATION_PATHS = 20;
 const SYMLINK = "120000";

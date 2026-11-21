@@ -415,7 +415,7 @@ Stored pane bounds (T364). Webview storage keeps six pane sizes in DIPs. The bou
 
 After DPI, density, or font changes, remeasure virtual rows and restore a valid scroll anchor. Do not remount the editor or replace its text selection. Reflow must never activate a hunk or commit action.
 
-Windows text size. Interface text follows the Windows Text size setting, from 100% to 225% (FR-035, research R7 "Windows text size"). Windows scales only text there, not the whole interface, so Arbareto scales only text too:
+Windows text size. Interface text follows the Windows Text size setting, from 100% to 225% (FR-035, research R7 "Windows text size"). Known limit: WebView2 built-in menus and scroll bars use the display scale only (user decision 2026-11-21, spec Assumptions, research R7). Windows scales only text there, not the whole interface, so Arbareto scales only text too:
 
 - The shell reads `UISettings.TextScaleFactor` when it creates the window and at each `TextScaleFactorChanged` event. The value lies from 1.00 to 2.25.
 - The `currentSession` result carries the factor, and each change reaches the page as a `text-scale` event (contract §2).

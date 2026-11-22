@@ -12,7 +12,7 @@ A preview release for Windows 11 x64.
 
 ### Changed
 
-- Before the branch list loads, a branch key or a right-click on a branch shows only "The branches are still loading." Arbareto loads the branches again only after a failed read. That input then shows "Arbareto cannot read the branches: <code>."
+- Before the branch list loads, a branch key or a right-click on a branch shows only "The branches are still loading." Arbareto loads the branches again only after a failed read. That input then shows "Arbareto cannot read the branches: <code>." On the current branch, a right-click still opens "Show only this branch's history".
 
 ## [0.1.3] - 2026-11-21
 

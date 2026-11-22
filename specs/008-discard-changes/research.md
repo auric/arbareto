@@ -849,7 +849,9 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
   - So 001 contract §11 holds for `fileFacts` walks: a stop ends the `wsl.exe` of the call, and the wrapper trap ends its scope (`operations.md:1552`, `:1593`).
   - The known limit in spec Assumptions stays as decided: the service does not wait for the walk end. On the reference distro, the reader ends within the close budget. Other distros are not checked.
   - Not shown: the WSL-internal source of the `SIGHUP`. Only repo probe P1 and T392 show it. DeepWiki found no WSL code for it.
-  - Environment: the test ran on build 0faec152 on 2026-11-22. `wsl.exe --version` gave WSL 3.0.5.0 and kernel 6.18.58.1-1. `uname -r` in Ubuntu-26.04 gave `6.18.58.1-microsoft-standard-WSL2`.
+  - Environment: the test ran on build 0faec152 on 2026-11-22, on Windows 10.0.26300.9974, x64. `wsl.exe --version` gave WSL 3.0.5.0 and kernel 6.18.58.1-1. `uname -r` in Ubuntu-26.04 gave `6.18.58.1-microsoft-standard-WSL2`.
+  - Later change, 2026-11-22: the test decides "gone" only from `test -d /proc/<pid>` exit 1. Exit 0 then needs a readable `stat`, and any other result panics.
+  - The changed test passed alone on 2026-11-22 on the version 0.1.4 candidate. Its trap mutation failed as required. The version before this change passed in the full parallel cargo run (673 passed, 0 failed, 16 ignored).
 
 ### T089 first-run retained budget, 2026-11-21
 

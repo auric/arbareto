@@ -6344,17 +6344,29 @@ mod tests {
         reference.host().run(&command)
     }
 
-    /// The `cat` exit for `/proc/<pid>/stat`, and field 22 of the record after exit 0.
-    fn proc_stat(reference: &Reference, pid: &str) -> (Option<u32>, Option<String>) {
+    /// The `test -d /proc/<pid>` exit, 0 or 1, and field 22 of `/proc/<pid>/stat` after exit 0. Any other result panics.
+    fn proc_stat(reference: &Reference, pid: &str) -> (u32, Option<String>) {
+        let dir = || match distro_sh(reference, "test -d \"/proc/$1\"", &[pid])
+            .expect("proc shell")
+            .exit_code
+        {
+            Some(code @ (0 | 1)) => code,
+            other => panic!("test -d /proc/{pid} exit {other:?}"),
+        };
+        if dir() == 1 {
+            return (1, None);
+        }
         let out = distro_sh(reference, "cat \"/proc/$1/stat\"", &[pid]).expect("stat shell");
         if out.exit_code != Some(0) {
-            return (out.exit_code, None);
+            // The process can end between the two reads. Only an absent directory means gone.
+            assert_eq!(dir(), 1, "cat /proc/{pid}/stat exit {:?}", out.exit_code);
+            return (1, None);
         }
         let text = String::from_utf8(out.stdout).expect("UTF-8");
         // The command name in field 2 can hold `)` and spaces.
         let (_, rest) = text.rsplit_once(')').expect("stat record");
         let start = rest.split_whitespace().nth(19).expect("stat field 22");
-        (Some(0), Some(start.to_string()))
+        (0, Some(start.to_string()))
     }
 
     /// The control group of `unit`, and the PID and start time of its only `/usr/bin/perl` process.
@@ -6508,16 +6520,12 @@ mod tests {
                     let exists = distro_sh(&reference, "test -d \"/sys/fs/cgroup$1\"", &[&cg])
                         .expect("cgroup check")
                         .exit_code;
-                    let (stat, now) = proc_stat(&reference, &perl);
-                    let alive = match stat {
-                        Some(0) => now.as_deref() == Some(start.as_str()),
-                        Some(1) => false,
-                        other => panic!("{case}: stat exit {other:?}"),
-                    };
+                    let (dir, now) = proc_stat(&reference, &perl);
+                    let alive = now.as_deref() == Some(start.as_str());
                     let state = if alive { "alive" } else { "gone" };
                     let exit = exists.map_or_else(|| "none".to_string(), |code| code.to_string());
                     println!(
-                        "OBSERVATION T088 case={case} t={at} cgroup={exit} perl={state} stat={stat:?} start={now:?}"
+                        "OBSERVATION T088 case={case} t={at} cgroup={exit} perl={state} dir={dir} start={now:?}"
                     );
                     (exists, alive)
                 })

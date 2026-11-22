@@ -67,9 +67,10 @@ const MEMORY_BYTES = 64 * MIB;
 // SC-007 (session 3 decision) at the 10,000-file limit: the process-tree peak growth and the growth RETAIN_MS after the run end.
 const LIMIT_PEAK_BYTES = 320 * MIB;
 const LIMIT_RETAINED_BYTES = 32 * MIB;
-// SC-007 (approved 2026-11-02): the first revert after the app start (run 0) has its own bounds at the limit.
+// SC-007 (approved 2026-11-02): the first revert after the app start (run 0) has its own peak bound at the limit.
 const LIMIT_FIRST_PEAK_BYTES = 400 * MIB;
-const LIMIT_FIRST_RETAINED_BYTES = 80 * MIB;
+// Research.md R15 "T089 first-run retained budget": calibrated from 5 packaged first runs.
+const LIMIT_FIRST_RETAINED_BYTES = 164 * MIB;
 const INPUT_P95_MS = 100;
 const INPUT_MAX_MS = 500;
 // Research.md R11: the deadline rule of whole files assumes at least 64 MiB/s of local disk throughput.
@@ -927,7 +928,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   );
 
   test.skipIf(reason !== null)(
-    "SC-007, SC-011: at the 004 multi-file limit of 10,000 files a run ends within 330 s, the process tree rises by at most 400 MiB in the first run and 320 MiB in each later run and keeps at most 80 MiB and 32 MiB 30 s after it, and Cancel stops a run within 1 s (median of 10)",
+    "SC-007, SC-011: at the 004 multi-file limit of 10,000 files a run ends within 330 s, the process tree rises by at most 400 MiB in the first run and 320 MiB in each later run and keeps at most 164 MiB and 32 MiB 30 s after it, and Cancel stops a run within 1 s (median of 10)",
     async () => {
       const repo = revertCopy("t048-limit");
       onlySmall(repo);

@@ -853,3 +853,27 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - The calibrated value replaces only the run 0 retained budget (`LIMIT_FIRST_RETAINED_BYTES`, today 80 MiB). The other SC-007 budgets do not change.
 - Control: a run 0 retained budget of 1 MiB must fail on one of the runs (`first: false`).
 - Open: the calibration runs. The run 0 retained budget stays pending until this record holds them.
+- Result, 2026-11-22: the run 0 retained budget is 164 MiB. The calibration runs below close the open item.
+- Build: the installed v0.1.4 candidate from `v0.1.4-rc` at `8234671a`. The exe SHA-256 `16B34481…` matched before and after every run.
+- Every `ORIGIN` line names the candidate worktree. Each run started a fresh app with its own profile folder.
+- Filter: only the case "at the 004 multi-file limit of 10,000 files". The 2026-11-03 method (medians of 5 s windows) did not change.
+- The runs kept `ARBARETO_WSL_DISTRO=Ubuntu-26.04` from the R3 driver. The shared setup of the file touches a WSL fixture.
+- Split: the 5 s window median at the retained point (30 s after the run end) minus the window median at the confirmation. Unit: MiB.
+
+| Run | Start | Minutes | Exit | Free GB | Run 0 retained | Run 0 peak | Renderer / service / GPU | Runs 1 to 10 retained max / peak max |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 2026-11-21 21:58 | 61.4 | 1 | 17.31 | 85.8 | 270.3 | +20.4 / +25.0 / +34.7 | 10.0 / 191.3 |
+| 2 | 2026-11-21 23:00 | 61.0 | 1 | 14.47 | 91.3 | 274.6 | +18.6 / +34.9 / +36.6 | -17.5 / 154.2 |
+| 3 | 2026-11-22 00:01 | 62.1 | 1 | 14.43 | 99.1 | 291.9 | +21.5 / +30.6 / +41.1 | -13.9 / 189.0 |
+| 4 | 2026-11-22 01:03 | 61.4 | 1 | 14.50 | 96.4 | 274.1 | +23.6 / +32.5 / +36.8 | -18.5 / 156.4 |
+| 5 | 2026-11-22 02:05 | 61.0 | 0 | 14.39 | 34.5 | 256.3 | -16.9 / +12.2 / +37.2 | -0.9 / 154.4 |
+
+- Other process kinds stay within -0.4 to +3.6 MiB. A replay of the samples gives the same totals as the test log lines.
+- Runs 1 to 4 failed only the check `first` (80 MiB budget). All other checks passed in all 5 runs.
+- Rule: 99.1 + 64 = 163.1 MiB, rounded up to 164 MiB. `LIMIT_FIRST_RETAINED_BYTES` is now 164 MiB.
+- Control: the in-test check `first` failed at 80 MiB in runs 1 to 4. A 1 MiB budget fails all 5 runs by the logged values. No separate 1 MiB packaged run was made.
+- Comparison: on v0.1.3 code, before the T087 index-read change, f015 run 0 kept 98.2 MiB and R3 kept 30.3 MiB. The f015 service term was about +30.3 MiB.
+- The candidate shows the same two levels: 85.8 to 99.1 MiB, and 34.5 MiB. The service term (+12.2 to +34.9 MiB) is at or below the f015 level.
+- So the data shows no rise from T087. The GPU process grows by +34.7 to +41.1 MiB in every run. Run 5 is low because the renderer fell by 16.9 MiB.
+- Caveat: 5 samples with a wide spread may not show the true maximum. The 64 MiB margin covers this. The candidate full run checks the budget again.
+- Logs and samples: local scratch.

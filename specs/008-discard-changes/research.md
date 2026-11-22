@@ -779,7 +779,8 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - So the large CDP buffers keep the IPC reply bodies in the renderer and inflate its memory.
 - Arm B covered only the limit case. The other five cases of the file ran only with the old buffers.
 - The harness keeps 512 MiB and 256 MiB in v0.1.3. The SC-007 memory budgets come from runs with these buffer sizes.
-- A switch to 32 MiB and 16 MiB needs a calibration run of the SC-007 memory budgets first (target v0.1.4).
+- A switch to 32 MiB and 16 MiB needs a calibration run of the SC-007 memory budgets first (target v0.1.5).
+- T089 calibrated only the first-run retained budget. Moved to v0.1.5 at the v0.1.4 release, 2026-11-22.
 
 ### v0.1.3 records (T083, T084, T085), 2026-11-18
 

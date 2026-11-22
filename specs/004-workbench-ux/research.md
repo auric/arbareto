@@ -757,8 +757,11 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 - So the press is lost, and no text shows.
 - Not proven: that f016 hit this exact order. The mechanism is not proven to be the f016 cause.
 - User decision 2026-11-22: "Waive, fix in v0.1.5". T179 holds the fix and its test, the first v0.1.5 task. T135 stays ticked.
-- In one diagnostic rerun without the foreground, the SC-014 Delete confirmation case failed once. It passed in f011 to f016.
-- That case calls `showContextMenu` once with no retry (`workbench-packaged.test.ts` about :443). The helper `openRowMenu` (about :323-333) retries. T180 holds the retry.
+- In the diagnostic reruns without the foreground, the SC-014 Delete confirmation case failed once, in run 3 of 10. It passed in f011 to f016.
+- Run 3 (local scratch): 7 pass, 6 skip, 1 fail. The exe was `0c201258…`. The reruns used a diagnostic copy of the test file.
+- The fail: `TIMEOUT: no element named "Delete…" in process 6308 after 10000 ms`. The wait for the "Delete…" menu item timed out after `showContextMenu` (about :444).
+- No cause is on record. The case calls `showContextMenu` once with no retry (`workbench-packaged.test.ts` about :443). The helper `openRowMenu` (about :323-333) retries when a render replaces the row.
+- T180 first keeps evidence on this fail and finds the cause. It adds the retry only if the record shows a replaced row.
 
 ## R31 Submodules tree and branch marks (user decisions of 2026-11-03)
 
@@ -1300,7 +1303,7 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 
 - T174 (ticked): the ten DOM controls and the packaged control ran red on code `2d109fff`. The packaged control used the f014 installer above. The tick commit changes only `specs/`. So `git diff --quiet 2d109fff <tick commit> -- src src-tauri tests scripts package.json bun.lock` exits 0 (tasks.md:44). The f014 `tests/windows` steps cover every file of `tests/windows` at `2d109fff`, and each step exited 0.
 
-## R34 v0.1.3 records (T175, T176), 2026-11-18
+## R34 v0.1.3 and v0.1.4 records (T175, T176, T177), 2026-11-18 and 2026-11-22
 
 - Build: full run f015 on code `e2fa367a`, branch `v0.1.3`. Installer SHA-256 `08706d55…`, installed exe `9ed79992…`.
 - The full record is 007 research.md R7 "v0.1.3 records". The logs are in local scratch `f015-full`.

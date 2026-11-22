@@ -1479,7 +1479,7 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
   - Ten diagnostic reruns without the foreground gave 0 T135 fails in 10. In f016, the app had the foreground. So the reruns do not match f016.
   - A scratch DOM test shows a lost Space on the next Conflicted row. It is not proven to be the f016 cause.
   - 004 research.md R30 holds the T135 record and the mechanism.
-  - User decision of 2026-11-22: "Waive, fix in v0.1.5". 004 T179 holds the fix. 004 T180 holds a menu retry for the SC-014 Delete case.
+  - User decision of 2026-11-22: "Waive, fix in v0.1.5". 004 T179 holds the fix. 004 T180 holds the cause search for a menu fail of the SC-014 Delete case in a diagnostic rerun.
 
 #### Ticks
 

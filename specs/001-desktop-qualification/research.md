@@ -1424,8 +1424,9 @@ T422 packaged result (2026-11-21, reference host): the fix removes the double sc
 - Control, red: the released v0.1.3 (installed exe sha256 `9ed79992f96240b6e6dd5b530e251017b5661090fdab7168eafebdbd12ec5d49`) has no rasterization call. The case printed `RECORD T422: … dpr=2.8125 inner=569x356 --text-scale=2.25`. The assertion expected 1.25 and received 2.8125.
 - Fix, green: the T422 package (commit `019bfbbc`, installer sha256 `E3F3A6D6C27B708F8E83A222D42007B8C2F884A9EE24A4BE45A5FAAA21CAEF67`, exe sha256 `CF553E58A319032C46BFC1305F7D86156D37AF51573C04FF3D8F793736B118EF`) printed `dpr=1.25 inner=1280x800 --text-scale=2.25`. The case gave 1 pass and 0 fail. The ORIGIN lines point into the T422 worktree.
 - This settles an open T422 question. With detection off, `devicePixelRatio` equals the window DPI / 96 exactly (225% text, 120 DPI).
-- Unverified: the 100% case and its ×2 control, a live Text size change, a display-scale change, and a second monitor (T157). Nobody ran them.
+- Unverified: a live Text size change, a display-scale change, and a second monitor (T157). Nobody ran them. The 100% case and its ×2 control ran on 2026-11-22 (records below).
 - Evidence: local scratch v014-t422/run.
+- Build of the 225% green record: `019bfbbc`. `git --no-optional-locks diff --stat 019bfbbc 26c75a01 -- src-tauri/src/lib.rs src-tauri/src/webview.rs tests/windows/text-scale-packaged.test.ts` prints nothing. So the fix and the test are equal in the v0.1.4 candidate.
 
 T422 result in the v0.1.4 full run f016 (2026-11-22, reference host): the 100% case is green.
 
@@ -1433,7 +1434,18 @@ T422 result in the v0.1.4 full run f016 (2026-11-22, reference host): the 100% c
 - `s5-text-scale-packaged`: 1 pass, 0 fail.
 - The case printed `RECORD T422: os=10.0.26300 webview2=Edg/157.0.4341.60 textSize=100% dpi=120 dpr=1.25 inner=1280x800 --text-scale=1`.
 - At Text size 100%, this run is the regression guard. The 225% red and green record is above.
-- Still unverified: the ×2 control of the 100% case, a live Text size change, a display-scale change, and a second monitor (T157).
+
+T422 ×2 control at Text size 100% (2026-11-22, reference host): the control is red, and the restore is green.
+
+- Build: a mutation copy of `a404e514`. Its product code equals `26c75a01`. Build identity `a404e514…-dirty`.
+- Mutation: both `webview::rasterize` calls in `src-tauri/src/lib.rs` pass twice the scale. One call is in the `ScaleFactorChanged` handler (about :184). The other is in `start` (about :287).
+- Control package: installer SHA-256 `983b56fe994f9ab0cc66785e50229bbd4f14b269167c7cd7107d05f5d00b9ec6`, installed exe `fc5ab8a4f9a7d2c31570019641f51da3b261231eb45d111bf518c8ba3aad4ce7`.
+- Control, red: `RECORD T422: … textSize=100% dpi=120 dpr=2.5 inner=640x400 --text-scale=1`. The assertion at test line 114 gave `Expected: 1.25 Received: 2.5`. Result: 0 pass, 1 fail.
+- Restore: the f016 installer `7d788ec1…` was installed again. The installed exe was `0c201258…`.
+- Restore, green: `dpr=1.25 inner=1280x800 --text-scale=1`. Result: 1 pass, 0 fail.
+- Not run alone: the `ScaleFactorChanged` call. No scale change occurred during the run.
+- Still unverified: a live Text size change, a display-scale change, and a second monitor (T157).
+- Evidence: local scratch v014-t422-control.
 
 Sources: [Text scaling](https://learn.microsoft.com/windows/apps/develop/input/text-scaling), [Accessible text requirements](https://learn.microsoft.com/windows/apps/design/accessibility/accessible-text-requirements#text-font-size-and-scale), [UISettings.TextScaleFactor](https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uisettings.textscalefactor), [ICoreWebView2Controller3](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller3), [ShouldDetectMonitorScaleChanges](https://learn.microsoft.com/dotnet/api/microsoft.web.webview2.core.corewebview2controller.shoulddetectmonitorscalechanges), [wry webview2 module](https://github.com/tauri-apps/wry/blob/wry-v0.57.1/src/webview2/mod.rs), [Edge 138 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/138#web-platform-features), [Edge 145 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/145#web-apis), [CSS Fonts 5 text-scale meta](https://drafts.csswg.org/css-fonts-5/#text-scale-meta), [preferred-text-scale explainer](https://github.com/w3c/csswg-drafts/blob/main/css-env-1/explainers/env-preferred-text-scale.md#windows-11). Document review and a source scan only; no WebView2 run.
 
@@ -2513,6 +2525,7 @@ Fixes: T389.
 
 - 47 steps: 45 green, 2 red, 0 invalid. Every `ORIGIN` line named the checkout under test (`bad` count 0 in each step).
 - T422: `s5-text-scale-packaged` gave 1 pass, 0 fail at Text size 100%. R7 "Windows text size" holds the RECORD line.
+- T422 ×2 control, 2026-11-22: red, and the restored f016 package is green. R7 "Windows text size" holds the record.
 - T422 (ticked, 2026-11-22): the 225% red and green record and the f016 100% guard hold the fix. Commit de8a2cd6 holds the test, and 019bfbbc holds the fix.
 - Two `tests/windows` steps of f016 were red: `s5-spelling-perf` and `s5-workbench-packaged`. The user decisions of 2026-11-22 accept f016 (007 R7).
 - The tick commit changes only `specs/` and `CHANGELOG.md`. So the tick tree equals `26c75a01` in `src src-tauri tests scripts package.json bun.lock`.

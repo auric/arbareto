@@ -835,6 +835,20 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - Open: a WSL stop ends the `wsl.exe` process of the walk. T088 did not check in a distro when the Linux reader ends.
 - User decision 2026-11-21: "Accept no fix". The known limit stays in spec Assumptions.
 - Before the T088 tick: check in a distro when the Linux reader ends after `wsl.exe` is killed. Run the cargo test `a_canceled_walk_ends_without_a_reply`.
+- Result, 2026-11-22, for the two open items above:
+  - The new cargo test `the_real_stop_of_a_file_facts_walk_ends_its_perl_reader` is in `src-tauri/src/wsl.rs` (commit 0faec152). It is next to `the_real_stop_of_one_wsl_exe_ends_only_its_scope`. It runs only on the reference distro Ubuntu-26.04.
+  - Method: a `stream` digest walk holds the Perl reader on a 64 GiB sparse file. The walk asks for `digest` and `stream`, as revert reads do.
+  - The test sets the stop Event. The walk collector then ends `wsl.exe` with `TerminateProcess`.
+  - The test uses the test host `JobHost::run_walk`. It and the product `OperationHost::run_walk` both call `start_and_collect` and `collect`.
+  - The test decides from process records only. It checks the cgroup directory of the unit (`test -d /sys/fs/cgroup<cg>`). It checks `/proc/<perl pid>/stat` and its start time (field 22). It does not use `list-units`.
+  - Main case: the cgroup and the Perl process were gone at 0 s, 1 s, and 5 s after the stop. The close budget is 5 s.
+  - In-test control: `systemctl` is `/bin/true`, so the trap ends nothing. The cgroup and Perl, with the same start time, were alive at 0, 1, and 5 s. So the file holds the reader long enough.
+  - Control mutation: the wrapper line `trap 'end; exit 129' HUP` became `trap 'exit 129' HUP`. `src/contracts/wsl-process.json` holds the line, and `include_str!` embeds it. The main case then failed at the 5 s assertion, and Perl stayed alive. The run then restored the line.
+  - The cargo test `a_canceled_walk_ends_without_a_reply` passed on the candidate.
+  - No scope, process, or fixture folder remained after the runs.
+  - So 001 contract §11 holds for `fileFacts` walks: a stop ends the `wsl.exe` of the call, and the wrapper trap ends its scope (`operations.md:1552`, `:1593`).
+  - The known limit in spec Assumptions stays as decided: the service does not wait for the walk end. On the reference distro, the reader ends within the close budget. Other distros are not checked.
+  - Not shown: the WSL-internal source of the `SIGHUP`. Only repo probe P1 and T392 show it. DeepWiki found no WSL code for it.
 
 ### T089 first-run retained budget, 2026-11-21
 

@@ -361,7 +361,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - Revert all unstaged changes sits in a menu of the Changes header, and it has no key. Git Extensions offers it in the commit dialog without a default key. This is a reviewer default.
 - The confirmation shows counts and paths, not the reverted lines. The selection stays visible in the diff behind the modal. This is a reviewer default.
 - Known limit: over 12 back-to-back runs at the 004 multi-file limit, the idle process-tree memory before each run rose by about 43 MiB per cycle (841 to 1,317 MiB). Each cycle is a run, an external restore, and F5. The cause is open. T072 finds it after v0.1.0 (research R15 "Batch 4 budget decisions").
-- Known limit: the service does not wait for the shell walk of a stopped `fileFacts` frame (001 contract §6 "Walks"). On Windows, the walk reads with full sharing, writes nothing, and sends no fact. So the next write or read goes on. User decision 2026-11-21 (research R15 "T088 canceled `fileFacts` walk").
+- Known limit: the service does not wait for the shell walk of a stopped `fileFacts` frame (001 contract §6 "Walks"). On Windows, the walk reads with full sharing, writes nothing, and sends no fact. So the next write or read goes on. On WSL, the stop ends the Linux reader within the 5 s close budget (reference distro Ubuntu-26.04). User decision 2026-11-21 (research R15 "T088 canceled `fileFacts` walk").
 - The modal and result texts are proposals. The plan records them, as every visible text comes from plan.md.
 - The fileReplace step of feature 005 grows to working files. Today it covers only `.gitignore` and `info/exclude` up to 1 MiB. For a whole file, it copies from Git's temporary file instead of a frame.
 

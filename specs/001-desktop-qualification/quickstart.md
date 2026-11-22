@@ -215,7 +215,7 @@ Verify:
 - F10, and Alt pressed alone, focus the first header menu. Arrow keys move, and Escape returns focus. AltGraph text entry never moves focus.
 - F6 and Shift+F6 reach every visible section in the plan.md order, in each window profile.
 - The first loaded frame after opening a repository shows the view with rows, graph, the Working directory and Index rows, counts, and no selected row. Selecting the Working directory row then shows the commit panel in the No selection state. Background polls show no Refreshing marker.
-- Set the Windows Text size to 150% and to 225%. Interface text grows by that factor without clipping. Every essential action stays reachable, by scrolling in the constrained profile where needed.
+- Set the Windows Text size to 150% and to 225%. Interface text grows by that factor without clipping. Exception: WebView2 built-in menus and scroll bars keep the display scale (known limit, spec Assumptions). Every essential action stays reachable, by scrolling in the constrained profile where needed.
 - At 720×480 and 225% text, the header wraps into rows. The path and the branch name show a middle ellipsis, and the repository menu shows both in full.
 - The notice band is one F6 stop, and F6 focuses its "Notices" heading. F6 skips a status region without content. When a focused band row disappears, focus moves to the band heading or to the next stop. The status area opens and collapses by keyboard and pointer, and Escape returns focus to its toggle.
 - A band row, the status area, or a stall notice never changes the layout profile. Only the window size, the text size, and the density choose it (`plan.md` "Height budget").

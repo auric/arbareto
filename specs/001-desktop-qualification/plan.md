@@ -415,14 +415,14 @@ Stored pane bounds (T364). Webview storage keeps six pane sizes in DIPs. The bou
 
 After DPI, density, or font changes, remeasure virtual rows and restore a valid scroll anchor. Do not remount the editor or replace its text selection. Reflow must never activate a hunk or commit action.
 
-Windows text size. Interface text follows the Windows Text size setting, from 100% to 225% (FR-035, research R7 "Windows text size"). Windows scales only text there, not the whole interface, so Arbareto scales only text too:
+Windows text size. Interface text follows the Windows Text size setting, from 100% to 225% (FR-035, research R7 "Windows text size"). Known limit: WebView2 built-in menus and scroll bars use the display scale only (user decision 2026-11-21, spec Assumptions, research R7). Windows scales only text there, not the whole interface, so Arbareto scales only text too:
 
 - The shell reads `UISettings.TextScaleFactor` when it creates the window and at each `TextScaleFactorChanged` event. The value lies from 1.00 to 2.25.
 - The `currentSession` result carries the factor, and each change reaches the page as a `text-scale` event (contract §2).
 - The page sets the CSS variable `--text-scale` to the factor. Every UI, code, and message font size and line height multiplies by it.
 - Every height that holds text grows by (factor − 1) × its line height. This covers rows, buttons, pane headings, bars, the badges, and the tray minimum. At factor 1, every metric equals the density table.
 - Lane spacing, node radius, splitter hit areas, focus outlines, and spacing keep their DIP values.
-- The shell leaves the WebView2 rasterization scale at the monitor scale, as pinned wry does. So the factor never scales the page twice.
+- The shell sets `ShouldDetectMonitorScaleChanges` to false. It sets `RasterizationScale` to the window scale factor when it creates the window and at each `ScaleFactorChanged` window event. Without this, WebView2 adds the text factor to the rasterization scale (research R7). So the factor never scales the page twice.
 - Profile thresholds stay in DIPs. Larger text makes section minima larger, so the constrained profile applies earlier, as the rule above permits. At 225% text, the 720×480 native minimum works in the constrained profile.
 - Text never clips. Long single-line text follows "Long text" above and keeps its full accessible name. A text-size change is a font change for the remeasurement rule above.
 

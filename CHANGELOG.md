@@ -2,6 +2,18 @@
 
 Each section lists the changes that a user of Arbareto sees in that release.
 
+## [0.1.4]
+
+A preview release for Windows 11 x64.
+
+### Fixed
+
+- At a Windows Text size above 100%, text no longer shows too large. The window shows the full layout again. Before, Arbareto applied the Text size twice.
+
+### Changed
+
+- Before the branch list loads, a branch key or a right-click on a branch shows only "The branches are still loading." Arbareto loads the branches again only after a failed read. That input then shows "Arbareto cannot read the branches: <code>." On the current branch, a right-click still opens "Show only this branch's history".
+
 ## [0.1.3] - 2026-11-21
 
 A preview release for Windows 11 x64.

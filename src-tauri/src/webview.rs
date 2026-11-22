@@ -11,7 +11,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     CompareBrowserVersions, GetAvailableCoreWebView2BrowserVersionString, ICoreWebView2,
     ICoreWebView2_11, ICoreWebView2AcceleratorKeyPressedEventArgs,
     ICoreWebView2AcceleratorKeyPressedEventArgs2, ICoreWebView2ContextMenuRequestedEventArgs,
-    ICoreWebView2Controller, ICoreWebView2Settings3,
+    ICoreWebView2Controller, ICoreWebView2Controller3, ICoreWebView2Settings3,
 };
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, ContextMenuRequestedEventHandler, ProcessFailedEventHandler,
@@ -185,6 +185,17 @@ pub fn attach(
             .Settings()?
             .cast::<ICoreWebView2Settings3>()?
             .SetAreBrowserAcceleratorKeysEnabled(false)
+    }
+}
+
+/// Sets the rasterization scale to the window scale factor without the Windows text factor (plan.md "Windows text size", T422).
+/// Monitor detection must stay off, or WebView2 replaces the scale (research.md R7).
+pub fn rasterize(controller: &ICoreWebView2Controller, scale: f64) -> windows::core::Result<()> {
+    let controller = controller.cast::<ICoreWebView2Controller3>()?;
+    // SAFETY: the caller runs on the UI thread of the webview, and `controller` is live.
+    unsafe {
+        controller.SetShouldDetectMonitorScaleChanges(false)?;
+        controller.SetRasterizationScale(scale)
     }
 }
 

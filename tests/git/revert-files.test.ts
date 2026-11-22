@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Response, RunWorkbenchResult } from "../../src/contracts/envelope";
-import { MULTI_FILE_ACTION_FILES, MULTI_FILE_PROOF_CONCURRENCY, MUTATION_RAW_INDEX_BYTES, PIPE_FRAME_BYTES, REVERT_PROGRESS_EVENTS_PER_SECOND } from "../../src/contracts/limits";
+import { FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_PROOF_CONCURRENCY, MUTATION_RAW_INDEX_BYTES, PIPE_FRAME_BYTES, REVERT_PROGRESS_EVENTS_PER_SECOND } from "../../src/contracts/limits";
 import { inTreeOrder } from "../../src/frontend/changes/revert-text";
 import { indexListArgs } from "../../src/git-service/commands";
 import { RunnerRefusal } from "../../src/git-service/git-runner";
@@ -918,6 +918,53 @@ describe("revert files: the reconcile reads the digests in parallel frames and t
     const fallback = { first: indexListArgs(), batches: true, paths: LONG.toSorted() };
     expect({ state: done.state, counts: done.result?.counts, review: listed(review), reconcile: listed(reconcile) }).toEqual({ state: "canceled", counts: { ...NONE, "not-started": LONG.length }, review: fallback, reconcile: fallback });
   }, LONG_TIMEOUT_MS);
+
+  // T087: contracts Δ3 names the whole-index read for the review and the reconcile only. 64 paths of about 590 units need two command lines.
+  caseTest("T087", "a D5a batch of 64 long paths reads its index entries in batched ls-files reads; the review and the reconcile each take one whole-index read", SHELL, () =>
+    withService({ name: "t087-d5a" }, async (service) => {
+      const paths = Array.from({ length: FILE_FACT_ENTRIES }, (_, k) => `t087-${"a".repeat(240)}/${"b".repeat(240)}/${String(k).padStart(2, "0")}-${"c".repeat(100)}.txt`);
+      const repo = build("t087-d5a", null, (repo) => {
+        g(repo, ["config", "core.longpaths", "true"]);
+        for (const p of paths) write(repo, p, `${p}\n`);
+        g(repo, ["add", "-A"]);
+        g(repo, ["commit", "-q", "--no-verify", "-m", "base"]);
+        for (const p of paths) write(repo, p, `${p} changed\n`);
+      });
+      // The paths do not fit one command line, so the oracle restores every path. Each path is a target.
+      const copy = copyRepo(repo, `t087-oracle-${++builds}`);
+      g(copy, ["restore", "--staged", "--worktree", "--source=HEAD", "--", "."]);
+      const oracle = { index: indexOf(copy), files: workingFileDigests(copy) };
+      const { r, read } = await open(service, repo);
+      let at = "review";
+      const listings: { at: string; args: readonly string[] }[] = [];
+      const release = service.runner.holdStart((call) => {
+        if (call.arguments.includes("ls-files") && call.arguments.includes("--stage")) listings.push({ at: reconciling(service) ? "reconcile" : at, args: call.arguments });
+        return false;
+      });
+      let done: ServiceResponse<RevertRun>;
+      try {
+        const reviewed = await reviewOk(service, r, read, paths.map((p) => idOf(read, p, "unstaged")));
+        at = "run";
+        done = await run(service, r, reviewed.workbenchToken);
+      } finally {
+        release();
+      }
+      const of = (window: string) => listings.filter((l) => l.at === window).map((l) => l.args);
+      const batched = of("run").map((args) => (Bun.deepEquals(args, indexListArgs()) ? "whole" : args.slice(args.indexOf("--") + 1).length));
+      // The run repeats the review reads (one whole-index read). Then D5a steps 1 and 3 each read the batch in two command lines.
+      const [first, ...d5a] = batched;
+      const split = first === "whole" && d5a.length === 4 && d5a.every((n) => typeof n === "number" && n < FILE_FACT_ENTRIES) && (d5a[0] as number) + (d5a[1] as number) === FILE_FACT_ENTRIES;
+      expect({ ...outcome(done), counts: done.result?.counts, review: of("review"), reconcile: of("reconcile"), run: split ? "batched" : batched }).toEqual({
+        ...SUCCEEDED,
+        counts: { ...NONE, reverted: FILE_FACT_ENTRIES },
+        review: [indexListArgs()],
+        reconcile: [indexListArgs()],
+        run: "batched",
+      });
+      expect({ index: indexOf(repo), files: workingFileDigests(repo) }).toEqual(oracle);
+    }),
+    LONG_TIMEOUT_MS,
+  );
 });
 
 describe("revert reviews always answer, and their refusal values fit the result schema (defects of batch 2)", () => {

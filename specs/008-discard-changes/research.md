@@ -779,7 +779,8 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - So the large CDP buffers keep the IPC reply bodies in the renderer and inflate its memory.
 - Arm B covered only the limit case. The other five cases of the file ran only with the old buffers.
 - The harness keeps 512 MiB and 256 MiB in v0.1.3. The SC-007 memory budgets come from runs with these buffer sizes.
-- A switch to 32 MiB and 16 MiB needs a calibration run of the SC-007 memory budgets first (target v0.1.4).
+- A switch to 32 MiB and 16 MiB needs a calibration run of the SC-007 memory budgets first (target v0.1.5).
+- T089 calibrated only the first-run retained budget. Moved to v0.1.5 at the v0.1.4 release, 2026-11-22.
 
 ### v0.1.3 records (T083, T084, T085), 2026-11-18
 
@@ -813,3 +814,103 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
   - LOW 3: `envelope.ts` and `revert.ts` each hold their own constant for the 20-file cap (T086).
   - LOW 4: the whole-index read of `indexEntriesOf` also serves the D5a batch reads (T087).
   - Suspicion: a canceled `fileFacts` frame may not wait for the shell walk of that frame (T088).
+
+### T088 canceled `fileFacts` walk, 2026-11-21
+
+- Result: the suspicion is true. The service ends a canceled `fileFacts` call before the shell walk of that frame ends.
+- 001 contract §6 "Walks" defines this behavior. The service does not wait for the shell after `cancel`, and no reply follows. The "Limit" bullet there covers an I/O that ignores the cancel.
+- Service: on an abort, `ask` in `src/git-service/native-runner.ts` resolves `canceled` and then sends `cancel`. It drops a later reply with that `callId`.
+- Test: `tests/contracts/native-runner.test.ts`, "an abort sends one cancel with the walk callId and ends the call at once, and a later reply is dropped". The "native runner walks" group gave 6 pass, 0 fail. Its `ORIGIN` lines named the checkout under test.
+- Control: without the immediate resolve in `ask`, the test timed out: 0 pass, 1 fail.
+- Shell: `cancel` sends `WalkEvent::Stop` (`src-tauri/src/process_requests.rs`). For a `Reply::Walk`, the watchdog sends no reply. It sets the stop flag and calls `CancelSynchronousIo` every 10 ms for at most 5 s (`cancel_io`, `CLOSE_WAIT`).
+- The walk checks the flag before each open, query, and 1 MiB read chunk (`src-tauri/src/file_facts.rs`, `check` and `pour`). So the walk ends after its current I/O.
+- The cargo test `a_canceled_walk_ends_without_a_reply` covers the shell stop. T088 did not run it.
+- The shell double `tests/git/bun-runner.ts` ends a held walk at the abort. It does not model a walk that outlives its call.
+- Which frames a stop reaches in `revert.ts`: the review reads use `ctx`, so a Cancel stops them. The review then ends, and no write follows.
+- The run reads use `q`, whose signal never aborts (`WorkbenchRun` in `workbench-review.ts`). A Cancel during the writes stops no `fileFacts` frame.
+- Only the fresh digest read of the reconcile has sibling frames in flight (up to `MULTI_FILE_PROOF_CONCURRENCY`). The first stop or failure of one frame stops its siblings. The outcome is then unknown, and no write follows.
+- Windows effect: each open of the walk shares read, write, and delete access. The walk asks only for read rights. It writes nothing, because `pour` gets no `out` handle.
+- Each production open in `src-tauri/src/file_replace.rs` shares read access. So a later write, rename, or `tempRemove` open stays compatible with a stopped walk that still reads.
+- A stopped walk sends no fact. So no stale fact enters an outcome.
+- Decision (reviewer default, T088): no fix. A fix needs a stop reply in 001 contract §6, and each stop then waits for the walk end. The behavior stays as a known limit in spec Assumptions. The user can still choose a fix.
+- Open: a WSL stop ends the `wsl.exe` process of the walk. T088 did not check in a distro when the Linux reader ends.
+- User decision 2026-11-21: "Accept no fix". The known limit stays in spec Assumptions.
+- Before the T088 tick: check in a distro when the Linux reader ends after `wsl.exe` is killed. Run the cargo test `a_canceled_walk_ends_without_a_reply`.
+- Result, 2026-11-22, for the two open items above:
+  - The new cargo test `the_real_stop_of_a_file_facts_walk_ends_its_perl_reader` is in `src-tauri/src/wsl.rs` (commit 0faec152). It is next to `the_real_stop_of_one_wsl_exe_ends_only_its_scope`. It runs only on the reference distro Ubuntu-26.04.
+  - Method: a `stream` digest walk holds the Perl reader on a 64 GiB sparse file. The walk asks for `digest` and `stream`, as revert reads do.
+  - The test sets the stop Event. The walk collector then ends `wsl.exe` with `TerminateProcess`.
+  - The test uses the test host `JobHost::run_walk`. It and the product `OperationHost::run_walk` both call `start_and_collect` and `collect`.
+  - The test decides from process records only. It checks the cgroup directory of the unit (`test -d /sys/fs/cgroup<cg>`). It checks `/proc/<perl pid>/stat` and its start time (field 22). It does not use `list-units`.
+  - Main case: the cgroup and the Perl process were gone at 0 s, 1 s, and 5 s after the stop. The close budget is 5 s.
+  - In-test control: `systemctl` is `/bin/true`, so the trap ends nothing. The cgroup and Perl, with the same start time, were alive at 0, 1, and 5 s. So the file holds the reader long enough.
+  - Control mutation: the wrapper line `trap 'end; exit 129' HUP` became `trap 'exit 129' HUP`. `src/contracts/wsl-process.json` holds the line, and `include_str!` embeds it. The main case then failed at the 5 s assertion, and Perl stayed alive. The run then restored the line.
+  - The cargo test `a_canceled_walk_ends_without_a_reply` passed on the candidate.
+  - No scope, process, or fixture folder remained after the runs.
+  - So 001 contract §11 holds for `fileFacts` walks: a stop ends the `wsl.exe` of the call, and the wrapper trap ends its scope (`operations.md:1552`, `:1593`).
+  - The known limit in spec Assumptions stays as decided: the service does not wait for the walk end. On the reference distro, the reader ends within the close budget. Other distros are not checked.
+  - Not shown: the WSL-internal source of the `SIGHUP`. Only repo probe P1 and T392 show it. DeepWiki found no WSL code for it.
+  - Environment: the test ran on build 0faec152 on 2026-11-22, on Windows 10.0.26300.9974, x64. `wsl.exe --version` gave WSL 3.0.5.0 and kernel 6.18.58.1-1. `uname -r` in Ubuntu-26.04 gave `6.18.58.1-microsoft-standard-WSL2`.
+  - Later change, 2026-11-22: the test decides "gone" only from `test -d /proc/<pid>` exit 1. Exit 0 then needs a readable `stat`, and any other result panics.
+  - The changed test passed alone on 2026-11-22 on the version 0.1.4 candidate. Its trap mutation failed as required. The version before this change passed in the full parallel cargo run (673 passed, 0 failed, 16 ignored).
+
+### T089 first-run retained budget, 2026-11-21
+
+- Offline replay of the saved samples with the window rules of `tests/windows/revert-perf.test.ts`. The replay gives the recorded 98.2 MiB (f015) and 30.3 MiB (R3) exactly.
+- Sample files (local scratch): f015 `t048-limit-2026-11-17T18-55-45-333Z.jsonl`, R3 `t048-limit-2026-11-18T10-12-45-159Z.jsonl`, v013-final control `t048-limit-2026-11-17T09-44-10-649Z.jsonl`. Replay output: `t089-replay2.txt`.
+- A run 0 baseline window that ends before the review opens raises the retained growth. f015: 98.2 to 122.0 MiB. R3: 30.3 to 65.0 MiB. v013-final 5 s control run: 51.0 to 105.7 MiB.
+- With that window, the peak growth also rises by about 24 to 55 MiB.
+- The replay tried each 5 s window that ends between 5 s after the sampler start and the confirmation press. The lowest f015 retained growth is 98.2 MiB, at today's window end. No baseline window makes f015 pass.
+- No cause is on record. At 30 s after the run end, the renderer holds 185.8 MiB in f015 and 148.7 MiB in R3.
+- The service holds +30.3 MiB in f015 and +5.0 MiB in R3. The GPU process holds about +37 to 41 MiB in all three runs.
+- Why the runs differ is a hypothesis only.
+- User decision 2026-11-21: "Calibrate a first-run budget". The baseline window does not change. The 2026-11-03 method (medians of 5 s windows) stays.
+- Calibration: 5 packaged first runs of the 10,000-file case on the v0.1.4 candidate.
+- Rule: the run 0 retained budget is the highest run 0 retained growth of those runs plus 64 MiB, rounded up to whole MiB. This is the SC-002 rule (005 research.md "SC-002 calibration", 007 research.md).
+- Record for each run: the retained growth and its split over the renderer, the service, and the GPU process.
+- The calibrated value replaces only the run 0 retained budget (`LIMIT_FIRST_RETAINED_BYTES`, today 80 MiB). The other SC-007 budgets do not change.
+- Control: a run 0 retained budget of 1 MiB must fail on one of the runs (`first: false`).
+- Open: the calibration runs. The run 0 retained budget stays pending until this record holds them.
+- Result, 2026-11-22: the run 0 retained budget is 164 MiB. The calibration runs below close the open item.
+- Build: the installed v0.1.4 candidate from `v0.1.4-rc` at `8234671a`. The exe SHA-256 `16B34481…` matched before and after every run.
+- Every `ORIGIN` line names the candidate worktree. Each run started a fresh app with its own profile folder.
+- Filter: only the case "at the 004 multi-file limit of 10,000 files". The 2026-11-03 method (medians of 5 s windows) did not change.
+- The runs kept `ARBARETO_WSL_DISTRO=Ubuntu-26.04` from the R3 driver. The shared setup of the file touches a WSL fixture.
+- Split: the 5 s window median at the retained point (30 s after the run end) minus the window median at the confirmation. Unit: MiB.
+
+| Run | Start | Minutes | Exit | Free GB | Run 0 retained | Run 0 peak | Renderer / service / GPU | Runs 1 to 10 retained max / peak max |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 2026-11-21 21:58 | 61.4 | 1 | 17.31 | 85.8 | 270.3 | +20.4 / +25.0 / +34.7 | 10.0 / 191.3 |
+| 2 | 2026-11-21 23:00 | 61.0 | 1 | 14.47 | 91.3 | 274.6 | +18.6 / +34.9 / +36.6 | -17.5 / 154.2 |
+| 3 | 2026-11-22 00:01 | 62.1 | 1 | 14.43 | 99.1 | 291.9 | +21.5 / +30.6 / +41.1 | -13.9 / 189.0 |
+| 4 | 2026-11-22 01:03 | 61.4 | 1 | 14.50 | 96.4 | 274.1 | +23.6 / +32.5 / +36.8 | -18.5 / 156.4 |
+| 5 | 2026-11-22 02:05 | 61.0 | 0 | 14.39 | 34.5 | 256.3 | -16.9 / +12.2 / +37.2 | -0.9 / 154.4 |
+
+- Other process kinds stay within -0.4 to +3.6 MiB. A replay of the samples gives the same totals as the test log lines.
+- Runs 1 to 4 failed only the check `first` (80 MiB budget). All other checks passed in all 5 runs.
+- Rule: 99.1 + 64 = 163.1 MiB, rounded up to 164 MiB. `LIMIT_FIRST_RETAINED_BYTES` is now 164 MiB.
+- Control: the in-test check `first` failed at 80 MiB in runs 1 to 4. A 1 MiB budget fails all 5 runs by the logged values. No separate 1 MiB packaged run was made.
+- Comparison: on v0.1.3 code, before the T087 index-read change, f015 run 0 kept 98.2 MiB and R3 kept 30.3 MiB. The f015 service term was about +30.3 MiB.
+- The candidate shows the same two levels: 85.8 to 99.1 MiB, and 34.5 MiB. The service term (+12.2 to +34.9 MiB) is at or below the f015 level.
+- So the data shows no rise from T087. The GPU process grows by +34.7 to +41.1 MiB in every run. Run 5 is low because the renderer fell by 16.9 MiB.
+- Caveat: 5 samples with a wide spread may not show the true maximum. The 64 MiB margin covers this. The candidate full run checks the budget again.
+- Logs and samples: local scratch.
+
+### v0.1.4 records (T086 to T089), 2026-11-22
+
+- Build: full run f016 on code `26c75a01`, branch `v0.1.4-rc`. Installer SHA-256 `7d788ec1…`, installed exe `0c201258…`.
+- The full record is 007 research.md R7 "v0.1.4 records". The logs are in local scratch `f016-full`.
+- 47 steps: 45 green, 2 red, 0 invalid. Every `ORIGIN` line named the checkout under test (`bad` count 0 in each step).
+- `s4-test-all` was green: 1,050 pass, 0 fail by the driver count. This record holds no per-file counts.
+- `s0e-cargo-test`: 673 passed, 0 failed, 16 ignored.
+- It includes `wsl::tests::the_real_stop_of_a_file_facts_walk_ends_its_perl_reader ... ok` and `process_requests::tests::a_canceled_walk_ends_without_a_reply ... ok`.
+- The step runs without `--nocapture`. So the T088 OBSERVATION lines do not print there. The record states "passed" only.
+- `s5-revert-perf`: 6 pass, 0 fail.
+  - `OBSERVATION T048: SC-007 limit growth, first run: runs [0], peak max 288.9 MiB, budget 400.0 MiB; retained max 85.3 MiB, budget 164.0 MiB`
+  - `OBSERVATION T048: SC-007 limit growth, later runs: runs [1..10], peak max 116.6 MiB, budget 320.0 MiB; retained max -31.7 MiB, budget 32.0 MiB`
+- T086: commit 8eb9c773 holds the one constant. T087: commit d683b603 holds the change and the `revert-files.test.ts` case.
+- T088: the two cargo tests above passed in f016. T089: run 0 kept 85.3 MiB against the 164 MiB budget.
+- T086 to T089 (ticked, 2026-11-22): f016 is the green Windows run of the 008 tick rule, with the waivers below. T088 and T089 name a candidate full run.
+- The tick commit changes only `specs/` and `CHANGELOG.md`. So the tick tree equals `26c75a01` in `src src-tauri tests scripts package.json bun.lock`.
+- The green `test:windows` clause holds only through the user decisions of 2026-11-22 (007 R7).
+- The red steps are `s5-spelling-perf` and `s5-workbench-packaged`.

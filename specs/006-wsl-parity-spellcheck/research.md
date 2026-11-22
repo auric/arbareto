@@ -685,6 +685,15 @@ Independent batch 3 review, reviewer agent, read-only. Verdict: passes after fix
 - A gate run fails when a sample of its window has no WebView2 private bytes or another root PID. A run without a load skips the menu step, records its values, and fails step 3.
 - The N4 Persian line is its own case. Without `fa`, that case skips with its reason.
 - Open point: each gate run records `maxGapMs`, the largest gap between two samples. Plan.md D3 fixes 250 ms samples. Closed: plan.md D3 bounds the gap at 1,500 ms (user decision 2026-11-10, T064).
+- v0.1.4 full run f016, 2026-11-22, code `26c75a01`: one gate run broke this bound. 007 research.md R7 "v0.1.4 records" holds the run.
+  - `s5-spelling-perf`: 88 pass, 1 fail, 1 skip. The Q25 gate case of tk failed in run 3.
+  - Message: `the tk run 3 sample gap is 1704 ms, above the 1500 ms bound` (validity check, `tests/windows/spelling-perf.test.ts:539`).
+  - tk runs 1 and 2 gave gaps of 296 ms and 303 ms.
+  - Across f011 to f016, 1,529 gate records have a largest gap of 380 ms. The failed tk run 3 wrote no record.
+  - Rerun of 2026-11-22, only the tk gate (`-t "packaged gate tk:"`): 1 pass, 89 filtered out.
+  - Rerun loadMs: 216.44, 216.49, and 164.17. increaseBytes: 146661376, 144306176, and 141008896. maxGapMs: 289, 281, and 281.
+  - No cause is on record. The 1,500 ms bound and T064 do not change.
+  - User decision 2026-11-22: "Accept record + rerun".
 
 ### T041 first packaged run, 2026-10-26, Windows 11 10.0.26300, build 73a9eb7b, WebView2 Edg/155
 

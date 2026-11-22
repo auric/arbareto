@@ -1130,6 +1130,37 @@ describe("readSubmoduleWork WSL route through a stub runner (contract Δ3 \"WSL 
       expect(runsOf(stub.runs.slice(from))).toEqual([`a ${own.join(" ")}`, `b ${own.join(" ")}`]);
     }
   });
+
+  caseTest("T127", "an error that is not a Stop in one trust check ends the read, and no other trust check starts after it", [], async () => {
+    // Each target lists one system status program. Its origin is outside the roots, so each trust check starts with one identity request.
+    const config = "system\0file:/etc/gitconfig\0core.fsmonitor\n/usr/bin/false\0";
+    const paths = mPaths(SUBMODULE_WORK_PAGE);
+    const stub = workStub((run) => ({ out: framesOf(run, Object.fromEntries(paths.map((p) => [at(p), { config }]))) }));
+    let starts = 0;
+    const pending = new Set<Promise<unknown>>();
+    // The first request throws a TypeError. Each other request gives a malformed reply after a timer, so its target fails with a Stop.
+    (stub.runner as unknown as { identities: () => Promise<unknown[]> }).identities = () => {
+      if (starts++ === 0) return Promise.reject(new TypeError("stub identity error"));
+      const reply = new Promise<unknown[]>((resolve) => setTimeout(() => resolve([]), 0));
+      pending.add(reply);
+      return reply;
+    };
+    const reads = createSubmoduleReads({ runner: stub.runner, trust: STUB_TRUST, environment: {}, readDeadlineMs: READ_DEADLINE_MS });
+    const snapshot = { snapshotId: crypto.randomUUID(), indexEntries: paths.map(gitlinkOf), indexCut: undefined, completeness: { state: "complete" }, entries: [] };
+    const t = { operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace: STUB_WORKSPACE, installation: { selectedPath: null } };
+    const error = await reads.readSubmoduleWork(t as never, snapshot as never, new Set(), 0).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    // The workers outlive the rejected read. Wait until each started request settles and no new request starts. The pass count bounds the wait.
+    for (let pass = 0; pass <= SUBMODULE_WORK_PAGE && pending.size > 0; pass++) {
+      const now = [...pending];
+      await Promise.allSettled(now);
+      now.forEach((p) => pending.delete(p));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect({ error: error instanceof TypeError, pending: pending.size, starts, runs: runsOf(stub.runs) }).toEqual({ error: true, pending: 0, starts: SUBMODULE_WORK_PARALLEL, runs: [`a ${paths.join(" ")}`] });
+  });
 });
 
 // T115 analyze finding A1: a check 5 output above 64 KiB gives the WSL route state.

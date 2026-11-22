@@ -6326,6 +6326,229 @@ mod tests {
         );
     }
 
+    /// The `/bin/sh` script `script` with `arguments` in the reference distro, outside any scope.
+    fn distro_sh(reference: &Reference, script: &str, arguments: &[&str]) -> Option<Output> {
+        let mut command = list_command(false, &std::env::vars_os().collect::<Vec<_>>());
+        command.arguments = strings(&[
+            "--distribution",
+            reference.distro.as_str(),
+            "--cd",
+            "/",
+            "--exec",
+            "/bin/sh",
+            "-c",
+            script,
+            "sh",
+        ]);
+        command.arguments.extend(strings(arguments));
+        reference.host().run(&command)
+    }
+
+    /// The `test -d /proc/<pid>` exit, 0 or 1, and field 22 of `/proc/<pid>/stat` after exit 0. Any other result panics.
+    fn proc_stat(reference: &Reference, pid: &str) -> (u32, Option<String>) {
+        let dir = || match distro_sh(reference, "test -d \"/proc/$1\"", &[pid])
+            .expect("proc shell")
+            .exit_code
+        {
+            Some(code @ (0 | 1)) => code,
+            other => panic!("test -d /proc/{pid} exit {other:?}"),
+        };
+        if dir() == 1 {
+            return (1, None);
+        }
+        let out = distro_sh(reference, "cat \"/proc/$1/stat\"", &[pid]).expect("stat shell");
+        if out.exit_code != Some(0) {
+            // The process can end between the two reads. Only an absent directory means gone.
+            assert_eq!(dir(), 1, "cat /proc/{pid}/stat exit {:?}", out.exit_code);
+            return (1, None);
+        }
+        let text = String::from_utf8(out.stdout).expect("UTF-8");
+        // The command name in field 2 can hold `)` and spaces.
+        let (_, rest) = text.rsplit_once(')').expect("stat record");
+        let start = rest.split_whitespace().nth(19).expect("stat field 22");
+        (0, Some(start.to_string()))
+    }
+
+    /// The control group of `unit`, and the PID and start time of its only `/usr/bin/perl` process.
+    fn perl_of(
+        reference: &Reference,
+        systemctl: &str,
+        unit: &str,
+    ) -> Option<(String, String, String)> {
+        let script = "cg=$(\"$1\" --user show --property=ControlGroup --value -- \"$2\") || exit 3\n\
+            case $cg in /?*) ;; *) exit 4 ;; esac\n\
+            printf '%s\\0' \"$cg\"\n\
+            while read -r p; do\n\
+            t=$(head -z -n 1 \"/proc/$p/cmdline\" 2>/dev/null | tr -d '\\0')\n\
+            printf '%s\\0%s\\0' \"$p\" \"$t\"\n\
+            done < \"/sys/fs/cgroup$cg/cgroup.procs\"";
+        let out = distro_sh(reference, script, &[systemctl, unit])?;
+        if out.exit_code != Some(0) {
+            return None;
+        }
+        let text = String::from_utf8(out.stdout).ok()?;
+        let mut tokens = text.split_terminator('\0');
+        let cg = tokens.next()?.to_string();
+        let rest: Vec<&str> = tokens.collect();
+        let perls: Vec<&str> = rest
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|[_, program]| *program == PERL)
+            .map(|[pid, _]| *pid)
+            .collect();
+        let [pid] = perls[..] else {
+            return None;
+        };
+        let start = proc_stat(reference, pid).1?;
+        Some((cg, pid.to_string(), start))
+    }
+
+    /// T088: kills the scopes of the operation and removes the fixture root, also after a failed assertion.
+    struct T088Cleanup<'a> {
+        reference: &'a Reference,
+        systemctl: String,
+        operation: String,
+        root: String,
+        inst: &'a Installation,
+    }
+
+    impl Drop for T088Cleanup<'_> {
+        fn drop(&mut self) {
+            let kill = "\"$1\" --user kill --signal=SIGKILL -- \"arbareto-$2-*.scope\"";
+            let killed = distro_sh(self.reference, kill, &[&self.systemctl, &self.operation]);
+            println!(
+                "OBSERVATION T088 cleanup kill exit {:?}",
+                killed.map(|out| out.exit_code)
+            );
+            let left = units_left(self.reference, self.inst, &self.operation);
+            let removed = distro_sh(self.reference, "rm -rf -- \"$1\"", &[&self.root])
+                .map(|out| out.exit_code);
+            println!("OBSERVATION T088 cleanup units {left:?} rm exit {removed:?}");
+            if !std::thread::panicking() {
+                assert_eq!(left, "", "no scope of the operation remains");
+                assert_eq!(removed, Some(Some(0)), "the fixture root is removed");
+            }
+        }
+    }
+
+    /// Feature 008 T088, 001 contract §6 `stop`: the stop of a `fileFacts` walk ends its `wsl.exe`. The wrapper trap then ends the Perl reader.
+    /// A `stream` digest of a 64 GiB sparse file holds Perl. With `systemctl` as `/bin/true`, the trap ends nothing, and Perl runs on.
+    #[test]
+    fn the_real_stop_of_a_file_facts_walk_ends_its_perl_reader() {
+        println!("OBSERVATION T088 origin {}", env!("CARGO_MANIFEST_DIR"));
+        let Some(reference) = reference() else {
+            return;
+        };
+        if reference.distro != "Ubuntu-26.04" {
+            skip("ubuntu-26.04");
+            return;
+        }
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let pid = std::process::id();
+        let operation = format!("0f0f0f0f-0000-4000-8088-{pid:012x}");
+        let root = format!("/tmp/arbareto-t088-{pid}");
+        let _cleanup = T088Cleanup {
+            reference: &reference,
+            systemctl: inst.systemctl.clone(),
+            operation: operation.clone(),
+            root: root.clone(),
+            inst: &inst,
+        };
+        let made = distro_sh(
+            &reference,
+            "mkdir -p -- \"$1\" && truncate -s 64G -- \"$1/big\"",
+            &[&root],
+        )
+        .expect("fixture shell");
+        assert_eq!(made.exit_code, Some(0), "the fixture");
+        let roots = [root.clone(), format!("{root}/.git"), format!("{root}/.git")];
+        let list = entries(&[(0, &["big"][..])]);
+        // Revert reads with `digest` and `stream` (`src/git-service/revert.ts`).
+        let read = FactRead {
+            stream: true,
+            ..FactRead::default()
+        };
+        let stopped_walk = |installation: &Installation, n: u32, case: &str| {
+            let unit = unit_name(&operation, n).expect("unit");
+            let command = file_facts_command(
+                installation,
+                &unit,
+                true,
+                read,
+                &roots,
+                &list,
+                None,
+                &environment,
+            );
+            let event = walk_event();
+            let (found, ended) = std::thread::scope(|s| {
+                let walker = s.spawn(|| {
+                    reference.host().run_walk(
+                        &command,
+                        FACTS_OUTPUT_BYTES + 2,
+                        Duration::from_secs(120),
+                        HANDLE(event.as_raw_handle()),
+                    )
+                });
+                let mut found = None;
+                eventually(Duration::from_secs(10), || {
+                    found = perl_of(&reference, &inst.systemctl, &unit);
+                    found.is_some()
+                });
+                set(&event);
+                (found, walker.join().expect("walk thread"))
+            });
+            let joined = Instant::now();
+            let (cg, perl, start) = found
+                .unwrap_or_else(|| panic!("{case}: the Perl reader of {unit} runs within 10 s"));
+            println!(
+                "OBSERVATION T088 case={case} unit={unit} cgroup={cg} perl={perl} start={start}"
+            );
+            assert!(
+                ended.output.is_none() && !ended.deadline,
+                "{case}: the stop gives no output and no deadline"
+            );
+            [0, 1, 5]
+                .into_iter()
+                .map(|at| {
+                    let due = joined + Duration::from_secs(at);
+                    std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                    let exists = distro_sh(&reference, "test -d \"/sys/fs/cgroup$1\"", &[&cg])
+                        .expect("cgroup check")
+                        .exit_code;
+                    let (dir, now) = proc_stat(&reference, &perl);
+                    let alive = now.as_deref() == Some(start.as_str());
+                    let state = if alive { "alive" } else { "gone" };
+                    let exit = exists.map_or_else(|| "none".to_string(), |code| code.to_string());
+                    println!(
+                        "OBSERVATION T088 case={case} t={at} cgroup={exit} perl={state} dir={dir} start={now:?}"
+                    );
+                    (exists, alive)
+                })
+                .collect::<Vec<_>>()
+        };
+        let main = stopped_walk(&inst, 1, "main");
+        let inert = Installation {
+            systemctl: "/bin/true".into(),
+            ..inst.clone()
+        };
+        let control = stopped_walk(&inert, 2, "control");
+        assert_eq!(
+            main[2],
+            (Some(1), false),
+            "main: at 5 s the cgroup is absent and Perl is gone"
+        );
+        assert_eq!(
+            control[2],
+            (Some(0), true),
+            "control: at 5 s the cgroup exists and Perl runs"
+        );
+    }
+
     /// Feature 003 contract Δ11: mode `destination` runs `lstat` on the path, then reads one directory entry.
     #[test]
     fn the_real_destination_mode_reads_the_entry_then_one_child() {

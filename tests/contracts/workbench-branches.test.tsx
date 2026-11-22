@@ -1174,4 +1174,25 @@ describe("branch row inputs before the readBranches answer (T176, plan D15 Branc
     await pressDelete("login-form");
     expect(double.count("readBranches")).toBe(reads + 2);
   });
+
+  test("after a failed readBranches, presses during the pending retry start no second retry; after its answer, Delete starts the review", async () => {
+    const world = branchWorld(() => reviewed("delete-branch", { ref: "refs/heads/login-form", oid: oid(4), onlyHere: 0, reflogKeeps: false, heldBy: null, current: false }));
+    world.answers.readBranches = () => ({ requestId: fixtureId(0x533), state: "failed", code: "GIT_FAILED" });
+    const double = await mountWorkbench(workbench, world);
+    const reads = double.count("readBranches");
+    world.answers.readBranches = undefined;
+    await pressDelete("login-form");
+    expect(double.count("readBranches")).toBe(reads + 1);
+    expect(footerText()).toContain("Arbareto cannot read the branches: GIT_FAILED.");
+    await pressDelete("login-form");
+    await pressDelete("login-form");
+    expect(double.count("readBranches")).toBe(reads + 1);
+    expect(footerText()).toContain("The branches are still loading.");
+    expect(footerText()).not.toContain("Arbareto cannot read the branches");
+    expect(reviews(double)).toEqual([]);
+    world.answers.readBranches = () => succeeded({ entries: ENTRIES });
+    for (const call of double.calls.filter((c) => c.operation === "readBranches" && !c.done)) await answer(call, succeeded({ entries: ENTRIES }));
+    await pressDelete("login-form");
+    expect(reviews(double)).toEqual([{ action: "delete-branch", ref: "refs/heads/login-form" }]);
+  });
 });

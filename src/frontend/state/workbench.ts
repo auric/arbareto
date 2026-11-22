@@ -52,6 +52,8 @@ export function createWorkbench({ bridge, target, mutationEnded, refreshHistory 
     for (const listener of listeners) listener();
   };
   let branchSeq = 0;
+  // The sequence number of the newest `readBranches` that has its answer, also a dropped one.
+  let branchAnswered = 0;
   const shown = (key: string) => state.views[key] ?? { view: "history" as View, before: "history" as View };
 
   /** `page` names the Settings page to open on, such as "Editor and tools" (spec FR-093). Without it, Settings opens on its first page. */
@@ -66,6 +68,7 @@ export function createWorkbench({ bridge, target, mutationEnded, refreshHistory 
     if (t === null) return;
     const seq = ++branchSeq;
     void bridge.readBranches(t).then((response) => {
+      if (seq === branchSeq) branchAnswered = seq;
       const now = target();
       // Latest wins, and a response of an older generation or another repository is dropped.
       if (seq !== branchSeq || now === null || now.repositoryId !== t.repositoryId || now.repositoryGeneration !== t.repositoryGeneration) return;
@@ -90,6 +93,8 @@ export function createWorkbench({ bridge, target, mutationEnded, refreshHistory 
       if (shown(key).view === "settings") setView(key, shown(key).before);
     },
     readBranches,
+    /** True while the newest `readBranches` has no answer. */
+    branchesPending: () => branchAnswered !== branchSeq,
     /** Feature 005 data-model §9 "Transitions": Open submodule pushes, Open parent repository pops, and every other open clears. */
     setParents: (parents: readonly Parent[]) => set({ parents }),
     commitView: (key: string): CommitViewState => state.commit[key] ?? COMMIT_VIEW,

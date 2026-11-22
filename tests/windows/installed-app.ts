@@ -66,7 +66,7 @@ export const windowsTextSize = () =>
   powershellJson(`$v = (Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Accessibility' -Name TextScaleFactor -ErrorAction SilentlyContinue).TextScaleFactor
 ConvertTo-Json -Compress -InputObject $(if ($null -eq $v) { 100 } else { [int]$v })`) as number;
 
-const quoted =(text: string) => `'${text.replaceAll("'", "''")}'`;
+const quoted = (text: string) => `'${text.replaceAll("'", "''")}'`;
 
 // The HWND of each Explorer window that Shell.Application lists.
 export function explorerWindows(): number[] {

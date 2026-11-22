@@ -894,3 +894,22 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - So the data shows no rise from T087. The GPU process grows by +34.7 to +41.1 MiB in every run. Run 5 is low because the renderer fell by 16.9 MiB.
 - Caveat: 5 samples with a wide spread may not show the true maximum. The 64 MiB margin covers this. The candidate full run checks the budget again.
 - Logs and samples: local scratch.
+
+### v0.1.4 records (T086 to T089), 2026-11-22
+
+- Build: full run f016 on code `26c75a01`, branch `v0.1.4-rc`. Installer SHA-256 `7d788ec1…`, installed exe `0c201258…`.
+- The full record is 007 research.md R7 "v0.1.4 records". The logs are in local scratch `f016-full`.
+- 47 steps: 45 green, 2 red, 0 invalid. Every `ORIGIN` line named the checkout under test (`bad` count 0 in each step).
+- `s4-test-all` was green: 1,050 pass, 0 fail by the driver count. This record holds no per-file counts.
+- `s0e-cargo-test`: 673 passed, 0 failed, 16 ignored.
+- It includes `wsl::tests::the_real_stop_of_a_file_facts_walk_ends_its_perl_reader ... ok` and `process_requests::tests::a_canceled_walk_ends_without_a_reply ... ok`.
+- The step runs without `--nocapture`. So the T088 OBSERVATION lines do not print there. The record states "passed" only.
+- `s5-revert-perf`: 6 pass, 0 fail.
+  - `OBSERVATION T048: SC-007 limit growth, first run: runs [0], peak max 288.9 MiB, budget 400.0 MiB; retained max 85.3 MiB, budget 164.0 MiB`
+  - `OBSERVATION T048: SC-007 limit growth, later runs: runs [1..10], peak max 116.6 MiB, budget 320.0 MiB; retained max -31.7 MiB, budget 32.0 MiB`
+- T086: commit 8eb9c773 holds the one constant. T087: commit d683b603 holds the change and the `revert-files.test.ts` case.
+- T088: the two cargo tests above passed in f016. T089: run 0 kept 85.3 MiB against the 164 MiB budget.
+- T086 to T089 (ticked, 2026-11-22): f016 is the green Windows run of the 008 tick rule, with the waivers below. T088 and T089 name a candidate full run.
+- The tick commit changes only `specs/` and `CHANGELOG.md`. So the tick tree equals `26c75a01` in `src src-tauri tests scripts package.json bun.lock`.
+- The green `test:windows` clause holds only through the user decisions of 2026-11-22 (007 R7).
+- The red steps are `s5-spelling-perf` and `s5-workbench-packaged`.

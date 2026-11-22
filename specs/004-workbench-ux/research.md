@@ -742,6 +742,24 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 - Git Extensions shows a warning button for unresolved merge conflicts in the main window. It opens its resolve dialog with the conflicted files.
 - Arbareto takes the idea of one prominent entry point. It keeps the resolve view docked in the Commit view and opens no dialog.
 
+**T135 in the v0.1.4 full run f016 (2026-11-22)**
+
+- Build: code `26c75a01` on branch `v0.1.4-rc`. Installer SHA-256 `7d788ec1…`, installed exe `0c201258…`. 007 research.md R7 "v0.1.4 records" holds the run.
+- `s5-workbench-packaged`: 7 pass, 6 skip, 1 fail. The 6 skips need live input (`ARBARETO_LIVE_INPUT` unset), as in f015.
+- The fail is T135, SC-017: `Mark resolved of b.txt did not happen within 30000 ms` (`tests/windows/workbench-packaged.test.ts:743`).
+- T135 passed in f011 to f015, in 16.2 to 18.1 s.
+- Ten diagnostic reruns without the foreground gave 0 T135 fails in 10. In f016, the app had the foreground. So the reruns do not match f016.
+- Mechanism: a scratch DOM test (local scratch) shows a defect. The defect is in v0.1.3 too. The path files did not change from `v0.1.3` to `26c75a01`.
+- After the a.txt Mark resolved, `run()` in `src/frontend/changes/ChangesPane.tsx` (about :315) moves the focus to the next row.
+- This focus move comes before React renders the end of the file action.
+- A Space in that window hits the busy check (about :326).
+- A Conflicted row shows `ResolveView`, which shows no reasons (`src/frontend/app/Workbench.tsx` about :749-765). So the busy reason shows nowhere.
+- So the press is lost, and no text shows.
+- Not proven: that f016 hit this exact order. The mechanism is not proven to be the f016 cause.
+- User decision 2026-11-22: "Waive, fix in v0.1.5". T179 holds the fix and its test, the first v0.1.5 task. T135 stays ticked.
+- In one diagnostic rerun without the foreground, the SC-014 Delete confirmation case failed once. It passed in f011 to f016.
+- That case calls `showContextMenu` once with no retry (`workbench-packaged.test.ts` about :443). The helper `openRowMenu` (about :323-333) retries. T180 holds the retry.
+
 ## R31 Submodules tree and branch marks (user decisions of 2026-11-03)
 
 **Sources**: the approved mockup boards Main, Collapsed, Dark, and BranchMarks (canvas https://claude.ai/artifact/Up56G2PtcEcmGw33kb5Eh4, sample data); the Plan agent plan and the facts of 2026-11-03 (local scratch); the order proof and the marks probe (local scratch). The plan cites the repository code at f0b084cb.
@@ -1332,3 +1350,15 @@ Ticks: none from this record. T151, T155, and T162 wait for the green final full
 
 - R31 "v0.1.3 session at Windows Text size 225% (2026-11-20)" holds the T145 and T164 record.
 - 7 cases of `submodule-tree-packaged.test.ts` failed. T178 and 001 T422 hold the fixes, target v0.1.4.
+
+**v0.1.4 full run f016, 2026-11-22 (T177)**
+
+- Build: full run f016 on code `26c75a01`, branch `v0.1.4-rc`. Installer SHA-256 `7d788ec1…`, installed exe `0c201258…`.
+- 007 research.md R7 "v0.1.4 records" holds the full record. The logs are in local scratch `f016-full`.
+- Every `ORIGIN` line named the checkout under test (`bad` count 0 in each step).
+- `s4-test-all` was green: 1,050 pass, 0 fail by the driver count. This record holds no per-file counts.
+- T177 code and tests: commits 55142aec and e3128ba4 change `BranchActions.tsx`, `workbench.ts`, and `tests/contracts/workbench-branches.test.tsx`.
+- T177 (ticked, 2026-11-22): the green `s4-test-all` step of f016 holds the T177 cases.
+- The tick commit changes only `specs/` and `CHANGELOG.md`. So the older-build rule (tasks.md:44) holds with `26c75a01`.
+- Two `tests/windows` steps of f016 were red. The user decisions of 2026-11-22 accept f016 (007 R7).
+- The `s5-workbench-packaged` fail is T135. R30 "T135 in the v0.1.4 full run f016" holds the waiver.

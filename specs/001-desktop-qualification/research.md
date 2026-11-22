@@ -1427,6 +1427,14 @@ T422 packaged result (2026-11-21, reference host): the fix removes the double sc
 - Unverified: the 100% case and its ×2 control, a live Text size change, a display-scale change, and a second monitor (T157). Nobody ran them.
 - Evidence: local scratch v014-t422/run.
 
+T422 result in the v0.1.4 full run f016 (2026-11-22, reference host): the 100% case is green.
+
+- Build: code `26c75a01`, installer SHA-256 `7d788ec1b1c3b1a9064182e5d4372ff921491efc3b129212ae0c220d4aab9e7e`, installed exe SHA-256 `0c2012585736c985fb1899bb872cb6ae878671a5f0b56300157a2d44efefa16b`. 007 research.md R7 "v0.1.4 records" holds the run.
+- `s5-text-scale-packaged`: 1 pass, 0 fail.
+- The case printed `RECORD T422: os=10.0.26300 webview2=Edg/157.0.4341.60 textSize=100% dpi=120 dpr=1.25 inner=1280x800 --text-scale=1`.
+- At Text size 100%, this run is the regression guard. The 225% red and green record is above.
+- Still unverified: the ×2 control of the 100% case, a live Text size change, a display-scale change, and a second monitor (T157).
+
 Sources: [Text scaling](https://learn.microsoft.com/windows/apps/develop/input/text-scaling), [Accessible text requirements](https://learn.microsoft.com/windows/apps/design/accessibility/accessible-text-requirements#text-font-size-and-scale), [UISettings.TextScaleFactor](https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uisettings.textscalefactor), [ICoreWebView2Controller3](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller3), [ShouldDetectMonitorScaleChanges](https://learn.microsoft.com/dotnet/api/microsoft.web.webview2.core.corewebview2controller.shoulddetectmonitorscalechanges), [wry webview2 module](https://github.com/tauri-apps/wry/blob/wry-v0.57.1/src/webview2/mod.rs), [Edge 138 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/138#web-platform-features), [Edge 145 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/145#web-apis), [CSS Fonts 5 text-scale meta](https://drafts.csswg.org/css-fonts-5/#text-scale-meta), [preferred-text-scale explainer](https://github.com/w3c/csswg-drafts/blob/main/css-env-1/explainers/env-preferred-text-scale.md#windows-11). Document review and a source scan only; no WebView2 run.
 
 ### Signing and deferred authenticated updates
@@ -2500,6 +2508,14 @@ Fixes: T389.
 - T419 (ticked): the 001 rule needs a green Windows run with `ORIGIN` lines in the checkout under test. f015 is that run.
 - The test files that changed after `e2fa367a` do not include `status-area.test.tsx`. They are `tests/git/fixture-root.ts` and two `tests/windows` files.
 - Four `tests/windows` steps of f015 were red. The user decisions of 2026-11-17 and 2026-11-18 accept f015 plus the reruns (007 R7).
+
+**v0.1.4 full run f016, 2026-11-22.** Build: code `26c75a01` on branch `v0.1.4-rc`. Installer SHA-256 `7d788ec1…`, installed exe `0c201258…`. The full record is in 007 research.md R7 "v0.1.4 records". The logs are in local scratch `f016-full`.
+
+- 47 steps: 45 green, 2 red, 0 invalid. Every `ORIGIN` line named the checkout under test (`bad` count 0 in each step).
+- T422: `s5-text-scale-packaged` gave 1 pass, 0 fail at Text size 100%. R7 "Windows text size" holds the RECORD line.
+- T422 (ticked, 2026-11-22): the 225% red and green record and the f016 100% guard hold the fix. Commit de8a2cd6 holds the test, and 019bfbbc holds the fix.
+- Two `tests/windows` steps of f016 were red: `s5-spelling-perf` and `s5-workbench-packaged`. The user decisions of 2026-11-22 accept f016 (007 R7).
+- The tick commit changes only `specs/` and `CHANGELOG.md`. So the tick tree equals `26c75a01` in `src src-tauri tests scripts package.json bun.lock`.
 
 ### Dependency reviews
 

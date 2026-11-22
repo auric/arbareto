@@ -1434,3 +1434,57 @@ No finding blocks v0.1.0. The release is a prerelease, immutable, and not latest
 - The fix targets v0.1.4 (001 T422). README.md "Known issues" names the defect.
 - The user approved the README update on 2026-11-20 and 2026-11-21. README.md Status and Download now name v0.1.3.
 - `OBSERVATION v0.1.3 release: v0.1.3 at ee676db5 (tag object 0e9c04f8), prerelease, immutable, not latest, four files; build 9 min 35 s, approval to published at most 1 min 17 s; downloads equal API digests; sums verify exit 0, 3 OK lines; attestation exit 0 for each file with the release.yml signer, exit 1 for a changed byte and for other.yml; notices file carries four attestations; GH_TOKEN only in "Publish the release"; both About URLs HTTP 200; upload refusal not run; double text scaling above 100% shipped as a known issue`
+
+### v0.1.4 records (2026-11-22)
+
+- Source: the driver logs in local scratch `f016-full`, the rerun logs in local scratch, and the orchestrator's run summary.
+- User decisions of 2026-11-22: "Accept record + rerun" for `s5-spelling-perf`, and "Waive, fix in v0.1.5" for T135 ("f016 red steps").
+
+#### Build identity
+
+- Code: `26c75a01` (26c75a0101acdcd5f596dd65c2ad7faed28b228d) on branch `v0.1.4-rc`, version 0.1.4. Porcelain was empty at the start and at the end.
+- f016 built `Arbareto_0.1.4_x64-setup.exe` with SHA-256 `7d788ec1b1c3b1a9064182e5d4372ff921491efc3b129212ae0c220d4aab9e7e`.
+- The exe after the NSIS marker patch has SHA-256 `0c2012585736c985fb1899bb872cb6ae878671a5f0b56300157a2d44efefa16b`, with 1 marker. The raw exe has `e99d8681…`.
+- The installed `arbareto.exe` equals the patched build. The exe installed before f016 had `16b34481…`, the T089 calibration build.
+- OS: Windows NT 10.0.26300.0, UBR 9974. Git 2.56.0.windows.2, WebView2 157.0.4341.60, Bun 1.4.4, rustc and cargo 1.99.0, tauri-cli 2.12.0.
+- f015 had WebView2 157.0.4341.46.
+- WSL: `Ubuntu-26.04` with Git 2.55.0.
+
+#### f016 steps
+
+- Time: 2026-11-22 03:50 to 18:55, local time. 47 steps: 45 green, 2 red, 0 invalid.
+- Each step printed an `ORIGIN` bad count of 0.
+- `s0e-cargo-test`: 673 passed, 0 failed, 16 ignored.
+- The step includes `wsl::tests::the_real_stop_of_a_file_facts_walk_ends_its_perl_reader` and `process_requests::tests::a_canceled_walk_ends_without_a_reply`. Both passed.
+- `s4-test-all`: 1,050 pass, 0 fail. In f015, the driver count of this step covered only the serial part. This record holds no JUnit total.
+- `s4w-workbench-wsl-facts` 27 pass, 0 fail. `s4w-workbench-wsl-branches` 12, 0. `s4w-workbench-wsl-staging` 12, 0. `s4w-workbench-wsl-settings` 14, 0.
+- `s6-gate`: 175 pass, 0 fail.
+- `s5-revert-perf`: 6 pass, 0 fail. 008 research.md R15 "v0.1.4 records" holds its OBSERVATION lines.
+- `s5-text-scale-packaged`: 1 pass, 0 fail. 001 research.md R7 "Windows text size" holds its RECORD line.
+- This record holds no per-step table.
+
+#### f016 red steps
+
+- `s5-spelling-perf`: 88 pass, 1 fail, 1 skip.
+  - The Q25 gate case of tk failed in run 3: `the tk run 3 sample gap is 1704 ms, above the 1500 ms bound`.
+  - The fail comes from the gap validity check (`tests/windows/spelling-perf.test.ts:539`). tk runs 1 and 2 gave gaps of 296 ms and 303 ms.
+  - Across f011 to f016, 1,529 gate records have a largest gap of 380 ms. The failed tk run 3 wrote no record.
+  - Rerun of 2026-11-22, only the tk gate (`-t "packaged gate tk:"`): 1 pass, 89 filtered out.
+  - No cause is on record. 006 research.md "Batch 3 review fixes" holds the rerun values.
+  - User decision of 2026-11-22: "Accept record + rerun".
+- `s5-workbench-packaged`: 7 pass, 6 skip, 1 fail.
+  - The fail is T135, SC-017: `Mark resolved of b.txt did not happen within 30000 ms` (`tests/windows/workbench-packaged.test.ts:743`).
+  - T135 passed in f011 to f015, in 16.2 to 18.1 s.
+  - The 6 skips need live input (`ARBARETO_LIVE_INPUT` unset), as in f015.
+  - Ten diagnostic reruns without the foreground gave 0 T135 fails in 10. In f016, the app had the foreground. So the reruns do not match f016.
+  - A scratch DOM test shows a lost Space on the next Conflicted row. It is not proven to be the f016 cause.
+  - 004 research.md R30 holds the T135 record and the mechanism.
+  - User decision of 2026-11-22: "Waive, fix in v0.1.5". 004 T179 holds the fix. 004 T180 holds a menu retry for the SC-014 Delete case.
+
+#### Ticks
+
+- Ticked on 2026-11-22: 001 T422, 004 T177, 005 T127, and 008 T086 to T089. Each feature research.md holds the record.
+- The green clause holds only through the two user decisions of 2026-11-22.
+- The tick commit changes only `specs/` and `CHANGELOG.md`. So the tick tree equals `26c75a01` in `src src-tauri tests scripts package.json bun.lock`.
+- CHANGELOG.md has the section `[0.1.4]` without a date. For 0.1.3, commit ee676db5 added the date at the release.
+- `OBSERVATION v0.1.4 full run f016: 26c75a01, installer 7d788ec1…, exe 0c201258…; 45 of 47 steps green, 0 invalid; ORIGIN bad 0; cargo 673/0/16; s4-test-all 1,050/0; gate 175/0; red s5-spelling-perf (tk run 3 gap 1704 ms, accepted with rerun 1/0) and s5-workbench-packaged (T135, waived to v0.1.5)`

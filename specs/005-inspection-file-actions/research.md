@@ -810,6 +810,14 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
   - User decision 2026-11-18: the f015 test:all and this same-tree record count for this tick. The user waives the exact-tree test:all clause for T115 only. Gap: no `bun run test:all` ran on the tick tree.
 - Reviewer finding MEDIUM 1 of the v0.1.3 review: `scriptWork` rethrows a non-`Stop` error without an abort.
   - The other trust workers then keep running. User decision of 2026-11-18: v0.1.3 ships as tested. T127 holds the fix, target v0.1.4.
+- T127 record, v0.1.4 full run f016 on code `26c75a01`, 2026-11-22 (007 research.md R7 "v0.1.4 records").
+  - Installer SHA-256 `7d788ec1…`, installed exe `0c201258…`. The logs are in local scratch `f016-full`.
+  - Commit ee53b6cc holds the fix in `src/git-service/submodule-change.ts` and the case in `tests/git/submodule-change.test.ts`.
+  - `s4-test-all` was green: 1,050 pass, 0 fail by the driver count. This record holds no per-file counts.
+  - Every `ORIGIN` line of f016 named the checkout under test.
+  - T127 (ticked, 2026-11-22): the green `s4-test-all` step of f016 holds the T127 case.
+  - The tick commit changes only `specs/` and `CHANGELOG.md`. So the older-build rule (tasks.md:43) holds with `26c75a01`.
+  - Two `tests/windows` steps of f016 were red. The user decisions of 2026-11-22 accept f016 (007 R7).
 
 **v0.1.2 records (T114, T123), 2026-11-16**
 
